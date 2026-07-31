@@ -415,7 +415,10 @@ fn mount_and_write(esp_dev: &str) -> Result<()> {
             .arg("mount")
             .arg("-mountPoint")
             .arg(&mount)
-            .arg(esp_dev),
+            .arg(esp_dev)
+            // Keep diskutil's chatter off stdout (the `freebsd` shortcut prints
+            // the machine id there).
+            .stdout(std::process::Stdio::null()),
         "diskutil mount (ESP)",
     )?;
 
@@ -432,7 +435,10 @@ fn mount_and_write(esp_dev: &str) -> Result<()> {
     })();
 
     if let Err(e) = run(
-        Command::new("diskutil").arg("unmount").arg(&mount),
+        Command::new("diskutil")
+            .arg("unmount")
+            .arg(&mount)
+            .stdout(std::process::Stdio::null()),
         "diskutil unmount (ESP)",
     ) {
         warn!("failed to unmount ESP cleanly: {e}");

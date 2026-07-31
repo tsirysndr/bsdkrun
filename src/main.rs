@@ -88,6 +88,12 @@ enum Command {
     /// Run an OCI image (Docker Hub / any registry) as a Linux machine.
     Linux(LinuxArgs),
 
+    /// Run FreeBSD — fetches the image if needed, then boots it (fetch + firmware).
+    Freebsd(BsdArgs),
+
+    /// Run NetBSD — fetches the image if needed, then boots it (fetch + firmware).
+    Netbsd(BsdArgs),
+
     /// List machines.
     Ps(PsArgs),
 
@@ -314,6 +320,37 @@ struct RunConfig {
     persist: bool,
 }
 
+/// Options for the `freebsd` / `netbsd` shortcut commands.
+#[derive(Parser)]
+struct BsdArgs {
+    /// Version to run. FreeBSD: a release like 15.1 (default: latest).
+    /// NetBSD: a release like 10.1, or `current` (default: current).
+    #[arg(long)]
+    version: Option<String>,
+
+    /// UEFI firmware to boot with (default: krunkit's KRUN_EFI, auto-located).
+    #[arg(long)]
+    firmware: Option<PathBuf>,
+
+    /// Re-download even if the image is already cached.
+    #[arg(long)]
+    force: bool,
+
+    /// Additional disk to attach as virtio-blk (repeatable).
+    /// Format: PATH[:ro] — append `:ro` for a read-only attachment.
+    #[arg(long = "attach-disk", value_name = "PATH[:ro]")]
+    attach_disk: Vec<DiskSpec>,
+
+    #[command(flatten)]
+    run: RunConfig,
+
+    #[command(flatten)]
+    net: NetConfig,
+
+    #[command(flatten)]
+    vm: VmConfig,
+}
+
 #[derive(Parser)]
 struct VmConfig {
     /// Number of vCPUs.
@@ -427,6 +464,8 @@ fn main() -> Result<()> {
         Command::Versions(args) => fetch::list_versions(args.os),
         Command::Grow(args) => fetch::grow(&args.disk, &args.size),
         Command::Linux(args) => boot_linux(args),
+        Command::Freebsd(args) => boot_bsd(fetch::Os::Freebsd, args),
+        Command::Netbsd(args) => boot_bsd(fetch::Os::Netbsd, args),
         Command::Ps(args) => cmd_ps(args.all),
         Command::Images => cmd_images(),
         Command::Stop(args) => cmd_stop(&args.id),
@@ -549,22 +588,42 @@ fn boot_kernel(args: KernelArgs) -> Result<()> {
 }
 
 fn boot_firmware(args: FirmwareArgs) -> Result<()> {
+    firmware_machine(
+        &args.firmware,
+        &args.disk,
+        &args.attach_disk,
+        &args.run,
+        &args.net,
+        &args.vm,
+    )
+}
+
+/// Boot a machine via UEFI firmware + a root disk (shared by `firmware` and the
+/// `freebsd`/`netbsd` shortcuts). The root disk is CoW-cloned per machine.
+fn firmware_machine(
+    firmware: &std::path::Path,
+    disk: &std::path::Path,
+    attach: &[DiskSpec],
+    run: &RunConfig,
+    net: &NetConfig,
+    vm: &VmConfig,
+) -> Result<()> {
     let machine_id = id::short_id();
     let vdir = machine_dir_or_tmp(&machine_id);
-    let image = basename(&args.disk);
-    let root_disk = prepare_bsd_disk(&args.disk, &vdir, args.run.persist)?;
+    let image = basename(disk);
+    let root_disk = prepare_bsd_disk(disk, &vdir, run.persist)?;
 
     let build = || -> Result<(Ctx, Option<Gvproxy>)> {
         let ctx = Ctx::new()?;
-        ctx.set_vm_config(args.vm.cpus, args.vm.mem)?;
+        ctx.set_vm_config(vm.cpus, vm.mem)?;
         ctx.attach_stdio_serial_console()
             .context("wiring guest serial console to stdio")?;
-        db::record_disk(&args.disk.to_string_lossy());
+        db::record_disk(&disk.to_string_lossy());
         ctx.add_disk("root", &root_disk, false)
             .with_context(|| format!("attaching root disk {}", root_disk.display()))?;
-        attach_extra_disks(&ctx, &args.attach_disk)?;
-        let gvproxy = setup_networking(&ctx, &args.net)?;
-        ctx.set_firmware(&args.firmware)
+        attach_extra_disks(&ctx, attach)?;
+        let gvproxy = setup_networking(&ctx, net)?;
+        ctx.set_firmware(firmware)
             .context("configuring firmware")?;
         Ok((ctx, gvproxy))
     };
@@ -575,11 +634,64 @@ fn boot_firmware(args: FirmwareArgs) -> Result<()> {
         "firmware",
         &image,
         "",
-        args.vm.cpus,
-        args.vm.mem,
-        args.run.detach,
+        vm.cpus,
+        vm.mem,
+        run.detach,
         true,
         build,
+    )
+}
+
+/// `freebsd` / `netbsd`: fetch the image if needed, auto-locate the firmware,
+/// then boot it — the one-liner equivalent of `fetch` + `firmware`.
+fn boot_bsd(os: fetch::Os, args: BsdArgs) -> Result<()> {
+    let cache = fetch::cache_dir()?;
+    let disk = fetch::fetch(os, args.version, &cache, args.force)?;
+    let firmware = match args.firmware {
+        Some(f) => f,
+        None => locate_krun_efi()?,
+    };
+    firmware_machine(&firmware, &disk, &args.attach_disk, &args.run, &args.net, &args.vm)
+}
+
+/// Locate libkrun's EDK2 firmware (`KRUN_EFI`): `$BSDKRUN_FIRMWARE`, a repo-local
+/// `images/KRUN_EFI.fd`, or krunkit's Homebrew install.
+fn locate_krun_efi() -> Result<PathBuf> {
+    if let Some(f) = std::env::var_os("BSDKRUN_FIRMWARE") {
+        let p = PathBuf::from(f);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    let repo = PathBuf::from("images/KRUN_EFI.fd");
+    if repo.exists() {
+        return Ok(repo);
+    }
+    // Candidate Homebrew prefixes (krunkit ships the firmware under share/krunkit).
+    let mut prefixes: Vec<PathBuf> = Vec::new();
+    if let Ok(out) = std::process::Command::new("brew")
+        .args(["--prefix", "krunkit"])
+        .output()
+    {
+        if out.status.success() {
+            let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !p.is_empty() {
+                prefixes.push(PathBuf::from(p));
+            }
+        }
+    }
+    for p in ["/opt/homebrew/opt/krunkit", "/opt/homebrew", "/usr/local"] {
+        prefixes.push(PathBuf::from(p));
+    }
+    for base in prefixes {
+        let fw = base.join("share/krunkit/KRUN_EFI.silent.fd");
+        if fw.exists() {
+            return Ok(fw);
+        }
+    }
+    anyhow::bail!(
+        "could not find the KRUN_EFI firmware. Install it with `brew install krunkit`, \
+         or pass --firmware /path/to/KRUN_EFI.fd."
     )
 }
 

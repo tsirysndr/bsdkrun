@@ -245,21 +245,31 @@ Notes:
 
 bsdkrun keeps a small SQLite database (`sqlx`) under `$XDG_STATE_HOME/bsdkrun` recording the
 machines you run, the images you've pulled, and disks you've attached — each with a **Docker-style
-short id**. A Docker-like set of commands operates on them:
+short id**. The same Docker-like commands work for **every guest type** — Linux (`linux`) and BSD
+(`firmware` / `kernel`) alike — bsdkrun records each machine's kind and applies the right logic:
 
 ```sh
-# run a machine in the background; prints its id
+# run any machine in the background; prints its id
 id=$(bsdkrun linux -d alpine)
+id=$(bsdkrun firmware -d --firmware images/KRUN_EFI.fd --disk images/fbsd15.raw)
 
 bsdkrun ps                 # list running machines (-a for all, incl. exited)
-bsdkrun images             # list pulled images (id, reference, size, age)
+bsdkrun images             # list images: pulled OCI images + fetched BSD images
 bsdkrun logs $id           # print the machine's console log
 bsdkrun logs -f $id        # follow it live
-bsdkrun shell $id          # attach an interactive shell (Ctrl-] to detach)
+bsdkrun shell $id          # attach to the machine (Ctrl-] to detach)
 bsdkrun stop $id           # stop a running machine
 ```
 
-Any unique **id prefix** works (`bsdkrun stop 8e1c`).
+Any unique **id prefix** works (`bsdkrun stop 8e1c`). `shell` attaches to the guest console: for a
+Linux machine that's an interactive shell (with `exit`/re-attach); for BSD it's the guest's own
+console (e.g. the `login:` prompt).
+
+**Copy-on-write disks** — a BSD machine's root disk is cloned per machine with an APFS `clonefile`
+(`cp -c` — instant, and costs no extra disk until the guest writes), so you can boot **many
+microVMs from one base image** concurrently without touching it. Pass `--persist` to boot the disk
+in place instead (writes persist; one machine at a time). Linux machines get the same isolation via
+their per-machine virtio-fs clone.
 
 How it works — no daemon:
 

@@ -5,7 +5,7 @@
 //!   * kernel   — direct kernel + cmdline, using libkrun's generated FDT
 //!                (target: NetBSD evbarm / bare kernel+FDT boot)
 //!   * firmware — a UEFI firmware image that boots a normal BSD disk via its
-//!                EFI loader (target: FreeBSD / OpenBSD arm64)
+//!                EFI loader (target: FreeBSD / NetBSD arm64)
 //!   * linux    — run an OCI image (Docker Hub / any registry) as a Linux
 //!                machine: fetch a kernel, extract the rootfs, boot it
 
@@ -548,6 +548,17 @@ fn boot_firmware(args: FirmwareArgs) -> Result<()> {
 }
 
 fn boot_linux(args: LinuxArgs) -> Result<()> {
+    // The prebuilt kernel is built without CONFIG_FUSE_FS, so it cannot mount a
+    // virtio-fs root (it would panic: "Unable to mount root fs"). Refuse `--virtiofs`
+    // unless the user supplied their own (FUSE-enabled) kernel via `--kernel`.
+    if args.virtiofs && args.kernel.is_none() {
+        anyhow::bail!(
+            "--virtiofs needs a guest kernel built with virtio-fs (CONFIG_FUSE_FS=y); the \
+             default prebuilt kernel is not. Pass --kernel with a FUSE-enabled kernel, or omit \
+             --virtiofs to boot from an initramfs (the default)."
+        );
+    }
+
     // Prepare everything that can fail before we fork / touch the hypervisor.
     let kernel = linux::ensure_kernel(args.kernel.clone(), &args.kernel_version)?;
     let image = oci::pull(&args.image)?;
@@ -663,11 +674,18 @@ fn configure_linux_ctx(
             ctx.set_workdir(&ep.workdir)?;
         }
         ctx.set_exec(&ep.argv[0], &ep.argv, &ep.env)?;
+        // libkrun serves the virtio-fs root under the tag `/dev/root` and injects
+        // its own `/init.krun` (a virtual file in the virtiofs driver) that runs
+        // the `set_exec` program. We must spell that out on the cmdline — libkrun
+        // does not add it when a custom kernel cmdline is supplied.
         ctx.set_kernel(
             kernel,
             krun::KRUN_KERNEL_FORMAT_RAW,
             None,
-            &format!("console={}", args.console),
+            &format!(
+                "console={} root=/dev/root rootfstype=virtiofs rw init=/init.krun",
+                args.console
+            ),
         )
         .context("configuring kernel")?;
     } else {

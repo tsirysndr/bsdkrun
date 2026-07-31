@@ -46,15 +46,10 @@ pub fn setup_detached(dir: &Path) -> Result<RawFd> {
     {
         anyhow::bail!("openpty: {}", std::io::Error::last_os_error());
     }
-    // Raw mode on the slave so console bytes pass through untouched (no CR/LF
-    // translation or echo between libkrun and the broker).
-    unsafe {
-        let mut t: libc::termios = std::mem::zeroed();
-        if libc::tcgetattr(slave, &mut t) == 0 {
-            libc::cfmakeraw(&mut t);
-            libc::tcsetattr(slave, libc::TCSANOW, &t);
-        }
-    }
+    // Leave the slave at the default (cooked) tty settings: the guest console
+    // (hvc0) is a normal terminal, so its `\n`->`\r\n` output translation must
+    // stay on — making it raw produces staircased output on the attaching
+    // terminal. Interactive programs (the shell's readline) set their own modes.
 
     let log_path = dir.join("console.log");
     let sock_path = dir.join("console.sock");
@@ -233,9 +228,12 @@ pub fn attach_interactive(dir: &Path) -> Result<()> {
     })?;
     let sock_fd = stream.as_raw_fd();
 
-    // Raw mode so keystrokes (incl. Ctrl-C) reach the guest; restored on drop.
-    let _raw = RawGuard::enable();
+    // Print the banner BEFORE entering raw mode, so its trailing newline still
+    // gets a carriage return (in raw mode `\n` is a bare line-feed, which would
+    // leave the cursor mid-line and render the guest prompt off to the right).
     eprintln!("[bsdkrun] attached — press Ctrl-] to detach (or `exit` the shell)");
+    // Raw mode so keystrokes (incl. Ctrl-C) reach the guest; restored on drop.
+    let raw = RawGuard::enable();
 
     let stdout = std::io::stdout();
     let mut filter = MarkerFilter::new();
@@ -301,6 +299,8 @@ pub fn attach_interactive(dir: &Path) -> Result<()> {
         let _ = h.write_all(&rest);
         let _ = h.flush();
     }
+    // Restore the terminal (cooked) before the banner, so its newline is normal.
+    drop(raw);
     eprintln!("\n[bsdkrun] detached");
     Ok(())
 }

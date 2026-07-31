@@ -228,6 +228,7 @@ cat > /Volumes/ESP/EFI/freebsd/loader.env <<'ENV'
 console=efi,eficom
 boot_serial=YES
 boot_multicons=YES
+loader_color=NO      # optional — see note below
 ENV
 
 diskutil unmount /Volumes/ESP
@@ -238,6 +239,11 @@ hdiutil detach "${DEV%s*}"
 > quotes are taken literally and you get `no valid consoles!`). Valid arm64 console names are
 > `efi` and `eficom`; the old `comconsole` name is deprecated. Delete the AppleDouble junk macOS
 > sprinkles on the FAT volume (`dot_clean /Volumes/ESP`) before unmounting.
+>
+> **Washed-out / gray console background?** The loader's boot menu paints the screen with ANSI
+> black (`ESC[40m`) for its color scheme, which clashes with a terminal whose background isn't
+> pure black — it reads as a gray filter over the console. `loader_color=NO` disables the loader's
+> colors; the beastie logo and menu still render, just in your terminal's own colors.
 
 ---
 

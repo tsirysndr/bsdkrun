@@ -338,6 +338,17 @@ bsdkrun volume rm web          # delete a volume's data (refused if a machine is
 bsdkrun volume rm -f web db    # force removal / multiple names
 ```
 
+**Bind-mount host directories (`--mount`, Linux only)** — share a host directory into the guest at
+a path, like `docker run -v`. Repeatable; append `:ro` for read-only:
+
+```sh
+bsdkrun linux --mount ~/project:/src --mount ~/data:/data:ro alpine -- ls /src
+```
+
+Each `--mount HOST:GUEST[:ro]` becomes a virtio-fs share the generated init mounts at `GUEST`
+(the host dir must exist; `GUEST` must be absolute). Reads and writes pass straight through to the
+host, and it composes with `-v` (persistent volume) and every Linux root mode.
+
 How it works — no daemon:
 
 - **`-d` detached** — bsdkrun forks; the child `setsid`s, wires the guest console (`hvc0`) to a

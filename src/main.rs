@@ -219,6 +219,12 @@ struct LinuxArgs {
     #[arg(short = 'v', long, value_name = "NAME")]
     volume: Option<String>,
 
+    /// Bind-mount a host directory into the guest over virtio-fs (repeatable),
+    /// like `docker run -v`. Format: `HOST:GUEST[:ro]` (append `:ro` for
+    /// read-only). Linux guests only.
+    #[arg(long = "mount", value_name = "HOST:GUEST[:ro]")]
+    mounts: Vec<String>,
+
     /// Override the image's entrypoint (like `docker run --entrypoint`).
     #[arg(long)]
     entrypoint: Option<String>,
@@ -891,6 +897,35 @@ fn prepare_bsd_disk(
     Ok(dst)
 }
 
+/// Parse a `--mount HOST:GUEST[:ro]` spec into a bind mount. The host directory
+/// must exist (it's canonicalized to an absolute path); the guest path must be
+/// absolute.
+fn parse_mount(spec: &str) -> Result<linux::BindMount> {
+    let parts: Vec<&str> = spec.split(':').collect();
+    let (host, guest, ro) = match parts.as_slice() {
+        [h, g] => (*h, *g, false),
+        [h, g, "ro"] => (*h, *g, true),
+        [h, g, "rw"] => (*h, *g, false),
+        _ => anyhow::bail!("invalid --mount {spec:?} — expected HOST:GUEST[:ro]"),
+    };
+    if host.is_empty() || guest.is_empty() {
+        anyhow::bail!("invalid --mount {spec:?} — empty HOST or GUEST");
+    }
+    if !guest.starts_with('/') {
+        anyhow::bail!("invalid --mount {spec:?} — GUEST path must be absolute");
+    }
+    let host = std::fs::canonicalize(host)
+        .with_context(|| format!("--mount host directory {host:?} does not exist"))?;
+    if !host.is_dir() {
+        anyhow::bail!("--mount host path {} is not a directory", host.display());
+    }
+    Ok(linux::BindMount {
+        host,
+        guest: guest.to_string(),
+        ro,
+    })
+}
+
 /// Resolve a `--volume NAME` to its directory under `<state>/volumes`, rejecting
 /// names that could escape it.
 fn volume_dir(name: &str) -> Result<PathBuf> {
@@ -994,6 +1029,10 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
     }
     let volume = args.volume.as_deref().map(volume_dir).transpose()?;
 
+    // Host directory bind mounts (`--mount HOST:GUEST[:ro]`), shared via virtio-fs.
+    let mounts: Vec<linux::BindMount> =
+        args.mounts.iter().map(|s| parse_mount(s)).collect::<Result<_>>()?;
+
     // Decide up front whether networking will come up, so the baked-in initramfs
     // `/init` + kernel `ip=` match what `setup_networking` will actually do.
     let net_up = !args.net.no_net && net::locate().is_ok();
@@ -1008,7 +1047,7 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
     // otherwise it's a per-machine virtio-fs clone, or an initramfs (--initramfs).
     let root_mode = match (&volume, args.virtiofs()) {
         (Some(voldir), _) => {
-            linux::prepare_overlay_volume(voldir, &ep, net_up, persistent)?;
+            linux::prepare_overlay_volume(voldir, &ep, net_up, persistent, &mounts)?;
             LinuxRoot::Overlay {
                 base: image.rootfs.clone(),
                 volume: voldir.clone(),
@@ -1020,6 +1059,7 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
             net_up,
             persistent,
             &vdir,
+            &mounts,
         )?),
         (None, false) => {
             linux::warn_initramfs_memory(&image.rootfs, args.vm.mem);
@@ -1028,6 +1068,7 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
                 &ep,
                 net_up,
                 persistent,
+                &mounts,
             )?)
         }
     };
@@ -1040,7 +1081,8 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
             ctx.attach_stdio_serial_console()
                 .context("wiring guest serial console to stdio")?;
         }
-        let gvproxy = configure_linux_ctx(&ctx, &args, &kernel, &root_mode, net_up, &vdir)?;
+        let gvproxy =
+            configure_linux_ctx(&ctx, &args, &kernel, &root_mode, &mounts, net_up, &vdir)?;
         Ok((ctx, gvproxy))
     };
 
@@ -1077,15 +1119,23 @@ enum LinuxRoot {
 
 /// Configure networking + rootfs + kernel on `ctx` (shared by the foreground and
 /// detached paths; the caller wires the console first). Returns the gvproxy.
+#[allow(clippy::too_many_arguments)]
 fn configure_linux_ctx(
     ctx: &Ctx,
     args: &LinuxArgs,
     kernel: &std::path::Path,
     root: &LinuxRoot,
+    mounts: &[linux::BindMount],
     net_up: bool,
     vdir: &std::path::Path,
 ) -> Result<Option<Gvproxy>> {
     let gvproxy = setup_networking_with_agent(ctx, &args.net, Some(vdir))?;
+    // Share each `--mount` host directory over virtio-fs; the generated init
+    // mounts them by matching tag.
+    for (i, m) in mounts.iter().enumerate() {
+        ctx.add_virtiofs(&linux::mount_tag(i), &m.host)
+            .with_context(|| format!("sharing --mount host dir {}", m.host.display()))?;
+    }
     // We boot our own init in every virtio-fs mode (not libkrun's init.krun,
     // which is for the bundled libkrunfw kernel).
     match root {

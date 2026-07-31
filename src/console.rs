@@ -201,65 +201,149 @@ fn pollin(fd: RawFd) -> libc::pollfd {
 /// Byte that detaches an interactive `shell` session: Ctrl-] (like telnet).
 const DETACH_KEY: u8 = 0x1d;
 
-/// Connect to a detached VM's console socket and proxy the local terminal in
-/// raw mode (for `shell`). Returns when the guest closes the console or the user
-/// presses Ctrl-] to detach.
+/// Invisible (OSC) marker the guest init emits when its console shell exits, so
+/// an attached `shell` detaches back to the host. Kept in sync with the string
+/// printed by `crate::linux`'s generated `/init`.
+const EXIT_MARKER: &[u8] = b"\x1b]6666;bsdkrun-exit\x07";
+
+/// Connect to a detached machine's console socket and proxy the local terminal
+/// in raw mode (for `shell`). Returns when: the user presses Ctrl-], the guest
+/// shell exits (via the exit marker), or the machine goes away.
 pub fn attach_interactive(dir: &Path) -> Result<()> {
+    use std::os::fd::AsRawFd;
+
     let sock = dir.join("console.sock");
     let stream = UnixStream::connect(&sock).with_context(|| {
         format!(
-            "connecting to {} — is the microVM running (and detached)?",
+            "connecting to {} — is the machine running (and detached)?",
             sock.display()
         )
     })?;
+    let sock_fd = stream.as_raw_fd();
 
-    // Put stdin into raw mode so keystrokes (incl. Ctrl-C) reach the guest; the
-    // guard restores it on exit.
+    // Raw mode so keystrokes (incl. Ctrl-C) reach the guest; restored on drop.
     let _raw = RawGuard::enable();
-    eprintln!("[bsdkrun] attached — press Ctrl-] to detach");
+    eprintln!("[bsdkrun] attached — press Ctrl-] to detach (or `exit` the shell)");
 
-    // Reader thread: guest console -> local stdout.
-    let mut reader = stream.try_clone().context("cloning console stream")?;
-    let reader_thread = thread::spawn(move || {
-        let mut buf = [0u8; 4096];
-        let stdout = std::io::stdout();
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
+    let stdout = std::io::stdout();
+    let mut filter = MarkerFilter::new();
+    // The replayed console (sent on connect) can contain exit markers from
+    // *previous* sessions — ignore those. Only markers seen after the user has
+    // interacted mean the shell they're in has exited.
+    let mut user_typed = false;
+    let mut input = [0u8; 4096];
+    let mut sockbuf = [0u8; 4096];
+
+    loop {
+        let mut pfds = [pollin(0), pollin(sock_fd)];
+        let n = unsafe { libc::poll(pfds.as_mut_ptr(), 2, -1) };
+        if n < 0 {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            break;
+        }
+
+        // Guest console -> stdout (filtering out the exit marker).
+        if pfds[1].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
+            match (&stream).read(&mut sockbuf) {
+                Ok(0) => break, // machine gone
                 Ok(k) => {
-                    let mut h = stdout.lock();
-                    if h.write_all(&buf[..k]).is_err() || h.flush().is_err() {
-                        break;
+                    let (out, markers) = filter.feed(&sockbuf[..k]);
+                    {
+                        let mut h = stdout.lock();
+                        let _ = h.write_all(&out);
+                        let _ = h.flush();
+                    }
+                    if markers > 0 && user_typed {
+                        break; // the shell we were in exited: return to host
                     }
                 }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(_) => break,
             }
         }
-    });
 
-    // Main: local stdin -> guest console, watching for the detach key.
-    let mut writer = stream;
-    let mut input = [0u8; 4096];
-    loop {
-        let k = unsafe { libc::read(0, input.as_mut_ptr().cast(), input.len()) };
-        if k <= 0 {
-            break;
-        }
-        let k = k as usize;
-        if let Some(pos) = input[..k].iter().position(|&b| b == DETACH_KEY) {
-            // Forward anything before the detach key, then stop.
-            let _ = writer.write_all(&input[..pos]);
-            break;
-        }
-        if writer.write_all(&input[..k]).is_err() {
-            break;
+        // Local stdin -> guest console (watching for the detach key).
+        if pfds[0].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
+            let k = unsafe { libc::read(0, input.as_mut_ptr().cast(), input.len()) };
+            if k <= 0 {
+                break;
+            }
+            user_typed = true;
+            let k = k as usize;
+            if let Some(pos) = input[..k].iter().position(|&b| b == DETACH_KEY) {
+                let _ = (&stream).write_all(&input[..pos]);
+                break;
+            }
+            if (&stream).write_all(&input[..k]).is_err() {
+                break;
+            }
         }
     }
-    // Shut the socket down both ways so the reader thread's blocking read
-    // returns (dropping alone wouldn't — the cloned fd keeps it half-open).
-    let _ = writer.shutdown(std::net::Shutdown::Both);
-    let _ = reader_thread.join();
+
+    // Flush any bytes the filter was holding back (a possible partial marker).
+    let rest = filter.flush();
+    {
+        let mut h = stdout.lock();
+        let _ = h.write_all(&rest);
+        let _ = h.flush();
+    }
     eprintln!("\n[bsdkrun] detached");
     Ok(())
+}
+
+/// Streams bytes through, stripping any [`EXIT_MARKER`] occurrences (and holding
+/// back a trailing partial marker across reads), reporting how many it stripped.
+struct MarkerFilter {
+    carry: Vec<u8>,
+}
+
+impl MarkerFilter {
+    fn new() -> Self {
+        MarkerFilter { carry: Vec::new() }
+    }
+
+    /// Returns (bytes to emit, number of markers stripped).
+    fn feed(&mut self, data: &[u8]) -> (Vec<u8>, usize) {
+        let mut buf = std::mem::take(&mut self.carry);
+        buf.extend_from_slice(data);
+        // Hold back a suffix that could be the start of a marker split across reads.
+        let hold = partial_marker_suffix(&buf);
+        let split = buf.len() - hold;
+        self.carry = buf[split..].to_vec();
+        let process = &buf[..split];
+
+        let mut out = Vec::with_capacity(process.len());
+        let mut markers = 0;
+        let mut i = 0;
+        while i < process.len() {
+            if process[i..].starts_with(EXIT_MARKER) {
+                markers += 1;
+                i += EXIT_MARKER.len();
+            } else {
+                out.push(process[i]);
+                i += 1;
+            }
+        }
+        (out, markers)
+    }
+
+    fn flush(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.carry)
+    }
+}
+
+/// Length of the longest suffix of `buf` that is a proper prefix of the marker
+/// (so it might complete on the next read).
+fn partial_marker_suffix(buf: &[u8]) -> usize {
+    let max = (EXIT_MARKER.len() - 1).min(buf.len());
+    for h in (1..=max).rev() {
+        if buf[buf.len() - h..] == EXIT_MARKER[..h] {
+            return h;
+        }
+    }
+    0
 }
 
 /// Stream a detached VM's console socket to stdout (for `logs -f`), read-only,

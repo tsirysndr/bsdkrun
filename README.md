@@ -269,9 +269,10 @@ How it works — no daemon:
   console is replayed so you see the current prompt immediately, and **Ctrl-]** detaches. A true
   `exec -it` (a new process regardless of the workload) would need an in-guest agent over vsock.
 - **Persistence** — a detached machine with **no explicit command** (`bsdkrun linux -d alpine`)
-  keeps a console shell alive across exits: exiting an attached shell just gives you a fresh one,
-  and the machine runs until you `stop` it. Give it a command (`… -d alpine -- myserver`) and it
-  behaves like Docker instead — the machine powers off when that command exits.
+  keeps a console shell alive: typing `exit` (or Ctrl-]) returns you to your **host** prompt and
+  leaves the machine **running** — re-attach any time with `shell` for a fresh shell; the machine
+  ends only when you `stop` it. Give it a command (`… -d alpine -- myserver`) and it behaves like
+  Docker instead — the machine powers off when that command exits.
 - **`stop`** sends `SIGTERM` to the machine's process (whose signal handler tears down gvproxy).
 - **`ps`** reconciles: a machine still marked *running* whose process is gone is shown as *exited*.
 

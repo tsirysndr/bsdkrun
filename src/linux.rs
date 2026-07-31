@@ -304,9 +304,12 @@ fn generate_init(ep: &Entrypoint, net: bool, persistent: bool) -> String {
     );
     if persistent {
         // Detached machine with no explicit command: keep a console shell alive
-        // across exits (so exiting an attached shell just gives a fresh one).
-        // The machine ends only via `stop` (SIGTERM to the host process).
-        s.push_str("while : ; do run \"$@\"; set -- /bin/sh ; done\n");
+        // across exits. When the shell exits we emit an (invisible OSC) marker so
+        // an attached `shell` client detaches back to the host, then respawn a
+        // fresh shell for the next attach. The machine ends only via `stop`.
+        s.push_str(
+            "while : ; do run \"$@\"; printf '\\033]6666;bsdkrun-exit\\007'; set -- /bin/sh ; done\n",
+        );
     } else {
         // Run the workload once, then power the machine off cleanly (magic-sysrq
         // needs no shutdown binary in the image); fall back to a shell rather

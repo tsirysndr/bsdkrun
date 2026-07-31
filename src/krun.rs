@@ -230,7 +230,6 @@ impl Ctx {
         Ok(())
     }
 
-
     /// Use a host directory as the guest's root filesystem, shared over
     /// virtio-fs. Requires a guest kernel built with `CONFIG_VIRTIO_FS=y`.
     /// libkrun injects its own init into this virtiofs root and runs the

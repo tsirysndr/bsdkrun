@@ -623,8 +623,7 @@ fn firmware_machine(
             .with_context(|| format!("attaching root disk {}", root_disk.display()))?;
         attach_extra_disks(&ctx, attach)?;
         let gvproxy = setup_networking(&ctx, net)?;
-        ctx.set_firmware(firmware)
-            .context("configuring firmware")?;
+        ctx.set_firmware(firmware).context("configuring firmware")?;
         Ok((ctx, gvproxy))
     };
 
@@ -651,23 +650,55 @@ fn boot_bsd(os: fetch::Os, args: BsdArgs) -> Result<()> {
         Some(f) => f,
         None => locate_krun_efi()?,
     };
-    firmware_machine(&firmware, &disk, &args.attach_disk, &args.run, &args.net, &args.vm)
+    firmware_machine(
+        &firmware,
+        &disk,
+        &args.attach_disk,
+        &args.run,
+        &args.net,
+        &args.vm,
+    )
 }
 
-/// Locate libkrun's EDK2 firmware (`KRUN_EFI`): `$BSDKRUN_FIRMWARE`, a repo-local
-/// `images/KRUN_EFI.fd`, or krunkit's Homebrew install.
+/// Locate libkrun's EDK2 firmware (`KRUN_EFI`), keeping a copy in bsdkrun's own
+/// cache dir (not the current directory). Overridden by `$BSDKRUN_FIRMWARE` (and
+/// by the `--firmware` flag before this is called).
 fn locate_krun_efi() -> Result<PathBuf> {
     if let Some(f) = std::env::var_os("BSDKRUN_FIRMWARE") {
         let p = PathBuf::from(f);
-        if p.exists() {
-            return Ok(p);
+        if !p.exists() {
+            anyhow::bail!("BSDKRUN_FIRMWARE={} does not exist", p.display());
         }
+        return Ok(p);
     }
-    let repo = PathBuf::from("images/KRUN_EFI.fd");
-    if repo.exists() {
-        return Ok(repo);
+    // Keep a copy under bsdkrun's cache ($BSDKRUN_CACHE / ~/.cache/bsdkrun) so it
+    // works from any directory and survives a krunkit upgrade.
+    let cache = fetch::cache_dir()?;
+    let cached = cache.join("KRUN_EFI.fd");
+    if cached.exists() {
+        return Ok(cached);
     }
-    // Candidate Homebrew prefixes (krunkit ships the firmware under share/krunkit).
+    let src = find_krunkit_firmware()?;
+    std::fs::create_dir_all(&cache).ok();
+    // Copy-on-write clone from krunkit's copy (`cp -c` — clonefile on APFS),
+    // falling back to a plain copy.
+    if fetch::run(
+        std::process::Command::new("cp").arg("-c").arg(&src).arg(&cached),
+        "cp (clone firmware)",
+    )
+    .is_err()
+    {
+        let _ = std::fs::remove_file(&cached);
+        std::fs::copy(&src, &cached).with_context(|| {
+            format!("copying firmware {} -> {}", src.display(), cached.display())
+        })?;
+    }
+    info!(path = %cached.display(), "cached KRUN_EFI firmware");
+    Ok(cached)
+}
+
+/// Find krunkit's `KRUN_EFI.silent.fd` in its Homebrew install.
+fn find_krunkit_firmware() -> Result<PathBuf> {
     let mut prefixes: Vec<PathBuf> = Vec::new();
     if let Ok(out) = std::process::Command::new("brew")
         .args(["--prefix", "krunkit"])
@@ -691,7 +722,7 @@ fn locate_krun_efi() -> Result<PathBuf> {
     }
     anyhow::bail!(
         "could not find the KRUN_EFI firmware. Install it with `brew install krunkit`, \
-         or pass --firmware /path/to/KRUN_EFI.fd."
+         or pass --firmware /path/to/KRUN_EFI.fd (or set BSDKRUN_FIRMWARE)."
     )
 }
 
@@ -712,7 +743,11 @@ fn basename(p: &std::path::Path) -> String {
 /// Prepare a BSD machine's root disk: unless `persist`, clone it into `vdir` with
 /// an APFS copy-on-write clone (`cp -c` — instant, no extra disk until the guest
 /// writes) so the base image stays pristine and machines run concurrently.
-fn prepare_bsd_disk(disk: &std::path::Path, vdir: &std::path::Path, persist: bool) -> Result<PathBuf> {
+fn prepare_bsd_disk(
+    disk: &std::path::Path,
+    vdir: &std::path::Path,
+    persist: bool,
+) -> Result<PathBuf> {
     if persist {
         return Ok(disk.to_path_buf());
     }
@@ -720,7 +755,10 @@ fn prepare_bsd_disk(disk: &std::path::Path, vdir: &std::path::Path, persist: boo
     let dst = vdir.join(format!("root.{ext}"));
     let _ = std::fs::remove_file(&dst);
     if fetch::run(
-        std::process::Command::new("cp").arg("-c").arg(disk).arg(&dst),
+        std::process::Command::new("cp")
+            .arg("-c")
+            .arg(disk)
+            .arg(&dst),
         "cp (clone disk)",
     )
     .is_err()
@@ -810,7 +848,12 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
     } else {
         linux::warn_initramfs_memory(&image.rootfs, args.vm.mem);
         (
-            Some(linux::build_initramfs(&image.rootfs, &ep, net_up, persistent)?),
+            Some(linux::build_initramfs(
+                &image.rootfs,
+                &ep,
+                net_up,
+                persistent,
+            )?),
             None,
         )
     };
@@ -876,8 +919,13 @@ fn configure_linux_ctx(
     } else {
         let initramfs = initramfs.expect("initramfs built for non-virtiofs boot");
         let cmdline = linux::kernel_cmdline(&args.console, net_up);
-        ctx.set_kernel(kernel, krun::KRUN_KERNEL_FORMAT_RAW, Some(initramfs), &cmdline)
-            .context("configuring kernel")?;
+        ctx.set_kernel(
+            kernel,
+            krun::KRUN_KERNEL_FORMAT_RAW,
+            Some(initramfs),
+            &cmdline,
+        )
+        .context("configuring kernel")?;
     }
     Ok(gvproxy)
 }

@@ -212,7 +212,9 @@ pub fn fetch(os: Os, version: Option<String>, dir: &Path, force: bool) -> Result
 
     // Record the fetched BSD image so `bsdkrun images` lists it alongside OCI
     // images. Keyed by path (unique), so a re-fetch just updates the row.
-    let size = std::fs::metadata(&ready).map(|m| m.len() as i64).unwrap_or(0);
+    let size = std::fs::metadata(&ready)
+        .map(|m| m.len() as i64)
+        .unwrap_or(0);
     crate::db::record_image(
         &format!("{}-{version}", os.slug()),
         &format!("file:{}", ready.display()),

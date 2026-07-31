@@ -150,10 +150,11 @@ struct LinuxArgs {
     #[arg(short = 'd', long)]
     detach: bool,
 
-    /// Share the extracted rootfs via virtio-fs instead of packing an initramfs.
-    /// Requires a guest kernel built with CONFIG_VIRTIO_FS=y (virtio-fs).
+    /// Boot from an initramfs (the whole rootfs is loaded into RAM) instead of
+    /// the default virtio-fs (which serves the rootfs from disk — no RAM-size
+    /// limit). Use this if the guest kernel lacks CONFIG_VIRTIO_FS.
     #[arg(long)]
-    virtiofs: bool,
+    initramfs: bool,
 
     /// Override the image's entrypoint (like `docker run --entrypoint`).
     #[arg(long)]
@@ -175,6 +176,13 @@ struct LinuxArgs {
     /// Everything after `--` is passed through.
     #[arg(last = true, value_name = "CMD")]
     command: Vec<String>,
+}
+
+impl LinuxArgs {
+    /// virtio-fs is the default; `--initramfs` opts out of it.
+    fn virtiofs(&self) -> bool {
+        !self.initramfs
+    }
 }
 
 #[derive(Parser)]
@@ -579,7 +587,7 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
 
     // Prepare the rootfs before forking so failures surface synchronously:
     // either an initramfs (default) or a cloned, writable virtio-fs root.
-    let (initramfs, virtiofs_root) = if args.virtiofs {
+    let (initramfs, virtiofs_root) = if args.virtiofs() {
         let root = linux::prepare_virtiofs_root(&image.rootfs, &ep, net_up, persistent, &vdir)?;
         (None, Some(root))
     } else {
@@ -643,7 +651,7 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
         cpus = args.vm.cpus,
         mem_mib = args.vm.mem,
         image = %args.image,
-        mode = if args.virtiofs { "virtiofs" } else { "initramfs" },
+        mode = if args.virtiofs() { "virtiofs" } else { "initramfs" },
         "booting Linux machine"
     );
     finish_recording(ctx, gvproxy, machine_id)
@@ -661,7 +669,7 @@ fn configure_linux_ctx(
     net_up: bool,
 ) -> Result<Option<Gvproxy>> {
     let gvproxy = setup_networking(ctx, &args.net)?;
-    if args.virtiofs {
+    if args.virtiofs() {
         // Share the per-machine (cloned) rootfs over virtio-fs and boot our own
         // init from it — we don't use libkrun's init.krun (that's for the bundled
         // libkrunfw kernel), so no set_exec/set_workdir here (our init handles it).

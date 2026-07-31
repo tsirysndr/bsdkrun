@@ -683,7 +683,10 @@ fn locate_krun_efi() -> Result<PathBuf> {
     // Copy-on-write clone from krunkit's copy (`cp -c` — clonefile on APFS),
     // falling back to a plain copy.
     if fetch::run(
-        std::process::Command::new("cp").arg("-c").arg(&src).arg(&cached),
+        std::process::Command::new("cp")
+            .arg("-c")
+            .arg(&src)
+            .arg(&cached),
         "cp (clone firmware)",
     )
     .is_err()
@@ -1042,7 +1045,7 @@ fn cmd_ps(all: bool) -> Result<()> {
     let db = db::Db::open()?;
     let machines = db.list_machines()?;
     println!(
-        "{:<14}  {:<22}  {:<12}  {:<10}  {}",
+        "{:<14}  {:<22}  {:<26}  {:<16}  {}",
         "ID", "IMAGE", "STATUS", "CREATED", "COMMAND"
     );
     for m in machines {
@@ -1054,20 +1057,24 @@ fn cmd_ps(all: bool) -> Result<()> {
         if !all && !running {
             continue;
         }
+        // Docker-style STATUS: "Up 5 minutes" / "Exited (0) 3 minutes ago".
         let status = if running {
-            "running".to_string()
+            format!("Up {}", db::human_duration_since(&m.created_at))
         } else {
-            match m.exit_code {
-                Some(c) => format!("exited ({c})"),
-                None => "exited".to_string(),
+            let dur = m.finished_at.as_deref().map(db::human_duration_since);
+            match (m.exit_code, dur) {
+                (Some(c), Some(d)) => format!("Exited ({c}) {d} ago"),
+                (Some(c), None) => format!("Exited ({c})"),
+                (None, Some(d)) => format!("Exited {d} ago"),
+                (None, None) => "Exited".to_string(),
             }
         };
         println!(
-            "{:<14}  {:<22}  {:<12}  {:<10}  {}",
+            "{:<14}  {:<22}  {:<26}  {:<16}  {}",
             m.id,
             truncate(&m.image, 22),
             status,
-            db::age(&m.created_at),
+            format!("{} ago", db::human_duration_since(&m.created_at)),
             truncate(&m.command, 40)
         );
     }
@@ -1093,7 +1100,9 @@ fn reconcile_bsd_images() {
             continue;
         }
         let path = entry.path();
-        let size = std::fs::metadata(&path).map(|m| m.len() as i64).unwrap_or(0);
+        let size = std::fs::metadata(&path)
+            .map(|m| m.len() as i64)
+            .unwrap_or(0);
         let reference = name.trim_end_matches(".raw").trim_end_matches(".img");
         db::record_image(
             reference,
@@ -1131,7 +1140,10 @@ fn cmd_stop(id: &str) -> Result<()> {
     match vm.pid {
         Some(pid) if db::pid_alive(pid) => {
             unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
-            db.set_machine_status(&vm.id, "exited", vm.exit_code).ok();
+            // The process exits 128+SIGTERM on our signal handler; record that so
+            // `ps` shows a Docker-style "Exited (143)".
+            let code = vm.exit_code.or(Some(128 + libc::SIGTERM as i64));
+            db.set_machine_status(&vm.id, "exited", code).ok();
             println!("{}", vm.id);
             Ok(())
         }

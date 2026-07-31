@@ -1,8 +1,8 @@
 name: e2e (Linux / KVM)
 
-# Boots a real OCI microVM under KVM on GitHub's Linux runners to validate the
-# Linux host port on both arches — bsdkrun detects the host CPU arch and pulls
-# the matching prebuilt vmlinux (aarch64 / x86_64) and OCI image.
+# Boots a real OCI microVM under KVM to validate the Linux host port. Only
+# GitHub's x86_64 runners expose /dev/kvm (the arm64 runners don't), so CI runs
+# amd64 here; arm64-on-Linux must be validated on a KVM-capable host.
 
 on:
   workflow_dispatch: {}
@@ -21,25 +21,15 @@ permissions:
 
 jobs:
   boot:
-    name: ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
-            musl: aarch64-unknown-linux-musl
-          - arch: x86_64
-            runner: ubuntu-latest
-            musl: x86_64-unknown-linux-musl
+    name: x86_64
+    runs-on: ubuntu-latest # x86_64; has /dev/kvm
     steps:
       - uses: actions/checkout@v4
 
       - name: Check KVM
         run: |
           set -eux
-          ls -l /dev/kvm
+          test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
           sudo chmod 666 /dev/kvm || true
 
       - name: Install build deps (incl. libkrun/libkrunfw build requirements)
@@ -52,24 +42,21 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.musl }}
+          targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
 
       # libkrun links libkrunfw (the bundled kernel). Building libkrunfw compiles
       # a Linux kernel from source — slow, but the reliable way to get libkrun on
-      # Ubuntu (no distro package).
-      - name: Build + install libkrunfw
-        run: |
-          set -eux
-          git clone --depth 1 https://github.com/containers/libkrunfw
-          make -C libkrunfw -j"$(nproc)"
-          sudo make -C libkrunfw install
+      # Ubuntu (no distro package). Use `cd`, NOT `make -C`: `-C` implies `-w`,
+      # which leaves a stray `w` in MAKEFLAGS that libkrunfw passes to the kernel
+      # sub-make as a bogus target ("No rule to make target 'w'").
       - name: Build + install libkrun
         run: |
           set -eux
+          git clone --depth 1 https://github.com/containers/libkrunfw
+          ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
           git clone --depth 1 https://github.com/containers/libkrun
-          make -C libkrun -j"$(nproc)"
-          sudo make -C libkrun install
+          ( cd libkrun && make -j"$(nproc)" && sudo make install )
           sudo ldconfig
 
       - name: Build bsdkrun
@@ -78,8 +65,8 @@ jobs:
       - name: Build guest agent (static musl)
         run: |
           set -eux
-          ( cd agent && cargo build --release --target ${{ matrix.musl }} )
-          echo "BSDKRUN_AGENT_LINUX=$PWD/agent/target/${{ matrix.musl }}/release/bsdkrun-agent" >> "$GITHUB_ENV"
+          ( cd agent && cargo build --release --target x86_64-unknown-linux-musl )
+          echo "BSDKRUN_AGENT_LINUX=$PWD/agent/target/x86_64-unknown-linux-musl/release/bsdkrun-agent" >> "$GITHUB_ENV"
 
       - name: e2e — boot an OCI microVM and run a command
         run: |
@@ -88,7 +75,7 @@ jobs:
           echo "----- guest output -----"; echo "$out"
           echo "$out" | grep -q hello-from-kvm
 
-      - name: e2e — detached machine + exec + volume
+      - name: e2e — detached machine + exec + volume persistence
         run: |
           set -eux
           id=$(./target/release/bsdkrun linux -d -v ci alpine -- sleep 120)

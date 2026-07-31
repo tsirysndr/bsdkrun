@@ -136,8 +136,9 @@ sudo ldconfig
 Some BSD image-prep steps (`losetup`/`mount`) need root, and bsdkrun runs them with `sudo`
 automatically when needed.
 
-> BSD guests under KVM are still **experimental**; the `linux` (OCI) path is what the e2e CI
-> exercises on both arches.
+> BSD guests under KVM are still **experimental**. The `linux` (OCI) path is what the e2e CI
+> boots — on x86_64 only, since GitHub's arm64 runners have no `/dev/kvm`; arm64-on-Linux (which
+> reuses the aarch64 kernel + agent) is validated on a KVM-capable host.
 
 ---
 

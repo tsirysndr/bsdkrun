@@ -72,9 +72,10 @@ pub fn setup_detached(dir: &Path) -> Result<RawFd> {
     Ok(slave)
 }
 
-/// How much recent console output to replay to a newly-attached client, so it
-/// immediately sees the current prompt instead of a blank screen.
-const REPLAY_BYTES: u64 = 4096;
+/// Window (from the end of the log) searched for the current line to replay to
+/// a newly-attached client. Only that line — the live prompt — is sent, so the
+/// attach shows the prompt immediately without dumping old scrollback.
+const REPLAY_WINDOW: u64 = 4096;
 
 /// The broker: `poll` over the PTY master, the listener, and connected clients.
 fn broker_loop(
@@ -173,21 +174,32 @@ fn broker_loop(
     }
 }
 
-/// Send the last `REPLAY_BYTES` of the console log to a freshly-connected client.
+/// Replay just the current console line (the live prompt) to a freshly-connected
+/// client, so the attach shows the prompt immediately without old scrollback.
 fn replay_tail(log_path: &Path, stream: &mut UnixStream) {
     use std::io::{Seek, SeekFrom};
     let Ok(mut f) = std::fs::File::open(log_path) else {
         return;
     };
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    let tail = REPLAY_BYTES.min(len);
-    if f.seek(SeekFrom::End(-(tail as i64))).is_err() {
+    if len == 0 {
+        return;
+    }
+    let window = REPLAY_WINDOW.min(len);
+    if f.seek(SeekFrom::End(-(window as i64))).is_err() {
         return;
     }
     let mut buf = Vec::new();
-    if f.read_to_end(&mut buf).is_ok() {
-        let _ = stream.write_all(&buf);
+    if f.read_to_end(&mut buf).is_err() {
+        return;
     }
+    // Send only the bytes after the last newline — the current (prompt) line.
+    let start = buf
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let _ = stream.write_all(&buf[start..]);
 }
 
 fn pollin(fd: RawFd) -> libc::pollfd {

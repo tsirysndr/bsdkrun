@@ -200,30 +200,48 @@ internal pipe — a pollable fd that just never delivers input. So:
 
 ---
 
-## Preparing a FreeBSD arm64 image
+## Preparing a guest image
 
 ### The easy way — `bsdkrun fetch`
 
-`fetch` downloads a FreeBSD arm64 VM image from `download.freebsd.org`, decompresses it, and writes
-the serial-console `loader.env` onto its ESP — everything below, automated. It shells out to tools
-already on macOS (`curl`, `xz`, `hdiutil`, `diskutil`).
+`fetch` downloads a BSD arm64 VM image, decompresses it, prepares it for a serial console, and
+links it into `./images` — everything below, automated. It shells out to tools already on macOS
+(`curl`, `xz`/`gzip`, `hdiutil`, `diskutil`).
 
 ```sh
-bsdkrun versions            # list available releases (14.3, 14.4, 15.0, 15.1, …)
-bsdkrun fetch               # download + prepare the latest release into ./images
-bsdkrun fetch --version 15.1        # pin a specific release
+# FreeBSD (default OS)
+bsdkrun versions                    # list releases (14.3, 14.4, 15.0, 15.1, …)
+bsdkrun fetch                       # latest release -> ./images/freebsd-<ver>.raw
+bsdkrun fetch --version 15.1        # pin a release
 bsdkrun fetch --dir /tmp --force    # custom dir, re-download
+
+# NetBSD
+bsdkrun versions --os netbsd        # list builds (current + releases)
+bsdkrun fetch --os netbsd           # NetBSD-current -> ./images/netbsd-current.img
 
 # then boot what it printed:
 bsdkrun firmware --firmware images/KRUN_EFI.fd --disk images/freebsd-15.1.raw --cpus 2 --mem 2048
 ```
 
-With no `--version`, it resolves the newest release by listing the mirror. The download is a few
-hundred MiB and expands to several GiB.
+With no `--version`, FreeBSD resolves the newest release and NetBSD uses **`current`** (see the
+NetBSD note below). Downloads are a few hundred MiB and expand to a couple GiB.
 
 Downloaded images are cached under **`~/.cache/bsdkrun/`** (override with `BSDKRUN_CACHE`, or
 `XDG_CACHE_HOME`), so fetching a version you already have is instant — it just links the cached
 image into `--dir` (a hard link, no second copy). Use `--force` to re-download.
+
+### NetBSD: use `current`, not a release
+
+NetBSD boots through the **same `firmware` path** as FreeBSD (its `efiboot` + `GENERIC64` kernel
+run under libkrun, and the kernel auto-selects libkrun's PL011 UART as console — no `loader.env`
+needed). But there's a catch: libkrun exposes **modern (v2) virtio-mmio**, and NetBSD's
+virtio-mmio driver only gained v2 support in **-current** (post-10.x). So:
+
+- **`bsdkrun fetch --os netbsd`** (→ `current`) boots all the way to `login:` with a working root
+  disk. ✅
+- Any NetBSD **release** (≤ 10.1) boots (kernel + console) but prints
+  `virtio: unknown version 0x02; giving up` and can't mount its root disk. `fetch` warns you if you
+  pin one.
 
 ### The manual way
 
@@ -347,15 +365,21 @@ Make sure `brew --prefix libkrun` resolves, or build with an explicit
 
 ## Status
 
-**FreeBSD 15 / arm64 boots to a `login:` prompt** via the `firmware` subcommand — through libkrun's
-EDK2 firmware, the FreeBSD EFI loader, and a full multi-user rc sequence, on macOS Apple Silicon.
-The blocker that made the guest look dead — console output going to a PL011 serial libkrun wasn't
-forwarding — is fixed by bsdkrun's serial-console wiring (see
-[Console](#console-how-output-reaches-your-terminal)), and guest-side virtio-mmio device discovery
-under libkrun is confirmed working for FreeBSD.
+Both guests boot to a `login:` prompt via the `firmware` subcommand on macOS Apple Silicon, through
+libkrun's EDK2 firmware and the guest's own EFI loader:
 
-Next: `kernel`-mode direct boot for **NetBSD/evbarm**, interactive login and networking shakedown,
-and trying **OpenBSD/arm64** via the same firmware path.
+- **FreeBSD 15.1 / arm64** — full multi-user rc sequence to `login:`. `fetch` + `firmware`.
+- **NetBSD-current / arm64** (evbarm `GENERIC64`) — efiboot → kernel → root-on-ffs → `login:`.
+  `fetch --os netbsd` + `firmware`. (NetBSD *releases* ≤ 10.1 boot but can't mount root — their
+  virtio-mmio driver is legacy-only; modern v2 support is only in -current.)
+
+The blocker that made guests look dead — console output going to a PL011 serial libkrun wasn't
+forwarding — is fixed by bsdkrun's serial-console wiring (see
+[Console](#console-how-output-reaches-your-terminal)). Guest-side virtio-mmio device discovery
+under libkrun is confirmed working for FreeBSD and NetBSD-current.
+
+Next: interactive login + networking shakedown, `kernel`-mode direct boot experiments, and trying
+**OpenBSD/arm64** via the same firmware path.
 
 ## License
 

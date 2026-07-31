@@ -1,22 +1,36 @@
-//! `fetch` subcommand: download a FreeBSD arm64 VM image and prepare it for
-//! booting under bsdkrun (writes the serial-console `loader.env` onto its ESP).
+//! `fetch` / `versions` subcommands: download a BSD arm64 VM image and prepare
+//! it for booting under bsdkrun.
 //!
 //! Everything is done by shelling out to tools already present on macOS —
-//! `curl` (download), `xz` (decompress), and `hdiutil`/`diskutil` (mount the FAT
-//! ESP so we can drop `loader.env` on it). No extra Rust dependencies.
+//! `curl` (download), `xz`/`gzip` (decompress), and `hdiutil`/`diskutil` (mount
+//! the FAT ESP so we can drop a console hint on it). No extra Rust dependencies.
+//!
+//! Downloaded+decompressed images are cached under `$HOME` (see [`cache_dir`]),
+//! so a version fetched before is never re-downloaded; `--dir` receives a hard
+//! link (or symlink) to the cached file — no second multi-GiB copy.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use clap::ValueEnum;
 use tracing::{info, warn};
 
-const MIRROR: &str = "https://download.freebsd.org/releases/VM-IMAGES";
+const FREEBSD_VM_IMAGES: &str = "https://download.freebsd.org/releases/VM-IMAGES";
+const NETBSD_PUB: &str = "https://cdn.netbsd.org/pub/NetBSD";
+const NETBSD_DAILY_HEAD: &str = "https://nycdn.netbsd.org/pub/NetBSD-daily/HEAD/latest";
 
-/// The console hint written to `/efi/freebsd/loader.env` on the image's ESP.
+/// Guest operating systems bsdkrun can provision.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Os {
+    Freebsd,
+    Netbsd,
+}
+
 /// FreeBSD's `/boot/loader.conf` lives on UFS (macOS can't write it), but the
-/// EFI loader reads this file from the FAT ESP before mounting UFS.
-const LOADER_ENV: &str = "\
+/// EFI loader reads this from the FAT ESP before mounting UFS. NetBSD needs no
+/// such hint — its kernel auto-selects the PL011 UART as console.
+const FREEBSD_LOADER_ENV: &str = "\
 console=efi,eficom
 boot_serial=YES
 boot_multicons=YES
@@ -24,59 +38,211 @@ comconsole_speed=115200
 efi_com_speed=115200
 ";
 
-/// Download + prepare a FreeBSD image. Returns the path to the ready raw image.
-///
-/// The downloaded+decompressed image is kept in a cache under `$HOME` so a
-/// version that was fetched before is never re-downloaded; `dir` receives a
-/// link to the cached file (unless it already is the cache).
-pub fn fetch(version: Option<String>, dir: &Path, force: bool) -> Result<PathBuf> {
+impl Os {
+    fn slug(self) -> &'static str {
+        match self {
+            Os::Freebsd => "freebsd",
+            Os::Netbsd => "netbsd",
+        }
+    }
+
+    /// File extension of the *decompressed* image.
+    fn raw_ext(self) -> &'static str {
+        match self {
+            Os::Freebsd => "raw",
+            Os::Netbsd => "img",
+        }
+    }
+
+    /// Compression of the published image.
+    fn comp(self) -> Comp {
+        match self {
+            Os::Freebsd => Comp::Xz,
+            Os::Netbsd => Comp::Gz,
+        }
+    }
+
+    /// Version used when the user doesn't pass `--version`.
+    fn default_version(self) -> Result<String> {
+        match self {
+            // Newest published release.
+            Os::Freebsd => Ok(self
+                .all_versions()?
+                .pop()
+                .ok_or_else(|| anyhow::anyhow!("no FreeBSD releases found"))?),
+            // Releases (<=10.x) lack modern virtio-mmio, so they can't mount a
+            // root disk under libkrun; -current is the one that works fully.
+            Os::Netbsd => Ok("current".to_string()),
+        }
+    }
+
+    fn image_url(self, version: &str) -> String {
+        match self {
+            Os::Freebsd => format!(
+                "{FREEBSD_VM_IMAGES}/{version}-RELEASE/aarch64/Latest/\
+                 FreeBSD-{version}-RELEASE-arm64-aarch64-ufs.raw.xz"
+            ),
+            Os::Netbsd if version == "current" => {
+                format!("{NETBSD_DAILY_HEAD}/evbarm-aarch64/binary/gzimg/arm64.img.gz")
+            }
+            Os::Netbsd => {
+                format!("{NETBSD_PUB}/NetBSD-{version}/evbarm-aarch64/binary/gzimg/arm64.img.gz")
+            }
+        }
+    }
+
+    /// Published release versions (ascending). `current`, where applicable, is
+    /// not listed here — it's handled separately.
+    fn all_versions(self) -> Result<Vec<String>> {
+        let (url, prefix, suffix) = match self {
+            Os::Freebsd => (format!("{FREEBSD_VM_IMAGES}/"), "", "-RELEASE/"),
+            Os::Netbsd => (format!("{NETBSD_PUB}/"), "NetBSD-", "/"),
+        };
+        let listing = curl_text(&url)?;
+        let mut versions: Vec<(u32, u32, String)> = listing
+            .split("href=\"")
+            .filter_map(|s| s.split('"').next())
+            .filter_map(|s| s.strip_prefix(prefix)?.strip_suffix(suffix))
+            .filter_map(|v| {
+                let mut parts = v.split('.');
+                let maj = parts.next()?.parse().ok()?;
+                let min = parts.next()?.parse().ok()?;
+                Some((maj, min, v.to_string()))
+            })
+            .collect();
+        versions.sort();
+        versions.dedup();
+        Ok(versions.into_iter().map(|(_, _, v)| v).collect())
+    }
+
+    /// Write a console hint onto the image where the OS's bootloader needs one.
+    fn prepare_console(self, raw: &Path) -> Result<()> {
+        match self {
+            Os::Freebsd => {
+                info!("writing serial-console loader.env onto the image's ESP…");
+                write_freebsd_loader_env(raw)
+            }
+            // NetBSD's kernel picks up the PL011 UART on its own.
+            Os::Netbsd => Ok(()),
+        }
+    }
+
+    /// Warn if a chosen version is known not to reach a usable system.
+    fn warn_if_unsupported(self, version: &str) {
+        if self == Os::Netbsd && version != "current" {
+            warn!(
+                "NetBSD {version} is a release whose virtio-mmio driver is legacy-only: it boots \
+                 (kernel + console work) but cannot see libkrun's virtio devices, so it can't \
+                 mount its root disk. Use `--version current` for a fully working system."
+            );
+        }
+    }
+}
+
+enum Comp {
+    Xz,
+    Gz,
+}
+
+impl Comp {
+    fn ext(&self) -> &'static str {
+        match self {
+            Comp::Xz => "xz",
+            Comp::Gz => "gz",
+        }
+    }
+
+    /// Decompress `file` in place (removing the compressed original).
+    fn decompress(&self, file: &Path) -> Result<()> {
+        let bin = match self {
+            Comp::Xz => "xz",
+            Comp::Gz => "gzip",
+        };
+        run(
+            Command::new(bin).arg("-d").arg("-f").arg(file),
+            &format!("{bin} (decompress)"),
+        )
+    }
+}
+
+/// Download + prepare an image. Returns the path to the ready raw image.
+pub fn fetch(os: Os, version: Option<String>, dir: &Path, force: bool) -> Result<PathBuf> {
     let version = match version {
         Some(v) => v,
         None => {
-            info!("resolving latest FreeBSD release…");
-            latest_version()?
+            info!("resolving default version…");
+            os.default_version()?
         }
     };
-    info!(version = %version, "FreeBSD version");
+    info!(os = os.slug(), version = %version, "selected");
+    os.warn_if_unsupported(&version);
 
     let cache = cache_dir()?;
     std::fs::create_dir_all(&cache)
         .with_context(|| format!("creating cache dir {}", cache.display()))?;
 
-    let cached = cache.join(format!("freebsd-{version}.raw"));
-    let xz = cache.join(format!("freebsd-{version}.raw.xz"));
+    let base = format!("{}-{version}", os.slug());
+    let raw = cache.join(format!("{base}.{}", os.raw_ext()));
+    let comp = cache.join(format!("{base}.{}.{}", os.raw_ext(), os.comp().ext()));
 
-    if cached.exists() && !force {
-        info!(path = %cached.display(), "using cached image (already downloaded)");
+    if raw.exists() && !force {
+        info!(path = %raw.display(), "using cached image (already downloaded)");
     } else {
-        let url = image_url(&version);
+        let url = os.image_url(&version);
         info!(%url, "downloading (this is a few hundred MiB)…");
-        let _ = std::fs::remove_file(&xz); // drop any stale/partial download
+        let _ = std::fs::remove_file(&comp); // drop any stale/partial download
         run(
             Command::new("curl")
                 .args(["-L", "--fail", "--progress-bar", "-o"])
-                .arg(&xz)
+                .arg(&comp)
                 .arg(&url),
             "curl (download image)",
         )
         .with_context(|| format!("downloading {url} — is that version published?"))?;
 
-        info!("decompressing with xz (expands to several GiB)…");
-        // `xz -d -f foo.raw.xz` removes the .xz and produces `foo.raw`.
-        run(
-            Command::new("xz").arg("-d").arg("-f").arg(&xz),
-            "xz (decompress)",
-        )?;
+        info!("decompressing (expands to a couple GiB)…");
+        os.comp().decompress(&comp)?;
     }
 
-    info!("writing serial-console loader.env onto the image's ESP…");
-    prepare_console(&cached)?;
+    os.prepare_console(&raw)?;
 
-    // Make the cached image available at the requested dir (no data copy).
-    let ready = materialize(&cached, dir, &version)?;
-
+    let ready = materialize(&raw, dir)?;
     info!(image = %ready.display(), "ready — boot it with: bsdkrun firmware --firmware images/KRUN_EFI.fd --disk {}", ready.display());
     Ok(ready)
+}
+
+/// Print the available builds for `os`.
+pub fn list_versions(os: Os) -> Result<()> {
+    let versions = os.all_versions()?;
+    match os {
+        Os::Freebsd => {
+            let latest = versions.last().cloned().unwrap_or_default();
+            println!("Available FreeBSD arm64 releases:");
+            for v in &versions {
+                let tag = if *v == latest { "  (latest)" } else { "" };
+                println!("  {v}{tag}");
+            }
+        }
+        Os::Netbsd => {
+            println!("Available NetBSD arm64 builds:");
+            println!("  current  (recommended — modern virtio-mmio; boots to root under libkrun)");
+            for v in versions.iter().rev() {
+                println!("  {v:<7}  (release; boots but no root disk under libkrun — legacy virtio-mmio)");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn curl_text(url: &str) -> Result<String> {
+    let out = Command::new("curl")
+        .args(["-sL", "--fail", "--max-time", "30", url])
+        .output()
+        .context("running curl")?;
+    if !out.status.success() {
+        bail!("curl failed to fetch {url}");
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Cache directory for downloaded images: `$BSDKRUN_CACHE`, else
@@ -96,16 +262,21 @@ fn cache_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".cache").join("bsdkrun"))
 }
 
-/// Expose the cached image at `<dir>/freebsd-<version>.raw` without copying its
-/// bytes — a hard link when possible, else a symlink. Returns the usable path.
-/// If `dir` already is the cache directory, the cached path is returned as-is.
-fn materialize(cached: &Path, dir: &Path, version: &str) -> Result<PathBuf> {
+/// Expose the cached image inside `dir` without copying its bytes — a hard link
+/// when possible, else a symlink. Returns the usable path. If `dir` already is
+/// the cache directory, the cached path is returned as-is.
+fn materialize(cached: &Path, dir: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(dir)
         .with_context(|| format!("creating output dir {}", dir.display()))?;
-    let out = dir.join(format!("freebsd-{version}.raw"));
+    let name = cached
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("bad cached path {}", cached.display()))?;
+    let out = dir.join(name);
 
-    // dir == cache (or out is literally the cached file): nothing to link.
-    let same_dir = match (std::fs::canonicalize(dir), cached.parent().map(std::fs::canonicalize)) {
+    let same_dir = match (
+        std::fs::canonicalize(dir),
+        cached.parent().map(std::fs::canonicalize),
+    ) {
         (Ok(a), Some(Ok(b))) => a == b,
         _ => out == *cached,
     };
@@ -113,7 +284,6 @@ fn materialize(cached: &Path, dir: &Path, version: &str) -> Result<PathBuf> {
         return Ok(cached.to_path_buf());
     }
 
-    // Replace any existing entry so re-fetches stay idempotent.
     let _ = std::fs::remove_file(&out);
     if std::fs::hard_link(cached, &out).is_err() {
         std::os::unix::fs::symlink(cached, &out)
@@ -122,69 +292,8 @@ fn materialize(cached: &Path, dir: &Path, version: &str) -> Result<PathBuf> {
     Ok(out)
 }
 
-/// All FreeBSD `X.Y` releases published under VM-IMAGES, sorted ascending.
-pub fn all_versions() -> Result<Vec<String>> {
-    let listing = curl_text(&format!("{MIRROR}/"))?;
-    let mut versions: Vec<(u32, u32, String)> = listing
-        .split("href=\"")
-        .filter_map(|s| s.split('"').next())
-        .filter_map(|s| s.strip_suffix("-RELEASE/"))
-        .filter_map(|v| {
-            let mut parts = v.split('.');
-            let maj = parts.next()?.parse().ok()?;
-            let min = parts.next()?.parse().ok()?;
-            Some((maj, min, v.to_string()))
-        })
-        .collect();
-    versions.sort();
-    if versions.is_empty() {
-        bail!("no FreeBSD releases found at {MIRROR}/");
-    }
-    Ok(versions.into_iter().map(|(_, _, v)| v).collect())
-}
-
-/// The highest `X.Y` release currently published.
-pub fn latest_version() -> Result<String> {
-    all_versions()?
-        .pop()
-        .ok_or_else(|| anyhow::anyhow!("no FreeBSD releases found at {MIRROR}/"))
-}
-
-/// Print the available FreeBSD releases (latest last, marked).
-pub fn list_versions() -> Result<()> {
-    let versions = all_versions()?;
-    let latest = versions.last().cloned().unwrap_or_default();
-    println!("Available FreeBSD arm64 releases:");
-    for v in &versions {
-        if *v == latest {
-            println!("  {v}  (latest)");
-        } else {
-            println!("  {v}");
-        }
-    }
-    Ok(())
-}
-
-fn image_url(version: &str) -> String {
-    format!(
-        "{MIRROR}/{version}-RELEASE/aarch64/Latest/\
-         FreeBSD-{version}-RELEASE-arm64-aarch64-ufs.raw.xz"
-    )
-}
-
-fn curl_text(url: &str) -> Result<String> {
-    let out = Command::new("curl")
-        .args(["-sL", "--fail", "--max-time", "30", url])
-        .output()
-        .context("running curl")?;
-    if !out.status.success() {
-        bail!("curl failed to fetch {url}");
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-/// Mount the image's FAT ESP and write `loader.env` onto it, then detach.
-fn prepare_console(raw: &Path) -> Result<()> {
+/// Mount the image's FAT ESP and write FreeBSD's `loader.env` onto it.
+fn write_freebsd_loader_env(raw: &Path) -> Result<()> {
     // Attach the raw image without mounting, and find the EFI (FAT) slice.
     let out = Command::new("hdiutil")
         .args([
@@ -209,7 +318,6 @@ fn prepare_console(raw: &Path) -> Result<()> {
         .and_then(|l| l.split_whitespace().next())
         .ok_or_else(|| anyhow::anyhow!("no EFI partition found in {}", raw.display()))?
         .to_string();
-    // Whole disk (for detach): strip a trailing "sN".
     let whole_disk = esp_dev
         .rfind('s')
         .map(|i| &esp_dev[..i])
@@ -217,9 +325,7 @@ fn prepare_console(raw: &Path) -> Result<()> {
         .to_string();
 
     // Everything after attach must be balanced by a detach, so wrap the work.
-    let result = write_loader_env(&esp_dev);
-
-    // Always detach, even on error.
+    let result = mount_and_write(&esp_dev);
     let _ = Command::new("hdiutil")
         .arg("detach")
         .arg(&whole_disk)
@@ -227,7 +333,7 @@ fn prepare_console(raw: &Path) -> Result<()> {
     result
 }
 
-fn write_loader_env(esp_dev: &str) -> Result<()> {
+fn mount_and_write(esp_dev: &str) -> Result<()> {
     let mount = std::env::temp_dir().join(format!("bsdkrun-esp-{}", std::process::id()));
     std::fs::create_dir_all(&mount).context("creating ESP mountpoint")?;
 
@@ -243,8 +349,7 @@ fn write_loader_env(esp_dev: &str) -> Result<()> {
     let write_result = (|| -> Result<()> {
         let dir = mount.join("EFI/freebsd");
         std::fs::create_dir_all(&dir).context("creating EFI/freebsd on ESP")?;
-        std::fs::write(dir.join("loader.env"), LOADER_ENV).context("writing loader.env")?;
-        // Clean up AppleDouble junk macOS sprinkles on the FAT volume.
+        std::fs::write(dir.join("loader.env"), FREEBSD_LOADER_ENV).context("writing loader.env")?;
         let _ = Command::new("dot_clean").arg(&mount).output();
         for junk in [".fseventsd", "EFI/._freebsd", "EFI/freebsd/._loader.env"] {
             let _ = std::fs::remove_dir_all(mount.join(junk));
@@ -253,7 +358,6 @@ fn write_loader_env(esp_dev: &str) -> Result<()> {
         Ok(())
     })();
 
-    // Always unmount.
     if let Err(e) = run(
         Command::new("diskutil").arg("unmount").arg(&mount),
         "diskutil unmount (ESP)",

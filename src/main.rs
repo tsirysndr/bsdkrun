@@ -63,16 +63,21 @@ enum Command {
     /// Boot a microVM from a UEFI firmware image + root disk.
     Firmware(FirmwareArgs),
 
-    /// Download a FreeBSD arm64 image and prepare it for booting.
+    /// Download a BSD arm64 image and prepare it for booting.
     Fetch(FetchArgs),
 
-    /// List the FreeBSD arm64 releases available to fetch.
-    Versions,
+    /// List the arm64 builds available to fetch.
+    Versions(VersionsArgs),
 }
 
 #[derive(Parser)]
 struct FetchArgs {
-    /// FreeBSD release to download (e.g. 15.1). Defaults to the latest.
+    /// Guest OS to fetch.
+    #[arg(long, value_enum, default_value = "freebsd")]
+    os: fetch::Os,
+
+    /// Version to download. FreeBSD: a release like 15.1 (default: latest).
+    /// NetBSD: a release like 10.1, or `current` (default: current).
     #[arg(long)]
     version: Option<String>,
 
@@ -83,6 +88,13 @@ struct FetchArgs {
     /// Re-download even if the image is already cached.
     #[arg(long)]
     force: bool,
+}
+
+#[derive(Parser)]
+struct VersionsArgs {
+    /// Guest OS to list builds for.
+    #[arg(long, value_enum, default_value = "freebsd")]
+    os: fetch::Os,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -178,8 +190,10 @@ fn main() -> Result<()> {
         Command::Probe => probe(),
         Command::Kernel(args) => boot_kernel(args),
         Command::Firmware(args) => boot_firmware(args),
-        Command::Fetch(args) => fetch::fetch(args.version, &args.dir, args.force).map(|_| ()),
-        Command::Versions => fetch::list_versions(),
+        Command::Fetch(args) => {
+            fetch::fetch(args.os, args.version, &args.dir, args.force).map(|_| ())
+        }
+        Command::Versions(args) => fetch::list_versions(args.os),
     }
 }
 

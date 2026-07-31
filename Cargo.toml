@@ -1,0 +1,12 @@
+[package]
+name = "bsdkrun"
+version = "0.1.0"
+edition = "2021"
+description = "A Firecracker-style microVM launcher for BSD guests on macOS, built on libkrun (Hypervisor.framework)"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+libc = "0.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

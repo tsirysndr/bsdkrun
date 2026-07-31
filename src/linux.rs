@@ -236,6 +236,7 @@ pub fn prepare_virtiofs_root(
         generate_init(ep, net, persistent).as_bytes(),
         0o755,
     )?;
+    crate::agent::inject_linux(&root)?;
     Ok(root)
 }
 
@@ -256,7 +257,7 @@ pub fn build_initramfs(
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).with_context(|| format!("creating {}", work.display()))?;
 
-    // Segment 2 staging: just our generated /init.
+    // Segment 2 staging: our generated /init plus the exec agent.
     let initstage = work.join("initstage");
     std::fs::create_dir_all(&initstage)?;
     oci::write_rootfs_file(
@@ -265,11 +266,12 @@ pub fn build_initramfs(
         generate_init(ep, net, persistent).as_bytes(),
         0o755,
     )?;
+    crate::agent::inject_linux(&initstage)?;
 
     let part_rootfs = work.join("rootfs.cpio.gz");
     let part_init = work.join("init.cpio.gz");
     cpio_gz(rootfs, ".", &part_rootfs)?;
-    cpio_gz(&initstage, "./init", &part_init)?;
+    cpio_gz(&initstage, ".", &part_init)?;
 
     // Concatenate the two gzip'd cpio archives — the kernel unpacks segments in
     // order, so /init (last) wins over any /init the image might carry.
@@ -327,6 +329,11 @@ fn generate_init(ep: &Entrypoint, net: bool, persistent: bool) -> String {
     s.push_str("mount -t proc proc /proc 2>/dev/null\n");
     s.push_str("mount -t sysfs sysfs /sys 2>/dev/null\n");
     s.push_str("mount -t devtmpfs dev /dev 2>/dev/null\n");
+    // devpts is required for openpty (used by `exec -t` / `shell` in the agent).
+    s.push_str("mkdir -p /dev/pts 2>/dev/null\n");
+    s.push_str("mount -t devpts devpts /dev/pts 2>/dev/null\n");
+    // Start the exec agent (TCP; for `exec`/`shell`) in the background.
+    s.push_str("[ -x /sbin/bsdkrun-agent ] && /sbin/bsdkrun-agent >/dev/null 2>&1 &\n");
     if net {
         s.push_str(&format!(
             "echo 'nameserver {GATEWAY_IP}' > /etc/resolv.conf 2>/dev/null\n"

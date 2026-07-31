@@ -1,0 +1,342 @@
+//! Host side of the in-guest exec agent (see `agent/`).
+//!
+//! The agent binary is injected into the guest rootfs (Linux) or installed by
+//! the user (BSD); the guest runs it, listening on TCP port 1024. gvproxy
+//! forwards a per-machine host port to that guest port, and `exec`/`shell`
+//! connect to `127.0.0.1:<host-port>` and speak the framed protocol below to run
+//! a command with full stdin/stdout/stderr + exit-code forwarding (+ a PTY).
+
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
+
+use anyhow::{bail, Context, Result};
+use tracing::info;
+
+use crate::fetch::{cache_dir, run};
+
+/// TCP port the guest agent listens on (matches `agent/src/main.rs`).
+pub const GUEST_PORT: u16 = 1024;
+/// Where the agent binary is installed inside the guest rootfs.
+pub const GUEST_PATH: &str = "sbin/bsdkrun-agent";
+
+/// GitHub release the prebuilt agents are published to (see the `release`
+/// workflows). The per-platform aarch64 binaries are attached as assets.
+const AGENT_RELEASE_BASE: &str = "https://github.com/tsirysndr/bsdkrun/releases/download";
+
+// Frame channels (must match the agent).
+const CH_STDIN: u8 = 0;
+const CH_STDOUT: u8 = 1;
+const CH_STDERR: u8 = 2;
+const CH_EXIT: u8 = 3;
+const CH_WINSZ: u8 = 4;
+
+/// A guest OS the agent is built for (aarch64 only).
+#[derive(Clone, Copy)]
+pub enum Platform {
+    Linux,
+    Freebsd,
+    Netbsd,
+}
+
+impl Platform {
+    fn slug(self) -> &'static str {
+        match self {
+            Platform::Linux => "linux",
+            Platform::Freebsd => "freebsd",
+            Platform::Netbsd => "netbsd",
+        }
+    }
+
+    /// Env var overriding the download with a local prebuilt binary (for dev).
+    fn env_key(self) -> &'static str {
+        match self {
+            Platform::Linux => "BSDKRUN_AGENT_LINUX",
+            Platform::Freebsd => "BSDKRUN_AGENT_FREEBSD",
+            Platform::Netbsd => "BSDKRUN_AGENT_NETBSD",
+        }
+    }
+
+    /// Release asset / cache file name, e.g. `bsdkrun-agent.linux-aarch64`.
+    fn asset(self) -> String {
+        format!("bsdkrun-agent.{}-aarch64", self.slug())
+    }
+}
+
+/// Release tag to pull agents from: `$BSDKRUN_AGENT_VERSION`, else this build's
+/// version (agents are published alongside each tagged bsdkrun release).
+fn agent_version() -> String {
+    std::env::var("BSDKRUN_AGENT_VERSION")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("v{}", env!("CARGO_PKG_VERSION")))
+}
+
+/// Download (once) and cache the guest agent for `platform`, returning its path.
+/// Cached under `<cache>/agent/<version>/<asset>`; set `BSDKRUN_AGENT_<PLATFORM>`
+/// to use a local prebuilt binary instead (e.g. during development).
+pub fn ensure_agent(platform: Platform) -> Result<PathBuf> {
+    if let Ok(p) = std::env::var(platform.env_key()) {
+        if !p.is_empty() {
+            let p = PathBuf::from(p);
+            if !p.exists() {
+                bail!("{}={} does not exist", platform.env_key(), p.display());
+            }
+            return Ok(p);
+        }
+    }
+
+    let version = agent_version();
+    let dir = cache_dir()?.join("agent").join(&version);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("creating agent cache dir {}", dir.display()))?;
+    let dest = dir.join(platform.asset());
+    if dest.exists() {
+        info!(path = %dest.display(), "using cached exec agent");
+        return Ok(dest);
+    }
+
+    let url = format!("{AGENT_RELEASE_BASE}/{version}/{}", platform.asset());
+    info!(%url, "downloading exec agent…");
+    let tmp = dir.join(format!("{}.partial", platform.asset()));
+    let _ = std::fs::remove_file(&tmp);
+    run(
+        Command::new("curl")
+            .args(["-L", "--fail", "--progress-bar", "-o"])
+            .arg(&tmp)
+            .arg(&url),
+        "curl (download agent)",
+    )
+    .with_context(|| {
+        format!(
+            "downloading bsdkrun-agent {version} for {} — is that bsdkrun release published \
+             (with the {} asset)? Override the tag with BSDKRUN_AGENT_VERSION, or point \
+             {} at a local binary.",
+            platform.slug(),
+            platform.asset(),
+            platform.env_key(),
+        )
+    })?;
+    set_executable(&tmp)?;
+    std::fs::rename(&tmp, &dest).context("moving agent into cache")?;
+    Ok(dest)
+}
+
+/// Public download URL of a platform's agent asset (for user-facing hints —
+/// BSD guests aren't auto-injected, so the user fetches this themselves).
+pub fn asset_url(platform: Platform) -> String {
+    format!(
+        "{AGENT_RELEASE_BASE}/{}/{}",
+        agent_version(),
+        platform.asset()
+    )
+}
+
+fn set_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .with_context(|| format!("chmod +x {}", path.display()))
+}
+
+/// Install the agent into a Linux guest rootfs at `GUEST_PATH` (mode 0755),
+/// downloading + caching it first if needed.
+pub fn inject_linux(rootfs: &Path) -> Result<()> {
+    let bin = ensure_agent(Platform::Linux)?;
+    let bytes =
+        std::fs::read(&bin).with_context(|| format!("reading agent binary {}", bin.display()))?;
+    crate::oci::write_rootfs_file(rootfs, GUEST_PATH, &bytes, 0o755)
+}
+
+/// File under a machine's state dir holding the host TCP port gvproxy forwards
+/// to the guest agent. Written at boot; read by `exec`/`shell`.
+pub fn port_file(machine_dir: &Path) -> std::path::PathBuf {
+    machine_dir.join("agent.port")
+}
+
+/// Read a machine's forwarded agent port, if it was recorded at boot.
+pub fn read_port(machine_dir: &Path) -> Option<u16> {
+    std::fs::read_to_string(port_file(machine_dir))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Run `argv` inside the guest via its agent (a gvproxy-forwarded TCP port on
+/// loopback), forwarding stdio and returning the guest process's exit code.
+/// `tty` requests a PTY (interactive).
+pub fn exec(host_port: u16, argv: &[String], env: &[String], tty: bool) -> Result<i32> {
+    let stream = connect(host_port)?;
+    stream.set_nodelay(true).ok();
+
+    write_request(&stream, tty, argv, env).context("sending exec request")?;
+
+    let _raw = tty.then(RawGuard::enable);
+
+    // Forward local stdin -> guest, in a background thread.
+    let mut stdin_w = stream.try_clone().context("cloning agent stream")?;
+    let done = std::sync::Arc::new(AtomicBool::new(false));
+    let done_stdin = done.clone();
+    thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        loop {
+            if done_stdin.load(Ordering::Relaxed) {
+                break;
+            }
+            let n = unsafe { libc::read(0, buf.as_mut_ptr().cast(), buf.len()) };
+            if n <= 0 {
+                let _ = write_frame(&mut stdin_w, CH_STDIN, &[]); // EOF
+                break;
+            }
+            if write_frame(&mut stdin_w, CH_STDIN, &buf[..n as usize]).is_err() {
+                break;
+            }
+        }
+    });
+
+    // In TTY mode, send the initial window size (SIGWINCH updates would be nice
+    // but a single size covers the common case).
+    if tty {
+        if let Some((rows, cols)) = local_winsize() {
+            let mut payload = Vec::with_capacity(4);
+            payload.extend_from_slice(&rows.to_le_bytes());
+            payload.extend_from_slice(&cols.to_le_bytes());
+            let mut w = stream.try_clone()?;
+            let _ = write_frame(&mut w, CH_WINSZ, &payload);
+        }
+    }
+
+    // Read guest output frames until EXIT.
+    let mut reader = stream;
+    let stdout = std::io::stdout();
+    let stderr = std::io::stderr();
+    let mut code = 0;
+    let mut saw_frame = false;
+    let mut saw_exit = false;
+    loop {
+        match read_frame(&mut reader) {
+            Some((CH_STDOUT, data)) => {
+                saw_frame = true;
+                let mut h = stdout.lock();
+                let _ = h.write_all(&data);
+                let _ = h.flush();
+            }
+            Some((CH_STDERR, data)) => {
+                saw_frame = true;
+                let mut h = stderr.lock();
+                let _ = h.write_all(&data);
+                let _ = h.flush();
+            }
+            Some((CH_EXIT, data)) => {
+                if data.len() >= 4 {
+                    code = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as i32;
+                }
+                saw_exit = true;
+                break;
+            }
+            Some(_) => {}
+            None => break, // agent closed without an explicit exit
+        }
+    }
+    done.store(true, Ordering::Relaxed);
+    if !saw_exit && !saw_frame {
+        anyhow::bail!("the guest agent accepted the connection but sent no output");
+    }
+    Ok(code)
+}
+
+/// Connect to the forwarded agent port, retrying briefly: gvproxy holds the
+/// forward but the guest agent may still be starting right after boot.
+fn connect(host_port: u16) -> Result<TcpStream> {
+    let addr = ("127.0.0.1", host_port);
+    let mut last = None;
+    for _ in 0..40 {
+        match TcpStream::connect(addr) {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                last = Some(e);
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    Err(anyhow::anyhow!(
+        "could not reach the guest agent on 127.0.0.1:{host_port}: {}",
+        last.map(|e| e.to_string()).unwrap_or_default()
+    ))
+}
+
+fn write_request(mut stream: &TcpStream, tty: bool, argv: &[String], env: &[String]) -> Result<()> {
+    let mut buf = Vec::new();
+    buf.push(tty as u8);
+    buf.extend_from_slice(&(argv.len() as u32).to_le_bytes());
+    for a in argv {
+        buf.extend_from_slice(&(a.len() as u32).to_le_bytes());
+        buf.extend_from_slice(a.as_bytes());
+    }
+    buf.extend_from_slice(&(env.len() as u32).to_le_bytes());
+    for e in env {
+        buf.extend_from_slice(&(e.len() as u32).to_le_bytes());
+        buf.extend_from_slice(e.as_bytes());
+    }
+    stream.write_all(&buf)?;
+    stream.flush()?;
+    Ok(())
+}
+
+fn write_frame(w: &mut impl Write, chan: u8, payload: &[u8]) -> std::io::Result<()> {
+    w.write_all(&[chan])?;
+    w.write_all(&(payload.len() as u32).to_le_bytes())?;
+    w.write_all(payload)?;
+    w.flush()
+}
+
+fn read_frame(r: &mut impl Read) -> Option<(u8, Vec<u8>)> {
+    let mut hdr = [0u8; 5];
+    r.read_exact(&mut hdr).ok()?;
+    let len = u32::from_le_bytes([hdr[1], hdr[2], hdr[3], hdr[4]]) as usize;
+    let mut data = vec![0u8; len];
+    r.read_exact(&mut data).ok()?;
+    Some((hdr[0], data))
+}
+
+fn local_winsize() -> Option<(u16, u16)> {
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    if unsafe { libc::ioctl(0, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_row > 0 {
+        Some((ws.ws_row, ws.ws_col))
+    } else {
+        None
+    }
+}
+
+/// RAII raw-mode guard for the local terminal (TTY exec).
+struct RawGuard {
+    saved: Option<libc::termios>,
+}
+
+impl RawGuard {
+    fn enable() -> Self {
+        if unsafe { libc::isatty(0) } != 1 {
+            return RawGuard { saved: None };
+        }
+        let mut term: libc::termios = unsafe { std::mem::zeroed() };
+        if unsafe { libc::tcgetattr(0, &mut term) } != 0 {
+            return RawGuard { saved: None };
+        }
+        let saved = term;
+        unsafe { libc::cfmakeraw(&mut term) };
+        unsafe { libc::tcsetattr(0, libc::TCSANOW, &term) };
+        RawGuard { saved: Some(saved) }
+    }
+}
+
+impl Drop for RawGuard {
+    fn drop(&mut self) {
+        if let Some(term) = self.saved {
+            unsafe { libc::tcsetattr(0, libc::TCSANOW, &term) };
+        }
+    }
+}

@@ -9,6 +9,7 @@
 //!   * linux    — run an OCI image (Docker Hub / any registry) as a Linux
 //!                machine: fetch a kernel, extract the rootfs, boot it
 
+mod agent;
 mod console;
 mod db;
 mod elf;
@@ -108,6 +109,28 @@ enum Command {
 
     /// Attach an interactive shell to a running (detached) machine.
     Shell(IdArgs),
+
+    /// Run a command inside a running machine (via its guest agent).
+    Exec(ExecArgs),
+}
+
+#[derive(Parser)]
+struct ExecArgs {
+    /// Allocate a pseudo-TTY (interactive; like `docker exec -it`).
+    #[arg(short = 't', long)]
+    tty: bool,
+
+    /// Set an environment variable in the command (repeatable), e.g. `-e K=V`.
+    #[arg(short = 'e', long = "env", value_name = "K=V")]
+    env: Vec<String>,
+
+    /// machine id (a unique prefix is enough).
+    #[arg(value_name = "ID")]
+    id: String,
+
+    /// Command and arguments to run inside the guest.
+    #[arg(value_name = "COMMAND", required = true, trailing_var_arg = true)]
+    command: Vec<String>,
 }
 
 #[derive(Parser)]
@@ -471,6 +494,7 @@ fn main() -> Result<()> {
         Command::Stop(args) => cmd_stop(&args.id),
         Command::Logs(args) => cmd_logs(&args.id, args.follow),
         Command::Shell(args) => cmd_shell(&args.id),
+        Command::Exec(args) => cmd_exec(&args.id, &args.command, &args.env, args.tty),
     }
 }
 
@@ -506,7 +530,14 @@ fn attach_extra_disks(ctx: &Ctx, disks: &[DiskSpec]) -> Result<()> {
 /// If gvproxy isn't installed we degrade gracefully — the guest boots without a
 /// NIC and we warn — *unless* the user explicitly asked for port forwards, in
 /// which case the missing dependency is a hard error.
-fn setup_networking(ctx: &Ctx, cfg: &NetConfig) -> Result<Option<Gvproxy>> {
+/// Bring up gvproxy networking. When `agent_dir` is given and networking is
+/// available, also allocate a host port forwarded to the guest agent's TCP port
+/// and record it under that machine's state dir (so `exec`/`shell` can reach it).
+fn setup_networking_with_agent(
+    ctx: &Ctx,
+    cfg: &NetConfig,
+    agent_dir: Option<&std::path::Path>,
+) -> Result<Option<Gvproxy>> {
     if cfg.no_net {
         if !cfg.ports.is_empty() {
             anyhow::bail!("--port cannot be combined with --no-net");
@@ -528,9 +559,29 @@ fn setup_networking(ctx: &Ctx, cfg: &NetConfig) -> Result<Option<Gvproxy>> {
         Some(s) => net::parse_mac(s).context("parsing --mac")?,
         None => net::DEFAULT_MAC,
     };
-    let gvproxy = Gvproxy::spawn(&cfg.ports).context("starting gvproxy networking")?;
+
+    // Forward a unique host port to the guest agent (for `exec`/`shell`) and
+    // persist it, alongside any user-requested `--port` forwards.
+    let mut ports = cfg.ports.clone();
+    let agent_port = match agent_dir {
+        Some(dir) => {
+            let host = net::free_local_port().context("reserving a host port for the exec agent")?;
+            ports.push(PortForward {
+                host,
+                guest: agent::GUEST_PORT,
+            });
+            let _ = std::fs::write(agent::port_file(dir), host.to_string());
+            Some(host)
+        }
+        None => None,
+    };
+
+    let gvproxy = Gvproxy::spawn(&ports).context("starting gvproxy networking")?;
     ctx.add_net_gvproxy(&gvproxy.vfkit_socket, mac)
         .context("attaching virtio-net device")?;
+    if let Some(p) = agent_port {
+        info!(agent_port = p, "exec agent reachable via forwarded port");
+    }
     Ok(Some(gvproxy))
 }
 
@@ -562,7 +613,9 @@ fn boot_kernel(args: KernelArgs) -> Result<()> {
                 .with_context(|| format!("attaching root disk {}", d.display()))?;
         }
         attach_extra_disks(&ctx, &args.attach_disk)?;
-        let gvproxy = setup_networking(&ctx, &args.net)?;
+        // Forward a host port to the guest agent so a user-installed bsdkrun-agent
+        // in the guest can serve `exec`/`shell` (idle until the guest runs it).
+        let gvproxy = setup_networking_with_agent(&ctx, &args.net, Some(&vdir))?;
         ctx.set_kernel(
             &args.kernel,
             args.format.to_krun(),
@@ -622,7 +675,9 @@ fn firmware_machine(
         ctx.add_disk("root", &root_disk, false)
             .with_context(|| format!("attaching root disk {}", root_disk.display()))?;
         attach_extra_disks(&ctx, attach)?;
-        let gvproxy = setup_networking(&ctx, net)?;
+        // Forward a host port to the guest agent so a user-installed bsdkrun-agent
+        // in the guest can serve `exec`/`shell` (idle until the guest runs it).
+        let gvproxy = setup_networking_with_agent(&ctx, net, Some(&vdir))?;
         ctx.set_firmware(firmware).context("configuring firmware")?;
         Ok((ctx, gvproxy))
     };
@@ -877,6 +932,7 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
             initramfs.as_deref(),
             virtiofs_root.as_deref(),
             net_up,
+            &vdir,
         )?;
         Ok((ctx, gvproxy))
     };
@@ -899,6 +955,7 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
 
 /// Configure networking + rootfs + kernel on `ctx` (shared by the foreground and
 /// detached paths; the caller wires the console first). Returns the gvproxy.
+#[allow(clippy::too_many_arguments)]
 fn configure_linux_ctx(
     ctx: &Ctx,
     args: &LinuxArgs,
@@ -907,8 +964,9 @@ fn configure_linux_ctx(
     initramfs: Option<&std::path::Path>,
     virtiofs_root: Option<&std::path::Path>,
     net_up: bool,
+    vdir: &std::path::Path,
 ) -> Result<Option<Gvproxy>> {
-    let gvproxy = setup_networking(ctx, &args.net)?;
+    let gvproxy = setup_networking_with_agent(ctx, &args.net, Some(vdir))?;
     if args.virtiofs() {
         // Share the per-machine (cloned) rootfs over virtio-fs and boot our own
         // init from it — we don't use libkrun's init.krun (that's for the bundled
@@ -1179,11 +1237,69 @@ fn cmd_logs(id: &str, follow: bool) -> Result<()> {
 fn cmd_shell(id: &str) -> Result<()> {
     let db = db::Db::open()?;
     let vm = db.find_machine(id)?;
-    if !vm.detached {
-        anyhow::bail!("`shell` attaches to a detached machine — start it with `-d`");
-    }
     if !vm.pid.map(db::pid_alive).unwrap_or(false) {
         anyhow::bail!("machine {} is not running", vm.id);
     }
-    console::attach_interactive(&std::path::PathBuf::from(&vm.state_dir))
+    let vdir = std::path::PathBuf::from(&vm.state_dir);
+    // Prefer the guest agent (a fresh interactive shell over TCP). Fall back to
+    // the persistent-console attach for machines booted without an agent port.
+    if let Some(port) = agent::read_port(&vdir) {
+        let code = agent::exec(port, &[default_shell()], &[], true)
+            .map_err(|e| agent_error(&vm.kind, e))?;
+        std::process::exit(code);
+    }
+    if !vm.detached {
+        anyhow::bail!("`shell` attaches to a detached machine — start it with `-d`");
+    }
+    console::attach_interactive(&vdir)
+}
+
+/// The interactive shell to launch inside a guest.
+/// `/bin/sh` exists on Alpine/busybox Linux images and on FreeBSD/NetBSD.
+fn default_shell() -> String {
+    "/bin/sh".to_string()
+}
+
+/// Whether a machine is a non-Linux guest (where we can't auto-inject the agent
+/// — the user installs and starts `bsdkrun-agent` in the guest themselves).
+fn is_bsd(kind: &str) -> bool {
+    kind != "linux"
+}
+
+/// Add a guest-specific hint to an agent connection/exec failure.
+fn agent_error(kind: &str, e: anyhow::Error) -> anyhow::Error {
+    if is_bsd(kind) {
+        anyhow::anyhow!(
+            "{e}\n\nBSD guests don't run the exec agent automatically. Download the agent for \
+             your guest from the bsdkrun GitHub release:\n  \
+             FreeBSD: {}\n  \
+             NetBSD:  {}\n\
+             then copy it into the running microVM and start it (it listens on TCP port {}): \
+             `./bsdkrun-agent &`. bsdkrun forwards a host port to it automatically.",
+            agent::asset_url(agent::Platform::Freebsd),
+            agent::asset_url(agent::Platform::Netbsd),
+            agent::GUEST_PORT,
+        )
+    } else {
+        e
+    }
+}
+
+/// Run a command inside a running machine via its guest agent.
+fn cmd_exec(id: &str, command: &[String], env: &[String], tty: bool) -> Result<()> {
+    let db = db::Db::open()?;
+    let vm = db.find_machine(id)?;
+    if !vm.pid.map(db::pid_alive).unwrap_or(false) {
+        anyhow::bail!("machine {} is not running", vm.id);
+    }
+    let vdir = std::path::PathBuf::from(&vm.state_dir);
+    let port = agent::read_port(&vdir).ok_or_else(|| {
+        anyhow::anyhow!(
+            "machine {} has no exec agent port — it was booted with networking disabled \
+             (--no-net), which the agent needs",
+            vm.id
+        )
+    })?;
+    let code = agent::exec(port, command, env, tty).map_err(|e| agent_error(&vm.kind, e))?;
+    std::process::exit(code);
 }

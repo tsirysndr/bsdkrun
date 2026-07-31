@@ -18,9 +18,13 @@ jobs:
       - uses: actions/checkout@v4
 
       # libkrun provides the C ABI bsdkrun links against (build.rs finds it via
-      # `brew --prefix libkrun`).
+      # `brew --prefix libkrun`). It lives in a third-party tap, which Homebrew
+      # 6.x requires be trusted before installing.
       - name: Install libkrun
-        run: brew install libkrun
+        run: |
+          brew tap libkrun/krun
+          brew trust libkrun/krun || true  # `trust` only exists on Homebrew 6.x+
+          brew install libkrun
 
       # Stable (default) with the musl target for the Linux agent.
       - name: Rust nightly (+ rust-src for build-std)

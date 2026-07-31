@@ -1,65 +1,67 @@
 # bsdkrun — build helpers.
 #
-# libkrun on macOS requires the Hypervisor.framework entitlement, and every
-# `cargo build` strips the codesignature, so we re-sign after each build.
+# On macOS, libkrun needs the Hypervisor.framework entitlement and every
+# `cargo build` strips the codesignature, so we re-sign after each build. On
+# Linux (KVM) there's nothing to sign — the sign steps are no-ops there.
 
-BIN_DEBUG   := target/debug/bsdkrun
-BIN_RELEASE := target/release/bsdkrun
+BIN_DEBUG    := target/debug/bsdkrun
+BIN_RELEASE  := target/release/bsdkrun
 ENTITLEMENTS := bsdkrun.entitlements
+UNAME_S      := $(shell uname -s)
 
-# In-guest exec agent: a separate crate cross-compiled to static aarch64 guest
-# binaries and published as GitHub release assets. bsdkrun downloads + caches the
-# matching one at runtime (Linux is auto-injected; FreeBSD/NetBSD are for the user
-# to copy into a running BSD guest). These targets produce the release assets —
-# the host build no longer embeds them. Not tracked in git.
-AGENT_DIR         := src/agent-bin
-AGENT_BIN         := $(AGENT_DIR)/bsdkrun-agent.linux-aarch64
-AGENT_BIN_FREEBSD := $(AGENT_DIR)/bsdkrun-agent.freebsd-aarch64
-AGENT_BIN_NETBSD  := $(AGENT_DIR)/bsdkrun-agent.netbsd-aarch64
+# In-guest exec agent: a separate crate cross-compiled to static per-(os,arch)
+# guest binaries and published as GitHub release assets. bsdkrun downloads +
+# caches the matching one at runtime (Linux auto-injected; FreeBSD/NetBSD are
+# for the user to copy into a running BSD guest). Not tracked in git.
+AGENT_DIR := src/agent-bin
 
-.PHONY: build release sign sign-release run test e2e agent agent-linux agent-freebsd agent-netbsd clean
+.PHONY: build release sign sign-release run test e2e clean \
+        agent agent-linux agent-freebsd agent-netbsd
 
 build:
 	cargo build
 	@$(MAKE) sign
-
-# Cross-compile the release-asset guest agents. Linux + FreeBSD build with
-# `cargo zigbuild` (zig ships their libc/sysroot); NetBSD has no zig libc and is
-# built natively in CI, so it's a local no-op.
-agent: agent-linux agent-freebsd agent-netbsd
-
-# Linux: stable + musl (zig provides the sysroot).
-agent-linux:
-	cd agent && cargo zigbuild --release --target aarch64-unknown-linux-musl
-	@mkdir -p $(AGENT_DIR)
-	cp agent/target/aarch64-unknown-linux-musl/release/bsdkrun-agent $(AGENT_BIN)
-
-# FreeBSD: needs nightly + rust-src (std isn't distributed for this target):
-#   rustup toolchain install nightly && rustup component add rust-src --toolchain nightly
-agent-freebsd:
-	cd agent && cargo +nightly zigbuild --release --target aarch64-unknown-freebsd \
-		-Z build-std=std,panic_abort
-	@mkdir -p $(AGENT_DIR)
-	cp agent/target/aarch64-unknown-freebsd/release/bsdkrun-agent $(AGENT_BIN_FREEBSD)
-
-# NetBSD: zig has no NetBSD libc, so it can't be cross-compiled from macOS. CI
-# builds it natively inside a NetBSD VM (.github/workflows/release-netbsd-agent.yml);
-# locally this is a no-op so `make agent` still succeeds.
-agent-netbsd:
-	@echo "note: aarch64-unknown-netbsd can't cross-compile via zig; built natively in CI."
 
 # Release build (+sign). Use this for anything you actually run.
 release:
 	cargo build --release
 	@$(MAKE) sign-release
 
-# Sign the debug binary with the hypervisor entitlement.
+# Sign with the hypervisor entitlement (macOS only; a no-op elsewhere).
 sign:
+ifeq ($(UNAME_S),Darwin)
 	codesign --entitlements $(ENTITLEMENTS) --force -s - $(BIN_DEBUG)
+endif
 
-# Sign the release binary with the hypervisor entitlement.
 sign-release:
+ifeq ($(UNAME_S),Darwin)
 	codesign --entitlements $(ENTITLEMENTS) --force -s - $(BIN_RELEASE)
+endif
+
+# --- guest agents (release assets) -----------------------------------------
+#
+# Linux + FreeBSD build for both arches with `cargo zigbuild` (zig ships their
+# libc/sysroot). NetBSD has no zig libc and is built natively in CI, so it's a
+# local no-op. FreeBSD needs nightly + rust-src (std isn't distributed):
+#   rustup toolchain install nightly && rustup component add rust-src --toolchain nightly
+agent: agent-linux agent-freebsd agent-netbsd
+
+agent-linux:
+	@mkdir -p $(AGENT_DIR)
+	cd agent && cargo zigbuild --release --target aarch64-unknown-linux-musl
+	cp agent/target/aarch64-unknown-linux-musl/release/bsdkrun-agent $(AGENT_DIR)/bsdkrun-agent.linux-aarch64
+	cd agent && cargo zigbuild --release --target x86_64-unknown-linux-musl
+	cp agent/target/x86_64-unknown-linux-musl/release/bsdkrun-agent $(AGENT_DIR)/bsdkrun-agent.linux-x86_64
+
+agent-freebsd:
+	@mkdir -p $(AGENT_DIR)
+	cd agent && cargo +nightly zigbuild --release --target aarch64-unknown-freebsd -Z build-std=std,panic_abort
+	cp agent/target/aarch64-unknown-freebsd/release/bsdkrun-agent $(AGENT_DIR)/bsdkrun-agent.freebsd-aarch64
+	cd agent && cargo +nightly zigbuild --release --target x86_64-unknown-freebsd -Z build-std=std,panic_abort
+	cp agent/target/x86_64-unknown-freebsd/release/bsdkrun-agent $(AGENT_DIR)/bsdkrun-agent.freebsd-x86_64
+
+agent-netbsd:
+	@echo "note: netbsd agents can't cross-compile via zig; built natively in CI."
 
 # Convenience: build (+sign) then run, forwarding args via ARGS=...
 run: build

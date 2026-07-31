@@ -76,17 +76,32 @@ impl Os {
         }
     }
 
-    fn image_url(self, version: &str) -> String {
+    fn image_url(self, version: &str, arch: crate::host::Arch) -> String {
+        use crate::host::Arch;
         match self {
-            Os::Freebsd => format!(
-                "{FREEBSD_VM_IMAGES}/{version}-RELEASE/aarch64/Latest/\
-                 FreeBSD-{version}-RELEASE-arm64-aarch64-ufs.raw.xz"
-            ),
-            Os::Netbsd if version == "current" => {
-                format!("{NETBSD_DAILY_HEAD}/evbarm-aarch64/binary/gzimg/arm64.img.gz")
+            // FreeBSD VM images: amd64 uses a single `amd64` fragment; aarch64
+            // uses the dir `aarch64` with an `arm64-aarch64` filename fragment.
+            Os::Freebsd => {
+                let (dir, frag) = match arch {
+                    Arch::X86_64 => ("amd64", "amd64".to_string()),
+                    Arch::Aarch64 => ("aarch64", "arm64-aarch64".to_string()),
+                };
+                format!(
+                    "{FREEBSD_VM_IMAGES}/{version}-RELEASE/{dir}/Latest/\
+                     FreeBSD-{version}-RELEASE-{frag}-ufs.raw.xz"
+                )
             }
+            // NetBSD gzimg disk images: evbarm-aarch64 for arm64; amd64 for x86_64.
             Os::Netbsd => {
-                format!("{NETBSD_PUB}/NetBSD-{version}/evbarm-aarch64/binary/gzimg/arm64.img.gz")
+                let (port, img) = match arch {
+                    Arch::X86_64 => ("amd64", "amd64.img.gz"),
+                    Arch::Aarch64 => ("evbarm-aarch64", "arm64.img.gz"),
+                };
+                if version == "current" {
+                    format!("{NETBSD_DAILY_HEAD}/{port}/binary/gzimg/{img}")
+                } else {
+                    format!("{NETBSD_PUB}/NetBSD-{version}/{port}/binary/gzimg/{img}")
+                }
             }
         }
     }
@@ -183,14 +198,17 @@ pub fn fetch(os: Os, version: Option<String>, dir: &Path, force: bool) -> Result
     std::fs::create_dir_all(&cache)
         .with_context(|| format!("creating cache dir {}", cache.display()))?;
 
-    let base = format!("{}-{version}", os.slug());
+    // A microVM guest runs the host arch, so images are fetched (and cached) per
+    // arch — amd64 on an x86_64 host, aarch64 on an arm64 host.
+    let arch = crate::host::Arch::current()?;
+    let base = format!("{}-{version}-{}", os.slug(), arch.slug());
     let raw = cache.join(format!("{base}.{}", os.raw_ext()));
     let comp = cache.join(format!("{base}.{}.{}", os.raw_ext(), os.comp().ext()));
 
     if raw.exists() && !force {
         info!(path = %raw.display(), "using cached image (already downloaded)");
     } else {
-        let url = os.image_url(&version);
+        let url = os.image_url(&version, arch);
         info!(%url, "downloading (this is a few hundred MiB)…");
         let _ = std::fs::remove_file(&comp); // drop any stale/partial download
         run(
@@ -216,7 +234,7 @@ pub fn fetch(os: Os, version: Option<String>, dir: &Path, force: bool) -> Result
         .map(|m| m.len() as i64)
         .unwrap_or(0);
     crate::db::record_image(
-        &format!("{}-{version}", os.slug()),
+        &format!("{}-{version}-{}", os.slug(), arch.slug()),
         &format!("file:{}", ready.display()),
         size,
         &ready.to_string_lossy(),
@@ -368,6 +386,7 @@ fn materialize(cached: &Path, dir: &Path) -> Result<PathBuf> {
 }
 
 /// Mount the image's FAT ESP and write FreeBSD's `loader.env` onto it.
+#[cfg(target_os = "macos")]
 fn write_freebsd_loader_env(raw: &Path) -> Result<()> {
     // Attach the raw image without mounting, and find the EFI (FAT) slice.
     let out = Command::new("hdiutil")
@@ -408,6 +427,7 @@ fn write_freebsd_loader_env(raw: &Path) -> Result<()> {
     result
 }
 
+#[cfg(target_os = "macos")]
 fn mount_and_write(esp_dev: &str) -> Result<()> {
     let mount = std::env::temp_dir().join(format!("bsdkrun-esp-{}", std::process::id()));
     std::fs::create_dir_all(&mount).context("creating ESP mountpoint")?;
@@ -448,6 +468,60 @@ fn mount_and_write(esp_dev: &str) -> Result<()> {
     let _ = std::fs::remove_dir(&mount);
 
     write_result
+}
+
+/// Linux: write FreeBSD's `loader.env` onto the image's FAT ESP via a partitioned
+/// loop device. Loop-mounting needs privileges, so this is best-effort: if it
+/// can't (e.g. not root), it warns and leaves the image as-is (the guest still
+/// boots — it just may not have the serial console pre-configured).
+///
+/// EXPERIMENTAL / untested — BSD guests under KVM need validation on a Linux host.
+#[cfg(not(target_os = "macos"))]
+fn write_freebsd_loader_env(raw: &Path) -> Result<()> {
+    use crate::host::root_command;
+
+    // losetup -Pf --show: attach with partition scanning, print the loop device.
+    let out = root_command("losetup")
+        .args(["-Pf", "--show"])
+        .arg(raw)
+        .output();
+    let loopdev = match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => {
+            warn!(
+                "couldn't attach a loop device for {} (needs root / losetup); skipping FreeBSD \
+                 serial-console setup — boot may need console tweaks",
+                raw.display()
+            );
+            return Ok(());
+        }
+    };
+    // The ESP is the first partition on FreeBSD's GPT image.
+    let esp = format!("{loopdev}p1");
+    let result = (|| -> Result<()> {
+        let mount = std::env::temp_dir().join(format!("bsdkrun-esp-{}", std::process::id()));
+        std::fs::create_dir_all(&mount).context("creating ESP mountpoint")?;
+        run(
+            root_command("mount")
+                .args(["-t", "vfat"])
+                .arg(&esp)
+                .arg(&mount),
+            "mount (ESP)",
+        )?;
+        let write = (|| -> Result<()> {
+            let dir = mount.join("EFI/freebsd");
+            std::fs::create_dir_all(&dir).context("creating EFI/freebsd on ESP")?;
+            std::fs::write(dir.join("loader.env"), FREEBSD_LOADER_ENV).context("writing loader.env")
+        })();
+        let _ = run(root_command("umount").arg(&mount), "umount (ESP)");
+        let _ = std::fs::remove_dir(&mount);
+        write
+    })();
+    let _ = root_command("losetup").arg("-d").arg(&loopdev).output();
+    if let Err(e) = &result {
+        warn!("FreeBSD serial-console setup failed: {e:#} — continuing");
+    }
+    Ok(())
 }
 
 /// Run a command, streaming its stdout/stderr, and error if it fails.

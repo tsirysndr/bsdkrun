@@ -1,0 +1,104 @@
+name: e2e (Linux / KVM)
+
+# Boots a real OCI microVM under KVM on GitHub's Linux runners to validate the
+# Linux host port on both arches — bsdkrun detects the host CPU arch and pulls
+# the matching prebuilt vmlinux (aarch64 / x86_64) and OCI image.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - "feat/linux-host"
+      - "main"
+    paths:
+      - "src/**"
+      - "agent/**"
+      - "build.rs"
+      - ".github/workflows/e2e-linux.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  boot:
+    name: ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            musl: aarch64-unknown-linux-musl
+          - arch: x86_64
+            runner: ubuntu-latest
+            musl: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check KVM
+        run: |
+          set -eux
+          ls -l /dev/kvm
+          sudo chmod 666 /dev/kvm || true
+
+      - name: Install build deps (incl. libkrun/libkrunfw build requirements)
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl ca-certificates xz-utils python3 \
+            pkg-config patchelf flex bison bc libelf-dev libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.musl }}
+      - uses: Swatinem/rust-cache@v2
+
+      # libkrun links libkrunfw (the bundled kernel). Building libkrunfw compiles
+      # a Linux kernel from source — slow, but the reliable way to get libkrun on
+      # Ubuntu (no distro package).
+      - name: Build + install libkrunfw
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/containers/libkrunfw
+          make -C libkrunfw -j"$(nproc)"
+          sudo make -C libkrunfw install
+      - name: Build + install libkrun
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/containers/libkrun
+          make -C libkrun -j"$(nproc)"
+          sudo make -C libkrun install
+          sudo ldconfig
+
+      - name: Build bsdkrun
+        run: cargo build --release
+
+      - name: Build guest agent (static musl)
+        run: |
+          set -eux
+          ( cd agent && cargo build --release --target ${{ matrix.musl }} )
+          echo "BSDKRUN_AGENT_LINUX=$PWD/agent/target/${{ matrix.musl }}/release/bsdkrun-agent" >> "$GITHUB_ENV"
+
+      - name: e2e — boot an OCI microVM and run a command
+        run: |
+          set -eux
+          out=$(./target/release/bsdkrun --log-level 1 linux alpine -- echo hello-from-kvm)
+          echo "----- guest output -----"; echo "$out"
+          echo "$out" | grep -q hello-from-kvm
+
+      - name: e2e — detached machine + exec + volume
+        run: |
+          set -eux
+          id=$(./target/release/bsdkrun linux -d -v ci alpine -- sleep 120)
+          sleep 6
+          ./target/release/bsdkrun exec "$id" uname -a
+          ./target/release/bsdkrun exec "$id" /bin/sh -c 'echo persisted > /root/x'
+          ./target/release/bsdkrun stop "$id"
+          # reboot the volume, confirm persistence
+          id2=$(./target/release/bsdkrun linux -d -v ci alpine -- sleep 60)
+          sleep 6
+          ./target/release/bsdkrun exec "$id2" cat /root/x | grep -q persisted
+          ./target/release/bsdkrun volume ls
+          ./target/release/bsdkrun stop "$id2"

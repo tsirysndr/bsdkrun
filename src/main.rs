@@ -572,12 +572,17 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
     // `/init` + kernel `ip=` match what `setup_networking` will actually do.
     let net_up = !args.net.no_net && net::locate().is_ok();
 
+    // A detached machine with no explicit command keeps a console shell alive
+    // across exits (so `shell` behaves like a persistent VM you attach to);
+    // otherwise the workload runs once and the machine powers off when it ends.
+    let persistent = args.detach && args.command.is_empty();
+
     // Build the initramfs before forking so failures surface synchronously.
     let initramfs = if args.virtiofs {
         None
     } else {
         linux::warn_initramfs_memory(&image.rootfs, args.vm.mem);
-        Some(linux::build_initramfs(&image.rootfs, &ep, net_up)?)
+        Some(linux::build_initramfs(&image.rootfs, &ep, net_up, persistent)?)
     };
 
     if args.detach {

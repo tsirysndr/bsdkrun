@@ -68,12 +68,21 @@ pub fn setup_detached(dir: &Path) -> Result<RawFd> {
         .open(&log_path)
         .with_context(|| format!("opening {}", log_path.display()))?;
 
-    thread::spawn(move || broker_loop(master, listener, logfile));
+    thread::spawn(move || broker_loop(master, listener, logfile, log_path));
     Ok(slave)
 }
 
+/// How much recent console output to replay to a newly-attached client, so it
+/// immediately sees the current prompt instead of a blank screen.
+const REPLAY_BYTES: u64 = 4096;
+
 /// The broker: `poll` over the PTY master, the listener, and connected clients.
-fn broker_loop(master_fd: RawFd, listener: UnixListener, mut logfile: std::fs::File) {
+fn broker_loop(
+    master_fd: RawFd,
+    listener: UnixListener,
+    mut logfile: std::fs::File,
+    log_path: std::path::PathBuf,
+) {
     // Non-blocking master, owned as a File for convenient I/O.
     unsafe {
         let flags = libc::fcntl(master_fd, libc::F_GETFL);
@@ -121,7 +130,11 @@ fn broker_loop(master_fd: RawFd, listener: UnixListener, mut logfile: std::fs::F
 
         // New client connections.
         if pfds[1].revents & libc::POLLIN != 0 {
-            while let Ok((stream, _)) = listener.accept() {
+            while let Ok((mut stream, _)) = listener.accept() {
+                // Replay recent console output (while the socket is still
+                // blocking) so an attaching `shell`/`logs -f` sees the current
+                // prompt immediately rather than a blank screen.
+                replay_tail(&log_path, &mut stream);
                 stream.set_nonblocking(true).ok();
                 clients.push(stream);
             }
@@ -157,6 +170,23 @@ fn broker_loop(master_fd: RawFd, listener: UnixListener, mut logfile: std::fs::F
         for i in drop_idx.into_iter().rev() {
             clients.remove(i);
         }
+    }
+}
+
+/// Send the last `REPLAY_BYTES` of the console log to a freshly-connected client.
+fn replay_tail(log_path: &Path, stream: &mut UnixStream) {
+    use std::io::{Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(log_path) else {
+        return;
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let tail = REPLAY_BYTES.min(len);
+    if f.seek(SeekFrom::End(-(tail as i64))).is_err() {
+        return;
+    }
+    let mut buf = Vec::new();
+    if f.read_to_end(&mut buf).is_ok() {
+        let _ = stream.write_all(&buf);
     }
 }
 
@@ -224,8 +254,9 @@ pub fn attach_interactive(dir: &Path) -> Result<()> {
             break;
         }
     }
-    // Dropping the stream closes it, unblocking the reader thread.
-    drop(writer);
+    // Shut the socket down both ways so the reader thread's blocking read
+    // returns (dropping alone wouldn't — the cloned fd keeps it half-open).
+    let _ = writer.shutdown(std::net::Shutdown::Both);
     let _ = reader_thread.join();
     eprintln!("\n[bsdkrun] detached");
     Ok(())

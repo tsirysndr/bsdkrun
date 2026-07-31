@@ -265,8 +265,13 @@ How it works — no daemon:
 - **`logs`** reads `console.log`; **`-f`** then streams `console.sock`.
 - **`shell`** connects to `console.sock` and proxies your terminal in raw mode — the same raw-mode
   attach Docker's CLI does, pointed at the guest console (so it's `docker attach`, not a fresh
-  `docker exec` process; for alpine's default `/bin/sh` that's a live shell). A true `exec -it`
-  (a new process regardless of the workload) would need an in-guest agent over vsock.
+  `docker exec` process; for alpine's default `/bin/sh` that's a live shell). On attach the recent
+  console is replayed so you see the current prompt immediately, and **Ctrl-]** detaches. A true
+  `exec -it` (a new process regardless of the workload) would need an in-guest agent over vsock.
+- **Persistence** — a detached machine with **no explicit command** (`bsdkrun linux -d alpine`)
+  keeps a console shell alive across exits: exiting an attached shell just gives you a fresh one,
+  and the machine runs until you `stop` it. Give it a command (`… -d alpine -- myserver`) and it
+  behaves like Docker instead — the machine powers off when that command exits.
 - **`stop`** sends `SIGTERM` to the machine's process (whose signal handler tears down gvproxy).
 - **`ps`** reconciles: a machine still marked *running* whose process is gone is shown as *exited*.
 

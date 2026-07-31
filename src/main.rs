@@ -548,18 +548,6 @@ fn boot_firmware(args: FirmwareArgs) -> Result<()> {
 }
 
 fn boot_linux(args: LinuxArgs) -> Result<()> {
-    // The prebuilt kernel is built without CONFIG_VIRTIO_FS, so it cannot mount a
-    // virtio-fs root (it would panic: "Unable to mount root fs"). Refuse `--virtiofs`
-    // unless the user supplied their own (FUSE-enabled) kernel via `--kernel`.
-    if args.virtiofs && args.kernel.is_none() {
-        anyhow::bail!(
-            "--virtiofs needs a guest kernel built with virtio-fs (CONFIG_VIRTIO_FS=y — note \
-             that CONFIG_FUSE_FS alone is not enough). The default prebuilt kernel is not. Pass \
-             --kernel with a virtio-fs-enabled kernel, or omit --virtiofs to boot from an \
-             initramfs (the default)."
-        );
-    }
-
     // Prepare everything that can fail before we fork / touch the hypervisor.
     let kernel = linux::ensure_kernel(args.kernel.clone(), &args.kernel_version)?;
     let image = oci::pull(&args.image)?;
@@ -594,7 +582,12 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
         None
     } else {
         linux::warn_initramfs_memory(&image.rootfs, args.vm.mem);
-        Some(linux::build_initramfs(&image.rootfs, &ep, net_up, persistent)?)
+        Some(linux::build_initramfs(
+            &image.rootfs,
+            &ep,
+            net_up,
+            persistent,
+        )?)
     };
 
     if args.detach {

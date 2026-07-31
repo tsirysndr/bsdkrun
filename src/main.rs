@@ -76,11 +76,11 @@ struct FetchArgs {
     #[arg(long)]
     version: Option<String>,
 
-    /// Directory to place the downloaded/prepared image in.
+    /// Directory to link the (cache-backed) image into.
     #[arg(long, default_value = "images")]
     dir: PathBuf,
 
-    /// Re-download even if the image already exists.
+    /// Re-download even if the image is already cached.
     #[arg(long)]
     force: bool,
 }

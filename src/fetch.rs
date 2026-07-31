@@ -25,6 +25,10 @@ efi_com_speed=115200
 ";
 
 /// Download + prepare a FreeBSD image. Returns the path to the ready raw image.
+///
+/// The downloaded+decompressed image is kept in a cache under `$HOME` so a
+/// version that was fetched before is never re-downloaded; `dir` receives a
+/// link to the cached file (unless it already is the cache).
 pub fn fetch(version: Option<String>, dir: &Path, force: bool) -> Result<PathBuf> {
     let version = match version {
         Some(v) => v,
@@ -35,17 +39,19 @@ pub fn fetch(version: Option<String>, dir: &Path, force: bool) -> Result<PathBuf
     };
     info!(version = %version, "FreeBSD version");
 
-    std::fs::create_dir_all(dir)
-        .with_context(|| format!("creating output dir {}", dir.display()))?;
+    let cache = cache_dir()?;
+    std::fs::create_dir_all(&cache)
+        .with_context(|| format!("creating cache dir {}", cache.display()))?;
 
-    let raw = dir.join(format!("freebsd-{version}.raw"));
-    let xz = dir.join(format!("freebsd-{version}.raw.xz"));
+    let cached = cache.join(format!("freebsd-{version}.raw"));
+    let xz = cache.join(format!("freebsd-{version}.raw.xz"));
 
-    if raw.exists() && !force {
-        info!(path = %raw.display(), "image already downloaded (pass --force to re-download)");
+    if cached.exists() && !force {
+        info!(path = %cached.display(), "using cached image (already downloaded)");
     } else {
         let url = image_url(&version);
         info!(%url, "downloading (this is a few hundred MiB)…");
+        let _ = std::fs::remove_file(&xz); // drop any stale/partial download
         run(
             Command::new("curl")
                 .args(["-L", "--fail", "--progress-bar", "-o"])
@@ -64,10 +70,56 @@ pub fn fetch(version: Option<String>, dir: &Path, force: bool) -> Result<PathBuf
     }
 
     info!("writing serial-console loader.env onto the image's ESP…");
-    prepare_console(&raw)?;
+    prepare_console(&cached)?;
 
-    info!(image = %raw.display(), "ready — boot it with: bsdkrun firmware --firmware images/KRUN_EFI.fd --disk {}", raw.display());
-    Ok(raw)
+    // Make the cached image available at the requested dir (no data copy).
+    let ready = materialize(&cached, dir, &version)?;
+
+    info!(image = %ready.display(), "ready — boot it with: bsdkrun firmware --firmware images/KRUN_EFI.fd --disk {}", ready.display());
+    Ok(ready)
+}
+
+/// Cache directory for downloaded images: `$BSDKRUN_CACHE`, else
+/// `$XDG_CACHE_HOME/bsdkrun`, else `$HOME/.cache/bsdkrun`.
+fn cache_dir() -> Result<PathBuf> {
+    if let Ok(c) = std::env::var("BSDKRUN_CACHE") {
+        if !c.is_empty() {
+            return Ok(PathBuf::from(c));
+        }
+    }
+    if let Ok(x) = std::env::var("XDG_CACHE_HOME") {
+        if !x.is_empty() {
+            return Ok(PathBuf::from(x).join("bsdkrun"));
+        }
+    }
+    let home = std::env::var("HOME").context("HOME is not set")?;
+    Ok(PathBuf::from(home).join(".cache").join("bsdkrun"))
+}
+
+/// Expose the cached image at `<dir>/freebsd-<version>.raw` without copying its
+/// bytes — a hard link when possible, else a symlink. Returns the usable path.
+/// If `dir` already is the cache directory, the cached path is returned as-is.
+fn materialize(cached: &Path, dir: &Path, version: &str) -> Result<PathBuf> {
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("creating output dir {}", dir.display()))?;
+    let out = dir.join(format!("freebsd-{version}.raw"));
+
+    // dir == cache (or out is literally the cached file): nothing to link.
+    let same_dir = match (std::fs::canonicalize(dir), cached.parent().map(std::fs::canonicalize)) {
+        (Ok(a), Some(Ok(b))) => a == b,
+        _ => out == *cached,
+    };
+    if same_dir {
+        return Ok(cached.to_path_buf());
+    }
+
+    // Replace any existing entry so re-fetches stay idempotent.
+    let _ = std::fs::remove_file(&out);
+    if std::fs::hard_link(cached, &out).is_err() {
+        std::os::unix::fs::symlink(cached, &out)
+            .with_context(|| format!("linking {} -> {}", out.display(), cached.display()))?;
+    }
+    Ok(out)
 }
 
 /// All FreeBSD `X.Y` releases published under VM-IMAGES, sorted ascending.

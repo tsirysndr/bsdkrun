@@ -221,6 +221,10 @@ bsdkrun firmware --firmware images/KRUN_EFI.fd --disk images/freebsd-15.1.raw --
 With no `--version`, it resolves the newest release by listing the mirror. The download is a few
 hundred MiB and expands to several GiB.
 
+Downloaded images are cached under **`~/.cache/bsdkrun/`** (override with `BSDKRUN_CACHE`, or
+`XDG_CACHE_HOME`), so fetching a version you already have is instant — it just links the cached
+image into `--dir` (a hard link, no second copy). Use `--force` to re-download.
+
 ### The manual way
 
 FreeBSD publishes raw arm64 disk images directly:

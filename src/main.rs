@@ -112,6 +112,34 @@ enum Command {
 
     /// Run a command inside a running machine (via its guest agent).
     Exec(ExecArgs),
+
+    /// Manage persistent volumes (list / remove).
+    Volume(VolumeArgs),
+}
+
+#[derive(Parser)]
+struct VolumeArgs {
+    #[command(subcommand)]
+    cmd: VolumeCmd,
+}
+
+#[derive(Subcommand)]
+enum VolumeCmd {
+    /// List persistent volumes.
+    Ls,
+    /// Remove one or more volumes (and their data).
+    Rm(VolumeRmArgs),
+}
+
+#[derive(Parser)]
+struct VolumeRmArgs {
+    /// Remove even if a running machine is using the volume.
+    #[arg(short, long)]
+    force: bool,
+
+    /// Volume name(s) to remove.
+    #[arg(value_name = "NAME", required = true)]
+    names: Vec<String>,
 }
 
 #[derive(Parser)]
@@ -184,6 +212,12 @@ struct LinuxArgs {
     /// limit). Use this if the guest kernel lacks CONFIG_VIRTIO_FS.
     #[arg(long)]
     initramfs: bool,
+
+    /// Persist the guest's rootfs to a named volume that survives reboots (like a
+    /// Docker volume). First use CoW-clones the image rootfs; reuse the same name
+    /// to keep your changes. Requires virtio-fs (not `--initramfs`, which is RAM).
+    #[arg(short = 'v', long, value_name = "NAME")]
+    volume: Option<String>,
 
     /// Override the image's entrypoint (like `docker run --entrypoint`).
     #[arg(long)]
@@ -339,8 +373,14 @@ struct RunConfig {
 
     /// Boot the disk in place (writes persist to it; only one machine at a time)
     /// instead of the default per-machine APFS copy-on-write clone.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "volume")]
     persist: bool,
+
+    /// Persist the guest's disk to a named volume that survives reboots (like a
+    /// Docker volume). First use CoW-clones the base; reuse the same name to keep
+    /// your changes. Stored under `<state>/volumes/<NAME>`.
+    #[arg(short = 'v', long, value_name = "NAME")]
+    volume: Option<String>,
 }
 
 /// Options for the `freebsd` / `netbsd` shortcut commands.
@@ -495,6 +535,10 @@ fn main() -> Result<()> {
         Command::Logs(args) => cmd_logs(&args.id, args.follow),
         Command::Shell(args) => cmd_shell(&args.id),
         Command::Exec(args) => cmd_exec(&args.id, &args.command, &args.env, args.tty),
+        Command::Volume(args) => match args.cmd {
+            VolumeCmd::Ls => cmd_volume_ls(),
+            VolumeCmd::Rm(a) => cmd_volume_rm(&a.names, a.force),
+        },
     }
 }
 
@@ -565,7 +609,8 @@ fn setup_networking_with_agent(
     let mut ports = cfg.ports.clone();
     let agent_port = match agent_dir {
         Some(dir) => {
-            let host = net::free_local_port().context("reserving a host port for the exec agent")?;
+            let host =
+                net::free_local_port().context("reserving a host port for the exec agent")?;
             ports.push(PortForward {
                 host,
                 guest: agent::GUEST_PORT,
@@ -588,10 +633,16 @@ fn setup_networking_with_agent(
 fn boot_kernel(args: KernelArgs) -> Result<()> {
     let machine_id = id::short_id();
     let vdir = machine_dir_or_tmp(&machine_id);
-    // CoW-clone the root disk per machine (unless --persist) so many machines can
-    // boot the same base image concurrently without touching it.
+    // CoW-clone the root disk per machine (unless --persist / --volume) so many
+    // machines can boot the same base image concurrently without touching it.
+    let volume = args.run.volume.as_deref().map(volume_dir).transpose()?;
     let root_disk = match &args.disk {
-        Some(d) => Some(prepare_bsd_disk(d, &vdir, args.run.persist)?),
+        Some(d) => Some(prepare_bsd_disk(
+            d,
+            &vdir,
+            args.run.persist,
+            volume.as_deref(),
+        )?),
         None => None,
     };
     let image = args
@@ -626,6 +677,9 @@ fn boot_kernel(args: KernelArgs) -> Result<()> {
         Ok((ctx, gvproxy))
     };
 
+    if let (Some(name), Some(dir)) = (args.run.volume.as_deref(), &volume) {
+        db::record_volume(name, "kernel", &image, &dir.to_string_lossy());
+    }
     run_machine(
         &machine_id,
         &vdir,
@@ -636,6 +690,7 @@ fn boot_kernel(args: KernelArgs) -> Result<()> {
         args.vm.mem,
         args.run.detach,
         true, // BSD: use the SMP-shutdown watchdog on the foreground path
+        args.run.volume.as_deref(),
         build,
     )
 }
@@ -664,7 +719,8 @@ fn firmware_machine(
     let machine_id = id::short_id();
     let vdir = machine_dir_or_tmp(&machine_id);
     let image = basename(disk);
-    let root_disk = prepare_bsd_disk(disk, &vdir, run.persist)?;
+    let volume = run.volume.as_deref().map(volume_dir).transpose()?;
+    let root_disk = prepare_bsd_disk(disk, &vdir, run.persist, volume.as_deref())?;
 
     let build = || -> Result<(Ctx, Option<Gvproxy>)> {
         let ctx = Ctx::new()?;
@@ -682,6 +738,9 @@ fn firmware_machine(
         Ok((ctx, gvproxy))
     };
 
+    if let (Some(name), Some(dir)) = (run.volume.as_deref(), &volume) {
+        db::record_volume(name, "firmware", &image, &dir.to_string_lossy());
+    }
     run_machine(
         &machine_id,
         &vdir,
@@ -692,6 +751,7 @@ fn firmware_machine(
         vm.mem,
         run.detach,
         true,
+        run.volume.as_deref(),
         build,
     )
 }
@@ -798,36 +858,70 @@ fn basename(p: &std::path::Path) -> String {
         .unwrap_or_else(|| p.to_string_lossy().into_owned())
 }
 
-/// Prepare a BSD machine's root disk: unless `persist`, clone it into `vdir` with
-/// an APFS copy-on-write clone (`cp -c` — instant, no extra disk until the guest
-/// writes) so the base image stays pristine and machines run concurrently.
+/// Prepare a BSD machine's root disk. With `volume`, the disk lives at a stable
+/// path under `<state>/volumes` and is reused across runs (changes persist);
+/// with `persist`, the base disk is booted in place; otherwise it's cloned into
+/// `vdir` fresh each boot. Clones use an APFS copy-on-write clone (`cp -c` —
+/// instant, no extra disk until the guest writes) so the base stays pristine.
 fn prepare_bsd_disk(
     disk: &std::path::Path,
     vdir: &std::path::Path,
     persist: bool,
+    volume: Option<&std::path::Path>,
 ) -> Result<PathBuf> {
+    let ext = disk.extension().and_then(|e| e.to_str()).unwrap_or("img");
+    if let Some(voldir) = volume {
+        std::fs::create_dir_all(voldir)
+            .with_context(|| format!("creating volume dir {}", voldir.display()))?;
+        let dst = voldir.join(format!("root.{ext}"));
+        if dst.exists() {
+            info!(path = %dst.display(), "reusing persistent volume disk");
+            return Ok(dst);
+        }
+        info!(path = %dst.display(), "creating persistent volume (CoW clone of base)");
+        clone_cow_file(disk, &dst)?;
+        return Ok(dst);
+    }
     if persist {
         return Ok(disk.to_path_buf());
     }
-    let ext = disk.extension().and_then(|e| e.to_str()).unwrap_or("img");
     let dst = vdir.join(format!("root.{ext}"));
     let _ = std::fs::remove_file(&dst);
+    clone_cow_file(disk, &dst)?;
+    Ok(dst)
+}
+
+/// Resolve a `--volume NAME` to its directory under `<state>/volumes`, rejecting
+/// names that could escape it.
+fn volume_dir(name: &str) -> Result<PathBuf> {
+    let ok = !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    if !ok {
+        anyhow::bail!("invalid volume name {name:?} — use letters, digits, '-', '_' or '.'");
+    }
+    Ok(db::volumes_dir()?.join(name))
+}
+
+/// Copy `src` to `dst` using an APFS copy-on-write clone (`cp -c`), falling back
+/// to a plain copy on filesystems without `clonefile(2)`.
+fn clone_cow_file(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
     if fetch::run(
-        std::process::Command::new("cp")
-            .arg("-c")
-            .arg(disk)
-            .arg(&dst),
+        std::process::Command::new("cp").arg("-c").arg(src).arg(dst),
         "cp (clone disk)",
     )
     .is_err()
     {
-        let _ = std::fs::remove_file(&dst);
+        let _ = std::fs::remove_file(dst);
         fetch::run(
-            std::process::Command::new("cp").arg(disk).arg(&dst),
+            std::process::Command::new("cp").arg(src).arg(dst),
             "cp (copy disk)",
         )?;
     }
-    Ok(dst)
+    Ok(())
 }
 
 /// Run a machine either in the foreground (records + attaches to this terminal)
@@ -844,10 +938,13 @@ fn run_machine(
     mem: u32,
     detach: bool,
     watchdog: bool,
+    volume: Option<&str>,
     build: impl FnOnce() -> Result<(Ctx, Option<Gvproxy>)>,
 ) -> Result<()> {
     if detach {
-        return run_detached(machine_id, vdir, kind, image, command, cpus, mem, build);
+        return run_detached(
+            machine_id, vdir, kind, image, command, cpus, mem, volume, build,
+        );
     }
     db::record_machine(
         machine_id,
@@ -860,6 +957,7 @@ fn run_machine(
         cpus as i64,
         mem as i64,
         &vdir.to_string_lossy(),
+        volume,
     );
     tty::install();
     if watchdog {
@@ -889,6 +987,13 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
     let vdir = machine_dir_or_tmp(&machine_id);
     let command = ep.argv.join(" ");
 
+    // A named volume makes the rootfs persist across runs. It needs virtio-fs
+    // (an initramfs is a RAM disk — nothing to persist).
+    if args.volume.is_some() && args.initramfs {
+        anyhow::bail!("--volume needs virtio-fs; it can't persist an --initramfs (RAM) rootfs");
+    }
+    let volume = args.volume.as_deref().map(volume_dir).transpose()?;
+
     // Decide up front whether networking will come up, so the baked-in initramfs
     // `/init` + kernel `ip=` match what `setup_networking` will actually do.
     let net_up = !args.net.no_net && net::locate().is_ok();
@@ -898,22 +1003,33 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
     // otherwise the workload runs once and the machine powers off when it ends.
     let persistent = args.detach && args.command.is_empty();
 
-    // Prepare the rootfs before forking so failures surface synchronously:
-    // either an initramfs (--initramfs) or a cloned, writable virtio-fs root.
-    let (initramfs, virtiofs_root) = if args.virtiofs() {
-        let root = linux::prepare_virtiofs_root(&image.rootfs, &ep, net_up, persistent, &vdir)?;
-        (None, Some(root))
-    } else {
-        linux::warn_initramfs_memory(&image.rootfs, args.vm.mem);
-        (
-            Some(linux::build_initramfs(
+    // Prepare the rootfs before forking so failures surface synchronously.
+    // A volume uses an overlayfs (shared image lower + persistent volume upper);
+    // otherwise it's a per-machine virtio-fs clone, or an initramfs (--initramfs).
+    let root_mode = match (&volume, args.virtiofs()) {
+        (Some(voldir), _) => {
+            linux::prepare_overlay_volume(voldir, &ep, net_up, persistent)?;
+            LinuxRoot::Overlay {
+                base: image.rootfs.clone(),
+                volume: voldir.clone(),
+            }
+        }
+        (None, true) => LinuxRoot::Virtiofs(linux::prepare_virtiofs_root(
+            &image.rootfs,
+            &ep,
+            net_up,
+            persistent,
+            &vdir,
+        )?),
+        (None, false) => {
+            linux::warn_initramfs_memory(&image.rootfs, args.vm.mem);
+            LinuxRoot::Initramfs(linux::build_initramfs(
                 &image.rootfs,
                 &ep,
                 net_up,
                 persistent,
-            )?),
-            None,
-        )
+            )?)
+        }
     };
 
     let build = || -> Result<(Ctx, Option<Gvproxy>)> {
@@ -924,19 +1040,13 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
             ctx.attach_stdio_serial_console()
                 .context("wiring guest serial console to stdio")?;
         }
-        let gvproxy = configure_linux_ctx(
-            &ctx,
-            &args,
-            &kernel,
-            &ep,
-            initramfs.as_deref(),
-            virtiofs_root.as_deref(),
-            net_up,
-            &vdir,
-        )?;
+        let gvproxy = configure_linux_ctx(&ctx, &args, &kernel, &root_mode, net_up, &vdir)?;
         Ok((ctx, gvproxy))
     };
 
+    if let (Some(name), Some(dir)) = (args.volume.as_deref(), &volume) {
+        db::record_volume(name, "linux", &args.image, &dir.to_string_lossy());
+    }
     // Linux never uses the SMP-shutdown watchdog: it redirects fd 2, which
     // libkrun's implicit virtio-console (hvc0) claims for the guest.
     run_machine(
@@ -949,44 +1059,70 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
         args.vm.mem,
         args.detach,
         false,
+        args.volume.as_deref(),
         build,
     )
 }
 
+/// How a Linux guest's root filesystem is provided.
+enum LinuxRoot {
+    /// Whole rootfs loaded into RAM (`--initramfs`).
+    Initramfs(PathBuf),
+    /// Per-machine copy-on-write virtio-fs clone (the ephemeral default).
+    Virtiofs(PathBuf),
+    /// Persistent overlay: shared image `base` (read-only lower) + `volume`
+    /// (writable upper) merged in the guest (`-v NAME`).
+    Overlay { base: PathBuf, volume: PathBuf },
+}
+
 /// Configure networking + rootfs + kernel on `ctx` (shared by the foreground and
 /// detached paths; the caller wires the console first). Returns the gvproxy.
-#[allow(clippy::too_many_arguments)]
 fn configure_linux_ctx(
     ctx: &Ctx,
     args: &LinuxArgs,
     kernel: &std::path::Path,
-    _ep: &linux::Entrypoint,
-    initramfs: Option<&std::path::Path>,
-    virtiofs_root: Option<&std::path::Path>,
+    root: &LinuxRoot,
     net_up: bool,
     vdir: &std::path::Path,
 ) -> Result<Option<Gvproxy>> {
     let gvproxy = setup_networking_with_agent(ctx, &args.net, Some(vdir))?;
-    if args.virtiofs() {
-        // Share the per-machine (cloned) rootfs over virtio-fs and boot our own
-        // init from it — we don't use libkrun's init.krun (that's for the bundled
-        // libkrunfw kernel), so no set_exec/set_workdir here (our init handles it).
-        let root = virtiofs_root.expect("virtio-fs root prepared for --virtiofs boot");
-        ctx.set_root(root)
-            .context("configuring virtio-fs root (needs a CONFIG_VIRTIO_FS=y kernel)")?;
-        let cmdline = linux::virtiofs_cmdline(&args.console, net_up);
-        ctx.set_kernel(kernel, krun::KRUN_KERNEL_FORMAT_RAW, None, &cmdline)
-            .context("configuring kernel")?;
-    } else {
-        let initramfs = initramfs.expect("initramfs built for non-virtiofs boot");
-        let cmdline = linux::kernel_cmdline(&args.console, net_up);
-        ctx.set_kernel(
-            kernel,
-            krun::KRUN_KERNEL_FORMAT_RAW,
-            Some(initramfs),
-            &cmdline,
-        )
-        .context("configuring kernel")?;
+    // We boot our own init in every virtio-fs mode (not libkrun's init.krun,
+    // which is for the bundled libkrunfw kernel).
+    match root {
+        LinuxRoot::Overlay { base, volume } => {
+            // Serve the shared image read-only as the root and inject a tiny
+            // stage-1 init (a virtual file — the on-disk image is untouched) that
+            // assembles the overlay from the image + volume and switch_roots.
+            ctx.set_root(base)
+                .context("configuring virtio-fs root (needs a CONFIG_VIRTIO_FS=y kernel)")?;
+            let stage1: &'static [u8] =
+                Box::leak(linux::overlay_stage1_init().into_bytes().into_boxed_slice());
+            for dir in ["bk_lower", "bk_vol", "bk_newroot"] {
+                ctx.fs_add_overlay_dir(krun::FS_ROOT_TAG, dir, 0o040755)
+                    .context("adding overlay mountpoint")?;
+            }
+            ctx.fs_add_overlay_file(krun::FS_ROOT_TAG, linux::OVERLAY_STAGE1, stage1, 0o100755)
+                .context("injecting overlay stage-1 init")?;
+            ctx.add_virtiofs(linux::OVERLAY_LOWER_TAG, base)
+                .context("sharing overlay lower (image)")?;
+            ctx.add_virtiofs(linux::OVERLAY_VOL_TAG, volume)
+                .context("sharing overlay upper (volume)")?;
+            let cmdline = linux::overlay_cmdline(&args.console, net_up);
+            ctx.set_kernel(kernel, krun::KRUN_KERNEL_FORMAT_RAW, None, &cmdline)
+                .context("configuring kernel")?;
+        }
+        LinuxRoot::Virtiofs(dir) => {
+            ctx.set_root(dir)
+                .context("configuring virtio-fs root (needs a CONFIG_VIRTIO_FS=y kernel)")?;
+            let cmdline = linux::virtiofs_cmdline(&args.console, net_up);
+            ctx.set_kernel(kernel, krun::KRUN_KERNEL_FORMAT_RAW, None, &cmdline)
+                .context("configuring kernel")?;
+        }
+        LinuxRoot::Initramfs(img) => {
+            let cmdline = linux::kernel_cmdline(&args.console, net_up);
+            ctx.set_kernel(kernel, krun::KRUN_KERNEL_FORMAT_RAW, Some(img), &cmdline)
+                .context("configuring kernel")?;
+        }
     }
     Ok(gvproxy)
 }
@@ -1015,6 +1151,7 @@ fn run_detached(
     command: &str,
     cpus: u8,
     mem: u32,
+    volume: Option<&str>,
     build: impl FnOnce() -> Result<(Ctx, Option<Gvproxy>)>,
 ) -> Result<()> {
     use std::io::Write;
@@ -1039,6 +1176,7 @@ fn run_detached(
             cpus as i64,
             mem as i64,
             &vdir.to_string_lossy(),
+            volume,
         );
         println!("{machine_id}");
         return Ok(());
@@ -1188,6 +1326,106 @@ fn cmd_images() -> Result<()> {
             oci::human_size(im.size.max(0) as u64),
             db::age(&im.created_at)
         );
+    }
+    Ok(())
+}
+
+fn cmd_volume_ls() -> Result<()> {
+    let db = db::Db::open()?;
+    let rows = db.list_volumes()?;
+    let tracked: std::collections::HashSet<String> = rows.iter().map(|v| v.name.clone()).collect();
+    println!(
+        "{:<20}  {:<9}  {:<28}  {:<10}  {}",
+        "NAME", "GUEST", "BASE", "SIZE", "CREATED"
+    );
+    for v in &rows {
+        println!(
+            "{:<20}  {:<9}  {:<28}  {:<10}  {}",
+            truncate(&v.name, 20),
+            v.kind,
+            truncate(&v.base, 28),
+            volume_size(&v.path),
+            db::age(&v.created_at),
+        );
+    }
+    // Also surface any on-disk volume dirs not tracked in the DB (e.g. created
+    // before volumes were recorded).
+    if let Ok(entries) = std::fs::read_dir(db::volumes_dir()?) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if e.path().is_dir() && !tracked.contains(&name) {
+                println!(
+                    "{:<20}  {:<9}  {:<28}  {:<10}  {}",
+                    truncate(&name, 20),
+                    "-",
+                    "-",
+                    volume_size(&e.path().to_string_lossy()),
+                    "-",
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// On-disk size of a volume via `du -sk` (counts allocated blocks, so CoW-shared
+/// data isn't double-counted); "-" if it can't be determined.
+fn volume_size(path: &str) -> String {
+    let out = std::process::Command::new("du")
+        .args(["-sk", path])
+        .output()
+        .ok();
+    out.filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .next()?
+                .parse::<u64>()
+                .ok()
+        })
+        .map(|kb| oci::human_size(kb * 1024))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn cmd_volume_rm(names: &[String], force: bool) -> Result<()> {
+    let db = db::Db::open()?;
+    // Volumes currently attached to a running machine.
+    let in_use: std::collections::HashSet<String> = db
+        .list_machines()?
+        .into_iter()
+        .filter(|m| m.pid.map(db::pid_alive).unwrap_or(false))
+        .filter_map(|m| m.volume)
+        .collect();
+
+    let mut failed = false;
+    for name in names {
+        let row = db.find_volume(name)?;
+        let dir = match &row {
+            Some(r) => PathBuf::from(&r.path),
+            None => db::volumes_dir()?.join(name),
+        };
+        if row.is_none() && !dir.exists() {
+            eprintln!("Error: no such volume: {name}");
+            failed = true;
+            continue;
+        }
+        if in_use.contains(name) && !force {
+            eprintln!("Error: volume {name:?} is in use by a running machine (use --force)");
+            failed = true;
+            continue;
+        }
+        if dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                eprintln!("Error: removing {}: {e}", dir.display());
+                failed = true;
+                continue;
+            }
+        }
+        db.remove_volume(name).ok();
+        println!("{name}");
+    }
+    if failed {
+        std::process::exit(1);
     }
     Ok(())
 }

@@ -36,6 +36,12 @@ pub fn machine_dir(id: &str) -> Result<PathBuf> {
     Ok(state_dir()?.join("machines").join(id))
 }
 
+/// Directory holding named persistent volumes (`<state>/volumes`). Unlike a
+/// machine's runtime dir, these survive across runs so guest changes persist.
+pub fn volumes_dir() -> Result<PathBuf> {
+    Ok(state_dir()?.join("volumes"))
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // some columns are stored for future use / debugging
 pub struct ImageRow {
@@ -63,6 +69,7 @@ pub struct MachineRow {
     pub state_dir: String,
     pub created_at: String,
     pub finished_at: Option<String>,
+    pub volume: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +78,15 @@ pub struct DiskRow {
     pub id: String,
     pub path: String,
     pub size: Option<i64>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct VolumeRow {
+    pub name: String,
+    pub kind: String,
+    pub base: String,
+    pub path: String,
     pub created_at: String,
 }
 
@@ -138,9 +154,12 @@ impl Db {
             )
             .execute(&self.pool)
             .await?;
-            // Add finished_at to databases created before it existed (errors with
+            // Add columns to databases created before they existed (errors with
             // "duplicate column" on newer ones — ignored).
             let _ = sqlx::query("ALTER TABLE machines ADD COLUMN finished_at TEXT")
+                .execute(&self.pool)
+                .await;
+            let _ = sqlx::query("ALTER TABLE machines ADD COLUMN volume TEXT")
                 .execute(&self.pool)
                 .await;
             sqlx::query(
@@ -148,6 +167,17 @@ impl Db {
                     id TEXT PRIMARY KEY,
                     path TEXT NOT NULL UNIQUE,
                     size INTEGER,
+                    created_at TEXT NOT NULL
+                )",
+            )
+            .execute(&self.pool)
+            .await?;
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS volumes (
+                    name TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    base TEXT NOT NULL,
+                    path TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 )",
             )
@@ -244,13 +274,14 @@ impl Db {
         cpus: i64,
         mem: i64,
         state_dir: &str,
+        volume: Option<&str>,
     ) -> Result<()> {
         self.rt
             .block_on(async {
                 sqlx::query(
                     "INSERT INTO machines
-                     (id, image, kind, command, status, pid, detached, cpus, mem, state_dir, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     (id, image, kind, command, status, pid, detached, cpus, mem, state_dir, created_at, volume)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(id)
                 .bind(image)
@@ -263,6 +294,7 @@ impl Db {
                 .bind(mem)
                 .bind(state_dir)
                 .bind(now())
+                .bind(volume)
                 .execute(&self.pool)
                 .await?;
                 Ok::<_, sqlx::Error>(())
@@ -297,7 +329,7 @@ impl Db {
             .block_on(async {
                 let rows = sqlx::query(
                     "SELECT id, image, kind, command, status, exit_code, pid, detached,
-                            cpus, mem, state_dir, created_at, finished_at
+                            cpus, mem, state_dir, created_at, finished_at, volume
                      FROM machines ORDER BY created_at DESC",
                 )
                 .fetch_all(&self.pool)
@@ -312,7 +344,7 @@ impl Db {
         let matches: Vec<MachineRow> = self.rt.block_on(async {
             let rows = sqlx::query(
                 "SELECT id, image, kind, command, status, exit_code, pid, detached,
-                        cpus, mem, state_dir, created_at, finished_at
+                        cpus, mem, state_dir, created_at, finished_at, volume
                  FROM machines WHERE id LIKE ? ORDER BY created_at DESC",
             )
             .bind(format!("{prefix}%"))
@@ -375,6 +407,81 @@ impl Db {
             })
             .map_err(Into::into)
     }
+
+    // ---- volumes --------------------------------------------------------
+
+    /// Record a named volume the first time it's created (idempotent by name, so
+    /// reusing a volume keeps its original metadata).
+    pub fn upsert_volume(&self, name: &str, kind: &str, base: &str, path: &str) -> Result<()> {
+        self.rt
+            .block_on(async {
+                sqlx::query(
+                    "INSERT INTO volumes (name, kind, base, path, created_at)
+                     VALUES (?, ?, ?, ?, ?)
+                     ON CONFLICT(name) DO NOTHING",
+                )
+                .bind(name)
+                .bind(kind)
+                .bind(base)
+                .bind(path)
+                .bind(now())
+                .execute(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn list_volumes(&self) -> Result<Vec<VolumeRow>> {
+        self.rt
+            .block_on(async {
+                let rows = sqlx::query(
+                    "SELECT name, kind, base, path, created_at FROM volumes
+                     ORDER BY created_at DESC",
+                )
+                .fetch_all(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(rows.into_iter().map(row_to_volume).collect())
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn find_volume(&self, name: &str) -> Result<Option<VolumeRow>> {
+        self.rt
+            .block_on(async {
+                let row = sqlx::query(
+                    "SELECT name, kind, base, path, created_at FROM volumes WHERE name = ?",
+                )
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(row.map(row_to_volume))
+            })
+            .map_err(Into::into)
+    }
+
+    /// Remove a volume row; returns whether a row was deleted.
+    pub fn remove_volume(&self, name: &str) -> Result<bool> {
+        self.rt
+            .block_on(async {
+                let r = sqlx::query("DELETE FROM volumes WHERE name = ?")
+                    .bind(name)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(r.rows_affected() > 0)
+            })
+            .map_err(Into::into)
+    }
+}
+
+fn row_to_volume(r: sqlx::sqlite::SqliteRow) -> VolumeRow {
+    VolumeRow {
+        name: r.get("name"),
+        kind: r.get("kind"),
+        base: r.get("base"),
+        path: r.get("path"),
+        created_at: r.get("created_at"),
+    }
 }
 
 fn row_to_machine(r: sqlx::sqlite::SqliteRow) -> MachineRow {
@@ -392,6 +499,7 @@ fn row_to_machine(r: sqlx::sqlite::SqliteRow) -> MachineRow {
         state_dir: r.get("state_dir"),
         created_at: r.get("created_at"),
         finished_at: r.get("finished_at"),
+        volume: r.get("volume"),
     }
 }
 
@@ -497,13 +605,21 @@ pub fn record_machine(
     cpus: i64,
     mem: i64,
     state_dir: &str,
+    volume: Option<&str>,
 ) {
     if let Err(e) = Db::open().and_then(|db| {
         db.insert_machine(
-            id, image, kind, command, status, pid, detached, cpus, mem, state_dir,
+            id, image, kind, command, status, pid, detached, cpus, mem, state_dir, volume,
         )
     }) {
         tracing::warn!("recording machine in state db: {e:#}");
+    }
+}
+
+/// Record a named volume (best-effort, idempotent by name).
+pub fn record_volume(name: &str, kind: &str, base: &str, path: &str) {
+    if let Err(e) = Db::open().and_then(|db| db.upsert_volume(name, kind, base, path)) {
+        tracing::warn!("recording volume in state db: {e:#}");
     }
 }
 

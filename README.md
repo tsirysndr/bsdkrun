@@ -181,8 +181,8 @@ bsdkrun netbsd  -d              # NetBSD-current in the background; prints its i
 bsdkrun freebsd --version 15.1 -d --port 2222:22
 ```
 
-Carries the usual machine options (`-d`, `--persist`, `--version`, `--attach-disk`, `--port`,
-`--cpus`/`--mem`), so per-machine [CoW disk clones](#managing-machines) and
+Carries the usual machine options (`-d`, `--persist`, `-v/--volume`, `--version`, `--attach-disk`,
+`--port`, `--cpus`/`--mem`), so per-machine [CoW disk clones](#managing-machines) and
 `ps`/`logs`/`shell`/`stop` all apply. The firmware is found via `$BSDKRUN_FIRMWARE`, a local
 `images/KRUN_EFI.fd`, or krunkit's Homebrew install (`--firmware` overrides).
 
@@ -307,6 +307,47 @@ console (e.g. the `login:` prompt).
 microVMs from one base image** concurrently without touching it. Pass `--persist` to boot the disk
 in place instead (writes persist; one machine at a time). Linux machines get the same isolation via
 their per-machine virtio-fs clone.
+
+**Persistent volumes (`-v NAME`)** — by default every boot starts from a fresh clone, so guest
+changes are thrown away when the machine exits. To keep them across reboots, name a volume — works
+the same for Linux, FreeBSD and NetBSD:
+
+```sh
+bsdkrun linux   -d -v web alpine            # persistent Linux rootfs (overlayfs)
+bsdkrun freebsd -d -v db                    # persistent FreeBSD disk
+```
+
+Reuse the same `-v NAME` and the machine comes back up with your changes intact. It's a single
+writer at a time (run one machine per volume), and it's mutually exclusive with `--persist` (which
+writes to the base image itself). The mechanism differs by guest, but the behavior is the same:
+
+- **Linux** uses an **overlayfs**: the OCI image stays a shared, read-only *lower* layer and only
+  your changes are written to the volume's *upper* layer — so a volume holds just the diffs (a few
+  hundred KB for a couple of edited files), not a whole rootfs. bsdkrun serves the image as the
+  root, injects a tiny stage-1 init that assembles the overlay and `chroot`s into it, and mounts
+  the image + volume as extra virtio-fs shares. Needs the default virtio-fs (not `--initramfs`,
+  a RAM disk with nothing to persist).
+- **FreeBSD / NetBSD** use an **APFS copy-on-write clone** of the disk image under
+  `<state>/volumes/<NAME>` (instant, and only grows as the guest writes).
+
+Volumes are recorded in the state DB and managed Docker-style:
+
+```sh
+bsdkrun volume ls              # NAME, GUEST, BASE, SIZE (du, CoW-aware), CREATED
+bsdkrun volume rm web          # delete a volume's data (refused if a machine is using it)
+bsdkrun volume rm -f web db    # force removal / multiple names
+```
+
+**Bind-mount host directories (`--mount`, Linux only)** — share a host directory into the guest at
+a path, like `docker run -v`. Repeatable; append `:ro` for read-only:
+
+```sh
+bsdkrun linux --mount ~/project:/src --mount ~/data:/data:ro alpine -- ls /src
+```
+
+Each `--mount HOST:GUEST[:ro]` becomes a virtio-fs share the generated init mounts at `GUEST`
+(the host dir must exist; `GUEST` must be absolute). Reads and writes pass straight through to the
+host, and it composes with `-v` (persistent volume) and every Linux root mode.
 
 How it works — no daemon:
 

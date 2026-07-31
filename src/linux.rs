@@ -127,6 +127,22 @@ pub struct Entrypoint {
     pub workdir: String,
 }
 
+/// A host directory bind-mounted into the guest over virtio-fs (`--mount`).
+pub struct BindMount {
+    /// Absolute host directory to share.
+    pub host: PathBuf,
+    /// Absolute guest mount point.
+    pub guest: String,
+    /// Mount read-only in the guest.
+    pub ro: bool,
+}
+
+/// virtio-fs tag for the i-th `--mount` share (matched between the host-side
+/// `add_virtiofs` and the guest-side `mount` in the generated init).
+pub fn mount_tag(i: usize) -> String {
+    format!("bkm{i}")
+}
+
 /// Combine the image config with any user overrides, following Docker's
 /// entrypoint/cmd rules:
 ///   * `--entrypoint` replaces the image Entrypoint.
@@ -196,6 +212,86 @@ fn add_ip(cmdline: &mut String, net: bool) {
     }
 }
 
+// --- overlayfs volumes (Linux) ----------------------------------------------
+//
+// A persistent volume keeps the base image as a shared, read-only overlay lower
+// and stores only the guest's changes in a writable upper — instead of cloning
+// the whole rootfs. libkrun serves the base image as the root (`/dev/root`); we
+// inject a tiny stage-1 `/init` into it (a virtual overlay file, so the shared
+// image on disk is never touched) that mounts the image again read-only, mounts
+// the volume, assembles an overlayfs, and `switch_root`s into it. Stage-2 (the
+// normal init) and the exec agent live in the volume's upper layer.
+
+/// Guest virtio-fs tags for the overlay lower (image) and upper (volume).
+pub const OVERLAY_LOWER_TAG: &str = "bk_lower";
+pub const OVERLAY_VOL_TAG: &str = "bk_vol";
+/// Path of the injected stage-1 init in the shared root.
+pub const OVERLAY_STAGE1: &str = ".bsdkrun-stage1";
+/// Stage-2 init, provided by the volume's upper layer (so it's in the merged root).
+const OVERLAY_INIT2: &str = "/sbin/bsdkrun-init2";
+
+/// Kernel command line for an overlay-volume boot: boot the shared image root and
+/// run our injected stage-1 init.
+pub fn overlay_cmdline(console: &str, net: bool) -> String {
+    let mut cmdline =
+        format!("console={console} root=/dev/root rootfstype=virtiofs rw init=/{OVERLAY_STAGE1}");
+    add_ip(&mut cmdline, net);
+    cmdline
+}
+
+/// The stage-1 init injected into the shared image root. Assembles the overlay
+/// and switches into it; the merged root then runs stage-2 (`OVERLAY_INIT2`).
+pub fn overlay_stage1_init() -> String {
+    let mut s = String::from("#!/bin/sh\n# bsdkrun overlay stage-1\n");
+    // The image again as the overlay lower, and the volume as upper.
+    s.push_str(&format!(
+        "mount -t virtiofs {OVERLAY_LOWER_TAG} /bk_lower || echo '[bk] lower mount failed'\n"
+    ));
+    s.push_str(&format!(
+        "mount -t virtiofs {OVERLAY_VOL_TAG} /bk_vol || echo '[bk] vol mount failed'\n"
+    ));
+    s.push_str("mkdir -p /bk_vol/upper /bk_vol/work 2>/dev/null\n");
+    s.push_str(
+        "mount -t overlay overlay \
+         -o lowerdir=/bk_lower,upperdir=/bk_vol/upper,workdir=/bk_vol/work /bk_newroot \
+         || echo '[bk] overlay mount failed'\n",
+    );
+    // chroot into the merged root and run the normal init there. (We use chroot,
+    // not switch_root/pivot_root: the real root is virtio-fs, not an initramfs,
+    // and switch_root refuses that. The workload never touches the outer root.)
+    s.push_str(&format!(
+        "exec chroot /bk_newroot {OVERLAY_INIT2} || echo '[bk] chroot failed'\n"
+    ));
+    // Fallback if the overlay couldn't be set up.
+    s.push_str("echo '[bsdkrun] overlay stage-1 failed'\nexec /bin/sh\n");
+    s
+}
+
+/// Prepare a persistent overlay volume on the host: create its `upper`/`work`
+/// dirs and (re)write the stage-2 init + exec agent into the upper layer so they
+/// appear in the merged root. The guest's own changes accumulate in `upper`.
+pub fn prepare_overlay_volume(
+    volume_dir: &Path,
+    ep: &Entrypoint,
+    net: bool,
+    persistent: bool,
+    mounts: &[BindMount],
+) -> Result<()> {
+    let upper = volume_dir.join("upper");
+    std::fs::create_dir_all(volume_dir.join("work"))
+        .with_context(|| format!("creating {}", volume_dir.join("work").display()))?;
+    std::fs::create_dir_all(&upper).with_context(|| format!("creating {}", upper.display()))?;
+    // Stage-2 init is the normal init, run inside the merged (overlay) root.
+    oci::write_rootfs_file(
+        &upper,
+        OVERLAY_INIT2.trim_start_matches('/'),
+        generate_init(ep, net, persistent, mounts).as_bytes(),
+        0o755,
+    )?;
+    crate::agent::inject_linux(&upper)?;
+    Ok(())
+}
+
 /// Prepare a per-machine, writable virtio-fs root: clone the cached rootfs into
 /// the machine's state dir and drop in our generated init at `VIRTIOFS_INIT`.
 ///
@@ -209,6 +305,7 @@ pub fn prepare_virtiofs_root(
     net: bool,
     persistent: bool,
     machine_dir: &Path,
+    mounts: &[BindMount],
 ) -> Result<PathBuf> {
     std::fs::create_dir_all(machine_dir)
         .with_context(|| format!("creating {}", machine_dir.display()))?;
@@ -233,7 +330,7 @@ pub fn prepare_virtiofs_root(
     oci::write_rootfs_file(
         &root,
         VIRTIOFS_INIT.trim_start_matches('/'),
-        generate_init(ep, net, persistent).as_bytes(),
+        generate_init(ep, net, persistent, mounts).as_bytes(),
         0o755,
     )?;
     crate::agent::inject_linux(&root)?;
@@ -252,6 +349,7 @@ pub fn build_initramfs(
     ep: &Entrypoint,
     net: bool,
     persistent: bool,
+    mounts: &[BindMount],
 ) -> Result<PathBuf> {
     let work = std::env::temp_dir().join(format!("bsdkrun-linux-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
@@ -263,7 +361,7 @@ pub fn build_initramfs(
     oci::write_rootfs_file(
         &initstage,
         "init",
-        generate_init(ep, net, persistent).as_bytes(),
+        generate_init(ep, net, persistent, mounts).as_bytes(),
         0o755,
     )?;
     crate::agent::inject_linux(&initstage)?;
@@ -323,7 +421,7 @@ fn concat_files(parts: &[&Path], out: &Path) -> Result<()> {
 /// Generate the `/init` (PID 1) shell script for the initramfs boot: mount the
 /// core pseudo-filesystems, point DNS at gvproxy, run the entrypoint, then power
 /// the VM off cleanly (via magic-sysrq — no shutdown binary needed in the image).
-fn generate_init(ep: &Entrypoint, net: bool, persistent: bool) -> String {
+fn generate_init(ep: &Entrypoint, net: bool, persistent: bool, mounts: &[BindMount]) -> String {
     let mut s = String::from("#!/bin/sh\n# generated by bsdkrun\n");
     s.push_str("mkdir -p /proc /sys /dev 2>/dev/null\n");
     s.push_str("mount -t proc proc /proc 2>/dev/null\n");
@@ -332,6 +430,16 @@ fn generate_init(ep: &Entrypoint, net: bool, persistent: bool) -> String {
     // devpts is required for openpty (used by `exec -t` / `shell` in the agent).
     s.push_str("mkdir -p /dev/pts 2>/dev/null\n");
     s.push_str("mount -t devpts devpts /dev/pts 2>/dev/null\n");
+    // Bind-mounted host directories (`--mount HOST:GUEST[:ro]`), over virtio-fs.
+    for (i, m) in mounts.iter().enumerate() {
+        let g = sh_quote(&m.guest);
+        let opt = if m.ro { " -o ro" } else { "" };
+        s.push_str(&format!("mkdir -p {g} 2>/dev/null\n"));
+        s.push_str(&format!(
+            "mount -t virtiofs{opt} {} {g} || echo '[bsdkrun] mount {g} failed'\n",
+            mount_tag(i)
+        ));
+    }
     // Start the exec agent (TCP; for `exec`/`shell`) in the background.
     s.push_str("[ -x /sbin/bsdkrun-agent ] && /sbin/bsdkrun-agent >/dev/null 2>&1 &\n");
     if net {

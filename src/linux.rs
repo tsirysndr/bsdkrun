@@ -169,13 +169,74 @@ pub fn resolve_entrypoint(
 /// needs no `ip`/`ifconfig` of its own.
 pub fn kernel_cmdline(console: &str, net: bool) -> String {
     let mut cmdline = format!("console={console} rdinit=/init");
+    add_ip(&mut cmdline, net);
+    cmdline
+}
+
+/// Path of our generated init inside a virtio-fs rootfs.
+const VIRTIOFS_INIT: &str = "/.bsdkrun-init";
+
+/// Kernel command line for the virtio-fs boot: mount the shared rootfs (tag
+/// `/dev/root`) read-write and run our own init — bypassing libkrun's `init.krun`
+/// (which only works with the bundled libkrunfw kernel).
+pub fn virtiofs_cmdline(console: &str, net: bool) -> String {
+    let mut cmdline =
+        format!("console={console} root=/dev/root rootfstype=virtiofs rw init={VIRTIOFS_INIT}");
+    add_ip(&mut cmdline, net);
+    cmdline
+}
+
+/// Append kernel-level IP autoconfig (so the image needs no `ip`/`ifconfig`).
+fn add_ip(cmdline: &mut String, net: bool) {
     if net {
         // ip=client::gw:netmask:hostname:device:autoconf:dns
         cmdline.push_str(&format!(
             " ip={GUEST_IP}::{GATEWAY_IP}:{NETMASK}:bsdkrun:eth0:off:{GATEWAY_IP}"
         ));
     }
-    cmdline
+}
+
+/// Prepare a per-machine, writable virtio-fs root: clone the cached rootfs into
+/// the machine's state dir and drop in our generated init at `VIRTIOFS_INIT`.
+///
+/// `cp -Rc` uses APFS `clonefile(2)` where available — an instant copy-on-write
+/// clone that costs no disk until the guest writes — so the shared image cache
+/// stays pristine and machines are isolated (unlike sharing one rw dir). It
+/// still serves the rootfs from disk, so there's no initramfs RAM load.
+pub fn prepare_virtiofs_root(
+    cached_rootfs: &Path,
+    ep: &Entrypoint,
+    net: bool,
+    persistent: bool,
+    machine_dir: &Path,
+) -> Result<PathBuf> {
+    std::fs::create_dir_all(machine_dir)
+        .with_context(|| format!("creating {}", machine_dir.display()))?;
+    let root = machine_dir.join("rootfs");
+    let _ = std::fs::remove_dir_all(&root);
+
+    // Clone via clonefile(2) on APFS; fall back to a plain recursive copy.
+    if run(
+        Command::new("cp").arg("-Rc").arg(cached_rootfs).arg(&root),
+        "cp (clone rootfs)",
+    )
+    .is_err()
+    {
+        let _ = std::fs::remove_dir_all(&root);
+        run(
+            Command::new("cp").arg("-R").arg(cached_rootfs).arg(&root),
+            "cp (copy rootfs)",
+        )?;
+    }
+
+    // Our init handles the same setup as the initramfs path (mounts, net, exec).
+    oci::write_rootfs_file(
+        &root,
+        VIRTIOFS_INIT.trim_start_matches('/'),
+        generate_init(ep, net, persistent).as_bytes(),
+        0o755,
+    )?;
+    Ok(root)
 }
 
 /// Build the initramfs: a cpio of the extracted rootfs, with a generated `/init`

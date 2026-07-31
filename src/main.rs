@@ -577,26 +577,26 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
     // otherwise the workload runs once and the machine powers off when it ends.
     let persistent = args.detach && args.command.is_empty();
 
-    // Build the initramfs before forking so failures surface synchronously.
-    let initramfs = if args.virtiofs {
-        None
+    // Prepare the rootfs before forking so failures surface synchronously:
+    // either an initramfs (default) or a cloned, writable virtio-fs root.
+    let (initramfs, virtiofs_root) = if args.virtiofs {
+        let root = linux::prepare_virtiofs_root(&image.rootfs, &ep, net_up, persistent, &vdir)?;
+        (None, Some(root))
     } else {
         linux::warn_initramfs_memory(&image.rootfs, args.vm.mem);
-        Some(linux::build_initramfs(
-            &image.rootfs,
-            &ep,
-            net_up,
-            persistent,
-        )?)
+        (
+            Some(linux::build_initramfs(&image.rootfs, &ep, net_up, persistent)?),
+            None,
+        )
     };
 
     if args.detach {
         return run_linux_detached(
             &args,
             &kernel,
-            &image,
             &ep,
             initramfs.as_deref(),
+            virtiofs_root.as_deref(),
             net_up,
             &machine_id,
             &vdir,
@@ -632,9 +632,9 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
         &ctx,
         &args,
         &kernel,
-        &image,
         &ep,
         initramfs.as_deref(),
+        virtiofs_root.as_deref(),
         net_up,
     )?;
 
@@ -655,43 +655,27 @@ fn configure_linux_ctx(
     ctx: &Ctx,
     args: &LinuxArgs,
     kernel: &std::path::Path,
-    image: &oci::Image,
-    ep: &linux::Entrypoint,
+    _ep: &linux::Entrypoint,
     initramfs: Option<&std::path::Path>,
+    virtiofs_root: Option<&std::path::Path>,
     net_up: bool,
 ) -> Result<Option<Gvproxy>> {
     let gvproxy = setup_networking(ctx, &args.net)?;
     if args.virtiofs {
-        ctx.set_root(&image.rootfs)
+        // Share the per-machine (cloned) rootfs over virtio-fs and boot our own
+        // init from it — we don't use libkrun's init.krun (that's for the bundled
+        // libkrunfw kernel), so no set_exec/set_workdir here (our init handles it).
+        let root = virtiofs_root.expect("virtio-fs root prepared for --virtiofs boot");
+        ctx.set_root(root)
             .context("configuring virtio-fs root (needs a CONFIG_VIRTIO_FS=y kernel)")?;
-        if !ep.workdir.is_empty() {
-            ctx.set_workdir(&ep.workdir)?;
-        }
-        ctx.set_exec(&ep.argv[0], &ep.argv, &ep.env)?;
-        // libkrun serves the virtio-fs root under the tag `/dev/root` and injects
-        // its own `/init.krun` (a virtual file in the virtiofs driver) that runs
-        // the `set_exec` program. We must spell that out on the cmdline — libkrun
-        // does not add it when a custom kernel cmdline is supplied.
-        ctx.set_kernel(
-            kernel,
-            krun::KRUN_KERNEL_FORMAT_RAW,
-            None,
-            &format!(
-                "console={} root=/dev/root rootfstype=virtiofs rw init=/init.krun",
-                args.console
-            ),
-        )
-        .context("configuring kernel")?;
+        let cmdline = linux::virtiofs_cmdline(&args.console, net_up);
+        ctx.set_kernel(kernel, krun::KRUN_KERNEL_FORMAT_RAW, None, &cmdline)
+            .context("configuring kernel")?;
     } else {
         let initramfs = initramfs.expect("initramfs built for non-virtiofs boot");
         let cmdline = linux::kernel_cmdline(&args.console, net_up);
-        ctx.set_kernel(
-            kernel,
-            krun::KRUN_KERNEL_FORMAT_RAW,
-            Some(initramfs),
-            &cmdline,
-        )
-        .context("configuring kernel")?;
+        ctx.set_kernel(kernel, krun::KRUN_KERNEL_FORMAT_RAW, Some(initramfs), &cmdline)
+            .context("configuring kernel")?;
     }
     Ok(gvproxy)
 }
@@ -713,9 +697,9 @@ fn finish_recording(ctx: Ctx, gvproxy: Option<Gvproxy>, machine_id: String) -> R
 fn run_linux_detached(
     args: &LinuxArgs,
     kernel: &std::path::Path,
-    image: &oci::Image,
     ep: &linux::Entrypoint,
     initramfs: Option<&std::path::Path>,
+    virtiofs_root: Option<&std::path::Path>,
     net_up: bool,
     machine_id: &str,
     vdir: &std::path::Path,
@@ -760,15 +744,23 @@ fn run_linux_detached(
         std::mem::forget(logf); // fd 2 now owns it
     }
 
-    let code =
-        match run_detached_child(args, kernel, image, ep, initramfs, net_up, machine_id, vdir) {
-            Ok(code) => code,
-            Err(e) => {
-                tracing::error!("detached machine failed: {e:#}");
-                db::update_machine_status(machine_id, "exited", Some(1));
-                1
-            }
-        };
+    let code = match run_detached_child(
+        args,
+        kernel,
+        ep,
+        initramfs,
+        virtiofs_root,
+        net_up,
+        machine_id,
+        vdir,
+    ) {
+        Ok(code) => code,
+        Err(e) => {
+            tracing::error!("detached machine failed: {e:#}");
+            db::update_machine_status(machine_id, "exited", Some(1));
+            1
+        }
+    };
     unsafe { libc::_exit(code) };
 }
 
@@ -778,9 +770,9 @@ fn run_linux_detached(
 fn run_detached_child(
     args: &LinuxArgs,
     kernel: &std::path::Path,
-    image: &oci::Image,
     ep: &linux::Entrypoint,
     initramfs: Option<&std::path::Path>,
+    virtiofs_root: Option<&std::path::Path>,
     net_up: bool,
     machine_id: &str,
     vdir: &std::path::Path,
@@ -802,7 +794,8 @@ fn run_detached_child(
     let ctx = Ctx::new()?;
     ctx.set_vm_config(args.vm.cpus, args.vm.mem)?;
     let _ = console_fd.as_raw_fd(); // (fd kept alive by dup2 above)
-    let gvproxy = configure_linux_ctx(&ctx, args, kernel, image, ep, initramfs, net_up)?;
+    let gvproxy =
+        configure_linux_ctx(&ctx, args, kernel, ep, initramfs, virtiofs_root, net_up)?;
 
     info!(id = %machine_id, image = %args.image, "detached Linux machine booting");
     let code = ctx.start_enter().context("starting machine")?;

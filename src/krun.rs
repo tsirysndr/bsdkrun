@@ -245,7 +245,9 @@ impl Ctx {
     }
 
     /// Set the working directory (relative to the virtio-fs root) for the
-    /// executable started by libkrun's init.
+    /// executable started by libkrun's init. (Unused now that we run our own
+    /// init instead of libkrun's `init.krun`; kept as a valid binding.)
+    #[allow(dead_code)]
     pub fn set_workdir(&self, workdir: &str) -> anyhow::Result<()> {
         let w = cstr(workdir)?;
         check(
@@ -257,6 +259,8 @@ impl Ctx {
 
     /// Set the executable (relative to the virtio-fs root), its arguments, and
     /// its environment, for libkrun's init to exec as the guest's entrypoint.
+    /// (Unused now that we run our own init; kept as a valid binding.)
+    #[allow(dead_code)]
     pub fn set_exec(
         &self,
         exec_path: &str,

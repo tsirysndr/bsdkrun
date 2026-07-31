@@ -19,8 +19,16 @@ permissions:
 
 jobs:
   build:
-    name: netbsd-aarch64
+    name: netbsd-${{ matrix.slug }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            slug: aarch64
+          - arch: x86-64
+            slug: x86_64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,12 +36,12 @@ jobs:
           # Build the tag's code.
           ref: ${{ inputs.tag }}
 
-      - name: Start NetBSD aarch64 VM
+      - name: Start NetBSD ${{ matrix.slug }} VM
         uses: cross-platform-actions/action@v1.3.0
         with:
           operating_system: netbsd
           version: "10.1"
-          architecture: arm64
+          architecture: ${{ matrix.arch }}
           shell: bash
           memory: 8G
           cpu_count: 4
@@ -49,19 +57,20 @@ jobs:
           cd agent
           cargo build --release --locked
           mkdir -p ../dist
-          cp "$CARGO_TARGET_DIR/release/bsdkrun-agent" ../dist/bsdkrun-agent.netbsd-aarch64
+          cp "$CARGO_TARGET_DIR/release/bsdkrun-agent" ../dist/bsdkrun-agent.netbsd-${{ matrix.slug }}
 
       - name: Checksums
         shell: bash
         run: |
           set -euo pipefail
-          cd dist && shasum -a 256 bsdkrun-agent.netbsd-aarch64 > bsdkrun-agent.netbsd-aarch64.sha256
+          cd dist
+          shasum -a 256 bsdkrun-agent.netbsd-${{ matrix.slug }} > bsdkrun-agent.netbsd-${{ matrix.slug }}.sha256
           ls -lh .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: netbsd-aarch64
+          name: netbsd-${{ matrix.slug }}
           path: dist/*
           if-no-files-found: error
 

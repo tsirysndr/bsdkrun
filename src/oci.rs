@@ -56,13 +56,14 @@ pub fn pull(reference: &str) -> Result<Image> {
 
     let token = get_token(&r)?;
 
-    // Resolve the reference to a concrete linux/arm64 image manifest.
+    // Resolve the reference to a concrete image manifest for the host arch.
+    let oci_arch = crate::host::Arch::current()?.oci();
     let manifest = get_manifest(&r, &r.reference, &token)?;
     let image_manifest = if is_index(&manifest) {
-        let digest = select_arm64(&manifest).with_context(|| {
-            format!("{reference} has no linux/arm64 image in its manifest index")
+        let digest = select_platform(&manifest, oci_arch).with_context(|| {
+            format!("{reference} has no linux/{oci_arch} image in its manifest index")
         })?;
-        info!(%digest, "selected linux/arm64 manifest");
+        info!(%digest, arch = oci_arch, "selected manifest");
         get_manifest(&r, &digest, &token)?
     } else {
         manifest
@@ -364,25 +365,25 @@ fn is_index(manifest: &Value) -> bool {
     mt.contains("manifest.list") || mt.contains("image.index") || manifest["manifests"].is_array()
 }
 
-/// From a multi-arch index, pick the linux/arm64 image manifest digest,
-/// preferring the `v8` variant when several arm64 entries exist.
-fn select_arm64(index: &Value) -> Result<String> {
+/// From a multi-arch index, pick the `linux/<arch>` image manifest digest. For
+/// arm64, prefer the `v8` variant when several entries exist.
+fn select_platform(index: &Value, arch: &str) -> Result<String> {
     let manifests = index["manifests"]
         .as_array()
         .context("manifest index has no manifests array")?;
-    let arm64 = manifests.iter().filter(|m| {
+    let matches = manifests.iter().filter(|m| {
         let p = &m["platform"];
-        p["architecture"].as_str() == Some("arm64") && p["os"].as_str() == Some("linux")
+        p["architecture"].as_str() == Some(arch) && p["os"].as_str() == Some("linux")
     });
-    // Prefer variant v8 (or unspecified) over odd variants.
-    let chosen = arm64
+    // Prefer variant v8 (arm64) or unspecified over odd variants.
+    let chosen = matches
         .clone()
         .find(|m| matches!(m["platform"]["variant"].as_str(), Some("v8") | None))
-        .or_else(|| arm64.clone().next());
+        .or_else(|| matches.clone().next());
     chosen
         .and_then(|m| m["digest"].as_str())
         .map(|s| s.to_string())
-        .context("no linux/arm64 manifest in index")
+        .with_context(|| format!("no linux/{arch} manifest in index"))
 }
 
 /// Parse the image config JSON into our `ImageConfig`.

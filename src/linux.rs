@@ -25,14 +25,26 @@ use crate::oci::{self, ImageConfig};
 const KERNEL_RELEASE_BASE: &str = "https://github.com/tsirysndr/vmlinux-builder/releases/download";
 pub const DEFAULT_KERNEL_VERSION: &str = "7.1.5";
 
-/// Asset filename for a given vmlinux-builder release.
-fn kernel_file(version: &str) -> String {
-    format!("vmlinux-{version}.aarch64")
+/// Asset filename for a given vmlinux-builder release + host arch.
+fn kernel_file(version: &str, arch: crate::host::Arch) -> String {
+    format!("vmlinux-{version}.{}", arch.slug())
 }
 
-/// Download URL for a given vmlinux-builder release.
-fn kernel_url(version: &str) -> String {
-    format!("{KERNEL_RELEASE_BASE}/{version}/{}", kernel_file(version))
+/// Download URL for a given vmlinux-builder release + host arch.
+fn kernel_url(version: &str, arch: crate::host::Arch) -> String {
+    format!(
+        "{KERNEL_RELEASE_BASE}/{version}/{}",
+        kernel_file(version, arch)
+    )
+}
+
+/// libkrun kernel format for the host arch: aarch64 boots a raw `Image`, x86_64
+/// loads the `vmlinux` ELF directly.
+pub fn kernel_format() -> u32 {
+    match crate::host::Arch::current() {
+        Ok(crate::host::Arch::X86_64) => crate::krun::KRUN_KERNEL_FORMAT_ELF,
+        _ => crate::krun::KRUN_KERNEL_FORMAT_RAW,
+    }
 }
 
 /// gvproxy's fixed guest lease + gateway (see [`crate::net`]).
@@ -47,12 +59,13 @@ const NETMASK: &str = "255.255.255.0";
 /// by `version` (downloaded + cached on first use). If the resolved file is an
 /// ELF, it's flattened to an `Image` and cached.
 pub fn ensure_kernel(override_path: Option<PathBuf>, version: &str) -> Result<PathBuf> {
+    let arch = crate::host::Arch::current()?;
     let cache = cache_dir()?;
     std::fs::create_dir_all(&cache)
         .with_context(|| format!("creating cache dir {}", cache.display()))?;
 
     // Resolve the source kernel (override or downloaded prebuilt). The cache
-    // filename embeds the version, so different releases coexist.
+    // filename embeds the version + arch, so releases/arches coexist.
     let source = match override_path {
         Some(p) => {
             if !p.exists() {
@@ -61,13 +74,13 @@ pub fn ensure_kernel(override_path: Option<PathBuf>, version: &str) -> Result<Pa
             p
         }
         None => {
-            let kernel = cache.join(kernel_file(version));
+            let kernel = cache.join(kernel_file(version, arch));
             if kernel.exists() {
                 info!(path = %kernel.display(), "using cached kernel");
             } else {
-                let url = kernel_url(version);
+                let url = kernel_url(version, arch);
                 info!(%url, "downloading kernel…");
-                let tmp = cache.join(format!("{}.partial", kernel_file(version)));
+                let tmp = cache.join(format!("{}.partial", kernel_file(version, arch)));
                 let _ = std::fs::remove_file(&tmp);
                 run(
                     Command::new("curl")
@@ -78,7 +91,9 @@ pub fn ensure_kernel(override_path: Option<PathBuf>, version: &str) -> Result<Pa
                 )
                 .with_context(|| {
                     format!(
-                        "downloading kernel {version} — is that vmlinux-builder release published?"
+                        "downloading kernel {version} ({}) — is that vmlinux-builder release \
+                         published for this arch?",
+                        arch.slug()
                     )
                 })?;
                 std::fs::rename(&tmp, &kernel).context("moving kernel into cache")?;
@@ -87,8 +102,11 @@ pub fn ensure_kernel(override_path: Option<PathBuf>, version: &str) -> Result<Pa
         }
     };
 
-    // If it's already a raw Image, use it directly; otherwise flatten the ELF to
-    // a cached Image (keyed by the source's name so overrides don't collide).
+    // x86_64 boots the vmlinux ELF directly (KRUN_KERNEL_FORMAT_ELF) — no
+    // flattening. aarch64 needs a raw `Image`, so flatten the ELF (cached).
+    if arch != crate::host::Arch::Aarch64 {
+        return Ok(source);
+    }
     let bytes = std::fs::read(&source).with_context(|| format!("reading {}", source.display()))?;
     if crate::elf::is_arm64_image(&bytes) {
         return Ok(source);
@@ -312,19 +330,8 @@ pub fn prepare_virtiofs_root(
     let root = machine_dir.join("rootfs");
     let _ = std::fs::remove_dir_all(&root);
 
-    // Clone via clonefile(2) on APFS; fall back to a plain recursive copy.
-    if run(
-        Command::new("cp").arg("-Rc").arg(cached_rootfs).arg(&root),
-        "cp (clone rootfs)",
-    )
-    .is_err()
-    {
-        let _ = std::fs::remove_dir_all(&root);
-        run(
-            Command::new("cp").arg("-R").arg(cached_rootfs).arg(&root),
-            "cp (copy rootfs)",
-        )?;
-    }
+    // Copy-on-write clone (APFS clonefile / Linux reflink); plain-copy fallback.
+    crate::host::cow_copy(cached_rootfs, &root, true)?;
 
     // Our init handles the same setup as the initramfs path (mounts, net, exec).
     oci::write_rootfs_file(

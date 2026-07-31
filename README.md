@@ -1,7 +1,8 @@
 # bsdkrun
 
-A Firecracker-style **microVM launcher for BSD and Linux guests on macOS Apple Silicon**, built on
-[libkrun](https://github.com/containers/libkrun) (which drives Apple's Hypervisor.framework).
+A Firecracker-style **microVM launcher for BSD and Linux guests on macOS and Linux**, built on
+[libkrun](https://github.com/containers/libkrun) (which drives Apple's Hypervisor.framework on
+macOS and KVM on Linux).
 
 `bsdkrun` is a thin, purpose-built CLI: it wraps libkrun's C ABI in a handful of safe Rust
 bindings and boots a guest three ways — from a **UEFI firmware** image (the guest's own EFI loader
@@ -9,8 +10,11 @@ boots a normal disk), from a **direct kernel + FDT** (no bootloader), or straigh
 image** (`bsdkrun linux alpine` pulls it from any registry, extracts the rootfs, and boots it like
 `docker run`). It is deliberately small: one FFI module, one CLI, no daemon.
 
-> **Platform:** macOS on Apple Silicon (arm64) only. libkrun's macOS backend is
-> Hypervisor.framework, and the guests we target are arm64 BSD and Linux images.
+> **Platforms:** **macOS on Apple Silicon** (Hypervisor.framework) and **Linux on amd64 or arm64**
+> (KVM). A hardware-virtualized guest runs the host's CPU arch, so bsdkrun detects the arch and
+> pulls the matching kernel, OCI image, and agent automatically. macOS is arm64-only; Linux works
+> on both x86_64 and aarch64. _(Linux support is new — see the [KVM e2e
+> CI](.github/workflows/e2e-linux.yml); BSD guests under KVM are still experimental.)_
 
 <p align="center">
   <img src=".github/assets/preview.png" alt="FreeBSD 15 arm64 booting under bsdkrun on macOS" width="800">
@@ -87,7 +91,10 @@ To hack on bsdkrun instead, build from source — see [Prerequisites](#prerequis
 
 ## Prerequisites
 
-### 1. Install libkrun (Homebrew)
+You need **libkrun**, a **Rust toolchain** (`rustup default stable`; edition 2021), and access to
+the hypervisor. The hypervisor part differs by OS.
+
+### macOS (Apple Silicon)
 
 libkrun, `krunvm`, and `krunkit` live in the **`libkrun/krun`** tap (redirected from the old
 `slp/krun`). Homebrew 6.x requires you to trust a third-party tap before it will run its install
@@ -103,44 +110,53 @@ brew install libkrun krunkit
 - **`krunkit`** ships the EDK2 UEFI firmware we use for EFI boot
   (`.../share/krunkit/KRUN_EFI.silent.fd`).
 
-### 2. A Rust toolchain
+**The Hypervisor entitlement (the part that bites everyone).** A binary that calls libkrun must be
+codesigned with `com.apple.security.hypervisor` (plus `com.apple.security.cs.disable-library-validation`
+so it can load the Homebrew dylibs). Without it, `krun_create_ctx`/`krun_set_vm_config` succeed but
+`krun_start_enter` fails at VM creation with `Internal(Vm(VmSetup(VmCreate)))` / **errno 22
+(EINVAL)**. Worse, **every `cargo build` strips the codesignature**, so you must re-sign after each
+build — the [`Makefile`](./Makefile) does this for you (entitlements in
+[`bsdkrun.entitlements`](./bsdkrun.entitlements)).
+
+### Linux (amd64 or arm64, KVM)
+
+libkrun uses **KVM** on Linux — no codesigning, but you need **`/dev/kvm`** access (be in the `kvm`
+group, or run under `sudo`). Ubuntu has no libkrun package, so build it (and its bundled kernel,
+libkrunfw) from source — see the [KVM e2e workflow](.github/workflows/e2e-linux.yml) for the exact
+steps:
 
 ```sh
-rustup default stable   # or any recent stable; project is edition 2021
+git clone --depth 1 https://github.com/containers/libkrunfw && make -C libkrunfw && sudo make -C libkrunfw install
+git clone --depth 1 https://github.com/containers/libkrun   && make -C libkrun   && sudo make -C libkrun   install
+sudo ldconfig
 ```
 
-### 3. The Hypervisor entitlement (this is the part that bites everyone)
+`build.rs` finds libkrun via `pkg-config libkrun` (or the standard lib dirs; override with
+`LIBKRUN_PREFIX=/path`). There's nothing to sign — `make build` skips the codesign step on Linux.
+Some BSD image-prep steps (`losetup`/`mount`) need root, and bsdkrun runs them with `sudo`
+automatically when needed.
 
-**A binary that calls libkrun must be codesigned with the `com.apple.security.hypervisor`
-entitlement** (plus `com.apple.security.cs.disable-library-validation` so it can load the
-Homebrew dylibs). Without it:
-
-- `krun_create_ctx` and `krun_set_vm_config` **succeed** (they never touch the hypervisor), so
-  everything looks fine…
-- …until `krun_start_enter`, which fails at VM creation with
-  `Internal(Vm(VmSetup(VmCreate)))` / **errno 22 (EINVAL)**.
-
-Worse: **every `cargo build` strips the codesignature**, so you must re-sign after each build.
-The [`Makefile`](./Makefile) handles this for you (see below). The entitlements live in
-[`bsdkrun.entitlements`](./bsdkrun.entitlements).
+> BSD guests under KVM are still **experimental**; the `linux` (OCI) path is what the e2e CI
+> exercises on both arches.
 
 ---
 
 ## Build
 
 ```sh
-make build      # cargo build (debug) + codesign with the hypervisor entitlement
-make release    # cargo build --release + codesign
+make build      # cargo build (debug)  [+ codesign on macOS]
+make release    # cargo build --release [+ codesign on macOS]
 ```
 
-`make run ARGS="..."` builds, signs, and runs in one step.
+`make run ARGS="..."` builds and runs in one step.
 
-> ⚠️ **Don't run `cargo build` and then the binary directly** — the binary will be unsigned and
-> will fail at boot with errno 22. Always go through `make`, or re-run `make sign` yourself after
-> a bare `cargo build`.
+> ⚠️ **macOS: don't run `cargo build` then the binary directly** — it'll be unsigned and fail at
+> boot with errno 22. Go through `make`, or re-run `make sign` after a bare `cargo build`. On Linux
+> there's nothing to sign, so `cargo build` is fine (the `make` sign steps are no-ops there).
 
-The [`build.rs`](./build.rs) locates libkrun via `brew --prefix libkrun` (override with
-`LIBKRUN_PREFIX=/path`) and embeds an rpath so the versioned dylib resolves at runtime.
+The [`build.rs`](./build.rs) locates libkrun via `brew --prefix libkrun` (macOS) or `pkg-config`
+(Linux), override with `LIBKRUN_PREFIX=/path`, and embeds an rpath so the shared library resolves
+at runtime.
 
 ---
 

@@ -14,6 +14,7 @@ mod console;
 mod db;
 mod elf;
 mod fetch;
+mod host;
 mod id;
 mod krun;
 mod linux;
@@ -941,22 +942,10 @@ fn volume_dir(name: &str) -> Result<PathBuf> {
     Ok(db::volumes_dir()?.join(name))
 }
 
-/// Copy `src` to `dst` using an APFS copy-on-write clone (`cp -c`), falling back
-/// to a plain copy on filesystems without `clonefile(2)`.
+/// Copy `src` to `dst` as a copy-on-write clone where the filesystem supports it
+/// (APFS on macOS, reflink on Linux), falling back to a plain copy.
 fn clone_cow_file(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
-    if fetch::run(
-        std::process::Command::new("cp").arg("-c").arg(src).arg(dst),
-        "cp (clone disk)",
-    )
-    .is_err()
-    {
-        let _ = std::fs::remove_file(dst);
-        fetch::run(
-            std::process::Command::new("cp").arg(src).arg(dst),
-            "cp (copy disk)",
-        )?;
-    }
-    Ok(())
+    host::cow_copy(src, dst, false)
 }
 
 /// Run a machine either in the foreground (records + attaches to this terminal)
@@ -1030,8 +1019,11 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
     let volume = args.volume.as_deref().map(volume_dir).transpose()?;
 
     // Host directory bind mounts (`--mount HOST:GUEST[:ro]`), shared via virtio-fs.
-    let mounts: Vec<linux::BindMount> =
-        args.mounts.iter().map(|s| parse_mount(s)).collect::<Result<_>>()?;
+    let mounts: Vec<linux::BindMount> = args
+        .mounts
+        .iter()
+        .map(|s| parse_mount(s))
+        .collect::<Result<_>>()?;
 
     // Decide up front whether networking will come up, so the baked-in initramfs
     // `/init` + kernel `ip=` match what `setup_networking` will actually do.
@@ -1158,19 +1150,19 @@ fn configure_linux_ctx(
             ctx.add_virtiofs(linux::OVERLAY_VOL_TAG, volume)
                 .context("sharing overlay upper (volume)")?;
             let cmdline = linux::overlay_cmdline(&args.console, net_up);
-            ctx.set_kernel(kernel, krun::KRUN_KERNEL_FORMAT_RAW, None, &cmdline)
+            ctx.set_kernel(kernel, linux::kernel_format(), None, &cmdline)
                 .context("configuring kernel")?;
         }
         LinuxRoot::Virtiofs(dir) => {
             ctx.set_root(dir)
                 .context("configuring virtio-fs root (needs a CONFIG_VIRTIO_FS=y kernel)")?;
             let cmdline = linux::virtiofs_cmdline(&args.console, net_up);
-            ctx.set_kernel(kernel, krun::KRUN_KERNEL_FORMAT_RAW, None, &cmdline)
+            ctx.set_kernel(kernel, linux::kernel_format(), None, &cmdline)
                 .context("configuring kernel")?;
         }
         LinuxRoot::Initramfs(img) => {
             let cmdline = linux::kernel_cmdline(&args.console, net_up);
-            ctx.set_kernel(kernel, krun::KRUN_KERNEL_FORMAT_RAW, Some(img), &cmdline)
+            ctx.set_kernel(kernel, linux::kernel_format(), Some(img), &cmdline)
                 .context("configuring kernel")?;
         }
     }
@@ -1557,6 +1549,8 @@ fn is_bsd(kind: &str) -> bool {
 /// Add a guest-specific hint to an agent connection/exec failure.
 fn agent_error(kind: &str, e: anyhow::Error) -> anyhow::Error {
     if is_bsd(kind) {
+        // Guest arch == host arch under KVM/HVF.
+        let arch = host::Arch::current().unwrap_or(host::Arch::Aarch64);
         anyhow::anyhow!(
             "{e}\n\nBSD guests don't run the exec agent automatically. Download the agent for \
              your guest from the bsdkrun GitHub release:\n  \
@@ -1564,8 +1558,8 @@ fn agent_error(kind: &str, e: anyhow::Error) -> anyhow::Error {
              NetBSD:  {}\n\
              then copy it into the running microVM and start it (it listens on TCP port {}): \
              `./bsdkrun-agent &`. bsdkrun forwards a host port to it automatically.",
-            agent::asset_url(agent::Platform::Freebsd),
-            agent::asset_url(agent::Platform::Netbsd),
+            agent::asset_url(host::GuestOs::Freebsd, arch),
+            agent::asset_url(host::GuestOs::Netbsd, arch),
             agent::GUEST_PORT,
         )
     } else {

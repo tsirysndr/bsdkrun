@@ -90,9 +90,15 @@ struct LinuxArgs {
     #[arg(value_name = "IMAGE")]
     image: String,
 
-    /// Kernel to boot (default: a prebuilt aarch64 vmlinux, downloaded + cached).
+    /// Kernel to boot (a path to an ELF vmlinux or raw arm64 Image). Overrides
+    /// `--kernel-version`.
     #[arg(long)]
     kernel: Option<PathBuf>,
+
+    /// vmlinux-builder release to download + boot (ignored if `--kernel` is
+    /// given). See https://github.com/tsirysndr/vmlinux-builder/releases.
+    #[arg(long, default_value = linux::DEFAULT_KERNEL_VERSION)]
+    kernel_version: String,
 
     /// Share the extracted rootfs via virtio-fs instead of packing an initramfs.
     /// Requires a guest kernel built with CONFIG_FUSE_FS=y / virtio-fs.
@@ -485,7 +491,7 @@ fn boot_firmware(args: FirmwareArgs) -> Result<()> {
 
 fn boot_linux(args: LinuxArgs) -> Result<()> {
     // Prepare everything that can fail before we touch the terminal/hypervisor.
-    let kernel = linux::ensure_kernel(args.kernel.clone())?;
+    let kernel = linux::ensure_kernel(args.kernel.clone(), &args.kernel_version)?;
     let image = oci::pull(&args.image)?;
     let ep = linux::resolve_entrypoint(&image.config, args.entrypoint.as_deref(), &args.command);
     info!(argv = ?ep.argv, "resolved entrypoint");

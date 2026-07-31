@@ -21,10 +21,19 @@ use tracing::{info, warn};
 use crate::fetch::{cache_dir, run};
 use crate::oci::{self, ImageConfig};
 
-/// Prebuilt aarch64 kernel used when the user doesn't pass `--kernel`.
-const KERNEL_URL: &str =
-    "https://github.com/tsirysndr/vmlinux-builder/releases/download/7.0/vmlinux-7.0.aarch64";
-const KERNEL_FILE: &str = "vmlinux-7.0.aarch64";
+/// Where the prebuilt aarch64 kernels are published, and the default release.
+const KERNEL_RELEASE_BASE: &str = "https://github.com/tsirysndr/vmlinux-builder/releases/download";
+pub const DEFAULT_KERNEL_VERSION: &str = "7.1.5";
+
+/// Asset filename for a given vmlinux-builder release.
+fn kernel_file(version: &str) -> String {
+    format!("vmlinux-{version}.aarch64")
+}
+
+/// Download URL for a given vmlinux-builder release.
+fn kernel_url(version: &str) -> String {
+    format!("{KERNEL_RELEASE_BASE}/{version}/{}", kernel_file(version))
+}
 
 /// gvproxy's fixed guest lease + gateway (see [`crate::net`]).
 const GUEST_IP: &str = "192.168.127.2";
@@ -34,14 +43,16 @@ const NETMASK: &str = "255.255.255.0";
 /// Ensure a bootable kernel is available and return the path to a raw arm64
 /// `Image` (libkrun's aarch64 loader needs `Image`, not a `vmlinux` ELF).
 ///
-/// Uses the `--kernel` override or the cached prebuilt (downloaded on first
-/// use); if that file is an ELF, it's flattened to an `Image` and cached.
-pub fn ensure_kernel(override_path: Option<PathBuf>) -> Result<PathBuf> {
+/// Uses the `--kernel` override, or the prebuilt vmlinux-builder release named
+/// by `version` (downloaded + cached on first use). If the resolved file is an
+/// ELF, it's flattened to an `Image` and cached.
+pub fn ensure_kernel(override_path: Option<PathBuf>, version: &str) -> Result<PathBuf> {
     let cache = cache_dir()?;
     std::fs::create_dir_all(&cache)
         .with_context(|| format!("creating cache dir {}", cache.display()))?;
 
-    // Resolve the source kernel (override or downloaded prebuilt).
+    // Resolve the source kernel (override or downloaded prebuilt). The cache
+    // filename embeds the version, so different releases coexist.
     let source = match override_path {
         Some(p) => {
             if !p.exists() {
@@ -50,20 +61,26 @@ pub fn ensure_kernel(override_path: Option<PathBuf>) -> Result<PathBuf> {
             p
         }
         None => {
-            let kernel = cache.join(KERNEL_FILE);
+            let kernel = cache.join(kernel_file(version));
             if kernel.exists() {
                 info!(path = %kernel.display(), "using cached kernel");
             } else {
-                info!(url = KERNEL_URL, "downloading kernel…");
-                let tmp = cache.join(format!("{KERNEL_FILE}.partial"));
+                let url = kernel_url(version);
+                info!(%url, "downloading kernel…");
+                let tmp = cache.join(format!("{}.partial", kernel_file(version)));
                 let _ = std::fs::remove_file(&tmp);
                 run(
                     Command::new("curl")
                         .args(["-L", "--fail", "--progress-bar", "-o"])
                         .arg(&tmp)
-                        .arg(KERNEL_URL),
+                        .arg(&url),
                     "curl (download kernel)",
-                )?;
+                )
+                .with_context(|| {
+                    format!(
+                        "downloading kernel {version} — is that vmlinux-builder release published?"
+                    )
+                })?;
                 std::fs::rename(&tmp, &kernel).context("moving kernel into cache")?;
             }
             kernel
@@ -248,10 +265,25 @@ fn generate_init(ep: &Entrypoint, net: bool) -> String {
     if !ep.workdir.is_empty() {
         s.push_str(&format!("cd {} 2>/dev/null\n", sh_quote(&ep.workdir)));
     }
-    // Run (not exec) so control returns here for a clean power-off.
+    // Run the workload in its OWN session with the console as controlling
+    // terminal, so Ctrl-C and job control actually reach it. Without this the
+    // program shares PID 1's session — which has no controlling tty — so the
+    // console's INTR char (^C) has no foreground process group to signal, and
+    // the shell reports "can't access tty; job control turned off".
+    //
+    // `setsid -c` acquires the controlling tty. On util-linux `-w` makes setsid
+    // wait for the child (we probe for it with a harmless `true`); on busybox,
+    // `setsid -c` exec's the program in place, so it waits inherently. If setsid
+    // is absent we fall back to a plain run (no job control, but it still runs).
     let cmd: Vec<String> = ep.argv.iter().map(|a| sh_quote(a)).collect();
-    s.push_str(&cmd.join(" "));
-    s.push('\n');
+    s.push_str(&format!("set -- {}\n", cmd.join(" ")));
+    s.push_str(
+        "if command -v setsid >/dev/null 2>&1; then\n\
+        \tif setsid -w -c true 2>/dev/null; then setsid -w -c \"$@\"; else setsid -c \"$@\"; fi\n\
+        else\n\
+        \t\"$@\"\n\
+        fi\n",
+    );
     s.push_str("code=$?\n");
     s.push_str("echo \"[bsdkrun] entrypoint exited (status $code); powering off\"\n");
     s.push_str("sync\n");

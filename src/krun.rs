@@ -231,9 +231,9 @@ impl Ctx {
     }
 
     /// Use a host directory as the guest's root filesystem, shared over
-    /// virtio-fs. Requires a guest kernel built with `CONFIG_FUSE_FS=y` /
-    /// virtio-fs. libkrun injects its own init into this virtiofs root and runs
-    /// the executable configured via [`Ctx::set_exec`].
+    /// virtio-fs. Requires a guest kernel built with `CONFIG_VIRTIO_FS=y`.
+    /// libkrun injects its own init into this virtiofs root and runs the
+    /// executable configured via [`Ctx::set_exec`].
     pub fn set_root(&self, root_path: &Path) -> anyhow::Result<()> {
         let path = path_cstr(root_path)?;
         check(

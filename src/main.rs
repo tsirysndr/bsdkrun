@@ -151,7 +151,7 @@ struct LinuxArgs {
     detach: bool,
 
     /// Share the extracted rootfs via virtio-fs instead of packing an initramfs.
-    /// Requires a guest kernel built with CONFIG_FUSE_FS=y / virtio-fs.
+    /// Requires a guest kernel built with CONFIG_VIRTIO_FS=y (virtio-fs).
     #[arg(long)]
     virtiofs: bool,
 
@@ -548,14 +548,15 @@ fn boot_firmware(args: FirmwareArgs) -> Result<()> {
 }
 
 fn boot_linux(args: LinuxArgs) -> Result<()> {
-    // The prebuilt kernel is built without CONFIG_FUSE_FS, so it cannot mount a
+    // The prebuilt kernel is built without CONFIG_VIRTIO_FS, so it cannot mount a
     // virtio-fs root (it would panic: "Unable to mount root fs"). Refuse `--virtiofs`
     // unless the user supplied their own (FUSE-enabled) kernel via `--kernel`.
     if args.virtiofs && args.kernel.is_none() {
         anyhow::bail!(
-            "--virtiofs needs a guest kernel built with virtio-fs (CONFIG_FUSE_FS=y); the \
-             default prebuilt kernel is not. Pass --kernel with a FUSE-enabled kernel, or omit \
-             --virtiofs to boot from an initramfs (the default)."
+            "--virtiofs needs a guest kernel built with virtio-fs (CONFIG_VIRTIO_FS=y — note \
+             that CONFIG_FUSE_FS alone is not enough). The default prebuilt kernel is not. Pass \
+             --kernel with a virtio-fs-enabled kernel, or omit --virtiofs to boot from an \
+             initramfs (the default)."
         );
     }
 
@@ -669,7 +670,7 @@ fn configure_linux_ctx(
     let gvproxy = setup_networking(ctx, &args.net)?;
     if args.virtiofs {
         ctx.set_root(&image.rootfs)
-            .context("configuring virtio-fs root (needs a CONFIG_FUSE_FS=y kernel)")?;
+            .context("configuring virtio-fs root (needs a CONFIG_VIRTIO_FS=y kernel)")?;
         if !ep.workdir.is_empty() {
             ctx.set_workdir(&ep.workdir)?;
         }

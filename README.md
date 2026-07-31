@@ -229,7 +229,7 @@ Notes:
 - The whole rootfs lives in RAM (initramfs), so size `--mem` above the image size; bsdkrun warns if
   it looks too small. The image must have a `/bin/sh` (scratch/distroless images won't boot this way).
 - **`--virtiofs`** shares the extracted rootfs directly via virtio-fs (`krun_set_root`) instead of
-  an initramfs — no RAM-size limit — but it needs a guest kernel built with `CONFIG_FUSE_FS=y`
+  an initramfs — no RAM-size limit — but it needs a guest kernel built with `CONFIG_VIRTIO_FS=y`
   (the default prebuilt kernel is not, so use `--kernel` with a FUSE-enabled one).
 - Console defaults to `hvc0` (libkrun's virtio-console); `--console` overrides it.
 

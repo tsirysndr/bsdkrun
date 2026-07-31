@@ -10,7 +10,7 @@
 //!     Firecracker-style kernel (no virtio-fs needed).
 //!   * **virtio-fs** (`--virtiofs`) — share the extracted rootfs directly via
 //!     `krun_set_root`, letting libkrun's own init run the entrypoint. Requires
-//!     a guest kernel built with `CONFIG_FUSE_FS=y` / virtio-fs.
+//!     a guest kernel built with virtio-fs (`CONFIG_VIRTIO_FS=y`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

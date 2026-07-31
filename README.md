@@ -21,6 +21,7 @@ image** (`bsdkrun linux alpine` pulls it from any registry, extracts the rootfs,
 ## Contents
 
 - [Why this exists](#why-this-exists)
+- [Install](#install)
 - [Prerequisites](#prerequisites)
 - [Build](#build)
 - [Usage](#usage)
@@ -64,6 +65,23 @@ The open research question is guest-side **virtio-mmio device discovery**. libkr
 virtio devices over MMIO (there is no PCI bus), and describes them via the ACPI/FDT it hands the
 guest. Whether a given BSD kernel enumerates those virtio-mmio devices — and routes its console to
 libkrun's virtio-console — is exactly what this tool is for probing.
+
+---
+
+## Install
+
+The quickest way — a prebuilt, already-signed binary via Homebrew (Apple Silicon only):
+
+```sh
+brew install tsirysndr/tap/bsdkrun
+```
+
+This auto-taps `libkrun/krun` and pulls in its dependencies (`libkrun`, `gvproxy`). The binary
+ships codesigned with the hypervisor entitlement, so there's nothing else to set up — jump to
+[Usage](#usage).
+
+To hack on bsdkrun instead, build from source — see [Prerequisites](#prerequisites) and
+[Build](#build).
 
 ---
 

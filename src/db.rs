@@ -426,11 +426,13 @@ pub fn record_image(reference: &str, digest: &str, size: i64, rootfs: &str) {
     }
 }
 
-/// Record a machine row.
+/// Record a machine row. `kind` is `linux` / `firmware` / `kernel` — the guest
+/// type, which `shell`/`logs`/etc. use to apply the right behavior.
 #[allow(clippy::too_many_arguments)]
 pub fn record_machine(
     id: &str,
     image: &str,
+    kind: &str,
     command: &str,
     status: &str,
     pid: Option<i64>,
@@ -441,7 +443,7 @@ pub fn record_machine(
 ) {
     if let Err(e) = Db::open().and_then(|db| {
         db.insert_machine(
-            id, image, "linux", command, status, pid, detached, cpus, mem, state_dir,
+            id, image, kind, command, status, pid, detached, cpus, mem, state_dir,
         )
     }) {
         tracing::warn!("recording machine in state db: {e:#}");

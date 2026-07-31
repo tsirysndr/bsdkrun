@@ -11,6 +11,10 @@ small: one FFI module, one CLI, no daemon.
 > **Platform:** macOS on Apple Silicon (arm64) only. libkrun's macOS backend is
 > Hypervisor.framework, and the guests we target are arm64 BSD images.
 
+<p align="center">
+  <img src=".github/assets/preview.png" alt="FreeBSD 15 arm64 booting under bsdkrun on macOS" width="800">
+</p>
+
 ---
 
 ## Why this exists

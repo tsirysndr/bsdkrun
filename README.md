@@ -329,6 +329,46 @@ How it works — no daemon:
 - **`stop`** sends `SIGTERM` to the machine's process (whose signal handler tears down gvproxy).
 - **`ps`** reconciles: a machine still marked *running* whose process is gone is shown as *exited*.
 
+### The exec agent
+
+`exec`/`shell` talk to a tiny in-guest **agent** that listens on **TCP port 1024** and runs one
+command per connection over a small framed protocol (stdin/stdout/stderr + exit code, optional
+PTY). There's no vsock dependency: bsdkrun forwards a per-machine host port to the guest through
+gvproxy, so the same mechanism works for Linux and BSD. The agent needs the guest's network up
+(gvproxy leases it `192.168.127.2`), so `exec`/`shell` require networking (not `--no-net`).
+
+- **Linux** — bsdkrun downloads the aarch64 agent from the GitHub release (cached under
+  `~/.cache/bsdkrun/agent/`), injects it into the rootfs, and starts it on boot. Nothing to do.
+  (Point `BSDKRUN_AGENT_LINUX` at a local binary, or `BSDKRUN_AGENT_VERSION` at a different tag,
+  to override.)
+- **FreeBSD / NetBSD** — bsdkrun can't write the guest's UFS/FFS from macOS, so you install the
+  agent yourself, once, inside the running guest.
+
+**BSD setup** (as root — the default no-password user). Download the matching binary from the
+release into the guest, which has internet by default:
+
+```sh
+# FreeBSD (fetch is built in):
+fetch -o /usr/local/sbin/bsdkrun-agent \
+  https://github.com/tsirysndr/bsdkrun/releases/download/v0.1.0/bsdkrun-agent.freebsd-aarch64
+
+# NetBSD (ftp speaks https):
+ftp -o /usr/local/sbin/bsdkrun-agent \
+  https://github.com/tsirysndr/bsdkrun/releases/download/v0.1.0/bsdkrun-agent.netbsd-aarch64
+
+chmod +x /usr/local/sbin/bsdkrun-agent
+/usr/local/sbin/bsdkrun-agent &          # start it now; listens on TCP :1024
+```
+
+From the host, `bsdkrun exec <id> uname -a` now works. To start it on every boot, add
+`/usr/local/sbin/bsdkrun-agent &` to `/etc/rc.local`, or install a proper service — on FreeBSD,
+`/usr/local/etc/rc.d/bsdkrun_agent` wrapping `daemon(8)` (`# REQUIRE: NETWORKING`), enabled with
+`sysrc bsdkrun_agent_enable=YES`. If `exec` times out, check inside the guest that networking is up
+(`ifconfig` shows `192.168.127.2`) and the agent is listening (`netstat -an | grep 1024`).
+
+> The FreeBSD binary is dynamically linked for FreeBSD 14+; the NetBSD binary is built natively on
+> NetBSD 10.
+
 ---
 
 ## Networking

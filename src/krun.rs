@@ -20,6 +20,26 @@ pub const KRUN_KERNEL_FORMAT_IMAGE_GZ: u32 = 4;
 #[allow(dead_code)]
 pub const KRUN_KERNEL_FORMAT_IMAGE_ZSTD: u32 = 5;
 
+// virtio-net feature bits (see libkrun.h). `COMPAT_NET_FEATURES` is the set
+// libkrun's own passt/gvproxy helpers enable — the safe baseline (checksum
+// offload + TSO/UFO) that a userspace proxy like gvproxy negotiates.
+const NET_FEATURE_CSUM: u32 = 1 << 0;
+const NET_FEATURE_GUEST_CSUM: u32 = 1 << 1;
+const NET_FEATURE_GUEST_TSO4: u32 = 1 << 7;
+const NET_FEATURE_GUEST_UFO: u32 = 1 << 10;
+const NET_FEATURE_HOST_TSO4: u32 = 1 << 11;
+const NET_FEATURE_HOST_UFO: u32 = 1 << 14;
+const COMPAT_NET_FEATURES: u32 = NET_FEATURE_CSUM
+    | NET_FEATURE_GUEST_CSUM
+    | NET_FEATURE_GUEST_TSO4
+    | NET_FEATURE_GUEST_UFO
+    | NET_FEATURE_HOST_TSO4
+    | NET_FEATURE_HOST_UFO;
+
+// Per-interface flags. `NET_FLAG_VFKIT` tells libkrun the unixgram peer speaks
+// gvproxy's "vfkit" framing (the mode gvproxy's `-listen-vfkit` socket uses).
+const NET_FLAG_VFKIT: u32 = 1 << 0;
+
 #[link(name = "krun")]
 extern "C" {
     fn krun_set_log_level(level: u32) -> i32;
@@ -40,6 +60,14 @@ extern "C" {
         cmdline: *const c_char,
     ) -> i32;
     fn krun_set_firmware(ctx_id: u32, firmware_path: *const c_char) -> i32;
+    fn krun_add_net_unixgram(
+        ctx_id: u32,
+        c_path: *const c_char,
+        fd: i32,
+        c_mac: *const u8,
+        features: u32,
+        flags: u32,
+    ) -> i32;
     fn krun_disable_implicit_console(ctx_id: u32) -> i32;
     fn krun_add_serial_console_default(ctx_id: u32, input_fd: i32, output_fd: i32) -> i32;
     fn krun_start_enter(ctx_id: u32) -> i32;
@@ -190,6 +218,39 @@ impl Ctx {
         check(
             unsafe { krun_set_firmware(self.id, fw.as_ptr()) },
             "krun_set_firmware",
+        )?;
+        Ok(())
+    }
+
+    /// Add a virtio-net device backed by a gvproxy "vfkit" unixgram socket.
+    ///
+    /// libkrun's default networking is the TSI backend, which impersonates the
+    /// guest's sockets from a shim *inside a Linux guest kernel* — BSD guests
+    /// have no such shim, so TSI gives them no network at all. Instead we point
+    /// libkrun at a userspace network stack (gvproxy) over a datagram socket;
+    /// the guest then sees an ordinary virtio-net NIC it can DHCP on. The socket
+    /// is created and served by [`crate::net::Gvproxy`].
+    ///
+    /// Must be called before `start_enter`. `mac` is the six-byte hardware
+    /// address advertised to the guest.
+    pub fn add_net_gvproxy(&self, vfkit_socket: &Path, mac: [u8; 6]) -> anyhow::Result<()> {
+        // Added in the same libkrun era as the explicit-console API; guard so a
+        // stale DYLD-loaded libkrun fails loudly instead of jumping a NULL stub.
+        require_symbol("krun_add_net_unixgram")?;
+
+        let path = path_cstr(vfkit_socket)?;
+        check(
+            unsafe {
+                krun_add_net_unixgram(
+                    self.id,
+                    path.as_ptr(),
+                    -1, // -1 => connect by path rather than a pre-opened fd
+                    mac.as_ptr(),
+                    COMPAT_NET_FEATURES,
+                    NET_FLAG_VFKIT,
+                )
+            },
+            "krun_add_net_unixgram",
         )?;
         Ok(())
     }

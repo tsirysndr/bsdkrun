@@ -23,9 +23,9 @@ The usual microVM stacks (Firecracker, Cloud Hypervisor) don't run on macOS, and
 VM tooling (QEMU, `vftool`, UTM) isn't microVM-shaped. libkrun gives you a Firecracker-like
 "configure a context, then `start_enter`" model on top of Hypervisor.framework — but its batteries
 are aimed at Linux guests. `bsdkrun` is an experiment in pointing that same machinery at
-**FreeBSD / NetBSD / OpenBSD** guests.
+**FreeBSD / NetBSD** guests.
 
-- **FreeBSD / OpenBSD (arm64):** boot via **firmware/EFI** — these systems expect to come up
+- **FreeBSD (arm64):** boot via **firmware/EFI** — these systems expect to come up
   through a UEFI loader, so we hand libkrun its bundled EDK2 firmware and let the guest's
   `loader.efi` take over from the EFI System Partition on the disk.
 - **NetBSD (evbarm):** boot via **direct kernel** — libkrun generates an FDT and jumps straight
@@ -126,7 +126,7 @@ make run ARGS="probe"
 
 ### `firmware` — boot a disk through its UEFI loader
 
-The compatible path for **FreeBSD / OpenBSD**. Point it at libkrun's EDK2 firmware and a raw disk
+The compatible path for **FreeBSD / NetBSD**. Point it at libkrun's EDK2 firmware and a raw disk
 image that carries an EFI System Partition:
 
 ```sh
@@ -163,6 +163,73 @@ into the kernel:
 ```
 
 `--format` is one of `elf` (default) or `raw`. `--initramfs` is optional.
+
+---
+
+## Networking
+
+Both `firmware` and `kernel` give the guest **internet access by default** — no flags needed.
+libkrun's built-in TSI backend only works for Linux guests (it needs an in-guest shim), so BSD
+guests instead get a real `virtio-net` NIC wired to [**gvproxy**](https://github.com/containers/gvisor-tap-vsock),
+a userspace network stack that NATs the guest out to your host's network. The guest DHCPs an
+address on `192.168.127.0/24` (gateway `.1`, guest `.2`) with working DNS.
+
+Install gvproxy once:
+
+```sh
+brew install gvproxy
+```
+
+If gvproxy isn't installed, bsdkrun prints a warning and boots the guest **without** a NIC (unless
+you asked for `--port`, which then hard-errors). Disable networking explicitly with `--no-net`.
+
+Each VM gets its **own** gvproxy instance and its own isolated network, so you can run several
+guests at once. gvproxy is torn down automatically when the VM exits — including when you interrupt
+it (Ctrl-C / `kill`), via a signal handler that also restores your terminal.
+
+### SSH into the guest
+
+gvproxy forwards a **unique** host port to the guest's SSH (`:22`) for each VM. bsdkrun logs it at
+boot:
+
+```
+INFO networking up — SSH into the guest with: ssh -p 58851 user@127.0.0.1
+```
+
+(The guest must be running `sshd` and permit your login, of course.)
+
+### Forwarding extra ports
+
+`--port HOST:GUEST` (repeatable) forwards a host TCP port into the guest:
+
+```sh
+./target/release/bsdkrun firmware \
+  --firmware "$(brew --prefix)/share/krunkit/KRUN_EFI.silent.fd" \
+  --disk images/fbsd15.raw \
+  --port 8080:80 --port 2222:22 \
+  --cpus 2 --mem 2048
+```
+
+`--mac AA:BB:CC:DD:EE:FF` overrides the guest NIC's MAC (default: a fixed locally-administered one).
+
+---
+
+## Disks
+
+The root disk is attached read-write as `virtio-blk` (`--disk`). Attach **additional** disks with
+`--attach-disk` (repeatable); append `:ro` for a read-only attachment:
+
+```sh
+./target/release/bsdkrun firmware \
+  --firmware "$(brew --prefix)/share/krunkit/KRUN_EFI.silent.fd" \
+  --disk images/fbsd15.raw \
+  --attach-disk images/data.raw \
+  --attach-disk images/blobs.raw:ro
+```
+
+Extra disks appear in the guest as the next `virtio-blk` devices (e.g. FreeBSD `vtbd1`, `vtbd2`…),
+in the order given. Create a blank one with `truncate -s 8G data.raw` (then partition/newfs it in
+the guest), or grow an existing image with [`bsdkrun grow`](#resizing-the-disk).
 
 ---
 
@@ -251,10 +318,18 @@ virtio-mmio driver only gained v2 support in **-current** (post-10.x). So:
 
 OpenBSD ships an **installer** (RAMDISK) image for arm64, not a preinstalled disk. `fetch --os
 openbsd` downloads it and `firmware` boots it. The good news: OpenBSD's EFI bootloader, the RAMDISK
-kernel, the **virtio-mmio disk** (`sd0`), and the PL011 console all come up under libkrun. The
-current limitation: the interactive installer stalls just after `softraid0` and doesn't reach its
-`(I)nstall/(S)hell` prompt yet — under investigation. A fully installed, persistent OpenBSD also
-needs a second target disk (multi-disk support, not yet wired up).
+kernel, the **virtio-mmio disk** (`sd0`), and the PL011 console all come up under libkrun — all the
+dmesg prints fine.
+
+**Blocker (a libkrun-level bug, not bsdkrun's):** right after autoconf (`softraid0`), OpenBSD's
+`pluart` console switches from polled to **interrupt-driven** — it sets `UARTIMSC = 0x50` (RX +
+RX-timeout interrupts). From there it **livelocks in a PL011 interrupt storm**: it spins forever
+reading `UARTMIS` (0x40) and writing `UARTICR` (0x44) `= 0`, never mounting root or reaching the
+`(I)nstall/(S)hell` prompt. libkrun's PL011 keeps the RX/RX-timeout interrupt asserted with no real
+input, and OpenBSD's handler never clears it — an interrupt storm. FreeBSD/NetBSD program the UART
+differently and don't hit this. Fixing it needs a change in libkrun's PL011 emulation (or OpenBSD's
+driver), so it can't be worked around from the launcher. A fully installed OpenBSD would also need
+multi-disk support.
 
 ### Resizing the disk
 
@@ -329,8 +404,10 @@ hdiutil detach "${DEV%s*}"
 
 | Path                   | What it is |
 |------------------------|------------|
-| `src/krun.rs`          | Safe Rust FFI bindings to the libkrun C ABI (`krun_create_ctx`, `krun_set_vm_config`, `krun_add_disk`, `krun_set_kernel`, `krun_set_firmware`, the `krun_disable_implicit_console` / `krun_add_serial_console_default` console wiring, `krun_start_enter`, …). Negative returns are decoded as `-errno`. |
+| `src/krun.rs`          | Safe Rust FFI bindings to the libkrun C ABI (`krun_create_ctx`, `krun_set_vm_config`, `krun_add_disk`, `krun_set_kernel`, `krun_set_firmware`, `krun_add_net_unixgram` for gvproxy networking, the `krun_disable_implicit_console` / `krun_add_serial_console_default` console wiring, `krun_start_enter`, …). Negative returns are decoded as `-errno`. |
 | `src/main.rs`          | `clap` CLI with the `probe` / `kernel` / `firmware` subcommands. |
+| `src/net.rs`           | User-mode networking: spawns and drives a per-VM gvproxy (unique host ssh-port, host→guest port forwards over its HTTP control socket), reaped on exit. |
+| `src/tty.rs`           | Saves stdin's terminal state before libkrun raws it and restores it on every exit path (clean, error, or signal); the signal handler also tears down gvproxy. |
 | `build.rs`             | Finds libkrun via Homebrew and configures linking + rpath. |
 | `Makefile`             | Build **and codesign** (re-signs after every build — mandatory on macOS). |
 | `bsdkrun.entitlements` | `com.apple.security.hypervisor` + library-validation opt-out. |
@@ -391,6 +468,16 @@ Your `loader.env` quoted the value (`console="efi"`). Use unquoted `console=efi,
 Make sure `brew --prefix libkrun` resolves, or build with an explicit
 `LIBKRUN_PREFIX=/opt/homebrew`.
 
+**Guest hangs on `poweroff`/`reboot` with `panicked at src/hvf/src/lib.rs:549: Unexpected val=…`**
+A libkrun bug: on an **SMP** guest, shutting down issues PSCI `CPU_OFF` / `AFFINITY_INFO` calls
+libkrun's HVF layer doesn't handle, so its vCPU threads panic and `krun_start_enter` never returns.
+The guest has already halted cleanly. bsdkrun **detects this and exits cleanly** for you (a watchdog
+tees libkrun's stderr and recognises the panic). To avoid the panic entirely, boot with `--cpus 1`.
+
+**Networking: `gvproxy not found on PATH`**
+Install it with `brew install gvproxy` (see [Networking](#networking)). Without it the guest boots
+with no NIC; `--no-net` silences the warning.
+
 ---
 
 ## Status
@@ -403,8 +490,9 @@ libkrun's EDK2 firmware and the guest's own EFI loader:
   `fetch --os netbsd` + `firmware`. (NetBSD *releases* ≤ 10.1 boot but can't mount root — their
   virtio-mmio driver is legacy-only; modern v2 support is only in -current.)
 - **OpenBSD / arm64** — installer RAMDISK boots (EFI bootloader → kernel → virtio-mmio `sd0` +
-  console). Reaching the installer prompt / installing to disk is still WIP (see the OpenBSD note
-  above). `fetch --os openbsd`.
+  console), then **livelocks in a PL011 UART interrupt storm** when its console goes
+  interrupt-driven after autoconf — a libkrun PL011-emulation bug, not fixable from bsdkrun (see the
+  OpenBSD note above). `fetch --os openbsd`.
 
 The blocker that made guests look dead — console output going to a PL011 serial libkrun wasn't
 forwarding — is fixed by bsdkrun's serial-console wiring (see

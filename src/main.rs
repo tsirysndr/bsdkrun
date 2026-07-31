@@ -9,16 +9,21 @@
 
 mod fetch;
 mod krun;
+mod net;
+mod tty;
+mod watchdog;
 
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use clap::builder::styling::{Color, RgbColor, Style, Styles};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use krun::Ctx;
+use net::{Gvproxy, PortForward};
 
 // Accent palette (with matching muted + error tones) applied to clap's --help
 // styling: electric teal for section headers/usage, violet for literals.
@@ -148,6 +153,14 @@ struct KernelArgs {
     #[arg(long)]
     disk: Option<PathBuf>,
 
+    /// Additional disk to attach as virtio-blk (repeatable).
+    /// Format: PATH[:ro] — append `:ro` for a read-only attachment.
+    #[arg(long = "attach-disk", value_name = "PATH[:ro]")]
+    attach_disk: Vec<DiskSpec>,
+
+    #[command(flatten)]
+    net: NetConfig,
+
     #[command(flatten)]
     vm: VmConfig,
 }
@@ -162,6 +175,14 @@ struct FirmwareArgs {
     #[arg(long)]
     disk: PathBuf,
 
+    /// Additional disk to attach as virtio-blk (repeatable).
+    /// Format: PATH[:ro] — append `:ro` for a read-only attachment.
+    #[arg(long = "attach-disk", value_name = "PATH[:ro]")]
+    attach_disk: Vec<DiskSpec>,
+
+    #[command(flatten)]
+    net: NetConfig,
+
     #[command(flatten)]
     vm: VmConfig,
 }
@@ -175,6 +196,75 @@ struct VmConfig {
     /// Guest RAM in MiB.
     #[arg(long, default_value_t = 512)]
     mem: u32,
+}
+
+/// User-mode networking options (shared by `kernel` and `firmware`).
+///
+/// Networking is on by default: the guest gets a virtio-net NIC wired to
+/// gvproxy, which NATs it out to the host's network (internet access via DHCP
+/// on 192.168.127.0/24). Pass `--no-net` for an isolated guest.
+#[derive(Args)]
+struct NetConfig {
+    /// Disable networking (boot the guest with no NIC).
+    #[arg(long = "no-net")]
+    no_net: bool,
+
+    /// Forward a host TCP port to the guest: HOST:GUEST (repeatable).
+    /// Example: `--port 2222:22` for SSH.
+    #[arg(long = "port", value_name = "HOST:GUEST")]
+    ports: Vec<PortForward>,
+
+    /// MAC address for the guest NIC (default: a fixed locally-administered one).
+    #[arg(long, value_name = "AA:BB:CC:DD:EE:FF")]
+    mac: Option<String>,
+}
+
+/// A disk to attach as virtio-blk, parsed from `PATH[:ro]`.
+#[derive(Clone)]
+struct DiskSpec {
+    path: PathBuf,
+    read_only: bool,
+}
+
+impl FromStr for DiskSpec {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Only treat a trailing `:ro`/`:rw` as a mode (paths may contain `:`).
+        if let Some(base) = s.strip_suffix(":ro") {
+            Ok(DiskSpec {
+                path: PathBuf::from(base),
+                read_only: true,
+            })
+        } else if let Some(base) = s.strip_suffix(":rw") {
+            Ok(DiskSpec {
+                path: PathBuf::from(base),
+                read_only: false,
+            })
+        } else {
+            Ok(DiskSpec {
+                path: PathBuf::from(s),
+                read_only: false,
+            })
+        }
+    }
+}
+
+impl FromStr for PortForward {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (host, guest) = s
+            .split_once(':')
+            .ok_or_else(|| format!("expected HOST:GUEST, got {s:?}"))?;
+        let host = host
+            .parse::<u16>()
+            .map_err(|_| format!("invalid host port {host:?} in {s:?}"))?;
+        let guest = guest
+            .parse::<u16>()
+            .map_err(|_| format!("invalid guest port {guest:?} in {s:?}"))?;
+        Ok(PortForward { host, guest })
+    }
 }
 
 fn main() -> Result<()> {
@@ -220,7 +310,64 @@ fn probe() -> Result<()> {
     Ok(())
 }
 
+/// Attach any `--attach-disk` images after the root disk. Block ids are
+/// `data0`, `data1`, … — libkrun only requires them to be unique.
+fn attach_extra_disks(ctx: &Ctx, disks: &[DiskSpec]) -> Result<()> {
+    for (i, disk) in disks.iter().enumerate() {
+        let block_id = format!("data{i}");
+        ctx.add_disk(&block_id, &disk.path, disk.read_only)
+            .with_context(|| format!("attaching disk {}", disk.path.display()))?;
+        info!(
+            id = %block_id,
+            path = %disk.path.display(),
+            read_only = disk.read_only,
+            "attached disk"
+        );
+    }
+    Ok(())
+}
+
+/// Bring up user-mode networking (on by default). Returns the live gvproxy
+/// handle, which must outlive the VM (kept in scope until after `start_enter`).
+///
+/// If gvproxy isn't installed we degrade gracefully — the guest boots without a
+/// NIC and we warn — *unless* the user explicitly asked for port forwards, in
+/// which case the missing dependency is a hard error.
+fn setup_networking(ctx: &Ctx, cfg: &NetConfig) -> Result<Option<Gvproxy>> {
+    if cfg.no_net {
+        if !cfg.ports.is_empty() {
+            anyhow::bail!("--port cannot be combined with --no-net");
+        }
+        info!("networking disabled (--no-net)");
+        return Ok(None);
+    }
+
+    // Probe for gvproxy up front so a missing dependency degrades cleanly.
+    if let Err(e) = net::locate() {
+        if !cfg.ports.is_empty() {
+            return Err(e).context("--port requires gvproxy");
+        }
+        tracing::warn!("networking disabled: {e:#}");
+        return Ok(None);
+    }
+
+    let mac = match &cfg.mac {
+        Some(s) => net::parse_mac(s).context("parsing --mac")?,
+        None => net::DEFAULT_MAC,
+    };
+    let gvproxy = Gvproxy::spawn(&cfg.ports).context("starting gvproxy networking")?;
+    ctx.add_net_gvproxy(&gvproxy.vfkit_socket, mac)
+        .context("attaching virtio-net device")?;
+    Ok(Some(gvproxy))
+}
+
 fn boot_kernel(args: KernelArgs) -> Result<()> {
+    // Snapshot the terminal + arm signal cleanup before libkrun raws the TTY.
+    tty::install();
+    // Catch libkrun's HVF panic-hang on SMP shutdown and turn it into a clean
+    // exit (see the watchdog module).
+    watchdog::install();
+
     let ctx = Ctx::new()?;
     ctx.set_vm_config(args.vm.cpus, args.vm.mem)?;
     ctx.attach_stdio_serial_console()
@@ -230,6 +377,8 @@ fn boot_kernel(args: KernelArgs) -> Result<()> {
         ctx.add_disk("root", disk, false)
             .with_context(|| format!("attaching root disk {}", disk.display()))?;
     }
+    attach_extra_disks(&ctx, &args.attach_disk)?;
+    let gvproxy = setup_networking(&ctx, &args.net)?;
 
     ctx.set_kernel(
         &args.kernel,
@@ -245,12 +394,25 @@ fn boot_kernel(args: KernelArgs) -> Result<()> {
         kernel = %args.kernel.display(),
         "booting microVM"
     );
-    let code = ctx.start_enter().context("starting microVM")?;
+    let result = ctx.start_enter();
+    // `start_enter` returns after the guest halts (or errors). Put the terminal
+    // back either way, before we propagate any error or exit.
+    tty::restore_stdin_termios();
+    let code = result.context("starting microVM")?;
     info!(code, "guest exited");
+    // Drop gvproxy explicitly to tear down networking before `exit` skips
+    // destructors.
+    drop(gvproxy);
     std::process::exit(code);
 }
 
 fn boot_firmware(args: FirmwareArgs) -> Result<()> {
+    // Snapshot the terminal + arm signal cleanup before libkrun raws the TTY.
+    tty::install();
+    // Catch libkrun's HVF panic-hang on SMP shutdown and turn it into a clean
+    // exit (see the watchdog module).
+    watchdog::install();
+
     let ctx = Ctx::new()?;
     ctx.set_vm_config(args.vm.cpus, args.vm.mem)?;
     ctx.attach_stdio_serial_console()
@@ -258,6 +420,8 @@ fn boot_firmware(args: FirmwareArgs) -> Result<()> {
 
     ctx.add_disk("root", &args.disk, false)
         .with_context(|| format!("attaching root disk {}", args.disk.display()))?;
+    attach_extra_disks(&ctx, &args.attach_disk)?;
+    let gvproxy = setup_networking(&ctx, &args.net)?;
 
     ctx.set_firmware(&args.firmware)
         .context("configuring firmware")?;
@@ -269,7 +433,12 @@ fn boot_firmware(args: FirmwareArgs) -> Result<()> {
         disk = %args.disk.display(),
         "booting microVM"
     );
-    let code = ctx.start_enter().context("starting microVM")?;
+    let result = ctx.start_enter();
+    // Restore the terminal on both the success and error paths (see boot_kernel).
+    tty::restore_stdin_termios();
+    let code = result.context("starting microVM")?;
     info!(code, "guest exited");
+    // See boot_kernel: drop gvproxy before `exit` bypasses destructors.
+    drop(gvproxy);
     std::process::exit(code);
 }

@@ -293,7 +293,8 @@ bsdkrun ps                 # list running machines (-a for all, incl. exited)
 bsdkrun images             # list images: pulled OCI images + fetched BSD images
 bsdkrun logs $id           # print the machine's console log
 bsdkrun logs -f $id        # follow it live
-bsdkrun shell $id          # attach to the machine (Ctrl-] to detach)
+bsdkrun exec $id uname -a  # run a command inside the guest (-t for a PTY, -e K=V for env)
+bsdkrun shell $id          # open an interactive shell in the guest
 bsdkrun stop $id           # stop a running machine
 ```
 
@@ -315,11 +316,11 @@ How it works — no daemon:
   and prints the id. (libkrun's implicit console only writes to a **tty** — a plain pipe/socket
   would just get *logged* — which is why the console is a PTY.)
 - **`logs`** reads `console.log`; **`-f`** then streams `console.sock`.
-- **`shell`** connects to `console.sock` and proxies your terminal in raw mode — the same raw-mode
-  attach Docker's CLI does, pointed at the guest console (so it's `docker attach`, not a fresh
-  `docker exec` process; for alpine's default `/bin/sh` that's a live shell). On attach the recent
-  console is replayed so you see the current prompt immediately, and **Ctrl-]** detaches. A true
-  `exec -it` (a new process regardless of the workload) would need an in-guest agent over vsock.
+- **`exec` / `shell`** run a **new** process in the guest through an in-guest agent (see below) —
+  `docker exec`, not `docker attach`. `exec` forwards stdin/stdout/stderr and the exit code (`-t`
+  allocates a PTY, `-e K=V` sets env); `shell` is `exec -t /bin/sh`. When a machine has no agent,
+  `shell` falls back to attaching the guest **console** over `console.sock` (raw-mode proxy, the
+  recent console replayed on attach, **Ctrl-]** to detach).
 - **Persistence** — a detached machine with **no explicit command** (`bsdkrun linux -d alpine`)
   keeps a console shell alive: typing `exit` (or Ctrl-]) returns you to your **host** prompt and
   leaves the machine **running** — re-attach any time with `shell` for a fresh shell; the machine

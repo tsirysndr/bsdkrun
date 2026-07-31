@@ -360,11 +360,96 @@ chmod +x /usr/local/sbin/bsdkrun-agent
 /usr/local/sbin/bsdkrun-agent &          # start it now; listens on TCP :1024
 ```
 
-From the host, `bsdkrun exec <id> uname -a` now works. To start it on every boot, add
-`/usr/local/sbin/bsdkrun-agent &` to `/etc/rc.local`, or install a proper service — on FreeBSD,
-`/usr/local/etc/rc.d/bsdkrun_agent` wrapping `daemon(8)` (`# REQUIRE: NETWORKING`), enabled with
-`sysrc bsdkrun_agent_enable=YES`. If `exec` times out, check inside the guest that networking is up
-(`ifconfig` shows `192.168.127.2`) and the agent is listening (`netstat -an | grep 1024`).
+From the host, `bsdkrun exec <id> uname -a` now works. The quickest way to start it on every boot
+is a line in `/etc/rc.local`:
+
+```sh
+/usr/local/sbin/bsdkrun-agent &
+```
+
+**As a proper service** — drop in an `rc.d` script (both are in [`packaging/`](./packaging)):
+
+<details>
+<summary>FreeBSD — <code>/usr/local/etc/rc.d/bsdkrun_agent</code></summary>
+
+```sh
+#!/bin/sh
+#
+# PROVIDE: bsdkrun_agent
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="bsdkrun_agent"
+rcvar="bsdkrun_agent_enable"
+
+load_rc_config $name
+
+: ${bsdkrun_agent_enable:="NO"}
+: ${bsdkrun_agent_program:="/usr/local/sbin/bsdkrun-agent"}
+
+pidfile="/var/run/${name}.pid"
+# daemon(8): -f background, -P track pid, -r restart the agent if it exits.
+command="/usr/sbin/daemon"
+command_args="-f -P ${pidfile} -r ${bsdkrun_agent_program}"
+
+run_rc_command "$1"
+```
+
+```sh
+chmod +x /usr/local/etc/rc.d/bsdkrun_agent
+sysrc bsdkrun_agent_enable=YES
+service bsdkrun_agent start
+```
+</details>
+
+<details>
+<summary>NetBSD — <code>/etc/rc.d/bsdkrun_agent</code> (no <code>daemon(8)</code>, so we track the pid ourselves)</summary>
+
+```sh
+#!/bin/sh
+#
+# PROVIDE: bsdkrun_agent
+# REQUIRE: NETWORKING
+
+. /etc/rc.subr
+
+name="bsdkrun_agent"
+rcvar=$name
+command="/usr/local/sbin/bsdkrun-agent"
+pidfile="/var/run/${name}.pid"
+
+start_cmd="agent_start"
+stop_cmd="agent_stop"
+
+agent_start()
+{
+	echo "Starting ${name}."
+	${command} &
+	echo $! > ${pidfile}
+}
+
+agent_stop()
+{
+	if [ -f ${pidfile} ]; then
+		kill "$(cat ${pidfile})" 2>/dev/null && rm -f ${pidfile}
+	fi
+}
+
+load_rc_config $name
+run_rc_command "$1"
+```
+
+```sh
+chmod +x /etc/rc.d/bsdkrun_agent
+echo 'bsdkrun_agent=YES' >> /etc/rc.conf
+/etc/rc.d/bsdkrun_agent start
+```
+</details>
+
+If `exec` times out, check inside the guest that networking is up (`ifconfig` shows
+`192.168.127.2`) and the agent is listening (`netstat -an | grep 1024`).
 
 > The FreeBSD binary is dynamically linked for FreeBSD 14+; the NetBSD binary is built natively on
 > NetBSD 10.

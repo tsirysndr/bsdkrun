@@ -303,13 +303,12 @@ fn generate_init(ep: &Entrypoint, net: bool, persistent: bool) -> String {
         }\n",
     );
     if persistent {
-        // Detached machine with no explicit command: keep a console shell alive
-        // across exits. When the shell exits we emit an (invisible OSC) marker so
-        // an attached `shell` client detaches back to the host, then respawn a
-        // fresh shell for the next attach. The machine ends only via `stop`.
-        s.push_str(
-            "while : ; do run \"$@\"; printf '\\033]6666;bsdkrun-exit\\007'; set -- /bin/sh ; done\n",
-        );
+        // Detached machine with no explicit command: keep the console shell alive
+        // across exits. Re-run the *same* command each time (so the image's real
+        // shell + prompt is preserved, not a bare /bin/sh), emitting an invisible
+        // OSC marker on exit so an attached `shell` detaches back to the host.
+        // The machine ends only via `stop`.
+        s.push_str("while : ; do run \"$@\"; printf '\\033]6666;bsdkrun-exit\\007'; done\n");
     } else {
         // Run the workload once, then power the machine off cleanly (magic-sysrq
         // needs no shutdown binary in the image); fall back to a shell rather

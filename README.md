@@ -355,4 +355,4 @@ and trying **OpenBSD/arm64** via the same firmware path.
 
 ## License
 
-TBD.
+[MIT](./LICENSE) © Tsiry Sandratraina

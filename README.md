@@ -25,6 +25,7 @@ image** (`bsdkrun linux alpine` pulls it from any registry, extracts the rootfs,
 - [Build](#build)
 - [Usage](#usage)
   - [`probe`](#probe--sanity-check-the-toolchain)
+  - [`freebsd` / `netbsd`](#freebsd--netbsd--one-liner-bsd-microvms)
   - [`firmware`](#firmware--boot-a-disk-through-its-uefi-loader)
   - [`kernel`](#kernel--boot-a-kernel-directly-no-bootloader)
   - [`linux`](#linux--run-an-oci-image-as-a-microvm)
@@ -150,10 +151,27 @@ Verifies that libkrun links and that a context can be created and configured. Do
 make run ARGS="probe"
 ```
 
+### `freebsd` / `netbsd` — one-liner BSD microVMs
+
+The quickest way to a BSD guest — fetches the image if needed, auto-locates libkrun's `KRUN_EFI`
+firmware, and boots it (the shorthand for [`fetch`](#the-easy-way--bsdkrun-fetch) + `firmware`, just
+like `bsdkrun linux alpine` does for Linux):
+
+```sh
+bsdkrun freebsd                 # latest FreeBSD, foreground
+bsdkrun netbsd  -d              # NetBSD-current in the background; prints its id
+bsdkrun freebsd --version 15.1 -d --port 2222:22
+```
+
+Carries the usual machine options (`-d`, `--persist`, `--version`, `--attach-disk`, `--port`,
+`--cpus`/`--mem`), so per-machine [CoW disk clones](#managing-machines) and
+`ps`/`logs`/`shell`/`stop` all apply. The firmware is found via `$BSDKRUN_FIRMWARE`, a local
+`images/KRUN_EFI.fd`, or krunkit's Homebrew install (`--firmware` overrides).
+
 ### `firmware` — boot a disk through its UEFI loader
 
-The compatible path for **FreeBSD / NetBSD**. Point it at libkrun's EDK2 firmware and a raw disk
-image that carries an EFI System Partition:
+The explicit form (the `freebsd`/`netbsd` shortcuts wrap it). Point it at libkrun's EDK2 firmware
+and a raw disk image that carries an EFI System Partition:
 
 ```sh
 make release

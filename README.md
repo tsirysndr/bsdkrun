@@ -43,15 +43,18 @@ image** (`bsdkrun linux alpine` pulls it from any registry, extracts the rootfs,
 
 The usual microVM stacks (Firecracker, Cloud Hypervisor) don't run on macOS, and the usual macOS
 VM tooling (QEMU, `vftool`, UTM) isn't microVM-shaped. libkrun gives you a Firecracker-like
-"configure a context, then `start_enter`" model on top of Hypervisor.framework — but its batteries
-are aimed at Linux guests. `bsdkrun` is an experiment in pointing that same machinery at
-**FreeBSD / NetBSD** guests.
+"configure a context, then `start_enter`" model on top of Hypervisor.framework — its batteries are
+aimed at Linux guests, and `bsdkrun` both leans into that (running OCI images directly) and points
+the same machinery at **FreeBSD / NetBSD** guests.
 
 - **FreeBSD (arm64):** boot via **firmware/EFI** — these systems expect to come up
   through a UEFI loader, so we hand libkrun its bundled EDK2 firmware and let the guest's
   `loader.efi` take over from the EFI System Partition on the disk.
 - **NetBSD (evbarm):** boot via **direct kernel** — libkrun generates an FDT and jumps straight
   into the kernel, no bootloader.
+- **Linux (arm64):** run any **OCI image** as a microVM — bsdkrun fetches a prebuilt kernel, pulls
+  the image from any registry, extracts its rootfs, and boots it `docker run`-style, with internet
+  access out of the box. See [`linux`](#linux--run-an-oci-image-as-a-microvm).
 
 > DragonFly BSD is out of scope: there's no arm64 port.
 

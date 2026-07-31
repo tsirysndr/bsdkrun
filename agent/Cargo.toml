@@ -1,0 +1,31 @@
+[package]
+name = "bsdkrun-agent"
+version = "0.1.0"
+edition = "2021"
+description = "In-guest TCP exec agent for bsdkrun (Linux/FreeBSD/NetBSD aarch64)"
+
+# Standalone crate — cross-compiled for the guest, not part of the host build.
+[workspace]
+
+[[bin]]
+name = "bsdkrun-agent"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+tokio = { version = "1", features = [
+    "rt",
+    "macros",
+    "net",
+    "process",
+    "io-util",
+    "sync",
+    "time",
+] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

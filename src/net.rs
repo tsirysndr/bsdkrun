@@ -67,8 +67,9 @@ fn sweep_stale_dirs() {
 
 /// Ask the OS for an unused loopback TCP port (bind :0, read it back, release).
 /// Used to give each gvproxy a unique host ssh-port so multiple guests can run
-/// at once — gvproxy always binds one and refuses port 0.
-fn free_local_port() -> Result<u16> {
+/// at once — gvproxy always binds one and refuses port 0. Also used for the
+/// per-machine forwarded agent port.
+pub fn free_local_port() -> Result<u16> {
     let listener =
         TcpListener::bind("127.0.0.1:0").context("reserving a free host port for gvproxy")?;
     let port = listener.local_addr()?.port();

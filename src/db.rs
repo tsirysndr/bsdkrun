@@ -62,6 +62,7 @@ pub struct MachineRow {
     pub mem: i64,
     pub state_dir: String,
     pub created_at: String,
+    pub finished_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -131,11 +132,17 @@ impl Db {
                     cpus INTEGER NOT NULL,
                     mem INTEGER NOT NULL,
                     state_dir TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    finished_at TEXT
                 )",
             )
             .execute(&self.pool)
             .await?;
+            // Add finished_at to databases created before it existed (errors with
+            // "duplicate column" on newer ones — ignored).
+            let _ = sqlx::query("ALTER TABLE machines ADD COLUMN finished_at TEXT")
+                .execute(&self.pool)
+                .await;
             sqlx::query(
                 "CREATE TABLE IF NOT EXISTS disks (
                     id TEXT PRIMARY KEY,
@@ -266,12 +273,20 @@ impl Db {
     pub fn set_machine_status(&self, id: &str, status: &str, exit_code: Option<i64>) -> Result<()> {
         self.rt
             .block_on(async {
-                sqlx::query("UPDATE machines SET status = ?, exit_code = ? WHERE id = ?")
-                    .bind(status)
-                    .bind(exit_code)
-                    .bind(id)
-                    .execute(&self.pool)
-                    .await?;
+                // Stamp finished_at the first time a machine exits (COALESCE keeps
+                // any earlier stamp; NULL while it's still running).
+                let finished_at = (status == "exited").then(now);
+                sqlx::query(
+                    "UPDATE machines
+                     SET status = ?, exit_code = ?, finished_at = COALESCE(finished_at, ?)
+                     WHERE id = ?",
+                )
+                .bind(status)
+                .bind(exit_code)
+                .bind(finished_at)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
                 Ok::<_, sqlx::Error>(())
             })
             .map_err(Into::into)
@@ -282,7 +297,7 @@ impl Db {
             .block_on(async {
                 let rows = sqlx::query(
                     "SELECT id, image, kind, command, status, exit_code, pid, detached,
-                            cpus, mem, state_dir, created_at
+                            cpus, mem, state_dir, created_at, finished_at
                      FROM machines ORDER BY created_at DESC",
                 )
                 .fetch_all(&self.pool)
@@ -297,7 +312,7 @@ impl Db {
         let matches: Vec<MachineRow> = self.rt.block_on(async {
             let rows = sqlx::query(
                 "SELECT id, image, kind, command, status, exit_code, pid, detached,
-                        cpus, mem, state_dir, created_at
+                        cpus, mem, state_dir, created_at, finished_at
                  FROM machines WHERE id LIKE ? ORDER BY created_at DESC",
             )
             .bind(format!("{prefix}%"))
@@ -376,6 +391,7 @@ fn row_to_machine(r: sqlx::sqlite::SqliteRow) -> MachineRow {
         mem: r.get("mem"),
         state_dir: r.get("state_dir"),
         created_at: r.get("created_at"),
+        finished_at: r.get("finished_at"),
     }
 }
 
@@ -388,14 +404,19 @@ fn now() -> String {
     secs.to_string()
 }
 
-/// Format a unix-seconds timestamp string as a relative age like "3m ago".
-pub fn age(created_at: &str) -> String {
-    let then: u64 = created_at.parse().unwrap_or(0);
+/// Seconds elapsed since a unix-seconds timestamp string.
+fn secs_since(ts: &str) -> u64 {
+    let then: u64 = ts.parse().unwrap_or(0);
     let now: u64 = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let secs = now.saturating_sub(then);
+    now.saturating_sub(then)
+}
+
+/// Format a unix-seconds timestamp string as a relative age like "3m ago".
+pub fn age(created_at: &str) -> String {
+    let secs = secs_since(created_at);
     if secs < 60 {
         format!("{secs}s ago")
     } else if secs < 3600 {
@@ -405,6 +426,42 @@ pub fn age(created_at: &str) -> String {
     } else {
         format!("{}d ago", secs / 86400)
     }
+}
+
+/// A human duration in Docker's exact phrasing (`docker/go-units` HumanDuration):
+/// "5 seconds", "About a minute", "3 hours", "2 days", …
+pub fn human_duration(secs: u64) -> String {
+    let minutes = secs / 60;
+    // Round hours like Docker (+30 min).
+    let hours = (secs as f64 / 3600.0 + 0.5) as u64;
+    if secs < 1 {
+        "Less than a second".to_string()
+    } else if secs == 1 {
+        "1 second".to_string()
+    } else if secs < 60 {
+        format!("{secs} seconds")
+    } else if minutes == 1 {
+        "About a minute".to_string()
+    } else if minutes < 60 {
+        format!("{minutes} minutes")
+    } else if hours == 1 {
+        "About an hour".to_string()
+    } else if hours < 48 {
+        format!("{hours} hours")
+    } else if hours < 24 * 7 * 2 {
+        format!("{} days", hours / 24)
+    } else if hours < 24 * 30 * 2 {
+        format!("{} weeks", hours / 24 / 7)
+    } else if hours < 24 * 365 * 2 {
+        format!("{} months", hours / 24 / 30)
+    } else {
+        format!("{} years", hours / 24 / 365)
+    }
+}
+
+/// Docker-style human duration since a unix-seconds timestamp string.
+pub fn human_duration_since(ts: &str) -> String {
+    human_duration(secs_since(ts))
 }
 
 /// Whether a process with `pid` is currently alive.

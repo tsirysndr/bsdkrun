@@ -1,0 +1,86 @@
+name: Release (NetBSD agent)
+
+# zig ships no NetBSD libc, so the NetBSD guest agent can't be cross-compiled
+# from macOS like the Linux/FreeBSD ones. It's built natively inside a NetBSD
+# aarch64 VM under emulation, which is far too slow to sit in the tag-release
+# path — so this is a manual, on-demand workflow. Run it for a tag whenever you
+# want the NetBSD binary; it attaches to that tag's existing GitHub release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to attach the NetBSD agent to (e.g. v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: netbsd-aarch64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Build the tag's code.
+          ref: ${{ inputs.tag }}
+
+      - name: Start NetBSD aarch64 VM
+        uses: cross-platform-actions/action@v1.3.0
+        with:
+          operating_system: netbsd
+          version: "10.1"
+          architecture: arm64
+          shell: bash
+          memory: 8G
+          cpu_count: 4
+
+      - name: Build the agent in the VM
+        shell: cpa.sh {0}
+        run: |
+          set -euo pipefail
+          sudo pkgin -y update
+          sudo pkgin -y install rust
+          # Keep target/ out of the workspace so it isn't synced back to the host.
+          export CARGO_TARGET_DIR="$HOME/build"
+          cd agent
+          cargo build --release --locked
+          mkdir -p ../dist
+          cp "$CARGO_TARGET_DIR/release/bsdkrun-agent" ../dist/bsdkrun-agent.netbsd-aarch64
+
+      - name: Checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist && shasum -a 256 bsdkrun-agent.netbsd-aarch64 > bsdkrun-agent.netbsd-aarch64.sha256
+          ls -lh .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: netbsd-aarch64
+          path: dist/*
+          if-no-files-found: error
+
+  upload:
+    name: Attach to GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag }}"
+          gh release upload "$tag" dist/* --clobber --repo "$GITHUB_REPOSITORY"

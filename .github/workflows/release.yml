@@ -1,0 +1,83 @@
+name: release
+
+# Build the macOS (Apple Silicon) bsdkrun binary and the cross-compiled guest
+# agents, then attach them to a GitHub release. Runs on version tags.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # create the release and upload assets
+
+jobs:
+  macos:
+    runs-on: macos-latest # Apple Silicon — needed for aarch64 + libkrun
+    steps:
+      - uses: actions/checkout@v4
+
+      # libkrun provides the C ABI bsdkrun links against (build.rs finds it via
+      # `brew --prefix libkrun`).
+      - name: Install libkrun
+        run: brew install libkrun
+
+      # Stable (default) with the musl target for the Linux agent.
+      - name: Rust nightly (+ rust-src for build-std)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - name: Rust stable (default) + linux-musl target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+
+      - name: Cache cargo + build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            agent -> agent/target
+
+      # cargo-zigbuild + zig (via the pip ziglang package, version-matched).
+      - name: Install zig + cargo-zigbuild
+        run: |
+          python3 -m venv "$HOME/.zb"
+          "$HOME/.zb/bin/pip" install --upgrade pip
+          "$HOME/.zb/bin/pip" install cargo-zigbuild ziglang
+          echo "$HOME/.zb/bin" >> "$GITHUB_PATH"
+
+      # Linux (embedded) + FreeBSD agents; NetBSD is skipped (no zig libc).
+      - name: Build guest agents
+        run: make agent
+
+      - name: Build + sign bsdkrun (release)
+        run: make release
+
+      - name: Package artifacts
+        run: |
+          set -eux
+          mkdir -p dist
+          # The signed host binary (tar keeps the exec bit + codesignature).
+          tar -C target/release -czf dist/bsdkrun-aarch64-apple-darwin.tar.gz bsdkrun
+          # The guest agents (BSD one is for manual injection into a running VM).
+          cp src/agent-bin/bsdkrun-agent.linux-aarch64 dist/
+          cp src/agent-bin/bsdkrun-agent.freebsd-aarch64 dist/
+          cd dist && shasum -a 256 * > SHA256SUMS.txt
+          cat dist/SHA256SUMS.txt
+
+      # Always expose the build as workflow artifacts (handy for manual runs).
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bsdkrun-macos-aarch64
+          path: dist/*
+
+      # On a version tag, create/update the GitHub release with the assets.
+      - name: Publish release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

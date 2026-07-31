@@ -230,23 +230,6 @@ impl Ctx {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    /// Add a virtio-vsock device with TSI (Transparent Socket Impersonation)
-    /// hijacking for both INET and UNIX sockets. libkrun's own `init.krun` (used
-    /// on the virtio-fs path) needs a vsock for timesync + TSI networking; on the
-    /// external-kernel path the implicit vsock isn't created, so add it here.
-    #[allow(dead_code)]
-    pub fn add_vsock_tsi(&self) -> anyhow::Result<()> {
-        // Best-effort: if an implicit vsock exists, disabling lets us add ours;
-        // if there's none, the disable is a harmless no-op error we ignore.
-        unsafe { krun_disable_implicit_vsock(self.id) };
-        // UNIX-socket hijacking isn't supported on macOS, so INET only.
-        check(
-            unsafe { krun_add_vsock(self.id, KRUN_TSI_HIJACK_INET) },
-            "krun_add_vsock",
-        )?;
-        Ok(())
-    }
 
     /// Use a host directory as the guest's root filesystem, shared over
     /// virtio-fs. Requires a guest kernel built with `CONFIG_VIRTIO_FS=y`.

@@ -13,13 +13,18 @@ build:
 	cargo build
 	@$(MAKE) sign
 
+# Release build (+sign). Use this for anything you actually run.
 release:
 	cargo build --release
-	codesign --entitlements $(ENTITLEMENTS) --force -s - $(BIN_RELEASE)
+	@$(MAKE) sign-release
 
 # Sign the debug binary with the hypervisor entitlement.
 sign:
 	codesign --entitlements $(ENTITLEMENTS) --force -s - $(BIN_DEBUG)
+
+# Sign the release binary with the hypervisor entitlement.
+sign-release:
+	codesign --entitlements $(ENTITLEMENTS) --force -s - $(BIN_RELEASE)
 
 # Convenience: build (+sign) then run, forwarding args via ARGS=...
 run: build

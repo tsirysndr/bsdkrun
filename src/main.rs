@@ -563,7 +563,8 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
     );
 
     let machine_id = id::short_id();
-    let vdir = db::machine_dir(&machine_id).unwrap_or_else(|_| std::env::temp_dir().join(&machine_id));
+    let vdir =
+        db::machine_dir(&machine_id).unwrap_or_else(|_| std::env::temp_dir().join(&machine_id));
     std::fs::create_dir_all(&vdir).ok();
     let command = ep.argv.join(" ");
 
@@ -742,14 +743,15 @@ fn run_linux_detached(
         std::mem::forget(logf); // fd 2 now owns it
     }
 
-    let code = match run_detached_child(args, kernel, image, ep, initramfs, net_up, machine_id, vdir) {
-        Ok(code) => code,
-        Err(e) => {
-            tracing::error!("detached machine failed: {e:#}");
-            db::update_machine_status(machine_id, "exited", Some(1));
-            1
-        }
-    };
+    let code =
+        match run_detached_child(args, kernel, image, ep, initramfs, net_up, machine_id, vdir) {
+            Ok(code) => code,
+            Err(e) => {
+                tracing::error!("detached machine failed: {e:#}");
+                db::update_machine_status(machine_id, "exited", Some(1));
+                1
+            }
+        };
     unsafe { libc::_exit(code) };
 }
 

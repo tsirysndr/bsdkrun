@@ -28,6 +28,7 @@ image** (`bsdkrun linux alpine` pulls it from any registry, extracts the rootfs,
   - [`firmware`](#firmware--boot-a-disk-through-its-uefi-loader)
   - [`kernel`](#kernel--boot-a-kernel-directly-no-bootloader)
   - [`linux`](#linux--run-an-oci-image-as-a-microvm)
+- [Managing machines](#managing-machines)
 - [Networking](#networking)
 - [Disks](#disks)
 - [Console](#console-how-output-reaches-your-terminal)
@@ -231,6 +232,43 @@ Notes:
   an initramfs — no RAM-size limit — but it needs a guest kernel built with `CONFIG_FUSE_FS=y`
   (the default prebuilt kernel is not, so use `--kernel` with a FUSE-enabled one).
 - Console defaults to `hvc0` (libkrun's virtio-console); `--console` overrides it.
+
+---
+
+## Managing machines
+
+bsdkrun keeps a small SQLite database (`sqlx`) under `$XDG_STATE_HOME/bsdkrun` recording the
+machines you run, the images you've pulled, and disks you've attached — each with a **Docker-style
+short id**. A Docker-like set of commands operates on them:
+
+```sh
+# run a machine in the background; prints its id
+id=$(bsdkrun linux -d alpine)
+
+bsdkrun ps                 # list running machines (-a for all, incl. exited)
+bsdkrun images             # list pulled images (id, reference, size, age)
+bsdkrun logs $id           # print the machine's console log
+bsdkrun logs -f $id        # follow it live
+bsdkrun shell $id          # attach an interactive shell (Ctrl-] to detach)
+bsdkrun stop $id           # stop a running machine
+```
+
+Any unique **id prefix** works (`bsdkrun stop 8e1c`).
+
+How it works — no daemon:
+
+- **`-d` detached** — bsdkrun forks; the child `setsid`s, wires the guest console (`hvc0`) to a
+  per-machine **PTY**, and a broker thread fans that PTY out to `console.log` and a Unix socket
+  (`console.sock`) under `…/machines/<id>/`. The parent records the machine (with the child's pid)
+  and prints the id. (libkrun's implicit console only writes to a **tty** — a plain pipe/socket
+  would just get *logged* — which is why the console is a PTY.)
+- **`logs`** reads `console.log`; **`-f`** then streams `console.sock`.
+- **`shell`** connects to `console.sock` and proxies your terminal in raw mode — the same raw-mode
+  attach Docker's CLI does, pointed at the guest console (so it's `docker attach`, not a fresh
+  `docker exec` process; for alpine's default `/bin/sh` that's a live shell). A true `exec -it`
+  (a new process regardless of the workload) would need an in-guest agent over vsock.
+- **`stop`** sends `SIGTERM` to the machine's process (whose signal handler tears down gvproxy).
+- **`ps`** reconciles: a machine still marked *running* whose process is gone is shown as *exited*.
 
 ---
 
@@ -452,8 +490,11 @@ hdiutil detach "${DEV%s*}"
 | Path                   | What it is |
 |------------------------|------------|
 | `src/krun.rs`          | Safe Rust FFI bindings to the libkrun C ABI (`krun_create_ctx`, `krun_set_vm_config`, `krun_add_disk`, `krun_set_kernel`, `krun_set_firmware`, `krun_set_root` / `krun_set_exec` for virtio-fs rootfs, `krun_add_net_unixgram` for gvproxy networking, the `krun_disable_implicit_console` / `krun_add_serial_console_default` console wiring, `krun_start_enter`, …). Negative returns are decoded as `-errno`. |
-| `src/main.rs`          | `clap` CLI with the `probe` / `kernel` / `firmware` / `linux` subcommands. |
+| `src/main.rs`          | `clap` CLI with the `probe` / `kernel` / `firmware` / `linux` boot subcommands and the `ps` / `images` / `stop` / `logs` / `shell` management subcommands. |
 | `src/oci.rs`           | Minimal OCI registry client: pulls a `linux/arm64` image (any v2 registry) with `curl`, extracts layers with `tar` (applying whiteouts), and caches the rootfs content-addressed by digest. |
+| `src/db.rs`            | State persistence in SQLite (`sqlx` over a small Tokio runtime): machines, images, and disks, each with a short id; plus the state-dir layout. |
+| `src/console.rs`       | Detached-machine console broker: wires the guest console to a PTY and fans it out to `console.log` + a `console.sock` that `logs`/`shell` clients attach to. |
+| `src/id.rs`            | Docker-style short ids (12 hex chars from `/dev/urandom`). |
 | `src/linux.rs`         | The `linux` subcommand: fetches/converts the kernel, resolves the entrypoint, and builds the initramfs (generated `/init`) or wires the virtio-fs root. |
 | `src/elf.rs`           | Flattens an aarch64 `vmlinux` ELF into a raw arm64 `Image` (what libkrun's loader wants) — pure Rust, no binutils. |
 | `src/net.rs`           | User-mode networking: spawns and drives a per-VM gvproxy (unique host ssh-port, host→guest port forwards over its HTTP control socket), reaped on exit. |

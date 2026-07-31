@@ -164,13 +164,55 @@ into the kernel:
 
 `--format` is one of `elf` (default) or `raw`. `--initramfs` is optional.
 
+### `linux` — run an OCI image as a microVM
+
+Run any Docker Hub / OCI image as a Linux microVM, `docker run`-style. bsdkrun fetches a prebuilt
+aarch64 kernel (cached), pulls the image for `linux/arm64`, extracts its rootfs, and boots it:
+
+```sh
+# run alpine's default shell
+./target/release/bsdkrun linux alpine
+
+# run a specific command, with more RAM
+./target/release/bsdkrun linux alpine --mem 1024 -- /bin/sh -c 'uname -a; cat /etc/os-release'
+
+# any registry / tag
+./target/release/bsdkrun linux ghcr.io/owner/name:tag
+```
+
+How it works:
+
+- **Kernel** — a prebuilt aarch64 `vmlinux` is downloaded from
+  [vmlinux-builder](https://github.com/tsirysndr/vmlinux-builder) and cached. libkrun's aarch64
+  loader needs the raw `Image` format, so bsdkrun flattens the ELF to an `Image` (in pure Rust — no
+  binutils) and caches that too. Override with `--kernel /path` (ELF or raw `Image`).
+- **Rootfs** — the OCI image is pulled straight from the registry (no Docker daemon; just `curl` +
+  `tar`) and its layers are extracted, applying whiteouts. The result is **cached, content-addressed
+  by image digest**, so a repeat run is instant. By default the rootfs is packed into an
+  **initramfs** and booted from RAM, with a generated `/init` that mounts `/proc` + `/sys`,
+  configures networking, and runs the image's Entrypoint/Cmd (honoring `Env`/`WorkingDir`).
+- **Entrypoint** — Docker semantics: args after `--` replace the image `Cmd`; `--entrypoint`
+  replaces the Entrypoint. When the workload exits, the VM powers off cleanly.
+- **Networking** — on by default (see [Networking](#networking)); the guest gets internet access
+  (ICMP/DNS/TCP) via gvproxy, configured through the kernel command line so the image itself needs
+  no `ip`/`dhcp` tools. `--no-net` disables it.
+
+Notes:
+
+- The whole rootfs lives in RAM (initramfs), so size `--mem` above the image size; bsdkrun warns if
+  it looks too small. The image must have a `/bin/sh` (scratch/distroless images won't boot this way).
+- **`--virtiofs`** shares the extracted rootfs directly via virtio-fs (`krun_set_root`) instead of
+  an initramfs — no RAM-size limit — but it needs a guest kernel built with `CONFIG_FUSE_FS=y`
+  (the default prebuilt kernel is not, so use `--kernel` with a FUSE-enabled one).
+- Console defaults to `hvc0` (libkrun's virtio-console); `--console` overrides it.
+
 ---
 
 ## Networking
 
-Both `firmware` and `kernel` give the guest **internet access by default** — no flags needed.
-libkrun's built-in TSI backend only works for Linux guests (it needs an in-guest shim), so BSD
-guests instead get a real `virtio-net` NIC wired to [**gvproxy**](https://github.com/containers/gvisor-tap-vsock),
+`firmware`, `kernel`, and `linux` all give the guest **internet access by default** — no flags
+needed. libkrun's built-in TSI backend only works for Linux guests via an in-guest shim, so we
+instead give every guest a real `virtio-net` NIC wired to [**gvproxy**](https://github.com/containers/gvisor-tap-vsock),
 a userspace network stack that NATs the guest out to your host's network. The guest DHCPs an
 address on `192.168.127.0/24` (gateway `.1`, guest `.2`) with working DNS.
 
@@ -286,16 +328,12 @@ bsdkrun fetch --dir /tmp --force    # custom dir, re-download
 bsdkrun versions --os netbsd        # list builds (current + releases)
 bsdkrun fetch --os netbsd           # NetBSD-current -> ./images/netbsd-current.img
 
-# OpenBSD (installer image — see note below)
-bsdkrun fetch --os openbsd          # OpenBSD installer -> ./images/openbsd-<ver>.img
-
 # then boot what it printed:
 bsdkrun firmware --firmware images/KRUN_EFI.fd --disk images/freebsd-15.1.raw --cpus 2 --mem 2048
 ```
 
-With no `--version`, FreeBSD resolves the newest release, NetBSD uses **`current`**, and OpenBSD
-uses the newest release (see the notes below). Downloads are a few hundred MiB (OpenBSD's are
-uncompressed; the others expand to a couple GiB).
+With no `--version`, FreeBSD resolves the newest release and NetBSD uses **`current`** (see the
+NetBSD note below). Downloads are a few hundred MiB and expand to a couple GiB.
 
 Downloaded images are cached under **`~/.cache/bsdkrun/`** (override with `BSDKRUN_CACHE`, or
 `XDG_CACHE_HOME`), so fetching a version you already have is instant — it just links the cached
@@ -313,23 +351,6 @@ virtio-mmio driver only gained v2 support in **-current** (post-10.x). So:
 - Any NetBSD **release** (≤ 10.1) boots (kernel + console) but prints
   `virtio: unknown version 0x02; giving up` and can't mount its root disk. `fetch` warns you if you
   pin one.
-
-### OpenBSD: installer image only (work in progress)
-
-OpenBSD ships an **installer** (RAMDISK) image for arm64, not a preinstalled disk. `fetch --os
-openbsd` downloads it and `firmware` boots it. The good news: OpenBSD's EFI bootloader, the RAMDISK
-kernel, the **virtio-mmio disk** (`sd0`), and the PL011 console all come up under libkrun — all the
-dmesg prints fine.
-
-**Blocker (a libkrun-level bug, not bsdkrun's):** right after autoconf (`softraid0`), OpenBSD's
-`pluart` console switches from polled to **interrupt-driven** — it sets `UARTIMSC = 0x50` (RX +
-RX-timeout interrupts). From there it **livelocks in a PL011 interrupt storm**: it spins forever
-reading `UARTMIS` (0x40) and writing `UARTICR` (0x44) `= 0`, never mounting root or reaching the
-`(I)nstall/(S)hell` prompt. libkrun's PL011 keeps the RX/RX-timeout interrupt asserted with no real
-input, and OpenBSD's handler never clears it — an interrupt storm. FreeBSD/NetBSD program the UART
-differently and don't hit this. Fixing it needs a change in libkrun's PL011 emulation (or OpenBSD's
-driver), so it can't be worked around from the launcher. A fully installed OpenBSD would also need
-multi-disk support.
 
 ### Resizing the disk
 
@@ -404,10 +425,14 @@ hdiutil detach "${DEV%s*}"
 
 | Path                   | What it is |
 |------------------------|------------|
-| `src/krun.rs`          | Safe Rust FFI bindings to the libkrun C ABI (`krun_create_ctx`, `krun_set_vm_config`, `krun_add_disk`, `krun_set_kernel`, `krun_set_firmware`, `krun_add_net_unixgram` for gvproxy networking, the `krun_disable_implicit_console` / `krun_add_serial_console_default` console wiring, `krun_start_enter`, …). Negative returns are decoded as `-errno`. |
-| `src/main.rs`          | `clap` CLI with the `probe` / `kernel` / `firmware` subcommands. |
+| `src/krun.rs`          | Safe Rust FFI bindings to the libkrun C ABI (`krun_create_ctx`, `krun_set_vm_config`, `krun_add_disk`, `krun_set_kernel`, `krun_set_firmware`, `krun_set_root` / `krun_set_exec` for virtio-fs rootfs, `krun_add_net_unixgram` for gvproxy networking, the `krun_disable_implicit_console` / `krun_add_serial_console_default` console wiring, `krun_start_enter`, …). Negative returns are decoded as `-errno`. |
+| `src/main.rs`          | `clap` CLI with the `probe` / `kernel` / `firmware` / `linux` subcommands. |
+| `src/oci.rs`           | Minimal OCI registry client: pulls a `linux/arm64` image (any v2 registry) with `curl`, extracts layers with `tar` (applying whiteouts), and caches the rootfs content-addressed by digest. |
+| `src/linux.rs`         | The `linux` subcommand: fetches/converts the kernel, resolves the entrypoint, and builds the initramfs (generated `/init`) or wires the virtio-fs root. |
+| `src/elf.rs`           | Flattens an aarch64 `vmlinux` ELF into a raw arm64 `Image` (what libkrun's loader wants) — pure Rust, no binutils. |
 | `src/net.rs`           | User-mode networking: spawns and drives a per-VM gvproxy (unique host ssh-port, host→guest port forwards over its HTTP control socket), reaped on exit. |
 | `src/tty.rs`           | Saves stdin's terminal state before libkrun raws it and restores it on every exit path (clean, error, or signal); the signal handler also tears down gvproxy. |
+| `src/watchdog.rs`      | Tees libkrun's stderr to catch its HVF panic-hang on BSD SMP shutdown and exit cleanly. |
 | `build.rs`             | Finds libkrun via Homebrew and configures linking + rpath. |
 | `Makefile`             | Build **and codesign** (re-signs after every build — mandatory on macOS). |
 | `bsdkrun.entitlements` | `com.apple.security.hypervisor` + library-validation opt-out. |

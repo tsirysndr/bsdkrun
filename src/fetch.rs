@@ -309,7 +309,7 @@ fn curl_text(url: &str) -> Result<String> {
 
 /// Cache directory for downloaded images: `$BSDKRUN_CACHE`, else
 /// `$XDG_CACHE_HOME/bsdkrun`, else `$HOME/.cache/bsdkrun`.
-fn cache_dir() -> Result<PathBuf> {
+pub(crate) fn cache_dir() -> Result<PathBuf> {
     if let Ok(c) = std::env::var("BSDKRUN_CACHE") {
         if !c.is_empty() {
             return Ok(PathBuf::from(c));
@@ -432,7 +432,7 @@ fn mount_and_write(esp_dev: &str) -> Result<()> {
 }
 
 /// Run a command, streaming its stdout/stderr, and error if it fails.
-fn run(cmd: &mut Command, what: &str) -> Result<()> {
+pub(crate) fn run(cmd: &mut Command, what: &str) -> Result<()> {
     let status = cmd.status().with_context(|| format!("spawning {what}"))?;
     if !status.success() {
         bail!("{what} exited with {status}");

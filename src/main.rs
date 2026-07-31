@@ -7,9 +7,12 @@
 //!   * firmware — a UEFI firmware image that boots a normal BSD disk via its
 //!                EFI loader (target: FreeBSD / OpenBSD arm64)
 
+mod elf;
 mod fetch;
 mod krun;
+mod linux;
 mod net;
+mod oci;
 mod tty;
 mod watchdog;
 
@@ -76,6 +79,46 @@ enum Command {
 
     /// Grow a disk image (the guest expands its root FS on next boot).
     Grow(GrowArgs),
+
+    /// Run an OCI image (Docker Hub / any registry) as a Linux microVM.
+    Linux(LinuxArgs),
+}
+
+#[derive(Parser)]
+struct LinuxArgs {
+    /// OCI image reference, e.g. `alpine`, `alpine:3.20`, `ghcr.io/owner/name:tag`.
+    #[arg(value_name = "IMAGE")]
+    image: String,
+
+    /// Kernel to boot (default: a prebuilt aarch64 vmlinux, downloaded + cached).
+    #[arg(long)]
+    kernel: Option<PathBuf>,
+
+    /// Share the extracted rootfs via virtio-fs instead of packing an initramfs.
+    /// Requires a guest kernel built with CONFIG_FUSE_FS=y / virtio-fs.
+    #[arg(long)]
+    virtiofs: bool,
+
+    /// Override the image's entrypoint (like `docker run --entrypoint`).
+    #[arg(long)]
+    entrypoint: Option<String>,
+
+    /// Guest console device the kernel should log to. libkrun's native console
+    /// is the virtio-console `hvc0`; use `ttyS0` only with a kernel/setup that
+    /// expects libkrun's explicit 8250 serial instead.
+    #[arg(long, default_value = "hvc0")]
+    console: String,
+
+    #[command(flatten)]
+    net: NetConfig,
+
+    #[command(flatten)]
+    vm: VmConfig,
+
+    /// Command (and args) to run instead of the image's default Cmd.
+    /// Everything after `--` is passed through.
+    #[arg(last = true, value_name = "CMD")]
+    command: Vec<String>,
 }
 
 #[derive(Parser)]
@@ -299,6 +342,7 @@ fn main() -> Result<()> {
         }
         Command::Versions(args) => fetch::list_versions(args.os),
         Command::Grow(args) => fetch::grow(&args.disk, &args.size),
+        Command::Linux(args) => boot_linux(args),
     }
 }
 
@@ -325,6 +369,18 @@ fn attach_extra_disks(ctx: &Ctx, disks: &[DiskSpec]) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Shared boot tail: enter the guest, restore the terminal on the way out
+/// (success or error), then tear down networking and exit with the guest's code.
+/// Never returns normally.
+fn finish(ctx: Ctx, gvproxy: Option<Gvproxy>) -> Result<()> {
+    let result = ctx.start_enter();
+    tty::restore_stdin_termios();
+    let code = result.context("starting microVM")?;
+    info!(code, "guest exited");
+    drop(gvproxy);
+    std::process::exit(code);
 }
 
 /// Bring up user-mode networking (on by default). Returns the live gvproxy
@@ -394,16 +450,7 @@ fn boot_kernel(args: KernelArgs) -> Result<()> {
         kernel = %args.kernel.display(),
         "booting microVM"
     );
-    let result = ctx.start_enter();
-    // `start_enter` returns after the guest halts (or errors). Put the terminal
-    // back either way, before we propagate any error or exit.
-    tty::restore_stdin_termios();
-    let code = result.context("starting microVM")?;
-    info!(code, "guest exited");
-    // Drop gvproxy explicitly to tear down networking before `exit` skips
-    // destructors.
-    drop(gvproxy);
-    std::process::exit(code);
+    finish(ctx, gvproxy)
 }
 
 fn boot_firmware(args: FirmwareArgs) -> Result<()> {
@@ -433,12 +480,74 @@ fn boot_firmware(args: FirmwareArgs) -> Result<()> {
         disk = %args.disk.display(),
         "booting microVM"
     );
-    let result = ctx.start_enter();
-    // Restore the terminal on both the success and error paths (see boot_kernel).
-    tty::restore_stdin_termios();
-    let code = result.context("starting microVM")?;
-    info!(code, "guest exited");
-    // See boot_kernel: drop gvproxy before `exit` bypasses destructors.
-    drop(gvproxy);
-    std::process::exit(code);
+    finish(ctx, gvproxy)
+}
+
+fn boot_linux(args: LinuxArgs) -> Result<()> {
+    // Prepare everything that can fail before we touch the terminal/hypervisor.
+    let kernel = linux::ensure_kernel(args.kernel.clone())?;
+    let image = oci::pull(&args.image)?;
+    let ep = linux::resolve_entrypoint(&image.config, args.entrypoint.as_deref(), &args.command);
+    info!(argv = ?ep.argv, "resolved entrypoint");
+
+    // Snapshot the terminal + arm signal cleanup before libkrun raws the TTY.
+    // NOTE: we deliberately do *not* install the stderr-tee watchdog here — it
+    // redirects fd 2, which libkrun's implicit virtio-console (hvc0) claims for
+    // the guest, breaking the console. The watchdog exists for the BSD SMP-
+    // shutdown PSCI panic; Linux guests power off cleanly and don't need it.
+    tty::install();
+
+    let ctx = Ctx::new()?;
+    ctx.set_vm_config(args.vm.cpus, args.vm.mem)?;
+    // For a `ttyS*` console we wire libkrun's explicit 8250 serial (as the BSD
+    // paths do); for `hvc*` we leave libkrun's implicit virtio-console in place
+    // (that's the console libkrun natively gives Linux container guests).
+    if !args.console.starts_with("hvc") {
+        ctx.attach_stdio_serial_console()
+            .context("wiring guest serial console to stdio")?;
+    }
+
+    let gvproxy = setup_networking(&ctx, &args.net)?;
+    // Networking is only actually up if gvproxy started (graceful-degrade aware),
+    // so the kernel `ip=`/DNS config is only added when there's really a NIC.
+    let net_up = gvproxy.is_some();
+
+    if args.virtiofs {
+        // Directory rootfs over virtio-fs; libkrun's init runs the entrypoint.
+        ctx.set_root(&image.rootfs)
+            .context("configuring virtio-fs root (needs a CONFIG_FUSE_FS=y kernel)")?;
+        if !ep.workdir.is_empty() {
+            ctx.set_workdir(&ep.workdir)?;
+        }
+        let (exec, argv) = (ep.argv[0].clone(), ep.argv.clone());
+        ctx.set_exec(&exec, &argv, &ep.env)?;
+        ctx.set_kernel(
+            &kernel,
+            krun::KRUN_KERNEL_FORMAT_RAW,
+            None,
+            &format!("console={}", args.console),
+        )
+        .context("configuring kernel")?;
+    } else {
+        // Initramfs: pack the rootfs + generated /init and boot it from RAM.
+        linux::warn_initramfs_memory(&image.rootfs, args.vm.mem);
+        let initramfs = linux::build_initramfs(&image.rootfs, &ep, net_up)?;
+        let cmdline = linux::kernel_cmdline(&args.console, net_up);
+        ctx.set_kernel(
+            &kernel,
+            krun::KRUN_KERNEL_FORMAT_RAW,
+            Some(&initramfs),
+            &cmdline,
+        )
+        .context("configuring kernel")?;
+    }
+
+    info!(
+        cpus = args.vm.cpus,
+        mem_mib = args.vm.mem,
+        image = %args.image,
+        mode = if args.virtiofs { "virtiofs" } else { "initramfs" },
+        "booting Linux microVM"
+    );
+    finish(ctx, gvproxy)
 }

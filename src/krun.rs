@@ -60,6 +60,14 @@ extern "C" {
         cmdline: *const c_char,
     ) -> i32;
     fn krun_set_firmware(ctx_id: u32, firmware_path: *const c_char) -> i32;
+    fn krun_set_root(ctx_id: u32, root_path: *const c_char) -> i32;
+    fn krun_set_workdir(ctx_id: u32, workdir_path: *const c_char) -> i32;
+    fn krun_set_exec(
+        ctx_id: u32,
+        exec_path: *const c_char,
+        argv: *const *const c_char,
+        envp: *const *const c_char,
+    ) -> i32;
     fn krun_add_net_unixgram(
         ctx_id: u32,
         c_path: *const c_char,
@@ -218,6 +226,60 @@ impl Ctx {
         check(
             unsafe { krun_set_firmware(self.id, fw.as_ptr()) },
             "krun_set_firmware",
+        )?;
+        Ok(())
+    }
+
+    /// Use a host directory as the guest's root filesystem, shared over
+    /// virtio-fs. Requires a guest kernel built with `CONFIG_FUSE_FS=y` /
+    /// virtio-fs. libkrun injects its own init into this virtiofs root and runs
+    /// the executable configured via [`Ctx::set_exec`].
+    pub fn set_root(&self, root_path: &Path) -> anyhow::Result<()> {
+        let path = path_cstr(root_path)?;
+        check(
+            unsafe { krun_set_root(self.id, path.as_ptr()) },
+            "krun_set_root",
+        )?;
+        Ok(())
+    }
+
+    /// Set the working directory (relative to the virtio-fs root) for the
+    /// executable started by libkrun's init.
+    pub fn set_workdir(&self, workdir: &str) -> anyhow::Result<()> {
+        let w = cstr(workdir)?;
+        check(
+            unsafe { krun_set_workdir(self.id, w.as_ptr()) },
+            "krun_set_workdir",
+        )?;
+        Ok(())
+    }
+
+    /// Set the executable (relative to the virtio-fs root), its arguments, and
+    /// its environment, for libkrun's init to exec as the guest's entrypoint.
+    pub fn set_exec(
+        &self,
+        exec_path: &str,
+        argv: &[String],
+        envp: &[String],
+    ) -> anyhow::Result<()> {
+        let exec = cstr(exec_path)?;
+        // argv/envp are NULL-terminated arrays of C string pointers. Keep the
+        // owning CStrings alive until after the call.
+        let argv_c: Vec<CString> = argv
+            .iter()
+            .map(|s| cstr(s))
+            .collect::<anyhow::Result<_>>()?;
+        let envp_c: Vec<CString> = envp
+            .iter()
+            .map(|s| cstr(s))
+            .collect::<anyhow::Result<_>>()?;
+        let mut argv_p: Vec<*const c_char> = argv_c.iter().map(|c| c.as_ptr()).collect();
+        argv_p.push(std::ptr::null());
+        let mut envp_p: Vec<*const c_char> = envp_c.iter().map(|c| c.as_ptr()).collect();
+        envp_p.push(std::ptr::null());
+        check(
+            unsafe { krun_set_exec(self.id, exec.as_ptr(), argv_p.as_ptr(), envp_p.as_ptr()) },
+            "krun_set_exec",
         )?;
         Ok(())
     }

@@ -67,7 +67,9 @@ jobs:
           # The guest agents (BSD one is for manual injection into a running VM).
           cp src/agent-bin/bsdkrun-agent.linux-aarch64 dist/
           cp src/agent-bin/bsdkrun-agent.freebsd-aarch64 dist/
-          cd dist && shasum -a 256 * > SHA256SUMS.txt
+          # Subshell so cwd doesn't leak; scope the glob so the sums file
+          # doesn't hash itself.
+          ( cd dist && shasum -a 256 bsdkrun-* > SHA256SUMS.txt )
           cat dist/SHA256SUMS.txt
 
       # Always expose the build as workflow artifacts (handy for manual runs).

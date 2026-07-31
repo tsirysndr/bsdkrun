@@ -219,12 +219,16 @@ bsdkrun fetch --dir /tmp --force    # custom dir, re-download
 bsdkrun versions --os netbsd        # list builds (current + releases)
 bsdkrun fetch --os netbsd           # NetBSD-current -> ./images/netbsd-current.img
 
+# OpenBSD (installer image — see note below)
+bsdkrun fetch --os openbsd          # OpenBSD installer -> ./images/openbsd-<ver>.img
+
 # then boot what it printed:
 bsdkrun firmware --firmware images/KRUN_EFI.fd --disk images/freebsd-15.1.raw --cpus 2 --mem 2048
 ```
 
-With no `--version`, FreeBSD resolves the newest release and NetBSD uses **`current`** (see the
-NetBSD note below). Downloads are a few hundred MiB and expand to a couple GiB.
+With no `--version`, FreeBSD resolves the newest release, NetBSD uses **`current`**, and OpenBSD
+uses the newest release (see the notes below). Downloads are a few hundred MiB (OpenBSD's are
+uncompressed; the others expand to a couple GiB).
 
 Downloaded images are cached under **`~/.cache/bsdkrun/`** (override with `BSDKRUN_CACHE`, or
 `XDG_CACHE_HOME`), so fetching a version you already have is instant — it just links the cached
@@ -242,6 +246,15 @@ virtio-mmio driver only gained v2 support in **-current** (post-10.x). So:
 - Any NetBSD **release** (≤ 10.1) boots (kernel + console) but prints
   `virtio: unknown version 0x02; giving up` and can't mount its root disk. `fetch` warns you if you
   pin one.
+
+### OpenBSD: installer image only (work in progress)
+
+OpenBSD ships an **installer** (RAMDISK) image for arm64, not a preinstalled disk. `fetch --os
+openbsd` downloads it and `firmware` boots it. The good news: OpenBSD's EFI bootloader, the RAMDISK
+kernel, the **virtio-mmio disk** (`sd0`), and the PL011 console all come up under libkrun. The
+current limitation: the interactive installer stalls just after `softraid0` and doesn't reach its
+`(I)nstall/(S)hell` prompt yet — under investigation. A fully installed, persistent OpenBSD also
+needs a second target disk (multi-disk support, not yet wired up).
 
 ### Resizing the disk
 
@@ -389,6 +402,9 @@ libkrun's EDK2 firmware and the guest's own EFI loader:
 - **NetBSD-current / arm64** (evbarm `GENERIC64`) — efiboot → kernel → root-on-ffs → `login:`.
   `fetch --os netbsd` + `firmware`. (NetBSD *releases* ≤ 10.1 boot but can't mount root — their
   virtio-mmio driver is legacy-only; modern v2 support is only in -current.)
+- **OpenBSD / arm64** — installer RAMDISK boots (EFI bootloader → kernel → virtio-mmio `sd0` +
+  console). Reaching the installer prompt / installing to disk is still WIP (see the OpenBSD note
+  above). `fetch --os openbsd`.
 
 The blocker that made guests look dead — console output going to a PL011 serial libkrun wasn't
 forwarding — is fixed by bsdkrun's serial-console wiring (see

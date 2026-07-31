@@ -19,12 +19,14 @@ use tracing::{info, warn};
 const FREEBSD_VM_IMAGES: &str = "https://download.freebsd.org/releases/VM-IMAGES";
 const NETBSD_PUB: &str = "https://cdn.netbsd.org/pub/NetBSD";
 const NETBSD_DAILY_HEAD: &str = "https://nycdn.netbsd.org/pub/NetBSD-daily/HEAD/latest";
+const OPENBSD_PUB: &str = "https://cdn.openbsd.org/pub/OpenBSD";
 
 /// Guest operating systems bsdkrun can provision.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Os {
     Freebsd,
     Netbsd,
+    Openbsd,
 }
 
 /// FreeBSD's `/boot/loader.conf` lives on UFS (macOS can't write it), but the
@@ -43,6 +45,7 @@ impl Os {
         match self {
             Os::Freebsd => "freebsd",
             Os::Netbsd => "netbsd",
+            Os::Openbsd => "openbsd",
         }
     }
 
@@ -50,7 +53,7 @@ impl Os {
     fn raw_ext(self) -> &'static str {
         match self {
             Os::Freebsd => "raw",
-            Os::Netbsd => "img",
+            Os::Netbsd | Os::Openbsd => "img",
         }
     }
 
@@ -59,6 +62,7 @@ impl Os {
         match self {
             Os::Freebsd => Comp::Xz,
             Os::Netbsd => Comp::Gz,
+            Os::Openbsd => Comp::None, // OpenBSD ships a raw .img
         }
     }
 
@@ -66,10 +70,10 @@ impl Os {
     fn default_version(self) -> Result<String> {
         match self {
             // Newest published release.
-            Os::Freebsd => Ok(self
+            Os::Freebsd | Os::Openbsd => Ok(self
                 .all_versions()?
                 .pop()
-                .ok_or_else(|| anyhow::anyhow!("no FreeBSD releases found"))?),
+                .ok_or_else(|| anyhow::anyhow!("no releases found for {}", self.slug()))?),
             // Releases (<=10.x) lack modern virtio-mmio, so they can't mount a
             // root disk under libkrun; -current is the one that works fully.
             Os::Netbsd => Ok("current".to_string()),
@@ -88,6 +92,11 @@ impl Os {
             Os::Netbsd => {
                 format!("{NETBSD_PUB}/NetBSD-{version}/evbarm-aarch64/binary/gzimg/arm64.img.gz")
             }
+            // e.g. 7.9 -> install79.img
+            Os::Openbsd => {
+                let xy = version.replace('.', "");
+                format!("{OPENBSD_PUB}/{version}/arm64/install{xy}.img")
+            }
         }
     }
 
@@ -97,6 +106,7 @@ impl Os {
         let (url, prefix, suffix) = match self {
             Os::Freebsd => (format!("{FREEBSD_VM_IMAGES}/"), "", "-RELEASE/"),
             Os::Netbsd => (format!("{NETBSD_PUB}/"), "NetBSD-", "/"),
+            Os::Openbsd => (format!("{OPENBSD_PUB}/"), "", "/"),
         };
         let listing = curl_text(&url)?;
         let mut versions: Vec<(u32, u32, String)> = listing
@@ -122,31 +132,40 @@ impl Os {
                 info!("writing serial-console loader.env onto the image's ESP…");
                 write_freebsd_loader_env(raw)
             }
-            // NetBSD's kernel picks up the PL011 UART on its own.
-            Os::Netbsd => Ok(()),
+            // NetBSD and OpenBSD pick up the PL011 UART on their own.
+            Os::Netbsd | Os::Openbsd => Ok(()),
         }
     }
 
-    /// Warn if a chosen version is known not to reach a usable system.
+    /// Note anything the user should know about the chosen version.
     fn warn_if_unsupported(self, version: &str) {
-        if self == Os::Netbsd && version != "current" {
-            warn!(
+        match self {
+            Os::Netbsd if version != "current" => warn!(
                 "NetBSD {version} is a release whose virtio-mmio driver is legacy-only: it boots \
                  (kernel + console work) but cannot see libkrun's virtio devices, so it can't \
                  mount its root disk. Use `--version current` for a fully working system."
-            );
+            ),
+            Os::Openbsd => info!(
+                "OpenBSD ships an installer image (RAMDISK), not a preinstalled system. This boots \
+                 to the OpenBSD installer — choose (S)hell for a live shell (the virtio disk shows \
+                 as sd0), or (I)nstall to set up a system."
+            ),
+            _ => {}
         }
     }
 }
 
 enum Comp {
+    None,
     Xz,
     Gz,
 }
 
 impl Comp {
+    /// Filename suffix of the compressed download (empty when uncompressed).
     fn ext(&self) -> &'static str {
         match self {
+            Comp::None => "",
             Comp::Xz => "xz",
             Comp::Gz => "gz",
         }
@@ -155,6 +174,7 @@ impl Comp {
     /// Decompress `file` in place (removing the compressed original).
     fn decompress(&self, file: &Path) -> Result<()> {
         let bin = match self {
+            Comp::None => return Ok(()),
             Comp::Xz => "xz",
             Comp::Gz => "gzip",
         };
@@ -183,25 +203,33 @@ pub fn fetch(os: Os, version: Option<String>, dir: &Path, force: bool) -> Result
 
     let base = format!("{}-{version}", os.slug());
     let raw = cache.join(format!("{base}.{}", os.raw_ext()));
-    let comp = cache.join(format!("{base}.{}.{}", os.raw_ext(), os.comp().ext()));
+    // Download target: the compressed file for xz/gz OSes, else the raw image.
+    let comp_ext = os.comp().ext();
+    let download = if comp_ext.is_empty() {
+        raw.clone()
+    } else {
+        cache.join(format!("{base}.{}.{comp_ext}", os.raw_ext()))
+    };
 
     if raw.exists() && !force {
         info!(path = %raw.display(), "using cached image (already downloaded)");
     } else {
         let url = os.image_url(&version);
         info!(%url, "downloading (this is a few hundred MiB)…");
-        let _ = std::fs::remove_file(&comp); // drop any stale/partial download
+        let _ = std::fs::remove_file(&download); // drop any stale/partial download
         run(
             Command::new("curl")
                 .args(["-L", "--fail", "--progress-bar", "-o"])
-                .arg(&comp)
+                .arg(&download)
                 .arg(&url),
             "curl (download image)",
         )
         .with_context(|| format!("downloading {url} — is that version published?"))?;
 
-        info!("decompressing (expands to a couple GiB)…");
-        os.comp().decompress(&comp)?;
+        if !comp_ext.is_empty() {
+            info!("decompressing (expands to a couple GiB)…");
+            os.comp().decompress(&download)?;
+        }
     }
 
     os.prepare_console(&raw)?;
@@ -290,6 +318,15 @@ pub fn list_versions(os: Os) -> Result<()> {
             for v in versions.iter().rev() {
                 println!("  {v:<7}  (release; boots but no root disk under libkrun — legacy virtio-mmio)");
             }
+        }
+        Os::Openbsd => {
+            let latest = versions.last().cloned().unwrap_or_default();
+            println!("Available OpenBSD arm64 installers:");
+            for v in &versions {
+                let tag = if *v == latest { "  (latest)" } else { "" };
+                println!("  {v}{tag}");
+            }
+            println!("(installer/RAMDISK images — boot to the OpenBSD installer, not a preinstalled system)");
         }
     }
     Ok(())

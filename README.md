@@ -243,6 +243,23 @@ virtio-mmio driver only gained v2 support in **-current** (post-10.x). So:
   `virtio: unknown version 0x02; giving up` and can't mount its root disk. `fetch` warns you if you
   pin one.
 
+### Resizing the disk
+
+The stock images are small (NetBSD's root is ~1.7 GB) — you'll hit **`no space left on device`**
+quickly. `grow` enlarges a raw image; NetBSD then expands its root filesystem to fill the new space
+automatically on the next boot:
+
+```sh
+bsdkrun grow --disk images/netbsd-current.img --size 8G
+bsdkrun firmware --firmware images/KRUN_EFI.fd --disk images/netbsd-current.img --cpus 2 --mem 2048
+# NetBSD's resize_root grows the GPT partition + ffs on boot; root becomes ~7.8 GB.
+```
+
+`grow` only enlarges (never shrinks). Note it follows hard links, so growing a `fetch`-linked image
+also grows the cached copy — that's usually fine (the file is sparse). **FreeBSD** images won't
+auto-grow this way (their UFS root is followed by the swap partition, so the trailing space isn't
+adjacent to root).
+
 ### The manual way
 
 FreeBSD publishes raw arm64 disk images directly:

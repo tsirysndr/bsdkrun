@@ -211,6 +211,67 @@ pub fn fetch(os: Os, version: Option<String>, dir: &Path, force: bool) -> Result
     Ok(ready)
 }
 
+/// Grow a raw disk image to `size` (e.g. "8G"). Only ever enlarges the file.
+///
+/// NetBSD's arm64 image expands its root filesystem to fill the new space
+/// automatically on the next boot (its root partition is last on the disk and
+/// `resize_root` runs on boot) — no in-guest steps needed. FreeBSD's image
+/// won't: its UFS root is followed by swap, so the trailing space isn't
+/// adjacent to root (you'd need to repartition + `growfs` by hand).
+pub fn grow(disk: &Path, size: &str) -> Result<()> {
+    let target = parse_size(size)?;
+    let meta = std::fs::metadata(disk)
+        .with_context(|| format!("stat {}", disk.display()))?;
+    let current = meta.len();
+    if target <= current {
+        bail!(
+            "--size {size} ({target} bytes) is not larger than the current image \
+             ({current} bytes); grow only enlarges disks"
+        );
+    }
+    // Growing follows hard links, so a cache-backed image would grow too.
+    use std::os::unix::fs::MetadataExt;
+    if meta.nlink() > 1 {
+        warn!(
+            "{} has {} hard links (e.g. into ~/.cache/bsdkrun) — growing enlarges all of them",
+            disk.display(),
+            meta.nlink()
+        );
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(disk)
+        .with_context(|| format!("opening {}", disk.display()))?
+        .set_len(target)
+        .with_context(|| format!("growing {}", disk.display()))?;
+
+    info!(from = current, to = target, image = %disk.display(), "grew image");
+    info!(
+        "NetBSD expands its root filesystem to fill the new space on next boot. \
+         (FreeBSD's root is followed by swap, so it won't auto-grow.)"
+    );
+    Ok(())
+}
+
+/// Parse a size like `8G`, `4096M`, `1.5g`, or a plain byte count.
+fn parse_size(s: &str) -> Result<u64> {
+    let s = s.trim();
+    let (num, mult): (&str, u64) = match s.chars().last() {
+        Some('G' | 'g') => (&s[..s.len() - 1], 1 << 30),
+        Some('M' | 'm') => (&s[..s.len() - 1], 1 << 20),
+        Some('K' | 'k') => (&s[..s.len() - 1], 1 << 10),
+        _ => (s, 1),
+    };
+    let val: f64 = num
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid size: {s:?} (try e.g. 8G, 4096M)"))?;
+    if val <= 0.0 {
+        bail!("size must be positive: {s:?}");
+    }
+    Ok((val * mult as f64) as u64)
+}
+
 /// Print the available builds for `os`.
 pub fn list_versions(os: Os) -> Result<()> {
     let versions = os.all_versions()?;

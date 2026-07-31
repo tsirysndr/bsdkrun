@@ -68,6 +68,20 @@ enum Command {
 
     /// List the arm64 builds available to fetch.
     Versions(VersionsArgs),
+
+    /// Grow a disk image (the guest expands its root FS on next boot).
+    Grow(GrowArgs),
+}
+
+#[derive(Parser)]
+struct GrowArgs {
+    /// Path to the raw disk image to enlarge.
+    #[arg(long)]
+    disk: PathBuf,
+
+    /// New size, e.g. 8G, 4096M (only enlarges — never shrinks).
+    #[arg(long)]
+    size: String,
 }
 
 #[derive(Parser)]
@@ -194,6 +208,7 @@ fn main() -> Result<()> {
             fetch::fetch(args.os, args.version, &args.dir, args.force).map(|_| ())
         }
         Command::Versions(args) => fetch::list_versions(args.os),
+        Command::Grow(args) => fetch::grow(&args.disk, &args.size),
     }
 }
 

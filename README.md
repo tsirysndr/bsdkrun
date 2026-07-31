@@ -202,18 +202,40 @@ internal pipe — a pollable fd that just never delivers input. So:
 
 ## Preparing a FreeBSD arm64 image
 
-FreeBSD publishes raw arm64 disk images. Fetch and decompress one (this is roughly what's in
-`images/`):
+### The easy way — `bsdkrun fetch`
+
+`fetch` downloads a FreeBSD arm64 VM image from `download.freebsd.org`, decompresses it, and writes
+the serial-console `loader.env` onto its ESP — everything below, automated. It shells out to tools
+already on macOS (`curl`, `xz`, `hdiutil`, `diskutil`).
 
 ```sh
-# e.g. a FreeBSD 15 arm64 raw image (name/URL will vary by release/snapshot)
-curl -Lo images/fbsd15.raw.xz <freebsd-arm64-vm-image-url>.xz
-xz -dk images/fbsd15.raw.xz          # -> images/fbsd15.raw (several GB)
+bsdkrun versions            # list available releases (14.3, 14.4, 15.0, 15.1, …)
+bsdkrun fetch               # download + prepare the latest release into ./images
+bsdkrun fetch --version 15.1        # pin a specific release
+bsdkrun fetch --dir /tmp --force    # custom dir, re-download
+
+# then boot what it printed:
+bsdkrun firmware --firmware images/KRUN_EFI.fd --disk images/freebsd-15.1.raw --cpus 2 --mem 2048
+```
+
+With no `--version`, it resolves the newest release by listing the mirror. The download is a few
+hundred MiB and expands to several GiB.
+
+### The manual way
+
+FreeBSD publishes raw arm64 disk images directly:
+
+```sh
+V=15.1
+base=https://download.freebsd.org/releases/VM-IMAGES/$V-RELEASE/aarch64/Latest
+curl -Lo images/fbsd.raw.xz "$base/FreeBSD-$V-RELEASE-arm64-aarch64-ufs.raw.xz"
+xz -d images/fbsd.raw.xz          # -> images/fbsd.raw (several GB)
 ```
 
 A valid image is **GPT** with an **EFI System Partition** (type GUID `C12A7328-…`) plus the
 FreeBSD UFS root (`516E7CB5-…`). You can sanity-check the partition table with `xxd`/`gpt`/
-`hdiutil` before booting.
+`hdiutil` before booting. Then set the console via the ESP as described next (or just run
+`bsdkrun fetch` on the same version, which does it for you).
 
 ### Point FreeBSD's console at the serial (via the ESP)
 

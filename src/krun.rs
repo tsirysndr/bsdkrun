@@ -141,7 +141,12 @@ impl Ctx {
         Ok(())
     }
 
-    pub fn add_disk(&self, block_id: &str, disk_path: &Path, read_only: bool) -> anyhow::Result<()> {
+    pub fn add_disk(
+        &self,
+        block_id: &str,
+        disk_path: &Path,
+        read_only: bool,
+    ) -> anyhow::Result<()> {
         let id = cstr(block_id)?;
         let path = path_cstr(disk_path)?;
         check(
@@ -212,7 +217,10 @@ impl Ctx {
         // older libkrun (e.g. via DYLD_LIBRARY_PATH pointing at a stale copy in
         // ~/.local/lib), calling them jumps through a NULL stub and segfaults.
         // Fail with an actionable message instead.
-        for sym in ["krun_disable_implicit_console", "krun_add_serial_console_default"] {
+        for sym in [
+            "krun_disable_implicit_console",
+            "krun_add_serial_console_default",
+        ] {
             require_symbol(sym)?;
         }
 

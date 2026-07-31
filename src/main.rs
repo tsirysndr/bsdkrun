@@ -7,19 +7,42 @@
 //!   * firmware — a UEFI firmware image that boots a normal BSD disk via its
 //!                EFI loader (target: FreeBSD / OpenBSD arm64)
 
+mod fetch;
 mod krun;
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use clap::builder::styling::{Color, RgbColor, Style, Styles};
 use clap::{Parser, Subcommand, ValueEnum};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use krun::Ctx;
 
+// Accent palette (with matching muted + error tones) applied to clap's --help
+// styling: electric teal for section headers/usage, violet for literals.
+const TEAL: Color = Color::Rgb(RgbColor(0, 232, 198));
+const VIOLET: Color = Color::Rgb(RgbColor(130, 100, 255));
+const MUTED: Color = Color::Rgb(RgbColor(200, 210, 220));
+const ERROR: Color = Color::Rgb(RgbColor(255, 100, 100));
+
+/// clap help/usage colors: electric teal for the section headers
+/// (Usage/Commands/Options), violet for literals (flags & subcommand names),
+/// muted gray for placeholders.
+fn cli_styles() -> Styles {
+    Styles::styled()
+        .header(Style::new().bold().fg_color(Some(TEAL)))
+        .usage(Style::new().bold().fg_color(Some(TEAL)))
+        .literal(Style::new().fg_color(Some(VIOLET)))
+        .placeholder(Style::new().fg_color(Some(MUTED)))
+        .valid(Style::new().fg_color(Some(VIOLET)))
+        .error(Style::new().bold().fg_color(Some(ERROR)))
+        .invalid(Style::new().bold().fg_color(Some(ERROR)))
+}
+
 #[derive(Parser)]
-#[command(name = "bsdkrun", version, about)]
+#[command(name = "bsdkrun", version, about, styles = cli_styles())]
 struct Cli {
     /// libkrun log verbosity (0=off .. 5=trace)
     #[arg(long, global = true, default_value_t = 1)]
@@ -39,6 +62,27 @@ enum Command {
 
     /// Boot a microVM from a UEFI firmware image + root disk.
     Firmware(FirmwareArgs),
+
+    /// Download a FreeBSD arm64 image and prepare it for booting.
+    Fetch(FetchArgs),
+
+    /// List the FreeBSD arm64 releases available to fetch.
+    Versions,
+}
+
+#[derive(Parser)]
+struct FetchArgs {
+    /// FreeBSD release to download (e.g. 15.1). Defaults to the latest.
+    #[arg(long)]
+    version: Option<String>,
+
+    /// Directory to place the downloaded/prepared image in.
+    #[arg(long, default_value = "images")]
+    dir: PathBuf,
+
+    /// Re-download even if the image already exists.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -134,6 +178,8 @@ fn main() -> Result<()> {
         Command::Probe => probe(),
         Command::Kernel(args) => boot_kernel(args),
         Command::Firmware(args) => boot_firmware(args),
+        Command::Fetch(args) => fetch::fetch(args.version, &args.dir, args.force).map(|_| ()),
+        Command::Versions => fetch::list_versions(),
     }
 }
 

@@ -1,19 +1,41 @@
 # bsdkrun
 
-A Firecracker-style **microVM launcher for BSD guests on macOS Apple Silicon**, built on
+A Firecracker-style **microVM launcher for BSD and Linux guests on macOS Apple Silicon**, built on
 [libkrun](https://github.com/containers/libkrun) (which drives Apple's Hypervisor.framework).
 
 `bsdkrun` is a thin, purpose-built CLI: it wraps libkrun's C ABI in a handful of safe Rust
-bindings and boots a BSD guest two ways — from a **UEFI firmware** image (the guest's own EFI
-loader boots a normal disk) or from a **direct kernel + FDT** (no bootloader). It is deliberately
-small: one FFI module, one CLI, no daemon.
+bindings and boots a guest three ways — from a **UEFI firmware** image (the guest's own EFI loader
+boots a normal disk), from a **direct kernel + FDT** (no bootloader), or straight from an **OCI
+image** (`bsdkrun linux alpine` pulls it from any registry, extracts the rootfs, and boots it like
+`docker run`). It is deliberately small: one FFI module, one CLI, no daemon.
 
 > **Platform:** macOS on Apple Silicon (arm64) only. libkrun's macOS backend is
-> Hypervisor.framework, and the guests we target are arm64 BSD images.
+> Hypervisor.framework, and the guests we target are arm64 BSD and Linux images.
 
 <p align="center">
   <img src=".github/assets/preview.png" alt="FreeBSD 15 arm64 booting under bsdkrun on macOS" width="800">
 </p>
+
+---
+
+## Contents
+
+- [Why this exists](#why-this-exists)
+- [Prerequisites](#prerequisites)
+- [Build](#build)
+- [Usage](#usage)
+  - [`probe`](#probe--sanity-check-the-toolchain)
+  - [`firmware`](#firmware--boot-a-disk-through-its-uefi-loader)
+  - [`kernel`](#kernel--boot-a-kernel-directly-no-bootloader)
+  - [`linux`](#linux--run-an-oci-image-as-a-microvm)
+- [Networking](#networking)
+- [Disks](#disks)
+- [Console](#console-how-output-reaches-your-terminal)
+- [Preparing a guest image](#preparing-a-guest-image)
+- [Project layout](#project-layout)
+- [Troubleshooting](#troubleshooting)
+- [Status](#status)
+- [License](#license)
 
 ---
 

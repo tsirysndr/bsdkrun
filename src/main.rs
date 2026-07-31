@@ -1,11 +1,13 @@
-//! bsdkrun — a Firecracker-style microVM launcher for BSD guests on macOS,
-//! built on libkrun (Hypervisor.framework).
+//! bsdkrun — a Firecracker-style microVM launcher for BSD and Linux guests on
+//! macOS, built on libkrun (Hypervisor.framework).
 //!
-//! Two boot modes:
+//! Boot modes:
 //!   * kernel   — direct kernel + cmdline, using libkrun's generated FDT
 //!                (target: NetBSD evbarm / bare kernel+FDT boot)
 //!   * firmware — a UEFI firmware image that boots a normal BSD disk via its
 //!                EFI loader (target: FreeBSD / OpenBSD arm64)
+//!   * linux    — run an OCI image (Docker Hub / any registry) as a Linux
+//!                microVM: fetch a kernel, extract the rootfs, boot it
 
 mod elf;
 mod fetch;

@@ -102,18 +102,31 @@ pub fn pull(reference: &str) -> Result<Image> {
     let layers = image_manifest["layers"]
         .as_array()
         .context("image manifest has no layers")?;
-    info!(count = layers.len(), "downloading + extracting layers");
+    let total_bytes: u64 = layers.iter().filter_map(|l| l["size"].as_u64()).sum();
+    info!(
+        count = layers.len(),
+        total = %human_size(total_bytes),
+        "pulling image layers"
+    );
     for (i, layer) in layers.iter().enumerate() {
         let digest = layer["digest"]
             .as_str()
             .with_context(|| format!("layer {i} has no digest"))?;
+        let size = layer["size"].as_u64().unwrap_or(0);
+        // A blank line keeps curl's in-place progress bar from being overwritten
+        // by the next log line.
+        eprintln!(
+            "  layer {}/{}  {}",
+            i + 1,
+            layers.len(),
+            human_size(size)
+        );
         let blob = staging.join(format!("layer{i}.tar"));
         get_blob(&r, digest, &token, Some(&blob))?;
         extract_layer(&blob, &staging_rootfs)
             .with_context(|| format!("extracting layer {i} ({digest})"))?;
         apply_whiteouts(&staging_rootfs)?;
         let _ = std::fs::remove_file(&blob);
-        info!(layer = i + 1, total = layers.len(), "extracted");
     }
 
     std::fs::write(
@@ -315,7 +328,9 @@ fn get_blob(r: &Ref, digest: &str, token: &Option<String>, to: Option<&Path>) ->
     match to {
         Some(path) => {
             let mut c = Command::new("curl");
-            c.args(["-s", "-L", "--fail", "--max-time", "600", "-o"])
+            // `--progress-bar` shows a live bar + percentage on stderr as the
+            // layer downloads (the layer size is logged separately by the caller).
+            c.args(["--progress-bar", "-L", "--fail", "--max-time", "600", "-o"])
                 .arg(path);
             if let Some(t) = token {
                 c.arg("-H").arg(format!("Authorization: Bearer {t}"));
@@ -384,6 +399,22 @@ fn parse_config(json: &Value) -> Result<ImageConfig> {
 /// `sha256:abcd…` -> `sha256-abcd…`, safe as a directory name.
 fn digest_to_dirname(digest: &str) -> String {
     digest.replace(':', "-")
+}
+
+/// Format a byte count as a human-readable size (e.g. `3.2 MiB`).
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut v = bytes as f64;
+    let mut unit = 0;
+    while v >= 1024.0 && unit < UNITS.len() - 1 {
+        v /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{v:.1} {}", UNITS[unit])
+    }
 }
 
 /// Unpack a layer tarball into `rootfs`. bsdtar auto-detects the compression;

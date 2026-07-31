@@ -33,6 +33,10 @@ pub struct ImageConfig {
 pub struct Image {
     pub rootfs: PathBuf,
     pub config: ImageConfig,
+    /// The image's content (config) digest, e.g. `sha256:…`.
+    pub digest: String,
+    /// Total size of the image's layers, in bytes.
+    pub size: i64,
 }
 
 /// Media types we accept for a manifest request — both OCI and Docker schema2,
@@ -68,6 +72,10 @@ pub fn pull(reference: &str) -> Result<Image> {
         .as_str()
         .context("image manifest has no config.digest")?
         .to_string();
+    let total_size: i64 = image_manifest["layers"]
+        .as_array()
+        .map(|ls| ls.iter().filter_map(|l| l["size"].as_i64()).sum())
+        .unwrap_or(0);
 
     // Content-addressed cache: identical image contents => identical config
     // digest => reuse the already-extracted rootfs.
@@ -82,6 +90,8 @@ pub fn pull(reference: &str) -> Result<Image> {
         return Ok(Image {
             rootfs,
             config: parse_config(&serde_json::from_slice(&cfg)?)?,
+            digest: config_digest,
+            size: total_size,
         });
     }
 
@@ -115,12 +125,7 @@ pub fn pull(reference: &str) -> Result<Image> {
         let size = layer["size"].as_u64().unwrap_or(0);
         // A blank line keeps curl's in-place progress bar from being overwritten
         // by the next log line.
-        eprintln!(
-            "  layer {}/{}  {}",
-            i + 1,
-            layers.len(),
-            human_size(size)
-        );
+        eprintln!("  layer {}/{}  {}", i + 1, layers.len(), human_size(size));
         let blob = staging.join(format!("layer{i}.tar"));
         get_blob(&r, digest, &token, Some(&blob))?;
         extract_layer(&blob, &staging_rootfs)
@@ -144,7 +149,12 @@ pub fn pull(reference: &str) -> Result<Image> {
         .with_context(|| format!("moving extracted image into cache at {}", dir.display()))?;
 
     info!(rootfs = %rootfs.display(), "image ready");
-    Ok(Image { rootfs, config })
+    Ok(Image {
+        rootfs,
+        config,
+        digest: config_digest,
+        size: total_size,
+    })
 }
 
 /// A parsed image reference broken into what the registry API needs.
@@ -402,7 +412,7 @@ fn digest_to_dirname(digest: &str) -> String {
 }
 
 /// Format a byte count as a human-readable size (e.g. `3.2 MiB`).
-fn human_size(bytes: u64) -> String {
+pub(crate) fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut v = bytes as f64;
     let mut unit = 0;

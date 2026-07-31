@@ -1,4 +1,4 @@
-//! bsdkrun — a Firecracker-style microVM launcher for BSD and Linux guests on
+//! bsdkrun — a Firecracker-style machine launcher for BSD and Linux guests on
 //! macOS, built on libkrun (Hypervisor.framework).
 //!
 //! Boot modes:
@@ -7,10 +7,13 @@
 //!   * firmware — a UEFI firmware image that boots a normal BSD disk via its
 //!                EFI loader (target: FreeBSD / OpenBSD arm64)
 //!   * linux    — run an OCI image (Docker Hub / any registry) as a Linux
-//!                microVM: fetch a kernel, extract the rootfs, boot it
+//!                machine: fetch a kernel, extract the rootfs, boot it
 
+mod console;
+mod db;
 mod elf;
 mod fetch;
+mod id;
 mod krun;
 mod linux;
 mod net;
@@ -67,10 +70,10 @@ enum Command {
     /// Check that libkrun links and a context/hvf can be initialized.
     Probe,
 
-    /// Boot a microVM from a direct kernel image + optional root disk.
+    /// Boot a machine from a direct kernel image + optional root disk.
     Kernel(KernelArgs),
 
-    /// Boot a microVM from a UEFI firmware image + root disk.
+    /// Boot a machine from a UEFI firmware image + root disk.
     Firmware(FirmwareArgs),
 
     /// Download a BSD arm64 image and prepare it for booting.
@@ -82,8 +85,48 @@ enum Command {
     /// Grow a disk image (the guest expands its root FS on next boot).
     Grow(GrowArgs),
 
-    /// Run an OCI image (Docker Hub / any registry) as a Linux microVM.
+    /// Run an OCI image (Docker Hub / any registry) as a Linux machine.
     Linux(LinuxArgs),
+
+    /// List machines.
+    Ps(PsArgs),
+
+    /// List downloaded images.
+    Images,
+
+    /// Stop a running machine.
+    Stop(IdArgs),
+
+    /// Show a machine's console log.
+    Logs(LogsArgs),
+
+    /// Attach an interactive shell to a running (detached) machine.
+    Shell(IdArgs),
+}
+
+#[derive(Parser)]
+struct PsArgs {
+    /// Show all machines (default shows only running ones).
+    #[arg(short, long)]
+    all: bool,
+}
+
+#[derive(Parser)]
+struct IdArgs {
+    /// machine id (a unique prefix is enough).
+    #[arg(value_name = "ID")]
+    id: String,
+}
+
+#[derive(Parser)]
+struct LogsArgs {
+    /// machine id (a unique prefix is enough).
+    #[arg(value_name = "ID")]
+    id: String,
+
+    /// Follow the live console output.
+    #[arg(short, long)]
+    follow: bool,
 }
 
 #[derive(Parser)]
@@ -101,6 +144,11 @@ struct LinuxArgs {
     /// given). See https://github.com/tsirysndr/vmlinux-builder/releases.
     #[arg(long, default_value = linux::DEFAULT_KERNEL_VERSION)]
     kernel_version: String,
+
+    /// Run the machine in the background and print its id (like `docker run -d`).
+    /// Use `logs`/`shell`/`stop` to interact with it afterwards.
+    #[arg(short = 'd', long)]
+    detach: bool,
 
     /// Share the extracted rootfs via virtio-fs instead of packing an initramfs.
     /// Requires a guest kernel built with CONFIG_FUSE_FS=y / virtio-fs.
@@ -351,6 +399,11 @@ fn main() -> Result<()> {
         Command::Versions(args) => fetch::list_versions(args.os),
         Command::Grow(args) => fetch::grow(&args.disk, &args.size),
         Command::Linux(args) => boot_linux(args),
+        Command::Ps(args) => cmd_ps(args.all),
+        Command::Images => cmd_images(),
+        Command::Stop(args) => cmd_stop(&args.id),
+        Command::Logs(args) => cmd_logs(&args.id, args.follow),
+        Command::Shell(args) => cmd_shell(&args.id),
     }
 }
 
@@ -367,6 +420,7 @@ fn probe() -> Result<()> {
 fn attach_extra_disks(ctx: &Ctx, disks: &[DiskSpec]) -> Result<()> {
     for (i, disk) in disks.iter().enumerate() {
         let block_id = format!("data{i}");
+        db::record_disk(&disk.path.to_string_lossy());
         ctx.add_disk(&block_id, &disk.path, disk.read_only)
             .with_context(|| format!("attaching disk {}", disk.path.display()))?;
         info!(
@@ -385,7 +439,7 @@ fn attach_extra_disks(ctx: &Ctx, disks: &[DiskSpec]) -> Result<()> {
 fn finish(ctx: Ctx, gvproxy: Option<Gvproxy>) -> Result<()> {
     let result = ctx.start_enter();
     tty::restore_stdin_termios();
-    let code = result.context("starting microVM")?;
+    let code = result.context("starting machine")?;
     info!(code, "guest exited");
     drop(gvproxy);
     std::process::exit(code);
@@ -438,6 +492,7 @@ fn boot_kernel(args: KernelArgs) -> Result<()> {
         .context("wiring guest serial console to stdio")?;
 
     if let Some(disk) = &args.disk {
+        db::record_disk(&disk.to_string_lossy());
         ctx.add_disk("root", disk, false)
             .with_context(|| format!("attaching root disk {}", disk.display()))?;
     }
@@ -456,7 +511,7 @@ fn boot_kernel(args: KernelArgs) -> Result<()> {
         cpus = args.vm.cpus,
         mem_mib = args.vm.mem,
         kernel = %args.kernel.display(),
-        "booting microVM"
+        "booting machine"
     );
     finish(ctx, gvproxy)
 }
@@ -473,6 +528,7 @@ fn boot_firmware(args: FirmwareArgs) -> Result<()> {
     ctx.attach_stdio_serial_console()
         .context("wiring guest serial console to stdio")?;
 
+    db::record_disk(&args.disk.to_string_lossy());
     ctx.add_disk("root", &args.disk, false)
         .with_context(|| format!("attaching root disk {}", args.disk.display()))?;
     attach_extra_disks(&ctx, &args.attach_disk)?;
@@ -486,76 +542,372 @@ fn boot_firmware(args: FirmwareArgs) -> Result<()> {
         mem_mib = args.vm.mem,
         firmware = %args.firmware.display(),
         disk = %args.disk.display(),
-        "booting microVM"
+        "booting machine"
     );
     finish(ctx, gvproxy)
 }
 
 fn boot_linux(args: LinuxArgs) -> Result<()> {
-    // Prepare everything that can fail before we touch the terminal/hypervisor.
+    // Prepare everything that can fail before we fork / touch the hypervisor.
     let kernel = linux::ensure_kernel(args.kernel.clone(), &args.kernel_version)?;
     let image = oci::pull(&args.image)?;
     let ep = linux::resolve_entrypoint(&image.config, args.entrypoint.as_deref(), &args.command);
     info!(argv = ?ep.argv, "resolved entrypoint");
 
+    // Persist the image (best-effort; DB problems never block booting).
+    db::record_image(
+        &args.image,
+        &image.digest,
+        image.size,
+        &image.rootfs.to_string_lossy(),
+    );
+
+    let machine_id = id::short_id();
+    let vdir = db::machine_dir(&machine_id).unwrap_or_else(|_| std::env::temp_dir().join(&machine_id));
+    std::fs::create_dir_all(&vdir).ok();
+    let command = ep.argv.join(" ");
+
+    // Decide up front whether networking will come up, so the baked-in initramfs
+    // `/init` + kernel `ip=` match what `setup_networking` will actually do.
+    let net_up = !args.net.no_net && net::locate().is_ok();
+
+    // Build the initramfs before forking so failures surface synchronously.
+    let initramfs = if args.virtiofs {
+        None
+    } else {
+        linux::warn_initramfs_memory(&image.rootfs, args.vm.mem);
+        Some(linux::build_initramfs(&image.rootfs, &ep, net_up)?)
+    };
+
+    if args.detach {
+        return run_linux_detached(
+            &args,
+            &kernel,
+            &image,
+            &ep,
+            initramfs.as_deref(),
+            net_up,
+            &machine_id,
+            &vdir,
+        );
+    }
+
+    // Foreground: record, then boot attached to this terminal.
+    db::record_machine(
+        &machine_id,
+        &args.image,
+        &command,
+        "running",
+        Some(std::process::id() as i64),
+        false,
+        args.vm.cpus as i64,
+        args.vm.mem as i64,
+        &vdir.to_string_lossy(),
+    );
+
     // Snapshot the terminal + arm signal cleanup before libkrun raws the TTY.
-    // NOTE: we deliberately do *not* install the stderr-tee watchdog here — it
-    // redirects fd 2, which libkrun's implicit virtio-console (hvc0) claims for
-    // the guest, breaking the console. The watchdog exists for the BSD SMP-
-    // shutdown PSCI panic; Linux guests power off cleanly and don't need it.
+    // NOTE: no stderr-tee watchdog here — it redirects fd 2, which libkrun's
+    // implicit virtio-console (hvc0) claims for the guest.
     tty::install();
 
     let ctx = Ctx::new()?;
     ctx.set_vm_config(args.vm.cpus, args.vm.mem)?;
-    // For a `ttyS*` console we wire libkrun's explicit 8250 serial (as the BSD
-    // paths do); for `hvc*` we leave libkrun's implicit virtio-console in place
-    // (that's the console libkrun natively gives Linux container guests).
+    // `hvc*` uses libkrun's implicit virtio-console; `ttyS*` its explicit serial.
     if !args.console.starts_with("hvc") {
         ctx.attach_stdio_serial_console()
             .context("wiring guest serial console to stdio")?;
     }
+    let gvproxy = configure_linux_ctx(
+        &ctx,
+        &args,
+        &kernel,
+        &image,
+        &ep,
+        initramfs.as_deref(),
+        net_up,
+    )?;
 
-    let gvproxy = setup_networking(&ctx, &args.net)?;
-    // Networking is only actually up if gvproxy started (graceful-degrade aware),
-    // so the kernel `ip=`/DNS config is only added when there's really a NIC.
-    let net_up = gvproxy.is_some();
+    info!(
+        id = %machine_id,
+        cpus = args.vm.cpus,
+        mem_mib = args.vm.mem,
+        image = %args.image,
+        mode = if args.virtiofs { "virtiofs" } else { "initramfs" },
+        "booting Linux machine"
+    );
+    finish_recording(ctx, gvproxy, machine_id)
+}
 
+/// Configure networking + rootfs + kernel on `ctx` (shared by the foreground and
+/// detached paths; the caller wires the console first). Returns the gvproxy.
+fn configure_linux_ctx(
+    ctx: &Ctx,
+    args: &LinuxArgs,
+    kernel: &std::path::Path,
+    image: &oci::Image,
+    ep: &linux::Entrypoint,
+    initramfs: Option<&std::path::Path>,
+    net_up: bool,
+) -> Result<Option<Gvproxy>> {
+    let gvproxy = setup_networking(ctx, &args.net)?;
     if args.virtiofs {
-        // Directory rootfs over virtio-fs; libkrun's init runs the entrypoint.
         ctx.set_root(&image.rootfs)
             .context("configuring virtio-fs root (needs a CONFIG_FUSE_FS=y kernel)")?;
         if !ep.workdir.is_empty() {
             ctx.set_workdir(&ep.workdir)?;
         }
-        let (exec, argv) = (ep.argv[0].clone(), ep.argv.clone());
-        ctx.set_exec(&exec, &argv, &ep.env)?;
+        ctx.set_exec(&ep.argv[0], &ep.argv, &ep.env)?;
         ctx.set_kernel(
-            &kernel,
+            kernel,
             krun::KRUN_KERNEL_FORMAT_RAW,
             None,
             &format!("console={}", args.console),
         )
         .context("configuring kernel")?;
     } else {
-        // Initramfs: pack the rootfs + generated /init and boot it from RAM.
-        linux::warn_initramfs_memory(&image.rootfs, args.vm.mem);
-        let initramfs = linux::build_initramfs(&image.rootfs, &ep, net_up)?;
+        let initramfs = initramfs.expect("initramfs built for non-virtiofs boot");
         let cmdline = linux::kernel_cmdline(&args.console, net_up);
         ctx.set_kernel(
-            &kernel,
+            kernel,
             krun::KRUN_KERNEL_FORMAT_RAW,
-            Some(&initramfs),
+            Some(initramfs),
             &cmdline,
         )
         .context("configuring kernel")?;
     }
+    Ok(gvproxy)
+}
 
-    info!(
-        cpus = args.vm.cpus,
-        mem_mib = args.vm.mem,
-        image = %args.image,
-        mode = if args.virtiofs { "virtiofs" } else { "initramfs" },
-        "booting Linux microVM"
+/// Like `finish`, but records the guest's exit code in the state DB first.
+fn finish_recording(ctx: Ctx, gvproxy: Option<Gvproxy>, machine_id: String) -> Result<()> {
+    let result = ctx.start_enter();
+    tty::restore_stdin_termios();
+    let code = result.context("starting machine")?;
+    info!(code, "guest exited");
+    db::update_machine_status(&machine_id, "exited", Some(code as i64));
+    drop(gvproxy);
+    std::process::exit(code);
+}
+
+/// Run a Linux machine in the background: fork, record the child in the state
+/// DB, print its id, and detach the child (console → per-machine socket + log).
+#[allow(clippy::too_many_arguments)]
+fn run_linux_detached(
+    args: &LinuxArgs,
+    kernel: &std::path::Path,
+    image: &oci::Image,
+    ep: &linux::Entrypoint,
+    initramfs: Option<&std::path::Path>,
+    net_up: bool,
+    machine_id: &str,
+    vdir: &std::path::Path,
+) -> Result<()> {
+    use std::io::Write;
+    // Flush any pending output (e.g. the pull progress) before forking.
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        anyhow::bail!("fork failed: {}", std::io::Error::last_os_error());
+    }
+    if pid > 0 {
+        // Parent: record the running VM and print its id, like `docker run -d`.
+        db::record_machine(
+            machine_id,
+            &args.image,
+            &ep.argv.join(" "),
+            "running",
+            Some(pid as i64),
+            true,
+            args.vm.cpus as i64,
+            args.vm.mem as i64,
+            &vdir.to_string_lossy(),
+        );
+        println!("{machine_id}");
+        return Ok(());
+    }
+
+    // Child: detach from the terminal/session and boot the VM.
+    unsafe { libc::setsid() };
+
+    // Send bsdkrun's own logs (fd 2) to a file in the VM dir.
+    if let Ok(logf) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(vdir.join("bsdkrun.log"))
+    {
+        use std::os::fd::AsRawFd;
+        unsafe { libc::dup2(logf.as_raw_fd(), 2) };
+        std::mem::forget(logf); // fd 2 now owns it
+    }
+
+    let code = match run_detached_child(args, kernel, image, ep, initramfs, net_up, machine_id, vdir) {
+        Ok(code) => code,
+        Err(e) => {
+            tracing::error!("detached machine failed: {e:#}");
+            db::update_machine_status(machine_id, "exited", Some(1));
+            1
+        }
+    };
+    unsafe { libc::_exit(code) };
+}
+
+/// The detached child's boot: wire the guest console to the broker socket, set
+/// up the VM, and run it. Returns the guest's exit code.
+#[allow(clippy::too_many_arguments)]
+fn run_detached_child(
+    args: &LinuxArgs,
+    kernel: &std::path::Path,
+    image: &oci::Image,
+    ep: &linux::Entrypoint,
+    initramfs: Option<&std::path::Path>,
+    net_up: bool,
+    machine_id: &str,
+    vdir: &std::path::Path,
+) -> Result<i32> {
+    use std::os::fd::AsRawFd;
+
+    // Wire the guest console (fd 0/1) to the broker socketpair; a thread fans it
+    // out to console.log + console.sock (see the console module).
+    let console_fd = console::setup_detached(vdir)?;
+    unsafe {
+        libc::dup2(console_fd, 0);
+        libc::dup2(console_fd, 1);
+    }
+
+    // Signal cleanup so `stop` (SIGTERM) tears down gvproxy. No terminal to
+    // restore (fd 0 is a socket), so tty::install's termios save is a no-op.
+    tty::install();
+
+    let ctx = Ctx::new()?;
+    ctx.set_vm_config(args.vm.cpus, args.vm.mem)?;
+    let _ = console_fd.as_raw_fd(); // (fd kept alive by dup2 above)
+    let gvproxy = configure_linux_ctx(&ctx, args, kernel, image, ep, initramfs, net_up)?;
+
+    info!(id = %machine_id, image = %args.image, "detached Linux machine booting");
+    let code = ctx.start_enter().context("starting machine")?;
+    db::update_machine_status(machine_id, "exited", Some(code as i64));
+    drop(gvproxy);
+    Ok(code)
+}
+
+// ---- management subcommands -------------------------------------------------
+
+/// Truncate a string to `n` display chars, adding an ellipsis if cut.
+fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(n.saturating_sub(1)).collect();
+        format!("{head}…")
+    }
+}
+
+#[allow(clippy::print_literal)] // padded tabular headers read clearer as args
+fn cmd_ps(all: bool) -> Result<()> {
+    let db = db::Db::open()?;
+    let machines = db.list_machines()?;
+    println!(
+        "{:<14}  {:<22}  {:<12}  {:<10}  {}",
+        "ID", "IMAGE", "STATUS", "CREATED", "COMMAND"
     );
-    finish(ctx, gvproxy)
+    for m in machines {
+        // Reconcile: a "running" row whose process is gone is really exited.
+        let running = m.status == "running" && m.pid.map(db::pid_alive).unwrap_or(false);
+        if m.status == "running" && !running {
+            db.set_machine_status(&m.id, "exited", m.exit_code).ok();
+        }
+        if !all && !running {
+            continue;
+        }
+        let status = if running {
+            "running".to_string()
+        } else {
+            match m.exit_code {
+                Some(c) => format!("exited ({c})"),
+                None => "exited".to_string(),
+            }
+        };
+        println!(
+            "{:<14}  {:<22}  {:<12}  {:<10}  {}",
+            m.id,
+            truncate(&m.image, 22),
+            status,
+            db::age(&m.created_at),
+            truncate(&m.command, 40)
+        );
+    }
+    Ok(())
+}
+
+#[allow(clippy::print_literal)] // padded tabular headers read clearer as args
+fn cmd_images() -> Result<()> {
+    let db = db::Db::open()?;
+    let images = db.list_images()?;
+    println!(
+        "{:<14}  {:<32}  {:<10}  {}",
+        "ID", "REFERENCE", "SIZE", "CREATED"
+    );
+    for im in images {
+        println!(
+            "{:<14}  {:<32}  {:<10}  {}",
+            im.id,
+            truncate(&im.reference, 32),
+            oci::human_size(im.size.max(0) as u64),
+            db::age(&im.created_at)
+        );
+    }
+    Ok(())
+}
+
+fn cmd_stop(id: &str) -> Result<()> {
+    let db = db::Db::open()?;
+    let vm = db.find_machine(id)?;
+    match vm.pid {
+        Some(pid) if db::pid_alive(pid) => {
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+            db.set_machine_status(&vm.id, "exited", vm.exit_code).ok();
+            println!("{}", vm.id);
+            Ok(())
+        }
+        _ => {
+            db.set_machine_status(&vm.id, "exited", vm.exit_code).ok();
+            println!("{} is not running", vm.id);
+            Ok(())
+        }
+    }
+}
+
+fn cmd_logs(id: &str, follow: bool) -> Result<()> {
+    use std::io::Write;
+    let db = db::Db::open()?;
+    let vm = db.find_machine(id)?;
+    let vdir = std::path::PathBuf::from(&vm.state_dir);
+    let log = vdir.join("console.log");
+    if let Ok(data) = std::fs::read(&log) {
+        std::io::stdout().write_all(&data).ok();
+        std::io::stdout().flush().ok();
+    } else if !follow {
+        anyhow::bail!(
+            "no console log for {} (only detached machines, run with -d, have one)",
+            vm.id
+        );
+    }
+    if follow {
+        console::follow(&vdir)?;
+    }
+    Ok(())
+}
+
+fn cmd_shell(id: &str) -> Result<()> {
+    let db = db::Db::open()?;
+    let vm = db.find_machine(id)?;
+    if !vm.detached {
+        anyhow::bail!("`shell` attaches to a detached machine — start it with `-d`");
+    }
+    if !vm.pid.map(db::pid_alive).unwrap_or(false) {
+        anyhow::bail!("machine {} is not running", vm.id);
+    }
+    console::attach_interactive(&std::path::PathBuf::from(&vm.state_dir))
 }

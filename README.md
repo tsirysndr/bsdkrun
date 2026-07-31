@@ -540,18 +540,13 @@ libkrun's EDK2 firmware and the guest's own EFI loader:
 - **NetBSD-current / arm64** (evbarm `GENERIC64`) — efiboot → kernel → root-on-ffs → `login:`.
   `fetch --os netbsd` + `firmware`. (NetBSD *releases* ≤ 10.1 boot but can't mount root — their
   virtio-mmio driver is legacy-only; modern v2 support is only in -current.)
-- **OpenBSD / arm64** — installer RAMDISK boots (EFI bootloader → kernel → virtio-mmio `sd0` +
-  console), then **livelocks in a PL011 UART interrupt storm** when its console goes
-  interrupt-driven after autoconf — a libkrun PL011-emulation bug, not fixable from bsdkrun (see the
-  OpenBSD note above). `fetch --os openbsd`.
 
 The blocker that made guests look dead — console output going to a PL011 serial libkrun wasn't
 forwarding — is fixed by bsdkrun's serial-console wiring (see
 [Console](#console-how-output-reaches-your-terminal)). Guest-side virtio-mmio device discovery
 under libkrun is confirmed working for FreeBSD and NetBSD-current.
 
-Next: interactive login + networking shakedown, `kernel`-mode direct boot experiments, and trying
-**OpenBSD/arm64** via the same firmware path.
+Next: interactive login + networking shakedown, and `kernel`-mode direct boot experiments.
 
 ## License
 

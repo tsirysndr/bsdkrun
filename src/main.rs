@@ -815,13 +815,29 @@ fn netbsd_cmdline() -> String {
 ///
 /// - **arm64** uses bsdkrun's bundled evbarm image (the `gzimg` with the agent
 ///   injected) + the evbarm `GENERIC64` kernel from the NetBSD CDN (`root=dk1`).
-/// - **amd64** has no upstream disk image, so we use bsdkrun's bundled FFS rootfs
-///   + `MICROVM` kernel (both PVH-boot under libkrun; `root=ld0a`).
+/// - **amd64** is not bootable under libkrun (see below) and is gated off.
 ///
 /// `--version` applies only to the arm64 kernel; the images themselves are pinned
 /// bundled assets.
 fn boot_netbsd(args: BsdArgs) -> Result<()> {
-    let (disk, kernel) = match host::Arch::current()? {
+    let arch = host::Arch::current()?;
+
+    // NetBSD amd64 can't boot under libkrun: libkrun enters x86_64 kernels via the
+    // Linux 64-bit boot protocol (a boot_params zero page), not PVH, so any NetBSD
+    // kernel triple-faults instantly (KVM_EXIT_SHUTDOWN, no console output). arm64
+    // works because libkrun uses Image+FDT there, which NetBSD understands. The
+    // bundled amd64 image + MICROVM kernel are ready for a PVH-capable libkrun;
+    // set BSDKRUN_NETBSD_AMD64=1 to attempt the boot against one.
+    if matches!(arch, host::Arch::X86_64) && std::env::var_os("BSDKRUN_NETBSD_AMD64").is_none() {
+        anyhow::bail!(
+            "NetBSD is not bootable on amd64 under libkrun yet. libkrun boots x86_64 \
+             kernels with the Linux boot protocol (not PVH), so the NetBSD kernel \
+             triple-faults immediately. NetBSD runs on arm64 hosts (Image+FDT boot). \
+             Set BSDKRUN_NETBSD_AMD64=1 to try anyway (e.g. with a PVH-capable libkrun)."
+        );
+    }
+
+    let (disk, kernel) = match arch {
         host::Arch::X86_64 => (
             fetch::fetch_netbsd_amd64_image(args.force)?,
             fetch::fetch_netbsd_amd64_kernel(args.force)?,

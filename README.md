@@ -681,13 +681,17 @@ image into `--dir` (a hard link, no second copy). Use `--force` to re-download.
 `bsdkrun netbsd` **direct-boots** the kernel (no firmware), rooting on the virtio-blk disk (override
 the kernel command line with `$BSDKRUN_NETBSD_CMDLINE`). The details differ by host arch:
 
-- **arm64** downloads NetBSD's evbarm `GENERIC64` kernel + live `gzimg` for the requested
-  `--version` (default `current`), rooting on the GPT wedge `dk1`. libkrun exposes **modern (v2)
-  virtio-mmio**, and NetBSD's driver only gained v2 support in **-current** (post-10.x): `current`
-  boots to `login:` ✅, while a **release** (≤ 10.1) boots but prints
-  `virtio: unknown version 0x02; giving up` and can't mount root. `fetch` warns you if you pin one.
-- **amd64** ignores `--version`: NetBSD ships no amd64 disk image, so bsdkrun downloads its own
-  bundled FFS rootfs + `MICROVM` kernel (release assets), rooting on `ld0a`.
+- **arm64** ✅ downloads bsdkrun's bundled evbarm image (the live `gzimg` with the agent injected)
+  + the evbarm `GENERIC64` kernel from the NetBSD CDN, rooting on the GPT wedge `dk1`. libkrun
+  exposes **modern (v2) virtio-mmio**, and NetBSD's driver only gained v2 support in **-current**
+  (post-10.x): the bundled image is `current`, so `--version` only affects the kernel — pinning a
+  **release** (≤ 10.1) kernel prints `virtio: unknown version 0x02; giving up`.
+- **amd64** ❌ is **not supported under libkrun** and is gated off with a clear error. libkrun boots
+  x86_64 kernels with the **Linux boot protocol** (a `boot_params` zero page), not **PVH**, so the
+  NetBSD kernel triple-faults instantly (`KVM_EXIT_SHUTDOWN`, no console) — this is a libkrun
+  limitation, not a NetBSD one (arm64 works because libkrun uses the OS-agnostic Image+FDT there).
+  The bundled amd64 FFS rootfs + `MICROVM` kernel are built and ready for a PVH-capable libkrun; set
+  `BSDKRUN_NETBSD_AMD64=1` to attempt the boot against one.
 
 ### Resizing the disk
 

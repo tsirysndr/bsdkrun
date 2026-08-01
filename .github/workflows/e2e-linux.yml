@@ -167,6 +167,10 @@ jobs:
           # kernel + FFS rootfs (root=ld0a). `logs` shows the guest console, and
           # `logs --boot` shows bsdkrun/libkrun's own boot log (fd 2 of the detached
           # child) — where the boot error lands when the console stays empty.
+          # amd64 NetBSD is gated off (libkrun has no PVH; it triple-faults). Set
+          # the escape hatch so CI still exercises the boot and would catch a future
+          # PVH-capable libkrun that makes it work.
+          export BSDKRUN_NETBSD_AMD64=1
           id=$(./target/release/bsdkrun --log-level 5 netbsd -d)
           sleep 20
           ./target/release/bsdkrun ps || true

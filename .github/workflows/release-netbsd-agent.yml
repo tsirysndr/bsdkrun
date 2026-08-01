@@ -50,6 +50,9 @@ jobs:
         shell: cpa.sh {0}
         run: |
           set -euo pipefail
+          # Point pkgin at the HTTPS CDN — the VM's default ftp mirror is very slow.
+          echo "https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/${{ matrix.slug }}/10.1/All" \
+            | sudo tee /usr/pkg/etc/pkgin/repositories.conf
           sudo pkgin -y update
           sudo pkgin -y install rust
           # Keep target/ out of the workspace so it isn't synced back to the host.

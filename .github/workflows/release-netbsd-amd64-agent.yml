@@ -1,0 +1,72 @@
+name: Release (NetBSD amd64 agent)
+
+# Builds the NetBSD amd64 guest agent natively in a NetBSD x86_64 VM (zig ships
+# no NetBSD libc, so it can't be cross-compiled) and attaches it to an existing
+# GitHub release. Manual / on-demand.
+#
+# Unlike the multi-arch agent workflow, this builds the CURRENTLY checked-out
+# code — it does NOT check out the input tag. The `tag` input only says which
+# release to upload the resulting binary to.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to attach the agent to (e.g. v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: netbsd x86_64 agent
+    runs-on: ubuntu-latest
+    steps:
+      # Deliberately no `ref:` — build the current branch's agent, not the tag's.
+      - uses: actions/checkout@v4
+
+      - name: Start NetBSD x86_64 VM
+        uses: cross-platform-actions/action@v1.3.0
+        with:
+          operating_system: netbsd
+          version: "10.1"
+          architecture: x86-64
+          shell: bash
+          memory: 8G
+          cpu_count: 4
+
+      - name: Build the agent in the VM
+        shell: cpa.sh {0}
+        run: |
+          set -euo pipefail
+          # Point pkgin at the HTTPS CDN — the VM's default ftp mirror is very slow.
+          echo 'https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/x86_64/10.1/All' \
+            | sudo tee /usr/pkg/etc/pkgin/repositories.conf
+          sudo pkgin -y update
+          sudo pkgin -y install rust
+          # Keep target/ out of the synced workspace so it isn't rsynced back;
+          # copy only the final binary into dist/ (which does sync to the host).
+          export CARGO_TARGET_DIR="$HOME/build"
+          ( cd agent && cargo build --release --locked )
+          mkdir -p dist
+          cp "$CARGO_TARGET_DIR/release/bsdkrun-agent" dist/bsdkrun-agent.netbsd-x86_64
+
+      - name: Checksums
+        run: |
+          set -eux
+          cd dist
+          sha256sum bsdkrun-agent.netbsd-x86_64 > bsdkrun-agent.netbsd-x86_64.sha256
+          ls -lh
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -eux
+          gh release upload "$TAG" \
+            dist/bsdkrun-agent.netbsd-x86_64 \
+            dist/bsdkrun-agent.netbsd-x86_64.sha256 \
+            --clobber --repo "$GITHUB_REPOSITORY"

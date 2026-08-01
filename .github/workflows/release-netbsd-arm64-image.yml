@@ -1,0 +1,152 @@
+name: Release (NetBSD arm64 image)
+
+# NetBSD's evbarm/aarch64 port DOES ship a ready-to-boot `gzimg` live image, so
+# unlike amd64 we don't build the rootfs from scratch — we take that image and
+# inject the guest agent (so `bsdkrun exec` works out of the box), preserving its
+# known-good GPT layout (dk0=EFI, dk1=FFS root) and direct-kernel boot.
+#
+# The arm64 agent is downloaded (building rust in an emulated arm64 NetBSD VM is
+# far too slow); mounting the image needs a NetBSD VM (vnconfig + FFS), so this
+# runs under cross-platform-actions like the other guest-image workflows.
+
+on:
+  workflow_dispatch:
+    inputs:
+      snapshot:
+        description: "NetBSD-daily HEAD snapshot dir (e.g. 20260731194610Z, or 'latest')"
+        required: false
+        default: "latest"
+        type: string
+      release_tag:
+        description: "Rolling release tag to publish the asset to"
+        required: false
+        default: "netbsd-arm64"
+        type: string
+      agent_url:
+        description: "URL of the NetBSD aarch64 agent to inject"
+        required: false
+        default: "https://github.com/tsirysndr/bsdkrun/releases/download/v0.1.0/bsdkrun-agent.netbsd-aarch64"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: inject agent (in NetBSD arm64 VM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start NetBSD arm64 VM
+        uses: cross-platform-actions/action@v1.3.0
+        with:
+          operating_system: netbsd
+          version: "10.1"
+          architecture: arm64
+          shell: bash
+          memory: 6G
+          cpu_count: 4
+
+      - name: Inject the agent into the evbarm gzimg
+        shell: cpa.sh {0}
+        run: |
+          set -eux
+          export PATH="/usr/pkg/bin:$PATH"
+          SNAP="${{ inputs.snapshot }}"
+          AGENT_URL="${{ inputs.agent_url }}"
+          WS="$(pwd)"
+          mkdir -p "$WS/dist"
+          # NetBSD base ships no curl, so install it (we download over HTTPS, never
+          # the ftp command). Download the agent as the normal user; the rest needs
+          # root (vnconfig, mount), so hand the paths to a root shell.
+          # Point pkgin at the HTTPS CDN — the VM's default ftp mirror is very slow.
+          echo 'https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/aarch64/10.1/All' \
+            | sudo tee /usr/pkg/etc/pkgin/repositories.conf
+          sudo pkgin -y update
+          sudo pkgin -y install curl
+          curl -fL -o "$WS/bsdkrun-agent" "$AGENT_URL"
+
+          sudo env WS="$WS" SNAP="$SNAP" /bin/sh -eux <<'ROOTEOF'
+          export PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/pkg/bin
+          BASEURL="https://nycdn.netbsd.org/pub/NetBSD-daily/HEAD/${SNAP}/evbarm-aarch64/binary"
+          WORK=/var/tmp/nbarm; rm -rf "$WORK"; mkdir -p "$WORK"; cd "$WORK"
+
+          # Fetch + decompress the live evbarm gzimg (a GPT disk). HTTPS via curl.
+          curl -fL -o arm64.img.gz "$BASEURL/gzimg/arm64.img.gz"
+          gunzip arm64.img.gz                     # -> arm64.img
+
+          # Attach it; its GPT wedges (dk*) auto-probe. Find the FFS root wedge by
+          # type rather than assuming dk1 (wedge numbers are global to the VM).
+          vnconfig vnd0 arm64.img
+          ROOTDK="$(dkctl vnd0 listwedges | awk '/type: *ffs/{print $1; exit}' | tr -d ':')"
+          test -n "$ROOTDK"
+          mkdir -p /mnt/root
+          mount "/dev/$ROOTDK" /mnt/root
+
+          # Inject the agent + an rc.d service (NetBSD has no daemon(8), so it
+          # backgrounds the agent and tracks the pid itself).
+          mkdir -p /mnt/root/usr/local/sbin
+          install -m 755 "$WS/bsdkrun-agent" /mnt/root/usr/local/sbin/bsdkrun-agent
+          cat > /mnt/root/etc/rc.d/bsdkrun_agent <<'EOF'
+          #!/bin/sh
+          #
+          # PROVIDE: bsdkrun_agent
+          # REQUIRE: NETWORKING
+
+          . /etc/rc.subr
+
+          name="bsdkrun_agent"
+          rcvar=$name
+          command="/usr/local/sbin/bsdkrun-agent"
+          pidfile="/var/run/${name}.pid"
+
+          start_cmd="agent_start"
+          stop_cmd="agent_stop"
+
+          agent_start()
+          {
+          	echo "Starting ${name}."
+          	${command} &
+          	echo $! > ${pidfile}
+          }
+
+          agent_stop()
+          {
+          	if [ -f ${pidfile} ]; then
+          		kill "$(cat ${pidfile})" 2>/dev/null && rm -f ${pidfile}
+          	fi
+          }
+
+          load_rc_config $name
+          run_rc_command "$1"
+          EOF
+          chmod 555 /mnt/root/etc/rc.d/bsdkrun_agent
+          echo 'bsdkrun_agent=YES' >> /mnt/root/etc/rc.conf
+
+          umount /mnt/root
+          vnconfig -u vnd0
+
+          gzip -9 -c arm64.img > "$WS/dist/netbsd-arm64-root.img.gz"
+          chmod 644 "$WS/dist"/*.gz
+          ROOTEOF
+          ls -lh "$WS/dist"
+
+      - name: Checksums
+        run: |
+          set -eux
+          cd dist
+          for f in *.gz; do sha256sum "$f" > "$f.sha256"; done
+          ls -lh
+
+      - name: Publish to the rolling release tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -eux
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "NetBSD arm64 (evbarm gzimg + bsdkrun agent)" \
+              --notes "NetBSD evbarm/aarch64 live gzimg with the bsdkrun guest agent injected (so \`bsdkrun exec\` works out of the box). Rebuilt by the release-netbsd-arm64-image workflow."
+          gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"

@@ -1,0 +1,136 @@
+name: Release (FreeBSD arm64 image)
+
+# FreeBSD ships ready-to-boot UFS VM images, so we take the upstream arm64 image
+# and inject the guest agent (so `bsdkrun exec` works out of the box), preserving
+# its GPT + EFI layout (FreeBSD boots through loader.efi, which needs libkrun's
+# EDK2 firmware — so `bsdkrun freebsd` is macOS-only).
+#
+# The arm64 agent is downloaded; mounting/repacking a UFS image needs FreeBSD
+# tools (mdconfig, gpart, UFS), so this runs in a FreeBSD arm64 VM under
+# cross-platform-actions.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "FreeBSD release to base the image on (e.g. 14.3)"
+        required: false
+        default: "14.3"
+        type: string
+      release_tag:
+        description: "Rolling release tag to publish the asset to"
+        required: false
+        default: "freebsd-arm64"
+        type: string
+      agent_url:
+        description: "URL of the FreeBSD aarch64 agent to inject"
+        required: false
+        default: "https://github.com/tsirysndr/bsdkrun/releases/download/v0.1.0/bsdkrun-agent.freebsd-aarch64"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: inject agent (in FreeBSD arm64 VM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start FreeBSD arm64 VM
+        uses: cross-platform-actions/action@v1.3.0
+        with:
+          operating_system: freebsd
+          version: "14.2"
+          architecture: arm64
+          shell: bash
+          memory: 6G
+          cpu_count: 4
+
+      - name: Inject the agent into the UFS VM image
+        shell: cpa.sh {0}
+        run: |
+          set -eux
+          VERSION="${{ inputs.version }}"
+          AGENT_URL="${{ inputs.agent_url }}"
+          WS="$(pwd)"
+          mkdir -p "$WS/dist"
+          # Download the agent as the normal user; mounting the image needs root.
+          fetch -o "$WS/bsdkrun-agent" "$AGENT_URL"
+
+          sudo env WS="$WS" VERSION="$VERSION" /bin/sh -eux <<'ROOTEOF'
+          export PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/local/bin
+          IMG="FreeBSD-${VERSION}-RELEASE-arm64-aarch64-ufs.raw"
+          URL="https://download.freebsd.org/releases/VM-IMAGES/${VERSION}-RELEASE/aarch64/Latest/${IMG}.xz"
+          WORK=/var/tmp/fbarm; rm -rf "$WORK"; mkdir -p "$WORK"; cd "$WORK"
+
+          # Fetch + decompress the upstream UFS VM image.
+          fetch -o "${IMG}.xz" "$URL"
+          xz -d "${IMG}.xz"                        # -> $IMG
+
+          # Attach it and find the freebsd-ufs partition by type (not a fixed index).
+          MD="$(mdconfig -a -t vnode -f "$IMG")"   # e.g. md0
+          UFSIDX="$(gpart show "$MD" | awk '/freebsd-ufs/{print $3; exit}')"
+          test -n "$UFSIDX"
+          mkdir -p /mnt/root
+          # -o rw; UFS from a VM image usually mounts cleanly (no fsck needed).
+          mount "/dev/${MD}p${UFSIDX}" /mnt/root
+
+          # Inject the agent + an rc.d service (FreeBSD has daemon(8): -r restarts
+          # the agent if it exits, -P tracks the pid).
+          mkdir -p /mnt/root/usr/local/sbin /mnt/root/usr/local/etc/rc.d
+          install -m 755 "$WS/bsdkrun-agent" /mnt/root/usr/local/sbin/bsdkrun-agent
+          cat > /mnt/root/usr/local/etc/rc.d/bsdkrun_agent <<'EOF'
+          #!/bin/sh
+          #
+          # PROVIDE: bsdkrun_agent
+          # REQUIRE: NETWORKING
+          # KEYWORD: shutdown
+
+          . /etc/rc.subr
+
+          name="bsdkrun_agent"
+          rcvar="bsdkrun_agent_enable"
+
+          load_rc_config $name
+
+          : ${bsdkrun_agent_enable:="NO"}
+          : ${bsdkrun_agent_program:="/usr/local/sbin/bsdkrun-agent"}
+
+          pidfile="/var/run/${name}.pid"
+          command="/usr/sbin/daemon"
+          command_args="-f -P ${pidfile} -r ${bsdkrun_agent_program}"
+
+          run_rc_command "$1"
+          EOF
+          chmod 555 /mnt/root/usr/local/etc/rc.d/bsdkrun_agent
+          sysrc -f /mnt/root/etc/rc.conf bsdkrun_agent_enable=YES
+
+          umount /mnt/root
+          mdconfig -d -u "$MD"
+
+          # Recompress (multithreaded; the client fetch expects a .raw.xz).
+          xz -T0 -6 -c "$IMG" > "$WS/dist/freebsd-arm64-root.raw.xz"
+          chmod 644 "$WS/dist"/*.xz
+          ROOTEOF
+          ls -lh "$WS/dist"
+
+      - name: Checksums
+        run: |
+          set -eux
+          cd dist
+          for f in *.xz; do sha256sum "$f" > "$f.sha256"; done
+          ls -lh
+
+      - name: Publish to the rolling release tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -eux
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "FreeBSD arm64 (UFS VM image + bsdkrun agent)" \
+              --notes "Upstream FreeBSD arm64 UFS VM image with the bsdkrun guest agent injected (so \`bsdkrun exec\` works out of the box). Rebuilt by the release-freebsd-arm64-image workflow."
+          gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"

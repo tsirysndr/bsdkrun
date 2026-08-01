@@ -68,7 +68,7 @@ jobs:
           path: |
             libkrunfw
             libkrun
-          key: libkrun-build-x86_64-v3
+          key: libkrun-build-x86_64-v4
 
       # Build only on a cache miss. libkrun links libkrunfw, so libkrunfw must be
       # installed before libkrun builds. Use `cd`, NOT `make -C`: `-C` implies
@@ -78,9 +78,9 @@ jobs:
         if: steps.libkrun-cache.outputs.cache-hit != 'true'
         run: |
           set -eux
-          git clone --depth 1 https://github.com/containers/libkrunfw
+          git clone --depth 1 -b v5.5.0 https://github.com/containers/libkrunfw
           ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
-          git clone --depth 1 https://github.com/containers/libkrun
+          git clone --depth 1 -b v1.19.4 https://github.com/containers/libkrun
           ( cd libkrun && make -j"$(nproc)" BLK=1 NET=1 )
 
       # Only cache a build that actually succeeded.
@@ -91,7 +91,7 @@ jobs:
           path: |
             libkrunfw
             libkrun
-          key: libkrun-build-x86_64-v3
+          key: libkrun-build-x86_64-v4
 
       # Install (fast) on every run — a cache hit restores the built trees but not
       # the system-installed libraries.

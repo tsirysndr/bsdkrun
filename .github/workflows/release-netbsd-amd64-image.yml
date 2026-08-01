@@ -24,11 +24,6 @@ on:
         required: false
         default: "netbsd-amd64"
         type: string
-      agent_tag:
-        description: "Optional: bsdkrun tag to pull the NetBSD agent from (for exec). Empty = skip."
-        required: false
-        default: ""
-        type: string
 
 permissions:
   contents: write
@@ -55,14 +50,23 @@ jobs:
         shell: cpa.sh {0}
         env:
           SNAP: ${{ inputs.snapshot }}
-          AGENT_TAG: ${{ inputs.agent_tag }}
         run: |
           set -eux
-          WS="$(pwd)"                       # synced workspace (artifacts go here)
+          WS="$(pwd)"                       # synced workspace (checkout + artifacts)
           BASEURL="https://nycdn.netbsd.org/pub/NetBSD-daily/HEAD/${SNAP}/amd64/binary"
           WORK="$HOME/build"                # outside the synced dir: big intermediates
           ROOT="$WORK/rootfs"
           mkdir -p "$ROOT" "$WS/dist"
+
+          # 0. Build the guest agent natively in this NetBSD VM (zig ships no NetBSD
+          #    libc, so it can't be cross-compiled). Keep target/ out of the synced
+          #    workspace so it isn't rsynced back to the host.
+          sudo pkgin -y update
+          sudo pkgin -y install rust
+          export CARGO_TARGET_DIR="$HOME/agent-build"
+          ( cd "$WS/agent" && cargo build --release --locked )
+          AGENT_BIN="$CARGO_TARGET_DIR/release/bsdkrun-agent"
+
           cd "$WORK"
 
           # 1. Minimal sets + the MICROVM kernel, all from the same snapshot.
@@ -111,30 +115,46 @@ jobs:
           chmod 600 "$ROOT/etc/master.passwd"
           pwd_mkdb -d "$ROOT/etc" -p "$ROOT/etc/master.passwd"
 
-          # 4. Optional: install the NetBSD guest agent so `bsdkrun exec` works, and
-          #    start it at boot via a tiny rc.d script.
-          if [ -n "${AGENT_TAG}" ]; then
-            AURL="https://github.com/${GITHUB_REPOSITORY:-tsirysndr/bsdkrun}/releases/download/${AGENT_TAG}/bsdkrun-agent.netbsd-x86_64"
-            if ftp -o "$ROOT/sbin/bsdkrun-agent" "$AURL"; then
-              chmod 755 "$ROOT/sbin/bsdkrun-agent"
-              cat > "$ROOT/etc/rc.d/bsdkrun_agent" <<'EOF'
+          # 4. Bake in the guest agent (built in step 0) so `bsdkrun exec` works out
+          #    of the box, and start it at boot. NetBSD has no daemon(8), so the
+          #    rc.d script backgrounds it and tracks the pid itself.
+          mkdir -p "$ROOT/usr/local/sbin"
+          install -m 755 "$AGENT_BIN" "$ROOT/usr/local/sbin/bsdkrun-agent"
+          cat > "$ROOT/etc/rc.d/bsdkrun_agent" <<'EOF'
           #!/bin/sh
+          #
           # PROVIDE: bsdkrun_agent
           # REQUIRE: NETWORKING
+
           . /etc/rc.subr
+
           name="bsdkrun_agent"
-          command="/sbin/bsdkrun-agent"
-          command_args="&"
+          rcvar=$name
+          command="/usr/local/sbin/bsdkrun-agent"
+          pidfile="/var/run/${name}.pid"
+
+          start_cmd="agent_start"
+          stop_cmd="agent_stop"
+
+          agent_start()
+          {
+          	echo "Starting ${name}."
+          	${command} &
+          	echo $! > ${pidfile}
+          }
+
+          agent_stop()
+          {
+          	if [ -f ${pidfile} ]; then
+          		kill "$(cat ${pidfile})" 2>/dev/null && rm -f ${pidfile}
+          	fi
+          }
+
           load_rc_config $name
-          : ${bsdkrun_agent:=YES}
           run_rc_command "$1"
           EOF
-              chmod 555 "$ROOT/etc/rc.d/bsdkrun_agent"
-              echo 'bsdkrun_agent=YES' >> "$ROOT/etc/rc.conf"
-            else
-              echo "WARNING: could not fetch agent from $AURL; image will boot without exec support"
-            fi
-          fi
+          chmod 555 "$ROOT/etc/rc.d/bsdkrun_agent"
+          echo 'bsdkrun_agent=YES' >> "$ROOT/etc/rc.conf"
 
           # 5. Build the FFS image (little-endian, FFSv2) and stage both assets.
           #    Bump -s if base+etc ever outgrows it; the client can `bsdkrun grow`.

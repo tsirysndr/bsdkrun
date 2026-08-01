@@ -25,14 +25,26 @@ use crate::oci::{self, ImageConfig};
 const KERNEL_RELEASE_BASE: &str = "https://github.com/tsirysndr/vmlinux-builder/releases/download";
 pub const DEFAULT_KERNEL_VERSION: &str = "7.1.5";
 
-/// Asset filename for a given vmlinux-builder release.
-fn kernel_file(version: &str) -> String {
-    format!("vmlinux-{version}.aarch64")
+/// Asset filename for a given vmlinux-builder release + host arch.
+fn kernel_file(version: &str, arch: crate::host::Arch) -> String {
+    format!("vmlinux-{version}.{}", arch.slug())
 }
 
-/// Download URL for a given vmlinux-builder release.
-fn kernel_url(version: &str) -> String {
-    format!("{KERNEL_RELEASE_BASE}/{version}/{}", kernel_file(version))
+/// Download URL for a given vmlinux-builder release + host arch.
+fn kernel_url(version: &str, arch: crate::host::Arch) -> String {
+    format!(
+        "{KERNEL_RELEASE_BASE}/{version}/{}",
+        kernel_file(version, arch)
+    )
+}
+
+/// libkrun kernel format for the host arch: aarch64 boots a raw `Image`, x86_64
+/// loads the `vmlinux` ELF directly.
+pub fn kernel_format() -> u32 {
+    match crate::host::Arch::current() {
+        Ok(crate::host::Arch::X86_64) => crate::krun::KRUN_KERNEL_FORMAT_ELF,
+        _ => crate::krun::KRUN_KERNEL_FORMAT_RAW,
+    }
 }
 
 /// gvproxy's fixed guest lease + gateway (see [`crate::net`]).
@@ -47,12 +59,13 @@ const NETMASK: &str = "255.255.255.0";
 /// by `version` (downloaded + cached on first use). If the resolved file is an
 /// ELF, it's flattened to an `Image` and cached.
 pub fn ensure_kernel(override_path: Option<PathBuf>, version: &str) -> Result<PathBuf> {
+    let arch = crate::host::Arch::current()?;
     let cache = cache_dir()?;
     std::fs::create_dir_all(&cache)
         .with_context(|| format!("creating cache dir {}", cache.display()))?;
 
     // Resolve the source kernel (override or downloaded prebuilt). The cache
-    // filename embeds the version, so different releases coexist.
+    // filename embeds the version + arch, so releases/arches coexist.
     let source = match override_path {
         Some(p) => {
             if !p.exists() {
@@ -61,13 +74,13 @@ pub fn ensure_kernel(override_path: Option<PathBuf>, version: &str) -> Result<Pa
             p
         }
         None => {
-            let kernel = cache.join(kernel_file(version));
+            let kernel = cache.join(kernel_file(version, arch));
             if kernel.exists() {
                 info!(path = %kernel.display(), "using cached kernel");
             } else {
-                let url = kernel_url(version);
+                let url = kernel_url(version, arch);
                 info!(%url, "downloading kernel…");
-                let tmp = cache.join(format!("{}.partial", kernel_file(version)));
+                let tmp = cache.join(format!("{}.partial", kernel_file(version, arch)));
                 let _ = std::fs::remove_file(&tmp);
                 run(
                     Command::new("curl")
@@ -78,7 +91,9 @@ pub fn ensure_kernel(override_path: Option<PathBuf>, version: &str) -> Result<Pa
                 )
                 .with_context(|| {
                     format!(
-                        "downloading kernel {version} — is that vmlinux-builder release published?"
+                        "downloading kernel {version} ({}) — is that vmlinux-builder release \
+                         published for this arch?",
+                        arch.slug()
                     )
                 })?;
                 std::fs::rename(&tmp, &kernel).context("moving kernel into cache")?;
@@ -87,8 +102,11 @@ pub fn ensure_kernel(override_path: Option<PathBuf>, version: &str) -> Result<Pa
         }
     };
 
-    // If it's already a raw Image, use it directly; otherwise flatten the ELF to
-    // a cached Image (keyed by the source's name so overrides don't collide).
+    // x86_64 boots the vmlinux ELF directly (KRUN_KERNEL_FORMAT_ELF) — no
+    // flattening. aarch64 needs a raw `Image`, so flatten the ELF (cached).
+    if arch != crate::host::Arch::Aarch64 {
+        return Ok(source);
+    }
     let bytes = std::fs::read(&source).with_context(|| format!("reading {}", source.display()))?;
     if crate::elf::is_arm64_image(&bytes) {
         return Ok(source);
@@ -212,84 +230,49 @@ fn add_ip(cmdline: &mut String, net: bool) {
     }
 }
 
-// --- overlayfs volumes (Linux) ----------------------------------------------
+// --- persistent volumes (writable virtio-fs root) ---------------------------
 //
-// A persistent volume keeps the base image as a shared, read-only overlay lower
-// and stores only the guest's changes in a writable upper — instead of cloning
-// the whole rootfs. libkrun serves the base image as the root (`/dev/root`); we
-// inject a tiny stage-1 `/init` into it (a virtual overlay file, so the shared
-// image on disk is never touched) that mounts the image again read-only, mounts
-// the volume, assembles an overlayfs, and `switch_root`s into it. Stage-2 (the
-// normal init) and the exec agent live in the volume's upper layer.
+// A named volume is just a persistent, writable rootfs (like a Docker volume):
+// the first use CoW-clones the base image into the volume dir; later boots reuse
+// it as-is, so the guest's changes survive reboots. libkrun serves it as the
+// virtio-fs root (`/dev/root`) exactly like the per-machine clone.
+//
+// We deliberately do NOT layer overlayfs over virtio-fs here: on Linux/KVM
+// overlayfs rejects a virtio-fs upperdir/workdir (it can't set the UUID xattr or
+// create the work dir), so the overlay silently drops to read-only and init
+// can't exec — a kernel panic ("Attempted to kill init!"). A plain writable
+// virtio-fs root behaves identically on macOS and Linux.
 
-/// Guest virtio-fs tags for the overlay lower (image) and upper (volume).
-pub const OVERLAY_LOWER_TAG: &str = "bk_lower";
-pub const OVERLAY_VOL_TAG: &str = "bk_vol";
-/// Path of the injected stage-1 init in the shared root.
-pub const OVERLAY_STAGE1: &str = ".bsdkrun-stage1";
-/// Stage-2 init, provided by the volume's upper layer (so it's in the merged root).
-const OVERLAY_INIT2: &str = "/sbin/bsdkrun-init2";
-
-/// Kernel command line for an overlay-volume boot: boot the shared image root and
-/// run our injected stage-1 init.
-pub fn overlay_cmdline(console: &str, net: bool) -> String {
-    let mut cmdline =
-        format!("console={console} root=/dev/root rootfstype=virtiofs rw init=/{OVERLAY_STAGE1}");
-    add_ip(&mut cmdline, net);
-    cmdline
-}
-
-/// The stage-1 init injected into the shared image root. Assembles the overlay
-/// and switches into it; the merged root then runs stage-2 (`OVERLAY_INIT2`).
-pub fn overlay_stage1_init() -> String {
-    let mut s = String::from("#!/bin/sh\n# bsdkrun overlay stage-1\n");
-    // The image again as the overlay lower, and the volume as upper.
-    s.push_str(&format!(
-        "mount -t virtiofs {OVERLAY_LOWER_TAG} /bk_lower || echo '[bk] lower mount failed'\n"
-    ));
-    s.push_str(&format!(
-        "mount -t virtiofs {OVERLAY_VOL_TAG} /bk_vol || echo '[bk] vol mount failed'\n"
-    ));
-    s.push_str("mkdir -p /bk_vol/upper /bk_vol/work 2>/dev/null\n");
-    s.push_str(
-        "mount -t overlay overlay \
-         -o lowerdir=/bk_lower,upperdir=/bk_vol/upper,workdir=/bk_vol/work /bk_newroot \
-         || echo '[bk] overlay mount failed'\n",
-    );
-    // chroot into the merged root and run the normal init there. (We use chroot,
-    // not switch_root/pivot_root: the real root is virtio-fs, not an initramfs,
-    // and switch_root refuses that. The workload never touches the outer root.)
-    s.push_str(&format!(
-        "exec chroot /bk_newroot {OVERLAY_INIT2} || echo '[bk] chroot failed'\n"
-    ));
-    // Fallback if the overlay couldn't be set up.
-    s.push_str("echo '[bsdkrun] overlay stage-1 failed'\nexec /bin/sh\n");
-    s
-}
-
-/// Prepare a persistent overlay volume on the host: create its `upper`/`work`
-/// dirs and (re)write the stage-2 init + exec agent into the upper layer so they
-/// appear in the merged root. The guest's own changes accumulate in `upper`.
-pub fn prepare_overlay_volume(
-    volume_dir: &Path,
+/// Prepare a persistent, writable virtio-fs root backed by a named volume.
+///
+/// First use CoW-clones the cached image into `<volume_dir>/rootfs`; later uses
+/// keep it (the guest's changes persist). We always (re)inject our generated
+/// init + exec agent so a bsdkrun upgrade ships new ones into existing volumes.
+pub fn prepare_volume_root(
+    cached_rootfs: &Path,
     ep: &Entrypoint,
     net: bool,
     persistent: bool,
+    volume_dir: &Path,
     mounts: &[BindMount],
-) -> Result<()> {
-    let upper = volume_dir.join("upper");
-    std::fs::create_dir_all(volume_dir.join("work"))
-        .with_context(|| format!("creating {}", volume_dir.join("work").display()))?;
-    std::fs::create_dir_all(&upper).with_context(|| format!("creating {}", upper.display()))?;
-    // Stage-2 init is the normal init, run inside the merged (overlay) root.
+) -> Result<PathBuf> {
+    let root = volume_dir.join("rootfs");
+    // First use: CoW-clone the image in. Reuse: keep the persisted rootfs so the
+    // guest's changes from previous boots are still there.
+    if !root.exists() {
+        std::fs::create_dir_all(volume_dir)
+            .with_context(|| format!("creating {}", volume_dir.display()))?;
+        crate::host::cow_copy(cached_rootfs, &root, true)?;
+    }
+    // Always refresh the bsdkrun-managed init + agent (never the user's data).
     oci::write_rootfs_file(
-        &upper,
-        OVERLAY_INIT2.trim_start_matches('/'),
+        &root,
+        VIRTIOFS_INIT.trim_start_matches('/'),
         generate_init(ep, net, persistent, mounts).as_bytes(),
         0o755,
     )?;
-    crate::agent::inject_linux(&upper)?;
-    Ok(())
+    crate::agent::inject_linux(&root)?;
+    Ok(root)
 }
 
 /// Prepare a per-machine, writable virtio-fs root: clone the cached rootfs into
@@ -312,19 +295,8 @@ pub fn prepare_virtiofs_root(
     let root = machine_dir.join("rootfs");
     let _ = std::fs::remove_dir_all(&root);
 
-    // Clone via clonefile(2) on APFS; fall back to a plain recursive copy.
-    if run(
-        Command::new("cp").arg("-Rc").arg(cached_rootfs).arg(&root),
-        "cp (clone rootfs)",
-    )
-    .is_err()
-    {
-        let _ = std::fs::remove_dir_all(&root);
-        run(
-            Command::new("cp").arg("-R").arg(cached_rootfs).arg(&root),
-            "cp (copy rootfs)",
-        )?;
-    }
+    // Copy-on-write clone (APFS clonefile / Linux reflink); plain-copy fallback.
+    crate::host::cow_copy(cached_rootfs, &root, true)?;
 
     // Our init handles the same setup as the initramfs path (mounts, net, exec).
     oci::write_rootfs_file(

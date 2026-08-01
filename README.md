@@ -1,7 +1,8 @@
 # bsdkrun
 
-A Firecracker-style **microVM launcher for BSD and Linux guests on macOS Apple Silicon**, built on
-[libkrun](https://github.com/containers/libkrun) (which drives Apple's Hypervisor.framework).
+A Firecracker-style **microVM launcher for BSD and Linux guests on macOS and Linux**, built on
+[libkrun](https://github.com/containers/libkrun) (which drives Apple's Hypervisor.framework on
+macOS and KVM on Linux).
 
 `bsdkrun` is a thin, purpose-built CLI: it wraps libkrun's C ABI in a handful of safe Rust
 bindings and boots a guest three ways — from a **UEFI firmware** image (the guest's own EFI loader
@@ -9,8 +10,12 @@ boots a normal disk), from a **direct kernel + FDT** (no bootloader), or straigh
 image** (`bsdkrun linux alpine` pulls it from any registry, extracts the rootfs, and boots it like
 `docker run`). It is deliberately small: one FFI module, one CLI, no daemon.
 
-> **Platform:** macOS on Apple Silicon (arm64) only. libkrun's macOS backend is
-> Hypervisor.framework, and the guests we target are arm64 BSD and Linux images.
+> **Platforms:** **macOS on Apple Silicon** (Hypervisor.framework) and **Linux on amd64 or arm64**
+> (KVM). A hardware-virtualized guest runs the host's CPU arch, so bsdkrun detects the arch and
+> pulls the matching kernel, OCI image, and agent automatically. macOS is arm64-only; Linux works
+> on both x86_64 and aarch64. **FreeBSD is macOS-only** (its EFI firmware ships only with the
+> macOS `libkrun-efi`); **NetBSD** direct-boots its kernel, so it runs on both. _(Linux support is
+> new — see the [KVM e2e CI](.github/workflows/e2e-linux.yml).)_
 
 <p align="center">
   <img src=".github/assets/preview.png" alt="FreeBSD 15 arm64 booting under bsdkrun on macOS" width="800">
@@ -50,13 +55,17 @@ VM tooling (QEMU, `vftool`, UTM) isn't microVM-shaped. libkrun gives you a Firec
 aimed at Linux guests, and `bsdkrun` both leans into that (running OCI images directly) and points
 the same machinery at **FreeBSD / NetBSD** guests.
 
-- **FreeBSD (arm64):** boot via **firmware/EFI** — these systems expect to come up
-  through a UEFI loader, so we hand libkrun its bundled EDK2 firmware and let the guest's
-  `loader.efi` take over from the EFI System Partition on the disk.
-- **NetBSD (evbarm):** boot via **direct kernel** — libkrun generates an FDT and jumps straight
-  into the kernel, no bootloader.
-- **Linux (arm64):** run any **OCI image** as a microVM — bsdkrun fetches a prebuilt kernel, pulls
-  the image from any registry, extracts its rootfs, and boots it `docker run`-style, with internet
+- **FreeBSD:** boot via **firmware/EFI** — these systems expect to come up through a UEFI loader,
+  so we hand libkrun its bundled EDK2 firmware and let the guest's `loader.efi` take over from the
+  EFI System Partition on the disk. That firmware ships only with **`libkrun-efi`, which is
+  macOS-only**, so **`bsdkrun freebsd` is a macOS-only command** (compiled out on Linux).
+- **NetBSD:** boot via **direct kernel** — **no bootloader or firmware**, so `bsdkrun netbsd` works
+  on **both macOS and Linux**. On **arm64** it downloads NetBSD's evbarm `GENERIC64` kernel + live
+  `gzimg`. NetBSD ships no amd64 disk image, so on **amd64** bsdkrun uses its own bundled FFS rootfs
+  plus the **`MICROVM`** kernel (a PVH ELF libkrun boots exactly like the Linux vmlinux); both are
+  hosted as release assets (built by the `release-netbsd-amd64-image` workflow).
+- **Linux:** run any **OCI image** as a microVM — bsdkrun fetches a prebuilt kernel, pulls the
+  image from any registry, extracts its rootfs, and boots it `docker run`-style, with internet
   access out of the box. See [`linux`](#linux--run-an-oci-image-as-a-microvm).
 
 > DragonFly BSD is out of scope: there's no arm64 port.
@@ -70,7 +79,7 @@ libkrun's virtio-console — is exactly what this tool is for probing.
 
 ## Install
 
-The quickest way — a prebuilt, already-signed binary via Homebrew (Apple Silicon only):
+**macOS (Apple Silicon)** — a prebuilt, already-signed binary via Homebrew:
 
 ```sh
 brew install tsirysndr/tap/bsdkrun
@@ -80,14 +89,36 @@ This auto-taps `libkrun/krun` and pulls in its dependencies (`libkrun`, `gvproxy
 ships codesigned with the hypervisor entitlement, so there's nothing else to set up — jump to
 [Usage](#usage).
 
-To hack on bsdkrun instead, build from source — see [Prerequisites](#prerequisites) and
+**Nix flake** — builds bsdkrun with all its dependencies. On **Linux (amd64/arm64)** it links
+nixpkgs' libkrun; on **macOS** it links your Homebrew libkrun, so those need `--impure`
+(`brew install libkrun/krun/libkrun` first) and produce a binary re-signed with the hypervisor
+entitlement.
+
+```sh
+# Linux (needs /dev/kvm access)
+nix run           github:tsirysndr/bsdkrun -- linux alpine   # run without installing
+nix profile install github:tsirysndr/bsdkrun                 # install into your profile
+nix develop       github:tsirysndr/bsdkrun                   # dev shell with the full toolchain
+
+# macOS (Apple Silicon) — impure link against Homebrew's libkrun
+brew install libkrun/krun/libkrun
+nix build  --impure github:tsirysndr/bsdkrun                  # -> ./result/bin/bsdkrun
+nix run    --impure github:tsirysndr/bsdkrun -- linux alpine
+```
+
+The flake wraps the runtime tools (`curl`, `tar`, `gzip`, `xz`, `cpio`, `gvproxy`, …) onto `PATH`,
+and `nix develop` adds the Rust toolchain plus `zig`/`cargo-zigbuild` for cross-building the guest
+agents. To hack on bsdkrun without Nix, build from source — see [Prerequisites](#prerequisites) and
 [Build](#build).
 
 ---
 
 ## Prerequisites
 
-### 1. Install libkrun (Homebrew)
+You need **libkrun**, a **Rust toolchain** (`rustup default stable`; edition 2021), and access to
+the hypervisor. The hypervisor part differs by OS.
+
+### macOS (Apple Silicon)
 
 libkrun, `krunvm`, and `krunkit` live in the **`libkrun/krun`** tap (redirected from the old
 `slp/krun`). Homebrew 6.x requires you to trust a third-party tap before it will run its install
@@ -103,44 +134,55 @@ brew install libkrun krunkit
 - **`krunkit`** ships the EDK2 UEFI firmware we use for EFI boot
   (`.../share/krunkit/KRUN_EFI.silent.fd`).
 
-### 2. A Rust toolchain
+**The Hypervisor entitlement (the part that bites everyone).** A binary that calls libkrun must be
+codesigned with `com.apple.security.hypervisor` (plus `com.apple.security.cs.disable-library-validation`
+so it can load the Homebrew dylibs). Without it, `krun_create_ctx`/`krun_set_vm_config` succeed but
+`krun_start_enter` fails at VM creation with `Internal(Vm(VmSetup(VmCreate)))` / **errno 22
+(EINVAL)**. Worse, **every `cargo build` strips the codesignature**, so you must re-sign after each
+build — the [`Makefile`](./Makefile) does this for you (entitlements in
+[`bsdkrun.entitlements`](./bsdkrun.entitlements)).
+
+### Linux (amd64 or arm64, KVM)
+
+libkrun uses **KVM** on Linux — no codesigning, but you need **`/dev/kvm`** access (be in the `kvm`
+group, or run under `sudo`). Ubuntu has no libkrun package, so build it (and its bundled kernel,
+libkrunfw) from source — see the [KVM e2e workflow](.github/workflows/e2e-linux.yml) for the exact
+steps:
 
 ```sh
-rustup default stable   # or any recent stable; project is edition 2021
+git clone --depth 1 https://github.com/containers/libkrunfw && make -C libkrunfw && sudo make -C libkrunfw install
+git clone --depth 1 https://github.com/containers/libkrun   && make -C libkrun   && sudo make -C libkrun   install
+sudo ldconfig
 ```
 
-### 3. The Hypervisor entitlement (this is the part that bites everyone)
+`build.rs` finds libkrun via `pkg-config libkrun` (or the standard lib dirs; override with
+`LIBKRUN_PREFIX=/path`). There's nothing to sign — `make build` skips the codesign step on Linux.
+Some BSD image-prep steps (`losetup`/`mount`) need root, and bsdkrun runs them with `sudo`
+automatically when needed.
 
-**A binary that calls libkrun must be codesigned with the `com.apple.security.hypervisor`
-entitlement** (plus `com.apple.security.cs.disable-library-validation` so it can load the
-Homebrew dylibs). Without it:
-
-- `krun_create_ctx` and `krun_set_vm_config` **succeed** (they never touch the hypervisor), so
-  everything looks fine…
-- …until `krun_start_enter`, which fails at VM creation with
-  `Internal(Vm(VmSetup(VmCreate)))` / **errno 22 (EINVAL)**.
-
-Worse: **every `cargo build` strips the codesignature**, so you must re-sign after each build.
-The [`Makefile`](./Makefile) handles this for you (see below). The entitlements live in
-[`bsdkrun.entitlements`](./bsdkrun.entitlements).
+> On Linux the CI boots the `linux` (OCI) path and the `netbsd` (direct-kernel) path — on x86_64
+> only, since GitHub's arm64 runners have no `/dev/kvm`; arm64-on-Linux (which reuses the aarch64
+> kernel + agent) is validated on a KVM-capable host. `freebsd` needs the macOS-only EFI firmware,
+> so it's not offered on Linux; NetBSD-under-KVM on amd64 is still experimental.
 
 ---
 
 ## Build
 
 ```sh
-make build      # cargo build (debug) + codesign with the hypervisor entitlement
-make release    # cargo build --release + codesign
+make build      # cargo build (debug)  [+ codesign on macOS]
+make release    # cargo build --release [+ codesign on macOS]
 ```
 
-`make run ARGS="..."` builds, signs, and runs in one step.
+`make run ARGS="..."` builds and runs in one step.
 
-> ⚠️ **Don't run `cargo build` and then the binary directly** — the binary will be unsigned and
-> will fail at boot with errno 22. Always go through `make`, or re-run `make sign` yourself after
-> a bare `cargo build`.
+> ⚠️ **macOS: don't run `cargo build` then the binary directly** — it'll be unsigned and fail at
+> boot with errno 22. Go through `make`, or re-run `make sign` after a bare `cargo build`. On Linux
+> there's nothing to sign, so `cargo build` is fine (the `make` sign steps are no-ops there).
 
-The [`build.rs`](./build.rs) locates libkrun via `brew --prefix libkrun` (override with
-`LIBKRUN_PREFIX=/path`) and embeds an rpath so the versioned dylib resolves at runtime.
+The [`build.rs`](./build.rs) locates libkrun via `brew --prefix libkrun` (macOS) or `pkg-config`
+(Linux), override with `LIBKRUN_PREFIX=/path`, and embeds an rpath so the shared library resolves
+at runtime.
 
 ---
 
@@ -171,20 +213,25 @@ make run ARGS="probe"
 
 ### `freebsd` / `netbsd` — one-liner BSD microVMs
 
-The quickest way to a BSD guest — fetches the image if needed, auto-locates libkrun's `KRUN_EFI`
-firmware, and boots it (the shorthand for [`fetch`](#the-easy-way--bsdkrun-fetch) + `firmware`, just
-like `bsdkrun linux alpine` does for Linux):
+The quickest way to a BSD guest — fetches the image (and, for NetBSD, the kernel) if needed, then
+boots it:
 
 ```sh
-bsdkrun freebsd                 # latest FreeBSD, foreground
+bsdkrun freebsd                 # latest FreeBSD, foreground   (macOS only — needs KRUN_EFI)
 bsdkrun netbsd  -d              # NetBSD-current in the background; prints its id
-bsdkrun freebsd --version 15.1 -d --port 2222:22
+bsdkrun netbsd  --version 10.1 -d --port 2222:22
 ```
 
-Carries the usual machine options (`-d`, `--persist`, `-v/--volume`, `--version`, `--attach-disk`,
-`--port`, `--cpus`/`--mem`), so per-machine [CoW disk clones](#managing-machines) and
-`ps`/`logs`/`shell`/`stop` all apply. The firmware is found via `$BSDKRUN_FIRMWARE`, a local
-`images/KRUN_EFI.fd`, or krunkit's Homebrew install (`--firmware` overrides).
+Both carry the usual machine options (`-d`, `--persist`, `-v/--volume`, `--version`,
+`--attach-disk`, `--port`, `--cpus`/`--mem`), so per-machine [CoW disk clones](#managing-machines)
+and `ps`/`logs`/`shell`/`stop` all apply. They differ in how they boot:
+
+- **`freebsd`** wraps [`fetch`](#the-easy-way--bsdkrun-fetch) + [`firmware`](#firmware--boot-a-disk-through-its-uefi-loader):
+  it auto-locates libkrun's `KRUN_EFI` firmware (via `$BSDKRUN_FIRMWARE`, a local
+  `images/KRUN_EFI.fd`, or krunkit's Homebrew install; `--firmware` overrides). That firmware is
+  **macOS-only**, so **`freebsd` is a macOS-only command**.
+- **`netbsd`** wraps `fetch` + a **direct kernel** boot — no firmware — so it works on **macOS and
+  Linux**.
 
 ### `firmware` — boot a disk through its UEFI loader
 
@@ -313,20 +360,21 @@ changes are thrown away when the machine exits. To keep them across reboots, nam
 the same for Linux, FreeBSD and NetBSD:
 
 ```sh
-bsdkrun linux   -d -v web alpine            # persistent Linux rootfs (overlayfs)
+bsdkrun linux   -d -v web alpine            # persistent Linux rootfs
 bsdkrun freebsd -d -v db                    # persistent FreeBSD disk
 ```
 
 Reuse the same `-v NAME` and the machine comes back up with your changes intact. It's a single
 writer at a time (run one machine per volume), and it's mutually exclusive with `--persist` (which
-writes to the base image itself). The mechanism differs by guest, but the behavior is the same:
+writes to the base image itself). The mechanism is the same idea for every guest — a copy-on-write
+clone that persists:
 
-- **Linux** uses an **overlayfs**: the OCI image stays a shared, read-only *lower* layer and only
-  your changes are written to the volume's *upper* layer — so a volume holds just the diffs (a few
-  hundred KB for a couple of edited files), not a whole rootfs. bsdkrun serves the image as the
-  root, injects a tiny stage-1 init that assembles the overlay and `chroot`s into it, and mounts
-  the image + volume as extra virtio-fs shares. Needs the default virtio-fs (not `--initramfs`,
-  a RAM disk with nothing to persist).
+- **Linux** serves the volume as a **writable virtio-fs root**. First use copy-on-write clones the
+  OCI image into the volume dir (`clonefile` on APFS / `reflink` on btrfs/xfs — instant, and only
+  grows as the guest writes; a plain copy elsewhere); later boots reuse it, so your changes persist.
+  Needs the default virtio-fs (not `--initramfs`, a RAM disk with nothing to persist). (Earlier
+  builds layered overlayfs over virtio-fs, but the Linux/KVM kernel rejects a virtio-fs overlay
+  upperdir, so a plain writable clone is used instead — it works identically on macOS and Linux.)
 - **FreeBSD / NetBSD** use an **APFS copy-on-write clone** of the disk image under
   `<state>/volumes/<NAME>` (instant, and only grows as the guest writes).
 
@@ -628,18 +676,18 @@ Downloaded images are cached under **`~/.cache/bsdkrun/`** (override with `BSDKR
 `XDG_CACHE_HOME`), so fetching a version you already have is instant — it just links the cached
 image into `--dir` (a hard link, no second copy). Use `--force` to re-download.
 
-### NetBSD: use `current`, not a release
+### NetBSD: version handling is arch-specific
 
-NetBSD boots through the **same `firmware` path** as FreeBSD (its `efiboot` + `GENERIC64` kernel
-run under libkrun, and the kernel auto-selects libkrun's PL011 UART as console — no `loader.env`
-needed). But there's a catch: libkrun exposes **modern (v2) virtio-mmio**, and NetBSD's
-virtio-mmio driver only gained v2 support in **-current** (post-10.x). So:
+`bsdkrun netbsd` **direct-boots** the kernel (no firmware), rooting on the virtio-blk disk (override
+the kernel command line with `$BSDKRUN_NETBSD_CMDLINE`). The details differ by host arch:
 
-- **`bsdkrun fetch --os netbsd`** (→ `current`) boots all the way to `login:` with a working root
-  disk. ✅
-- Any NetBSD **release** (≤ 10.1) boots (kernel + console) but prints
-  `virtio: unknown version 0x02; giving up` and can't mount its root disk. `fetch` warns you if you
-  pin one.
+- **arm64** downloads NetBSD's evbarm `GENERIC64` kernel + live `gzimg` for the requested
+  `--version` (default `current`), rooting on the GPT wedge `dk1`. libkrun exposes **modern (v2)
+  virtio-mmio**, and NetBSD's driver only gained v2 support in **-current** (post-10.x): `current`
+  boots to `login:` ✅, while a **release** (≤ 10.1) boots but prints
+  `virtio: unknown version 0x02; giving up` and can't mount root. `fetch` warns you if you pin one.
+- **amd64** ignores `--version`: NetBSD ships no amd64 disk image, so bsdkrun downloads its own
+  bundled FFS rootfs + `MICROVM` kernel (release assets), rooting on `ld0a`.
 
 ### Resizing the disk
 

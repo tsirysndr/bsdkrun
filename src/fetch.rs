@@ -20,6 +20,14 @@ const FREEBSD_VM_IMAGES: &str = "https://download.freebsd.org/releases/VM-IMAGES
 const NETBSD_PUB: &str = "https://cdn.netbsd.org/pub/NetBSD";
 const NETBSD_DAILY_HEAD: &str = "https://nycdn.netbsd.org/pub/NetBSD-daily/HEAD/latest";
 
+/// NetBSD publishes no ready-to-boot **amd64** disk image (only arm64/evbarm
+/// ships a `gzimg`), so bsdkrun hosts its own: an FFS rootfs built from the
+/// amd64 sets plus the matching `MICROVM` kernel (a PVH ELF libkrun can boot),
+/// produced by the `release-netbsd-amd64-image` workflow and pinned to this
+/// rolling release tag.
+const NETBSD_AMD64_BASE: &str =
+    "https://github.com/tsirysndr/bsdkrun/releases/download/netbsd-amd64";
+
 /// Guest operating systems bsdkrun can provision.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Os {
@@ -76,17 +84,32 @@ impl Os {
         }
     }
 
-    fn image_url(self, version: &str) -> String {
+    fn image_url(self, version: &str, arch: crate::host::Arch) -> String {
+        use crate::host::Arch;
         match self {
-            Os::Freebsd => format!(
-                "{FREEBSD_VM_IMAGES}/{version}-RELEASE/aarch64/Latest/\
-                 FreeBSD-{version}-RELEASE-arm64-aarch64-ufs.raw.xz"
-            ),
-            Os::Netbsd if version == "current" => {
-                format!("{NETBSD_DAILY_HEAD}/evbarm-aarch64/binary/gzimg/arm64.img.gz")
+            // FreeBSD VM images: amd64 uses a single `amd64` fragment; aarch64
+            // uses the dir `aarch64` with an `arm64-aarch64` filename fragment.
+            Os::Freebsd => {
+                let (dir, frag) = match arch {
+                    Arch::X86_64 => ("amd64", "amd64".to_string()),
+                    Arch::Aarch64 => ("aarch64", "arm64-aarch64".to_string()),
+                };
+                format!(
+                    "{FREEBSD_VM_IMAGES}/{version}-RELEASE/{dir}/Latest/\
+                     FreeBSD-{version}-RELEASE-{frag}-ufs.raw.xz"
+                )
             }
+            // NetBSD gzimg disk images: evbarm-aarch64 for arm64; amd64 for x86_64.
             Os::Netbsd => {
-                format!("{NETBSD_PUB}/NetBSD-{version}/evbarm-aarch64/binary/gzimg/arm64.img.gz")
+                let (port, img) = match arch {
+                    Arch::X86_64 => ("amd64", "amd64.img.gz"),
+                    Arch::Aarch64 => ("evbarm-aarch64", "arm64.img.gz"),
+                };
+                if version == "current" {
+                    format!("{NETBSD_DAILY_HEAD}/{port}/binary/gzimg/{img}")
+                } else {
+                    format!("{NETBSD_PUB}/NetBSD-{version}/{port}/binary/gzimg/{img}")
+                }
             }
         }
     }
@@ -183,14 +206,17 @@ pub fn fetch(os: Os, version: Option<String>, dir: &Path, force: bool) -> Result
     std::fs::create_dir_all(&cache)
         .with_context(|| format!("creating cache dir {}", cache.display()))?;
 
-    let base = format!("{}-{version}", os.slug());
+    // A microVM guest runs the host arch, so images are fetched (and cached) per
+    // arch — amd64 on an x86_64 host, aarch64 on an arm64 host.
+    let arch = crate::host::Arch::current()?;
+    let base = format!("{}-{version}-{}", os.slug(), arch.slug());
     let raw = cache.join(format!("{base}.{}", os.raw_ext()));
     let comp = cache.join(format!("{base}.{}.{}", os.raw_ext(), os.comp().ext()));
 
     if raw.exists() && !force {
         info!(path = %raw.display(), "using cached image (already downloaded)");
     } else {
-        let url = os.image_url(&version);
+        let url = os.image_url(&version, arch);
         info!(%url, "downloading (this is a few hundred MiB)…");
         let _ = std::fs::remove_file(&comp); // drop any stale/partial download
         run(
@@ -216,7 +242,7 @@ pub fn fetch(os: Os, version: Option<String>, dir: &Path, force: bool) -> Result
         .map(|m| m.len() as i64)
         .unwrap_or(0);
     crate::db::record_image(
-        &format!("{}-{version}", os.slug()),
+        &format!("{}-{version}-{}", os.slug(), arch.slug()),
         &format!("file:{}", ready.display()),
         size,
         &ready.to_string_lossy(),
@@ -224,6 +250,102 @@ pub fn fetch(os: Os, version: Option<String>, dir: &Path, force: bool) -> Result
 
     info!(image = %ready.display(), "ready — boot it with: bsdkrun firmware --firmware images/KRUN_EFI.fd --disk {}", ready.display());
     Ok(ready)
+}
+
+/// Download + decompress the NetBSD `GENERIC` kernel for the host arch (cached),
+/// for direct-kernel boot — no EFI firmware needed. arm64 gets the raw `Image`
+/// (`netbsd-GENERIC64.img`); amd64 gets the ELF (`netbsd-GENERIC`).
+pub fn fetch_netbsd_kernel(version: Option<String>, force: bool) -> Result<PathBuf> {
+    use crate::host::Arch;
+    let arch = Arch::current()?;
+    let version = version.unwrap_or_else(|| "current".to_string());
+    let (port, kfile) = match arch {
+        Arch::Aarch64 => ("evbarm-aarch64", "netbsd-GENERIC64.img"),
+        Arch::X86_64 => ("amd64", "netbsd-GENERIC"),
+    };
+    let url = if version == "current" {
+        format!("{NETBSD_DAILY_HEAD}/{port}/binary/kernel/{kfile}.gz")
+    } else {
+        format!("{NETBSD_PUB}/NetBSD-{version}/{port}/binary/kernel/{kfile}.gz")
+    };
+
+    let cache = cache_dir()?;
+    std::fs::create_dir_all(&cache)
+        .with_context(|| format!("creating cache dir {}", cache.display()))?;
+    let out = cache.join(format!("netbsd-{version}-{}.kernel", arch.slug()));
+    if out.exists() && !force {
+        info!(path = %out.display(), "using cached NetBSD kernel");
+        return Ok(out);
+    }
+    let gz = cache.join(format!("netbsd-{version}-{}.kernel.gz", arch.slug()));
+    let _ = std::fs::remove_file(&gz);
+    info!(%url, "downloading NetBSD kernel…");
+    run(
+        Command::new("curl")
+            .args(["-L", "--fail", "--progress-bar", "-o"])
+            .arg(&gz)
+            .arg(&url),
+        "curl (download NetBSD kernel)",
+    )
+    .with_context(|| format!("downloading NetBSD kernel {version} ({})", arch.slug()))?;
+    run(
+        Command::new("gzip").arg("-d").arg("-f").arg(&gz),
+        "gzip (decompress NetBSD kernel)",
+    )?;
+    // gzip -d drops the .gz, leaving netbsd-<v>-<arch>.kernel.
+    Ok(out)
+}
+
+/// Download + gunzip a `.gz` release asset into `cache/<out_name>` (cached).
+/// Shared by the NetBSD amd64 image + MICROVM kernel fetchers.
+fn fetch_gz_asset(url: &str, out_name: &str, force: bool) -> Result<PathBuf> {
+    let cache = cache_dir()?;
+    std::fs::create_dir_all(&cache)
+        .with_context(|| format!("creating cache dir {}", cache.display()))?;
+    let out = cache.join(out_name);
+    if out.exists() && !force {
+        info!(path = %out.display(), "using cached asset");
+        return Ok(out);
+    }
+    let gz = cache.join(format!("{out_name}.gz"));
+    let _ = std::fs::remove_file(&gz);
+    info!(%url, "downloading…");
+    run(
+        Command::new("curl")
+            .args(["-L", "--fail", "--progress-bar", "-o"])
+            .arg(&gz)
+            .arg(url),
+        "curl (download asset)",
+    )
+    .with_context(|| format!("downloading {url}"))?;
+    // gzip -d drops the .gz suffix, leaving `<out_name>`.
+    run(
+        Command::new("gzip").arg("-d").arg("-f").arg(&gz),
+        "gzip (decompress asset)",
+    )?;
+    Ok(out)
+}
+
+/// bsdkrun-hosted NetBSD **amd64** root filesystem (an FFS image; there is no
+/// upstream amd64 disk image). Booted as a virtio-blk root (`root=ld0a`) under
+/// the MICROVM kernel. The `--version` flag doesn't apply — this is a pinned,
+/// bundled asset built by the `release-netbsd-amd64-image` workflow.
+pub fn fetch_netbsd_amd64_image(force: bool) -> Result<PathBuf> {
+    fetch_gz_asset(
+        &format!("{NETBSD_AMD64_BASE}/netbsd-amd64-root.img.gz"),
+        "netbsd-amd64-root.img",
+        force,
+    )
+}
+
+/// bsdkrun-hosted NetBSD **amd64** MICROVM kernel (a PVH ELF — the same
+/// `PHYS32_ENTRY`-note boot path libkrun uses for the Linux vmlinux).
+pub fn fetch_netbsd_amd64_kernel(force: bool) -> Result<PathBuf> {
+    fetch_gz_asset(
+        &format!("{NETBSD_AMD64_BASE}/netbsd-MICROVM-amd64.gz"),
+        "netbsd-MICROVM.amd64.kernel",
+        force,
+    )
 }
 
 /// Grow a raw disk image to `size` (e.g. "8G"). Only ever enlarges the file.
@@ -368,6 +490,7 @@ fn materialize(cached: &Path, dir: &Path) -> Result<PathBuf> {
 }
 
 /// Mount the image's FAT ESP and write FreeBSD's `loader.env` onto it.
+#[cfg(target_os = "macos")]
 fn write_freebsd_loader_env(raw: &Path) -> Result<()> {
     // Attach the raw image without mounting, and find the EFI (FAT) slice.
     let out = Command::new("hdiutil")
@@ -408,6 +531,7 @@ fn write_freebsd_loader_env(raw: &Path) -> Result<()> {
     result
 }
 
+#[cfg(target_os = "macos")]
 fn mount_and_write(esp_dev: &str) -> Result<()> {
     let mount = std::env::temp_dir().join(format!("bsdkrun-esp-{}", std::process::id()));
     std::fs::create_dir_all(&mount).context("creating ESP mountpoint")?;
@@ -448,6 +572,60 @@ fn mount_and_write(esp_dev: &str) -> Result<()> {
     let _ = std::fs::remove_dir(&mount);
 
     write_result
+}
+
+/// Linux: write FreeBSD's `loader.env` onto the image's FAT ESP via a partitioned
+/// loop device. Loop-mounting needs privileges, so this is best-effort: if it
+/// can't (e.g. not root), it warns and leaves the image as-is (the guest still
+/// boots — it just may not have the serial console pre-configured).
+///
+/// EXPERIMENTAL / untested — BSD guests under KVM need validation on a Linux host.
+#[cfg(not(target_os = "macos"))]
+fn write_freebsd_loader_env(raw: &Path) -> Result<()> {
+    use crate::host::root_command;
+
+    // losetup -Pf --show: attach with partition scanning, print the loop device.
+    let out = root_command("losetup")
+        .args(["-Pf", "--show"])
+        .arg(raw)
+        .output();
+    let loopdev = match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => {
+            warn!(
+                "couldn't attach a loop device for {} (needs root / losetup); skipping FreeBSD \
+                 serial-console setup — boot may need console tweaks",
+                raw.display()
+            );
+            return Ok(());
+        }
+    };
+    // The ESP is the first partition on FreeBSD's GPT image.
+    let esp = format!("{loopdev}p1");
+    let result = (|| -> Result<()> {
+        let mount = std::env::temp_dir().join(format!("bsdkrun-esp-{}", std::process::id()));
+        std::fs::create_dir_all(&mount).context("creating ESP mountpoint")?;
+        run(
+            root_command("mount")
+                .args(["-t", "vfat"])
+                .arg(&esp)
+                .arg(&mount),
+            "mount (ESP)",
+        )?;
+        let write = (|| -> Result<()> {
+            let dir = mount.join("EFI/freebsd");
+            std::fs::create_dir_all(&dir).context("creating EFI/freebsd on ESP")?;
+            std::fs::write(dir.join("loader.env"), FREEBSD_LOADER_ENV).context("writing loader.env")
+        })();
+        let _ = run(root_command("umount").arg(&mount), "umount (ESP)");
+        let _ = std::fs::remove_dir(&mount);
+        write
+    })();
+    let _ = root_command("losetup").arg("-d").arg(&loopdev).output();
+    if let Err(e) = &result {
+        warn!("FreeBSD serial-console setup failed: {e:#} — continuing");
+    }
+    Ok(())
 }
 
 /// Run a command, streaming its stdout/stderr, and error if it fails.

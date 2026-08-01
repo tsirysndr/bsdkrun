@@ -1,0 +1,174 @@
+name: e2e (Linux / KVM)
+
+# Boots a real OCI microVM under KVM to validate the Linux host port. Only
+# GitHub's x86_64 runners expose /dev/kvm (the arm64 runners don't), so CI runs
+# amd64 here; arm64-on-Linux must be validated on a KVM-capable host.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - "feat/linux-host"
+      - "main"
+    paths:
+      - "src/**"
+      - "agent/**"
+      - "build.rs"
+      - ".github/workflows/e2e-linux.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  boot:
+    name: x86_64
+    runs-on: ubuntu-latest # x86_64; has /dev/kvm
+    timeout-minutes: 30 # never hang the runner if a guest doesn't power off
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          set -eux
+          test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
+          # Give the runner user access to /dev/kvm (default is root:kvm 0660).
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 0666 /dev/kvm
+          ls -l /dev/kvm
+
+      - name: Install build deps (incl. libkrun/libkrunfw build requirements)
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl ca-certificates xz-utils python3 \
+            python3-pyelftools pkg-config patchelf patch cpio kmod rsync zstd \
+            flex bison bc libelf-dev libssl-dev \
+            clang libclang-dev llvm-dev musl-tools
+
+      - name: Install gvproxy (user-mode networking)
+        run: |
+          set -eux
+          sudo curl -fL -o /usr/local/bin/gvproxy \
+            https://github.com/containers/gvisor-tap-vsock/releases/latest/download/gvproxy-linux-amd64
+          sudo chmod +x /usr/local/bin/gvproxy
+          gvproxy --help >/dev/null 2>&1 || which gvproxy
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+
+      # libkrun links libkrunfw (the bundled kernel). Building libkrunfw compiles
+      # a Linux kernel from source (~15-20 min), so cache the built trees and skip
+      # straight to install on a hit. Bump CACHE_KEY below to force a rebuild.
+      # Restore the built libkrunfw/libkrun trees if we've cached them (the kernel
+      # compile is ~15-20 min). We restore/save separately so a *failed* build
+      # never poisons the cache. Bump the key to force a rebuild.
+      - name: Restore libkrun build
+        id: libkrun-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-v4
+
+      # Build only on a cache miss. libkrun links libkrunfw, so libkrunfw must be
+      # installed before libkrun builds. Use `cd`, NOT `make -C`: `-C` implies
+      # `-w`, which leaves a stray `w` in MAKEFLAGS that libkrunfw passes to the
+      # kernel sub-make as a bogus target ("No rule to make target 'w'").
+      - name: Build libkrun (cache miss)
+        if: steps.libkrun-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          git clone --depth 1 -b v5.5.0 https://github.com/containers/libkrunfw
+          ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
+          git clone --depth 1 -b v1.19.4 https://github.com/containers/libkrun
+          ( cd libkrun && make -j"$(nproc)" BLK=1 NET=1 )
+
+      # Only cache a build that actually succeeded.
+      - name: Save libkrun build
+        if: steps.libkrun-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-v4
+
+      # Install (fast) on every run — a cache hit restores the built trees but not
+      # the system-installed libraries.
+      - name: Install libkrun
+        run: |
+          set -eux
+          ( cd libkrunfw && sudo make install )
+          ( cd libkrun && sudo make install BLK=1 NET=1 )
+          # libkrun installs into /usr/local/lib64 (with the libkrun.so dev
+          # symlink + a pkg-config file). Point pkg-config (used by build.rs) and
+          # the runtime loader at it.
+          echo "PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo /usr/local/lib64 | sudo tee /etc/ld.so.conf.d/libkrun.conf
+          sudo ldconfig
+          ls -l /usr/local/lib64/libkrun.so*
+
+      - name: Build bsdkrun
+        run: cargo build --release
+
+      - name: Build guest agent (static musl)
+        run: |
+          set -eux
+          ( cd agent && cargo build --release --target x86_64-unknown-linux-musl )
+          echo "BSDKRUN_AGENT_LINUX=$PWD/agent/target/x86_64-unknown-linux-musl/release/bsdkrun-agent" >> "$GITHUB_ENV"
+
+      - name: e2e — boot an OCI microVM (detached) and exec a command
+        run: |
+          set -eux
+          # Use the detached path: it wires the guest console to a per-machine PTY
+          # broker, so it works without the CI step having a real TTY on stdout
+          # (libkrun's implicit console only writes to a tty). `logs` then shows
+          # the boot; `exec` runs a command via the in-guest agent.
+          id=$(./target/release/bsdkrun --log-level 5 linux -d alpine -- sleep 300)
+          sleep 3
+          ./target/release/bsdkrun ps
+          echo "----- guest console -----"
+          ./target/release/bsdkrun logs "$id" | tail -40 || true
+          out=$(timeout 30 ./target/release/bsdkrun exec "$id" echo hello-from-kvm || true)
+          ./target/release/bsdkrun stop "$id" || true
+          echo "$out" | grep -q hello-from-kvm
+
+      - name: e2e — detached machine + exec + volume persistence
+        run: |
+          set -eux
+          id=$(./target/release/bsdkrun linux -d -v ci alpine -- sleep 60)
+          sleep 5
+          timeout 30 ./target/release/bsdkrun exec "$id" uname -a
+          timeout 30 ./target/release/bsdkrun exec "$id" /bin/sh -c 'echo persisted > /root/x'
+          ./target/release/bsdkrun stop "$id"
+          # reboot the volume, confirm persistence
+          id2=$(./target/release/bsdkrun linux -d -v ci alpine -- sleep 60)
+          sleep 5
+          timeout 30 ./target/release/bsdkrun exec "$id2" cat /root/x | grep -q persisted
+          ./target/release/bsdkrun volume ls
+          ./target/release/bsdkrun stop "$id2"
+
+      # NetBSD boots via direct kernel — no EFI firmware — so it can run on
+      # Linux/KVM too. On amd64 this pulls bsdkrun's bundled FFS rootfs + MICROVM
+      # kernel (a PVH ELF); experimental (continue-on-error), and a no-op until
+      # the release-netbsd-amd64-image workflow has published those assets.
+      - name: e2e — NetBSD (direct kernel)
+        continue-on-error: true
+        run: |
+          set -eux
+          # Downloads the bundled amd64 MICROVM kernel + FFS rootfs and direct-boots
+          # (root=ld0a). Capture the console and check for the NetBSD banner. Tune
+          # the root/console via BSDKRUN_NETBSD_CMDLINE.
+          timeout 180 ./target/release/bsdkrun --log-level 1 netbsd 2>&1 | tee nb.log || true
+          if grep -qiE "NetBSD|Copyright.*Berkeley|boot device" nb.log; then
+            echo "NetBSD kernel booted"
+          else
+            echo "NetBSD boot not confirmed (amd64 MICROVM under libkrun is experimental)"
+          fi

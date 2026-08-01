@@ -1,0 +1,185 @@
+name: Release (NetBSD amd64 image)
+
+# NetBSD publishes no ready-to-boot amd64 disk image (only arm64/evbarm ships a
+# `gzimg`), so bsdkrun builds its own: an FFS rootfs made from the amd64 `sets`
+# with `makefs`, plus the matching `MICROVM` kernel (a PVH ELF libkrun boots the
+# same way it boots the Linux vmlinux). Both are published to a rolling release
+# tag the client downloads (see `NETBSD_AMD64_BASE` in src/fetch.rs).
+#
+# `makefs` is a NetBSD tool, so the image is assembled inside a NetBSD VM (the
+# same cross-platform-actions mechanism the guest-agent workflow uses). The sets
+# and the kernel are pulled from ONE daily-HEAD snapshot so the kernel's /stand
+# modules match the userland. MICROVM lives only in NetBSD-current today.
+
+on:
+  workflow_dispatch:
+    inputs:
+      snapshot:
+        description: "NetBSD-daily HEAD snapshot dir (e.g. 20260731194610Z, or 'latest')"
+        required: false
+        default: "latest"
+        type: string
+      release_tag:
+        description: "Rolling release tag to publish the assets to"
+        required: false
+        default: "netbsd-amd64"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build image (in NetBSD VM)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start NetBSD x86_64 VM
+        uses: cross-platform-actions/action@v1.3.0
+        with:
+          operating_system: netbsd
+          version: "10.1"
+          architecture: x86-64
+          shell: bash
+          memory: 8G
+          cpu_count: 4
+
+      - name: Build the FFS rootfs + stage the MICROVM kernel
+        shell: cpa.sh {0}
+        env:
+          SNAP: ${{ inputs.snapshot }}
+        run: |
+          set -eux
+          WS="$(pwd)"                       # synced workspace (checkout + artifacts)
+          BASEURL="https://nycdn.netbsd.org/pub/NetBSD-daily/HEAD/${SNAP}/amd64/binary"
+          WORK="$HOME/build"                # outside the synced dir: big intermediates
+          ROOT="$WORK/rootfs"
+          mkdir -p "$ROOT" "$WS/dist"
+
+          # 0. Build the guest agent natively in this NetBSD VM (zig ships no NetBSD
+          #    libc, so it can't be cross-compiled). Keep target/ out of the synced
+          #    workspace so it isn't rsynced back to the host.
+          sudo pkgin -y update
+          sudo pkgin -y install rust
+          export CARGO_TARGET_DIR="$HOME/agent-build"
+          ( cd "$WS/agent" && cargo build --release --locked )
+          AGENT_BIN="$CARGO_TARGET_DIR/release/bsdkrun-agent"
+
+          cd "$WORK"
+
+          # 1. Minimal sets + the MICROVM kernel, all from the same snapshot.
+          for s in base etc; do
+            ftp -o "$s.tar.xz" "$BASEURL/sets/$s.tar.xz"
+          done
+          ftp -o netbsd-MICROVM.gz "$BASEURL/kernel/netbsd-MICROVM.gz"
+
+          # 2. Populate the rootfs (NetBSD tar autodetects xz).
+          for s in base etc; do
+            tar -xpf "$s.tar.xz" -C "$ROOT"
+          done
+
+          # 3. Minimal config: DHCP networking, no swap, serial-console root login.
+          cat > "$ROOT/etc/rc.conf" <<'EOF'
+          rc_configured=YES
+          hostname=bsdkrun
+          dhcpcd=YES
+          dhcpcd_flags="-b"
+          no_swap=YES
+          savecore=NO
+          sshd=NO
+          EOF
+
+          # amd64 image is a bare makefs FFS on a virtio-blk disk -> root is ld0a.
+          cat > "$ROOT/etc/fstab" <<'EOF'
+          /dev/ld0a  /         ffs    rw  1 1
+          ptyfs      /dev/pts  ptyfs  rw  0 0
+          kernfs     /kern     kernfs rw  0 0
+          EOF
+
+          # MICROVM has no framebuffer; its console is the serial line (com0), which
+          # NetBSD exposes as the `console` tty. Enable root login there, disable the
+          # wscons ttyE* entries. (NetBSD sed -i is fiddly; filter via awk instead.)
+          awk '{
+            if ($1=="console") print "console \"/usr/libexec/getty default\" vt100 on secure";
+            else if ($1 ~ /^ttyE/) print "#" $0;
+            else print
+          }' "$ROOT/etc/ttys" > "$ROOT/etc/ttys.new"
+          mv "$ROOT/etc/ttys.new" "$ROOT/etc/ttys"
+
+          # Passwordless root on the (secure) console — a dev microVM, not exposed.
+          awk -F: 'BEGIN{OFS=":"} $1=="root"{$2=""} {print}' \
+            "$ROOT/etc/master.passwd" > "$ROOT/etc/master.passwd.new"
+          mv "$ROOT/etc/master.passwd.new" "$ROOT/etc/master.passwd"
+          chmod 600 "$ROOT/etc/master.passwd"
+          pwd_mkdb -d "$ROOT/etc" -p "$ROOT/etc/master.passwd"
+
+          # 4. Bake in the guest agent (built in step 0) so `bsdkrun exec` works out
+          #    of the box, and start it at boot. NetBSD has no daemon(8), so the
+          #    rc.d script backgrounds it and tracks the pid itself.
+          mkdir -p "$ROOT/usr/local/sbin"
+          install -m 755 "$AGENT_BIN" "$ROOT/usr/local/sbin/bsdkrun-agent"
+          cat > "$ROOT/etc/rc.d/bsdkrun_agent" <<'EOF'
+          #!/bin/sh
+          #
+          # PROVIDE: bsdkrun_agent
+          # REQUIRE: NETWORKING
+
+          . /etc/rc.subr
+
+          name="bsdkrun_agent"
+          rcvar=$name
+          command="/usr/local/sbin/bsdkrun-agent"
+          pidfile="/var/run/${name}.pid"
+
+          start_cmd="agent_start"
+          stop_cmd="agent_stop"
+
+          agent_start()
+          {
+          	echo "Starting ${name}."
+          	${command} &
+          	echo $! > ${pidfile}
+          }
+
+          agent_stop()
+          {
+          	if [ -f ${pidfile} ]; then
+          		kill "$(cat ${pidfile})" 2>/dev/null && rm -f ${pidfile}
+          	fi
+          }
+
+          load_rc_config $name
+          run_rc_command "$1"
+          EOF
+          chmod 555 "$ROOT/etc/rc.d/bsdkrun_agent"
+          echo 'bsdkrun_agent=YES' >> "$ROOT/etc/rc.conf"
+
+          # 5. Build the FFS image (little-endian, FFSv2) and stage both assets.
+          #    Bump -s if base+etc ever outgrows it; the client can `bsdkrun grow`.
+          makefs -t ffs -B le -s 1536m -o version=2,bsize=16384,fsize=2048 \
+            "$WORK/netbsd-amd64-root.img" "$ROOT"
+          gzip -9 -c "$WORK/netbsd-amd64-root.img" > "$WS/dist/netbsd-amd64-root.img.gz"
+          cp "$WORK/netbsd-MICROVM.gz" "$WS/dist/netbsd-MICROVM-amd64.gz"
+          ls -lh "$WS/dist"
+
+      - name: Checksums
+        run: |
+          set -eux
+          cd dist
+          for f in *.gz; do sha256sum "$f" > "$f.sha256"; done
+          ls -lh
+
+      - name: Publish to the rolling release tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -eux
+          # Create the release once, then clobber its assets on every rebuild.
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "NetBSD amd64 (prebuilt rootfs + MICROVM kernel)" \
+              --notes "FFS rootfs built from the NetBSD-current amd64 sets with makefs, plus the matching MICROVM kernel (PVH). Rebuilt by the release-netbsd-amd64-image workflow. bsdkrun downloads these for \`bsdkrun netbsd\` on amd64 hosts."
+          gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"

@@ -8,9 +8,6 @@ use std::ffi::CString;
 use std::os::raw::c_char;
 use std::path::Path;
 
-/// virtio-fs tag libkrun uses for the root filesystem (see `KRUN_FS_ROOT_TAG`).
-pub const FS_ROOT_TAG: &str = "/dev/root";
-
 // Kernel image formats accepted by krun_set_kernel.
 pub const KRUN_KERNEL_FORMAT_RAW: u32 = 0;
 pub const KRUN_KERNEL_FORMAT_ELF: u32 = 1;
@@ -65,21 +62,6 @@ extern "C" {
     fn krun_set_firmware(ctx_id: u32, firmware_path: *const c_char) -> i32;
     fn krun_set_root(ctx_id: u32, root_path: *const c_char) -> i32;
     fn krun_add_virtiofs(ctx_id: u32, c_tag: *const c_char, c_path: *const c_char) -> i32;
-    fn krun_fs_add_overlay_file(
-        ctx_id: u32,
-        fs_tag: *const c_char,
-        path: *const c_char,
-        data: *const u8,
-        data_len: usize,
-        mode: u32,
-        one_shot: bool,
-    ) -> i32;
-    fn krun_fs_add_overlay_dir(
-        ctx_id: u32,
-        fs_tag: *const c_char,
-        path: *const c_char,
-        mode: u32,
-    ) -> i32;
     fn krun_set_workdir(ctx_id: u32, workdir_path: *const c_char) -> i32;
     fn krun_set_exec(
         ctx_id: u32,
@@ -263,56 +245,13 @@ impl Ctx {
     }
 
     /// Add an extra virtio-fs share the guest can mount by `tag`
-    /// (`mount -t virtiofs <tag> <mountpoint>`). Used for overlayfs volumes:
-    /// a read-only lower (the shared image) plus a writable upper (the volume).
+    /// (`mount -t virtiofs <tag> <mountpoint>`). Used for `--mount` host dirs.
     pub fn add_virtiofs(&self, tag: &str, host_path: &Path) -> anyhow::Result<()> {
         let tag = cstr(tag)?;
         let path = path_cstr(host_path)?;
         check(
             unsafe { krun_add_virtiofs(self.id, tag.as_ptr(), path.as_ptr()) },
             "krun_add_virtiofs",
-        )?;
-        Ok(())
-    }
-
-    /// Inject a virtual file into a virtio-fs device — it appears in the guest
-    /// without being written to the host directory. `data` must stay valid for
-    /// the whole VM lifetime (libkrun does not copy it), so pass a `'static`
-    /// slice. Used to place our `/init` into the shared, read-only root image.
-    pub fn fs_add_overlay_file(
-        &self,
-        fs_tag: &str,
-        path: &str,
-        data: &'static [u8],
-        mode: u32,
-    ) -> anyhow::Result<()> {
-        let tag = cstr(fs_tag)?;
-        let p = cstr(path)?;
-        check(
-            unsafe {
-                krun_fs_add_overlay_file(
-                    self.id,
-                    tag.as_ptr(),
-                    p.as_ptr(),
-                    data.as_ptr(),
-                    data.len(),
-                    mode,
-                    false,
-                )
-            },
-            "krun_fs_add_overlay_file",
-        )?;
-        Ok(())
-    }
-
-    /// Inject a virtual (empty, read-only) directory into a virtio-fs device —
-    /// useful as a mount point in the shared root without touching the host dir.
-    pub fn fs_add_overlay_dir(&self, fs_tag: &str, path: &str, mode: u32) -> anyhow::Result<()> {
-        let tag = cstr(fs_tag)?;
-        let p = cstr(path)?;
-        check(
-            unsafe { krun_fs_add_overlay_dir(self.id, tag.as_ptr(), p.as_ptr(), mode) },
-            "krun_fs_add_overlay_dir",
         )?;
         Ok(())
     }

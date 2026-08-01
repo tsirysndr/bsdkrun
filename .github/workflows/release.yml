@@ -31,10 +31,10 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
-      - name: Rust stable (default) + linux-musl target
+      - name: Rust stable (default) + linux-musl targets (both arches)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-unknown-linux-musl
+          targets: aarch64-unknown-linux-musl, x86_64-unknown-linux-musl
 
       - name: Cache cargo + build
         uses: Swatinem/rust-cache@v2
@@ -64,9 +64,9 @@ jobs:
           mkdir -p dist
           # The signed host binary (tar keeps the exec bit + codesignature).
           tar -C target/release -czf dist/bsdkrun-aarch64-apple-darwin.tar.gz bsdkrun
-          # The guest agents (BSD one is for manual injection into a running VM).
-          cp src/agent-bin/bsdkrun-agent.linux-aarch64 dist/
-          cp src/agent-bin/bsdkrun-agent.freebsd-aarch64 dist/
+          # All cross-built guest agents (linux/freebsd × aarch64/x86_64). BSD
+          # ones are for manual injection into a running VM.
+          cp src/agent-bin/bsdkrun-agent.* dist/
           # Subshell so cwd doesn't leak; scope the glob so the sums file
           # doesn't hash itself.
           ( cd dist && shasum -a 256 bsdkrun-* > SHA256SUMS.txt )

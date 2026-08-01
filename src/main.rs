@@ -14,6 +14,7 @@ mod console;
 mod db;
 mod elf;
 mod fetch;
+mod host;
 mod id;
 mod krun;
 mod linux;
@@ -89,10 +90,11 @@ enum Command {
     /// Run an OCI image (Docker Hub / any registry) as a Linux machine.
     Linux(LinuxArgs),
 
-    /// Run FreeBSD — fetches the image if needed, then boots it (fetch + firmware).
+    /// Run FreeBSD — fetch + EFI-firmware boot (macOS only; needs KRUN_EFI).
+    #[cfg(target_os = "macos")]
     Freebsd(BsdArgs),
 
-    /// Run NetBSD — fetches the image if needed, then boots it (fetch + firmware).
+    /// Run NetBSD — fetch + direct-kernel boot (no firmware needed).
     Netbsd(BsdArgs),
 
     /// List machines.
@@ -533,8 +535,9 @@ fn main() -> Result<()> {
         Command::Versions(args) => fetch::list_versions(args.os),
         Command::Grow(args) => fetch::grow(&args.disk, &args.size),
         Command::Linux(args) => boot_linux(args),
-        Command::Freebsd(args) => boot_bsd(fetch::Os::Freebsd, args),
-        Command::Netbsd(args) => boot_bsd(fetch::Os::Netbsd, args),
+        #[cfg(target_os = "macos")]
+        Command::Freebsd(args) => boot_freebsd(args),
+        Command::Netbsd(args) => boot_netbsd(args),
         Command::Ps(args) => cmd_ps(args.all),
         Command::Images => cmd_images(),
         Command::Stop(args) => cmd_stop(&args.id),
@@ -764,9 +767,13 @@ fn firmware_machine(
 
 /// `freebsd` / `netbsd`: fetch the image if needed, auto-locate the firmware,
 /// then boot it — the one-liner equivalent of `fetch` + `firmware`.
-fn boot_bsd(os: fetch::Os, args: BsdArgs) -> Result<()> {
+/// FreeBSD boots through its `loader.efi`, which needs libkrun's EDK2 firmware —
+/// only available on macOS (the `libkrun-efi` flavor), so this command is gated
+/// to macOS. On Linux there's no KRUN_EFI, so FreeBSD isn't offered.
+#[cfg(target_os = "macos")]
+fn boot_freebsd(args: BsdArgs) -> Result<()> {
     let cache = fetch::cache_dir()?;
-    let disk = fetch::fetch(os, args.version, &cache, args.force)?;
+    let disk = fetch::fetch(fetch::Os::Freebsd, args.version, &cache, args.force)?;
     let firmware = match args.firmware {
         Some(f) => f,
         None => locate_krun_efi()?,
@@ -781,9 +788,85 @@ fn boot_bsd(os: fetch::Os, args: BsdArgs) -> Result<()> {
     )
 }
 
+/// NetBSD kernel command line (override with `$BSDKRUN_NETBSD_CMDLINE`). The root
+/// device is arch-specific: the arm64 image is GPT-partitioned, so its root FFS
+/// is the wedge `dk1` (`dk0` is the EFI partition); the amd64 image is a bare
+/// makefs FFS on a virtio-blk disk, which NetBSD roots as `ld0a`.
+fn netbsd_cmdline() -> String {
+    if let Ok(s) = std::env::var("BSDKRUN_NETBSD_CMDLINE") {
+        if !s.is_empty() {
+            return s;
+        }
+    }
+    match host::Arch::current() {
+        Ok(host::Arch::X86_64) => "root=ld0a".to_string(),
+        _ => "root=dk1".to_string(),
+    }
+}
+
+/// NetBSD boots via **direct kernel** — libkrun jumps straight into the kernel,
+/// no EFI firmware needed (unlike FreeBSD). The disk + kernel are arch-specific:
+///
+/// - **arm64** uses NetBSD's evbarm `gzimg` live image + `GENERIC64` kernel.
+/// - **amd64** has no upstream disk image, so we use bsdkrun's bundled FFS rootfs
+///   + `MICROVM` kernel (both PVH-boot under libkrun); `--version` is ignored.
+fn boot_netbsd(args: BsdArgs) -> Result<()> {
+    let cache = fetch::cache_dir()?;
+    let (disk, kernel) = match host::Arch::current()? {
+        host::Arch::X86_64 => (
+            fetch::fetch_netbsd_amd64_image(args.force)?,
+            fetch::fetch_netbsd_amd64_kernel(args.force)?,
+        ),
+        host::Arch::Aarch64 => (
+            fetch::fetch(fetch::Os::Netbsd, args.version.clone(), &cache, args.force)?,
+            fetch::fetch_netbsd_kernel(args.version.clone(), args.force)?,
+        ),
+    };
+
+    let machine_id = id::short_id();
+    let vdir = machine_dir_or_tmp(&machine_id);
+    let image = basename(&disk);
+    let volume = args.run.volume.as_deref().map(volume_dir).transpose()?;
+    let root_disk = prepare_bsd_disk(&disk, &vdir, args.run.persist, volume.as_deref())?;
+
+    let build = || -> Result<(Ctx, Option<Gvproxy>)> {
+        let ctx = Ctx::new()?;
+        ctx.set_vm_config(args.vm.cpus, args.vm.mem)?;
+        ctx.attach_stdio_serial_console()
+            .context("wiring guest serial console to stdio")?;
+        db::record_disk(&disk.to_string_lossy());
+        ctx.add_disk("root", &root_disk, false)
+            .with_context(|| format!("attaching root disk {}", root_disk.display()))?;
+        attach_extra_disks(&ctx, &args.attach_disk)?;
+        let gvproxy = setup_networking_with_agent(&ctx, &args.net, Some(&vdir))?;
+        ctx.set_kernel(&kernel, linux::kernel_format(), None, &netbsd_cmdline())
+            .context("configuring kernel")?;
+        Ok((ctx, gvproxy))
+    };
+
+    if let (Some(name), Some(dir)) = (args.run.volume.as_deref(), &volume) {
+        db::record_volume(name, "netbsd", &image, &dir.to_string_lossy());
+    }
+    run_machine(
+        &machine_id,
+        &vdir,
+        "netbsd",
+        &image,
+        "",
+        args.vm.cpus,
+        args.vm.mem,
+        args.run.detach,
+        true,
+        args.run.volume.as_deref(),
+        build,
+    )
+}
+
 /// Locate libkrun's EDK2 firmware (`KRUN_EFI`), keeping a copy in bsdkrun's own
 /// cache dir (not the current directory). Overridden by `$BSDKRUN_FIRMWARE` (and
-/// by the `--firmware` flag before this is called).
+/// by the `--firmware` flag before this is called). macOS only — the EFI
+/// firmware ships with libkrun-efi, which is macOS-only.
+#[cfg(target_os = "macos")]
 fn locate_krun_efi() -> Result<PathBuf> {
     if let Some(f) = std::env::var_os("BSDKRUN_FIRMWARE") {
         let p = PathBuf::from(f);
@@ -821,7 +904,9 @@ fn locate_krun_efi() -> Result<PathBuf> {
     Ok(cached)
 }
 
-/// Find krunkit's `KRUN_EFI.silent.fd` in its Homebrew install.
+/// Find krunkit's `KRUN_EFI.silent.fd` in its Homebrew install. macOS only —
+/// krunkit (and the EFI firmware) exist only there.
+#[cfg(target_os = "macos")]
 fn find_krunkit_firmware() -> Result<PathBuf> {
     let mut prefixes: Vec<PathBuf> = Vec::new();
     if let Ok(out) = std::process::Command::new("brew")
@@ -941,22 +1026,10 @@ fn volume_dir(name: &str) -> Result<PathBuf> {
     Ok(db::volumes_dir()?.join(name))
 }
 
-/// Copy `src` to `dst` using an APFS copy-on-write clone (`cp -c`), falling back
-/// to a plain copy on filesystems without `clonefile(2)`.
+/// Copy `src` to `dst` as a copy-on-write clone where the filesystem supports it
+/// (APFS on macOS, reflink on Linux), falling back to a plain copy.
 fn clone_cow_file(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
-    if fetch::run(
-        std::process::Command::new("cp").arg("-c").arg(src).arg(dst),
-        "cp (clone disk)",
-    )
-    .is_err()
-    {
-        let _ = std::fs::remove_file(dst);
-        fetch::run(
-            std::process::Command::new("cp").arg(src).arg(dst),
-            "cp (copy disk)",
-        )?;
-    }
-    Ok(())
+    host::cow_copy(src, dst, false)
 }
 
 /// Run a machine either in the foreground (records + attaches to this terminal)
@@ -1030,8 +1103,11 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
     let volume = args.volume.as_deref().map(volume_dir).transpose()?;
 
     // Host directory bind mounts (`--mount HOST:GUEST[:ro]`), shared via virtio-fs.
-    let mounts: Vec<linux::BindMount> =
-        args.mounts.iter().map(|s| parse_mount(s)).collect::<Result<_>>()?;
+    let mounts: Vec<linux::BindMount> = args
+        .mounts
+        .iter()
+        .map(|s| parse_mount(s))
+        .collect::<Result<_>>()?;
 
     // Decide up front whether networking will come up, so the baked-in initramfs
     // `/init` + kernel `ip=` match what `setup_networking` will actually do.
@@ -1043,16 +1119,17 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
     let persistent = args.detach && args.command.is_empty();
 
     // Prepare the rootfs before forking so failures surface synchronously.
-    // A volume uses an overlayfs (shared image lower + persistent volume upper);
+    // A volume is a persistent, writable virtio-fs root (CoW-cloned on first use);
     // otherwise it's a per-machine virtio-fs clone, or an initramfs (--initramfs).
     let root_mode = match (&volume, args.virtiofs()) {
-        (Some(voldir), _) => {
-            linux::prepare_overlay_volume(voldir, &ep, net_up, persistent, &mounts)?;
-            LinuxRoot::Overlay {
-                base: image.rootfs.clone(),
-                volume: voldir.clone(),
-            }
-        }
+        (Some(voldir), _) => LinuxRoot::Virtiofs(linux::prepare_volume_root(
+            &image.rootfs,
+            &ep,
+            net_up,
+            persistent,
+            voldir,
+            &mounts,
+        )?),
         (None, true) => LinuxRoot::Virtiofs(linux::prepare_virtiofs_root(
             &image.rootfs,
             &ep,
@@ -1110,11 +1187,9 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
 enum LinuxRoot {
     /// Whole rootfs loaded into RAM (`--initramfs`).
     Initramfs(PathBuf),
-    /// Per-machine copy-on-write virtio-fs clone (the ephemeral default).
+    /// Copy-on-write virtio-fs clone. Ephemeral per-machine by default, or a
+    /// persistent named volume (`-v NAME`) whose clone lives in the volume dir.
     Virtiofs(PathBuf),
-    /// Persistent overlay: shared image `base` (read-only lower) + `volume`
-    /// (writable upper) merged in the guest (`-v NAME`).
-    Overlay { base: PathBuf, volume: PathBuf },
 }
 
 /// Configure networking + rootfs + kernel on `ctx` (shared by the foreground and
@@ -1139,38 +1214,16 @@ fn configure_linux_ctx(
     // We boot our own init in every virtio-fs mode (not libkrun's init.krun,
     // which is for the bundled libkrunfw kernel).
     match root {
-        LinuxRoot::Overlay { base, volume } => {
-            // Serve the shared image read-only as the root and inject a tiny
-            // stage-1 init (a virtual file — the on-disk image is untouched) that
-            // assembles the overlay from the image + volume and switch_roots.
-            ctx.set_root(base)
-                .context("configuring virtio-fs root (needs a CONFIG_VIRTIO_FS=y kernel)")?;
-            let stage1: &'static [u8] =
-                Box::leak(linux::overlay_stage1_init().into_bytes().into_boxed_slice());
-            for dir in ["bk_lower", "bk_vol", "bk_newroot"] {
-                ctx.fs_add_overlay_dir(krun::FS_ROOT_TAG, dir, 0o040755)
-                    .context("adding overlay mountpoint")?;
-            }
-            ctx.fs_add_overlay_file(krun::FS_ROOT_TAG, linux::OVERLAY_STAGE1, stage1, 0o100755)
-                .context("injecting overlay stage-1 init")?;
-            ctx.add_virtiofs(linux::OVERLAY_LOWER_TAG, base)
-                .context("sharing overlay lower (image)")?;
-            ctx.add_virtiofs(linux::OVERLAY_VOL_TAG, volume)
-                .context("sharing overlay upper (volume)")?;
-            let cmdline = linux::overlay_cmdline(&args.console, net_up);
-            ctx.set_kernel(kernel, krun::KRUN_KERNEL_FORMAT_RAW, None, &cmdline)
-                .context("configuring kernel")?;
-        }
         LinuxRoot::Virtiofs(dir) => {
             ctx.set_root(dir)
                 .context("configuring virtio-fs root (needs a CONFIG_VIRTIO_FS=y kernel)")?;
             let cmdline = linux::virtiofs_cmdline(&args.console, net_up);
-            ctx.set_kernel(kernel, krun::KRUN_KERNEL_FORMAT_RAW, None, &cmdline)
+            ctx.set_kernel(kernel, linux::kernel_format(), None, &cmdline)
                 .context("configuring kernel")?;
         }
         LinuxRoot::Initramfs(img) => {
             let cmdline = linux::kernel_cmdline(&args.console, net_up);
-            ctx.set_kernel(kernel, krun::KRUN_KERNEL_FORMAT_RAW, Some(img), &cmdline)
+            ctx.set_kernel(kernel, linux::kernel_format(), Some(img), &cmdline)
                 .context("configuring kernel")?;
         }
     }
@@ -1557,6 +1610,8 @@ fn is_bsd(kind: &str) -> bool {
 /// Add a guest-specific hint to an agent connection/exec failure.
 fn agent_error(kind: &str, e: anyhow::Error) -> anyhow::Error {
     if is_bsd(kind) {
+        // Guest arch == host arch under KVM/HVF.
+        let arch = host::Arch::current().unwrap_or(host::Arch::Aarch64);
         anyhow::anyhow!(
             "{e}\n\nBSD guests don't run the exec agent automatically. Download the agent for \
              your guest from the bsdkrun GitHub release:\n  \
@@ -1564,8 +1619,8 @@ fn agent_error(kind: &str, e: anyhow::Error) -> anyhow::Error {
              NetBSD:  {}\n\
              then copy it into the running microVM and start it (it listens on TCP port {}): \
              `./bsdkrun-agent &`. bsdkrun forwards a host port to it automatically.",
-            agent::asset_url(agent::Platform::Freebsd),
-            agent::asset_url(agent::Platform::Netbsd),
+            agent::asset_url(host::GuestOs::Freebsd, arch),
+            agent::asset_url(host::GuestOs::Netbsd, arch),
             agent::GUEST_PORT,
         )
     } else {

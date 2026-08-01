@@ -25,7 +25,7 @@ pub const GUEST_PORT: u16 = 1024;
 pub const GUEST_PATH: &str = "sbin/bsdkrun-agent";
 
 /// GitHub release the prebuilt agents are published to (see the `release`
-/// workflows). The per-platform aarch64 binaries are attached as assets.
+/// workflows). Per-(os, arch) binaries are attached as assets.
 const AGENT_RELEASE_BASE: &str = "https://github.com/tsirysndr/bsdkrun/releases/download";
 
 // Frame channels (must match the agent).
@@ -35,35 +35,19 @@ const CH_STDERR: u8 = 2;
 const CH_EXIT: u8 = 3;
 const CH_WINSZ: u8 = 4;
 
-/// A guest OS the agent is built for (aarch64 only).
-#[derive(Clone, Copy)]
-pub enum Platform {
-    Linux,
-    Freebsd,
-    Netbsd,
+use crate::host::{Arch, GuestOs};
+
+/// Release asset / cache file name, e.g. `bsdkrun-agent.linux-aarch64`.
+fn asset_name(os: GuestOs, arch: Arch) -> String {
+    format!("bsdkrun-agent.{}-{}", os.slug(), arch.slug())
 }
 
-impl Platform {
-    fn slug(self) -> &'static str {
-        match self {
-            Platform::Linux => "linux",
-            Platform::Freebsd => "freebsd",
-            Platform::Netbsd => "netbsd",
-        }
-    }
-
-    /// Env var overriding the download with a local prebuilt binary (for dev).
-    fn env_key(self) -> &'static str {
-        match self {
-            Platform::Linux => "BSDKRUN_AGENT_LINUX",
-            Platform::Freebsd => "BSDKRUN_AGENT_FREEBSD",
-            Platform::Netbsd => "BSDKRUN_AGENT_NETBSD",
-        }
-    }
-
-    /// Release asset / cache file name, e.g. `bsdkrun-agent.linux-aarch64`.
-    fn asset(self) -> String {
-        format!("bsdkrun-agent.{}-aarch64", self.slug())
+/// Env var overriding the download with a local prebuilt binary (for dev).
+fn env_key(os: GuestOs) -> &'static str {
+    match os {
+        GuestOs::Linux => "BSDKRUN_AGENT_LINUX",
+        GuestOs::Freebsd => "BSDKRUN_AGENT_FREEBSD",
+        GuestOs::Netbsd => "BSDKRUN_AGENT_NETBSD",
     }
 }
 
@@ -76,33 +60,34 @@ fn agent_version() -> String {
         .unwrap_or_else(|| format!("v{}", env!("CARGO_PKG_VERSION")))
 }
 
-/// Download (once) and cache the guest agent for `platform`, returning its path.
-/// Cached under `<cache>/agent/<version>/<asset>`; set `BSDKRUN_AGENT_<PLATFORM>`
-/// to use a local prebuilt binary instead (e.g. during development).
-pub fn ensure_agent(platform: Platform) -> Result<PathBuf> {
-    if let Ok(p) = std::env::var(platform.env_key()) {
+/// Download (once) and cache the guest agent for `(os, arch)`, returning its
+/// path. Cached under `<cache>/agent/<version>/<asset>`; set the matching
+/// `BSDKRUN_AGENT_<OS>` env var to use a local prebuilt binary instead.
+pub fn ensure_agent(os: GuestOs, arch: Arch) -> Result<PathBuf> {
+    if let Ok(p) = std::env::var(env_key(os)) {
         if !p.is_empty() {
             let p = PathBuf::from(p);
             if !p.exists() {
-                bail!("{}={} does not exist", platform.env_key(), p.display());
+                bail!("{}={} does not exist", env_key(os), p.display());
             }
             return Ok(p);
         }
     }
 
     let version = agent_version();
+    let asset = asset_name(os, arch);
     let dir = cache_dir()?.join("agent").join(&version);
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("creating agent cache dir {}", dir.display()))?;
-    let dest = dir.join(platform.asset());
+    let dest = dir.join(&asset);
     if dest.exists() {
         info!(path = %dest.display(), "using cached exec agent");
         return Ok(dest);
     }
 
-    let url = format!("{AGENT_RELEASE_BASE}/{version}/{}", platform.asset());
+    let url = format!("{AGENT_RELEASE_BASE}/{version}/{asset}");
     info!(%url, "downloading exec agent…");
-    let tmp = dir.join(format!("{}.partial", platform.asset()));
+    let tmp = dir.join(format!("{asset}.partial"));
     let _ = std::fs::remove_file(&tmp);
     run(
         Command::new("curl")
@@ -113,12 +98,10 @@ pub fn ensure_agent(platform: Platform) -> Result<PathBuf> {
     )
     .with_context(|| {
         format!(
-            "downloading bsdkrun-agent {version} for {} — is that bsdkrun release published \
-             (with the {} asset)? Override the tag with BSDKRUN_AGENT_VERSION, or point \
-             {} at a local binary.",
-            platform.slug(),
-            platform.asset(),
-            platform.env_key(),
+            "downloading bsdkrun-agent {version} ({asset}) — is that bsdkrun release published \
+             with that asset? Override the tag with BSDKRUN_AGENT_VERSION, or point {} at a \
+             local binary.",
+            env_key(os),
         )
     })?;
     set_executable(&tmp)?;
@@ -126,13 +109,13 @@ pub fn ensure_agent(platform: Platform) -> Result<PathBuf> {
     Ok(dest)
 }
 
-/// Public download URL of a platform's agent asset (for user-facing hints —
-/// BSD guests aren't auto-injected, so the user fetches this themselves).
-pub fn asset_url(platform: Platform) -> String {
+/// Public download URL of an agent asset (for user-facing hints — BSD guests
+/// aren't auto-injected, so the user fetches this themselves).
+pub fn asset_url(os: GuestOs, arch: Arch) -> String {
     format!(
         "{AGENT_RELEASE_BASE}/{}/{}",
         agent_version(),
-        platform.asset()
+        asset_name(os, arch)
     )
 }
 
@@ -145,7 +128,8 @@ fn set_executable(path: &Path) -> Result<()> {
 /// Install the agent into a Linux guest rootfs at `GUEST_PATH` (mode 0755),
 /// downloading + caching it first if needed.
 pub fn inject_linux(rootfs: &Path) -> Result<()> {
-    let bin = ensure_agent(Platform::Linux)?;
+    // Guest arch == host arch under KVM/HVF.
+    let bin = ensure_agent(GuestOs::Linux, Arch::current()?)?;
     let bytes =
         std::fs::read(&bin).with_context(|| format!("reading agent binary {}", bin.display()))?;
     crate::oci::write_rootfs_file(rootfs, GUEST_PATH, &bytes, 0o755)

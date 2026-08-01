@@ -157,7 +157,7 @@ jobs:
         run: |
           set -eux
           id=$(./target/release/bsdkrun linux -d -v ci alpine -- sleep 120)
-          sleep 5
+          sleep 10
           # Dump the guest console: the overlay stage-1 init echoes exactly which
           # step failed ("[bk] overlay mount failed", etc.) if the volume overlay
           # couldn't be assembled (which would stop the agent from starting).
@@ -169,7 +169,7 @@ jobs:
           ./target/release/bsdkrun stop "$id"
           # reboot the volume, confirm persistence
           id2=$(./target/release/bsdkrun linux -d -v ci alpine -- sleep 60)
-          sleep 3
+          sleep 10
           timeout 30 ./target/release/bsdkrun exec "$id2" cat /root/x | grep -q persisted
           ./target/release/bsdkrun volume ls
           ./target/release/bsdkrun stop "$id2"

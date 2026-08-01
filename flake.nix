@@ -101,6 +101,7 @@
             pkg-config
             llvmPackages.llvm
             libkrun
+            qemu_kvm # KVM userspace tooling (bsdkrun itself drives /dev/kvm via libkrun)
             cargo-zigbuild
             zig
           ] ++ runtimeDeps;

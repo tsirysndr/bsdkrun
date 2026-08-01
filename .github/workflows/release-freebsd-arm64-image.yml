@@ -58,6 +58,7 @@ jobs:
           mkdir -p "$WS/dist"
           # Download the agent as the normal user; mounting the image needs root.
           fetch -o "$WS/bsdkrun-agent" "$AGENT_URL"
+          chmod a+x "$WS/bsdkrun-agent"
 
           sudo env WS="$WS" VERSION="$VERSION" /bin/sh -eux <<'ROOTEOF'
           export PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/local/bin

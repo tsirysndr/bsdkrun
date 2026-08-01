@@ -23,6 +23,7 @@ jobs:
   boot:
     name: x86_64
     runs-on: ubuntu-latest # x86_64; has /dev/kvm
+    timeout-minutes: 30 # never hang the runner if a guest doesn't power off
     steps:
       - uses: actions/checkout@v4
 
@@ -126,9 +127,12 @@ jobs:
       - name: e2e — boot an OCI microVM and run a command
         run: |
           set -eux
-          out=$(./target/release/bsdkrun --log-level 1 linux alpine -- echo hello-from-kvm)
-          echo "----- guest output -----"; echo "$out"
-          echo "$out" | grep -q hello-from-kvm
+          # Max libkrun logging + a hard timeout so we always see how far the
+          # x86_64 boot got instead of hanging (guest console goes to stdout).
+          timeout 120 ./target/release/bsdkrun --log-level 5 \
+            linux alpine -- echo hello-from-kvm 2>&1 | tee boot.log || true
+          echo "----- checking for guest output -----"
+          grep -q hello-from-kvm boot.log
 
       - name: e2e — detached machine + exec + volume persistence
         run: |

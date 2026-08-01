@@ -95,7 +95,7 @@ nixpkgs' libkrun; on **macOS** it links your Homebrew libkrun, so those need `--
 entitlement.
 
 ```sh
-# Linux (needs /dev/kvm access)
+# Linux — needs /dev/kvm access: sudo usermod -aG kvm $USER && newgrp kvm
 nix run           github:tsirysndr/bsdkrun -- linux alpine   # run without installing
 nix profile install github:tsirysndr/bsdkrun                 # install into your profile
 nix develop       github:tsirysndr/bsdkrun                   # dev shell with the full toolchain
@@ -144,10 +144,15 @@ build — the [`Makefile`](./Makefile) does this for you (entitlements in
 
 ### Linux (amd64 or arm64, KVM)
 
-libkrun uses **KVM** on Linux — no codesigning, but you need **`/dev/kvm`** access (be in the `kvm`
-group, or run under `sudo`). Ubuntu has no libkrun package, so build it (and its bundled kernel,
-libkrunfw) from source — see the [KVM e2e workflow](.github/workflows/e2e-linux.yml) for the exact
-steps:
+libkrun uses **KVM** on Linux — no codesigning, but you need **`/dev/kvm`** access. Add yourself to
+the `kvm` group (or run under `sudo`):
+
+```sh
+sudo usermod -aG kvm $USER && newgrp kvm
+```
+
+Ubuntu has no libkrun package, so build it (and its bundled kernel, libkrunfw) from source — see the
+[KVM e2e workflow](.github/workflows/e2e-linux.yml) for the exact steps:
 
 ```sh
 git clone --depth 1 https://github.com/containers/libkrunfw && make -C libkrunfw && sudo make -C libkrunfw install

@@ -138,7 +138,8 @@ jobs:
             "$ROOT/etc/master.passwd" > "$ROOT/etc/master.passwd.new"
           mv "$ROOT/etc/master.passwd.new" "$ROOT/etc/master.passwd"
           chmod 600 "$ROOT/etc/master.passwd"
-          pwd_mkdb -d "$ROOT/etc" -p "$ROOT/etc/master.passwd"
+          # pwd_mkdb -d is the ROOT dir (it appends /etc itself), so pass $ROOT.
+          pwd_mkdb -d "$ROOT" -p "$ROOT/etc/master.passwd"
 
           # Bake in the guest agent so `bsdkrun exec` works out of the box, started
           # at boot via rc.d (NetBSD has no daemon(8), so it tracks the pid itself).

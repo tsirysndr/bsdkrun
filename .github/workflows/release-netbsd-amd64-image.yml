@@ -118,7 +118,7 @@ jobs:
             "$ROOT/etc/master.passwd" > "$ROOT/etc/master.passwd.new"
           mv "$ROOT/etc/master.passwd.new" "$ROOT/etc/master.passwd"
           chmod 600 "$ROOT/etc/master.passwd"
-          pwd_mkdb -d "$ROOT/etc" -p "$ROOT/etc/master.passwd"
+          /usr/sbin/pwd_mkdb -d "$ROOT/etc" -p "$ROOT/etc/master.passwd"
 
           # 4. Bake in the guest agent (built in step 0) so `bsdkrun exec` works out
           #    of the box, and start it at boot. NetBSD has no daemon(8), so the
@@ -163,7 +163,7 @@ jobs:
 
           # 5. Build the FFS image (little-endian, FFSv2) and stage both assets.
           #    Bump -s if base+etc ever outgrows it; the client can `bsdkrun grow`.
-          makefs -t ffs -B le -s 1536m -o version=2,bsize=16384,fsize=2048 \
+          /usr/sbin/makefs -t ffs -B le -s 1536m -o version=2,bsize=16384,fsize=2048 \
             "$WORK/netbsd-amd64-root.img" "$ROOT"
           gzip -9 -c "$WORK/netbsd-amd64-root.img" > "$WS/dist/netbsd-amd64-root.img.gz"
           cp "$WORK/netbsd-MICROVM.gz" "$WS/dist/netbsd-MICROVM-amd64.gz"

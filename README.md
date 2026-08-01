@@ -87,16 +87,27 @@ This auto-taps `libkrun/krun` and pulls in its dependencies (`libkrun`, `gvproxy
 ships codesigned with the hypervisor entitlement, so there's nothing else to set up — jump to
 [Usage](#usage).
 
-**Linux (amd64 / arm64)** — via the Nix flake (pulls libkrun + everything else):
+**Nix flake** — builds bsdkrun with all its dependencies. On **Linux (amd64/arm64)** it links
+nixpkgs' libkrun; on **macOS** it links your Homebrew libkrun, so those need `--impure`
+(`brew install libkrun/krun/libkrun` first) and produce a binary re-signed with the hypervisor
+entitlement.
 
 ```sh
-nix run  github:tsirysndr/bsdkrun -- linux alpine   # run without installing
-nix profile install github:tsirysndr/bsdkrun        # install into your profile
-nix develop github:tsirysndr/bsdkrun                # a dev shell with the full toolchain
+# Linux (needs /dev/kvm access)
+nix run           github:tsirysndr/bsdkrun -- linux alpine   # run without installing
+nix profile install github:tsirysndr/bsdkrun                 # install into your profile
+nix develop       github:tsirysndr/bsdkrun                   # dev shell with the full toolchain
+
+# macOS (Apple Silicon) — impure link against Homebrew's libkrun
+brew install libkrun/krun/libkrun
+nix build  --impure github:tsirysndr/bsdkrun                  # -> ./result/bin/bsdkrun
+nix run    --impure github:tsirysndr/bsdkrun -- linux alpine
 ```
 
-You still need `/dev/kvm` access. To hack on bsdkrun, build from source — see
-[Prerequisites](#prerequisites) and [Build](#build).
+The flake wraps the runtime tools (`curl`, `tar`, `gzip`, `xz`, `cpio`, `gvproxy`, …) onto `PATH`,
+and `nix develop` adds the Rust toolchain plus `zig`/`cargo-zigbuild` for cross-building the guest
+agents. To hack on bsdkrun without Nix, build from source — see [Prerequisites](#prerequisites) and
+[Build](#build).
 
 ---
 

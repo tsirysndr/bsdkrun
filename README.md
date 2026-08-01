@@ -74,7 +74,7 @@ libkrun's virtio-console — is exactly what this tool is for probing.
 
 ## Install
 
-The quickest way — a prebuilt, already-signed binary via Homebrew (Apple Silicon only):
+**macOS (Apple Silicon)** — a prebuilt, already-signed binary via Homebrew:
 
 ```sh
 brew install tsirysndr/tap/bsdkrun
@@ -84,8 +84,16 @@ This auto-taps `libkrun/krun` and pulls in its dependencies (`libkrun`, `gvproxy
 ships codesigned with the hypervisor entitlement, so there's nothing else to set up — jump to
 [Usage](#usage).
 
-To hack on bsdkrun instead, build from source — see [Prerequisites](#prerequisites) and
-[Build](#build).
+**Linux (amd64 / arm64)** — via the Nix flake (pulls libkrun + everything else):
+
+```sh
+nix run  github:tsirysndr/bsdkrun -- linux alpine   # run without installing
+nix profile install github:tsirysndr/bsdkrun        # install into your profile
+nix develop github:tsirysndr/bsdkrun                # a dev shell with the full toolchain
+```
+
+You still need `/dev/kvm` access. To hack on bsdkrun, build from source — see
+[Prerequisites](#prerequisites) and [Build](#build).
 
 ---
 

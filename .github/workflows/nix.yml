@@ -1,0 +1,31 @@
+name: nix
+
+# Build bsdkrun through the Nix flake (linking nixpkgs' libkrun) and run
+# `nix flake check` (package build + clippy + rustfmt) on both Linux arches.
+# This is a pure build — no KVM needed — so it runs on the standard runners.
+
+on:
+  push:
+    branches: [main, feat/linux-host]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: nix build · ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64-linux
+            runner: ubuntu-latest
+          - arch: aarch64-linux
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v16
+      - name: nix build
+        run: nix build -L .#bsdkrun
+      - name: nix flake check
+        run: nix flake check -L

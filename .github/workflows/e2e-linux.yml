@@ -58,14 +58,17 @@ jobs:
       # libkrun links libkrunfw (the bundled kernel). Building libkrunfw compiles
       # a Linux kernel from source (~15-20 min), so cache the built trees and skip
       # straight to install on a hit. Bump CACHE_KEY below to force a rebuild.
-      - name: Cache libkrun/libkrunfw build
+      # Restore the built libkrunfw/libkrun trees if we've cached them (the kernel
+      # compile is ~15-20 min). We restore/save separately so a *failed* build
+      # never poisons the cache. Bump the key to force a rebuild.
+      - name: Restore libkrun build
         id: libkrun-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             libkrunfw
             libkrun
-          key: libkrun-build-x86_64-v1
+          key: libkrun-build-x86_64-v2
 
       # Build only on a cache miss. libkrun links libkrunfw, so libkrunfw must be
       # installed before libkrun builds. Use `cd`, NOT `make -C`: `-C` implies
@@ -79,6 +82,16 @@ jobs:
           ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
           git clone --depth 1 https://github.com/containers/libkrun
           ( cd libkrun && make -j"$(nproc)" )
+
+      # Only cache a build that actually succeeded.
+      - name: Save libkrun build
+        if: steps.libkrun-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-v2
 
       # Install (fast) on every run — a cache hit restores the built trees but not
       # the system-installed libraries.

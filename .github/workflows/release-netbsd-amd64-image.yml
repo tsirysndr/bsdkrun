@@ -59,8 +59,11 @@ jobs:
 
           # 0. Build the guest agent natively in this NetBSD VM (zig ships no NetBSD
           #    libc, so it can't be cross-compiled). Built as the normal user.
+          # Point pkgin at the HTTPS CDN — the VM's default ftp mirror is very slow.
+          echo 'https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/x86_64/10.1/All' \
+            | sudo tee /usr/pkg/etc/pkgin/repositories.conf
           sudo pkgin -y update
-          sudo pkgin -y install rust
+          sudo pkgin -y install rust curl
           export CARGO_TARGET_DIR="$HOME/agent-build"
           ( cd "$WS/agent" && cargo build --release --locked )
           AGENT_BIN="$CARGO_TARGET_DIR/release/bsdkrun-agent"
@@ -70,7 +73,7 @@ jobs:
           #      needs root to mknod the /dev nodes the guest boots from (the sets
           #      ship none); and makefs must run as root to preserve all of that.
           sudo env SNAP="$SNAP" WS="$WS" AGENT_BIN="$AGENT_BIN" /bin/sh -eux <<'ROOTEOF'
-          export PATH=/sbin:/usr/sbin:/bin:/usr/bin
+          export PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/pkg/bin
           BASEURL="https://nycdn.netbsd.org/pub/NetBSD-daily/HEAD/${SNAP}/amd64/binary"
           WORK=/var/tmp/nbimg
           ROOT="$WORK/rootfs"
@@ -78,11 +81,11 @@ jobs:
           cd "$WORK"
 
           # Minimal sets + the MICROVM kernel, all from one snapshot (so the
-          # kernel's /stand modules match the userland).
+          # kernel's /stand modules match the userland). HTTPS via curl.
           for s in base etc; do
-            ftp -o "$s.tar.xz" "$BASEURL/sets/$s.tar.xz"
+            curl -fL -o "$s.tar.xz" "$BASEURL/sets/$s.tar.xz"
           done
-          ftp -o netbsd-MICROVM.gz "$BASEURL/kernel/netbsd-MICROVM.gz"
+          curl -fL -o netbsd-MICROVM.gz "$BASEURL/kernel/netbsd-MICROVM.gz"
 
           # Populate the rootfs (root -> correct ownership + setuid bits; NetBSD
           # tar autodetects xz).

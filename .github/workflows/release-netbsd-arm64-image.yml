@@ -73,13 +73,18 @@ jobs:
           BASEURL="https://nycdn.netbsd.org/pub/NetBSD-daily/HEAD/${SNAP}/evbarm-aarch64/binary"
           WORK=/var/tmp/nbarm; rm -rf "$WORK"; mkdir -p "$WORK"; cd "$WORK"
 
-          # Fetch + decompress the live evbarm gzimg (a GPT disk). HTTPS via curl.
+          # Fetch the live evbarm gzimg (a GPT disk) and decompress it straight into
+          # the synced dist/, operating on it in place. Compression is done on the
+          # host afterwards — the emulated arm64 VM is far too slow for gzip -9.
+          # HTTPS via curl.
+          IMG="$WS/dist/netbsd-arm64-root.img"
           curl -fL -o arm64.img.gz "$BASEURL/gzimg/arm64.img.gz"
-          gunzip arm64.img.gz                     # -> arm64.img
+          gunzip -c arm64.img.gz > "$IMG"
+          rm -f arm64.img.gz
 
           # Attach it; its GPT wedges (dk*) auto-probe. Find the FFS root wedge by
           # type rather than assuming dk1 (wedge numbers are global to the VM).
-          vnconfig vnd0 arm64.img
+          vnconfig vnd0 "$IMG"
           ROOTDK="$(dkctl vnd0 listwedges | awk '/type: *ffs/{print $1; exit}' | tr -d ':')"
           test -n "$ROOTDK"
           mkdir -p /mnt/root
@@ -127,11 +132,17 @@ jobs:
 
           umount /mnt/root
           vnconfig -u vnd0
-
-          gzip -9 -c arm64.img > "$WS/dist/netbsd-arm64-root.img.gz"
-          chmod 644 "$WS/dist"/*.gz
+          chmod 644 "$IMG"
           ROOTEOF
           ls -lh "$WS/dist"
+
+      - name: Compress on the host (native x86_64 — fast)
+        run: |
+          set -eux
+          # The raw image synced back from the VM; gzip it here, not in the slow
+          # emulated guest.
+          gzip -9 -f dist/netbsd-arm64-root.img   # -> dist/netbsd-arm64-root.img.gz
+          ls -lh dist
 
       - name: Checksums
         run: |

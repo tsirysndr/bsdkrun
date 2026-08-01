@@ -144,3 +144,26 @@ jobs:
           ./target/release/bsdkrun exec "$id2" cat /root/x | grep -q persisted
           ./target/release/bsdkrun volume ls
           ./target/release/bsdkrun stop "$id2"
+
+      # FreeBSD under KVM is experimental (continue-on-error). This exercises the
+      # arch-aware amd64 image fetch and the Linux losetup/mount ESP prep, then
+      # attempts a boot — which currently needs the KRUN_EFI firmware that has no
+      # Linux package yet (krunkit is macOS-only), so the boot step just reports
+      # how far it got.
+      - name: e2e — FreeBSD (experimental)
+        continue-on-error: true
+        run: |
+          set -eux
+          # Fetch + prepare the amd64 image (downloads, decompresses, writes the
+          # serial-console loader.env onto the ESP via losetup — needs sudo, which
+          # bsdkrun invokes itself). Validates the BSD-on-Linux disk tooling.
+          ./target/release/bsdkrun fetch --os freebsd
+          # Attempt the boot. Without KRUN_EFI it stops at firmware lookup; capture
+          # output and show how far it got. Provide a firmware via BSDKRUN_FIRMWARE
+          # once a Linux KRUN_EFI build is available.
+          timeout 120 ./target/release/bsdkrun freebsd 2>&1 | tee fb.log || true
+          if grep -qiE "FreeBSD|beastie|Booting|loader\.efi" fb.log; then
+            echo "FreeBSD boot progressed"
+          else
+            echo "FreeBSD boot not reached — likely missing KRUN_EFI firmware (Linux BSD boot is experimental)"
+          fi

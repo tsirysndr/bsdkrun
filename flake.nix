@@ -1,5 +1,5 @@
 {
-  description = "bsdkrun - a Firecracker-style microVM launcher for BSD and Linux guests, on libkrun (KVM)";
+  description = "bsdkrun - a Firecracker-style microVM launcher for BSD and Linux guests, on libkrun";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -10,29 +10,53 @@
   };
 
   outputs = { self, nixpkgs, crane, flake-utils, ... }:
-    # libkrun in nixpkgs is Linux-only (KVM); macOS uses Homebrew + codesigning,
-    # so the Nix package targets Linux. Both CPU arches are supported.
+    # Linux (KVM) uses nixpkgs' libkrun. macOS (Hypervisor.framework) has no
+    # libkrun in nixpkgs, so it links Homebrew's — an *impure* build:
+    #   brew install libkrun && nix build --impure .#bsdkrun
     flake-utils.lib.eachSystem [
       "x86_64-linux"
       "aarch64-linux"
+      "aarch64-darwin"
     ] (system:
       let
         pkgs = import nixpkgs { inherit system; };
         inherit (pkgs) lib;
+        isDarwin = pkgs.stdenv.isDarwin;
 
         craneLib = crane.mkLib pkgs;
         src = craneLib.cleanCargoSource ./.;
 
-        # nixpkgs' libkrun builds with default `make` (no BLK/NET), which omits
-        # krun_add_disk / krun_add_net_unixgram. bsdkrun needs both, so rebuild
-        # libkrun with BLK=1 NET=1.
+        # Linux: nixpkgs' libkrun, rebuilt with BLK=1 NET=1 (its default `make`
+        # omits krun_add_disk / krun_add_net_unixgram, which bsdkrun needs).
         libkrun = pkgs.libkrun.overrideAttrs (old: {
           makeFlags = (old.makeFlags or [ ]) ++ [ "BLK=1" "NET=1" ];
         });
 
-        # Tools bsdkrun shells out to at runtime (image/agent download, disk
-        # prep, and gvproxy for user-mode networking).
-        runtimeDeps = with pkgs; [ curl gnutar gzip xz cpio util-linux gvproxy ];
+        # macOS: Homebrew's libkrun (override with LIBKRUN_PREFIX, needs --impure).
+        brewLibkrunPrefix =
+          let p = builtins.getEnv "LIBKRUN_PREFIX";
+          in if p != "" then p else "/opt/homebrew/opt/libkrun";
+
+        libkrunPrefix = if isDarwin then brewLibkrunPrefix else "${libkrun}";
+
+        # Tools bsdkrun shells out to at runtime. On macOS the system versions are
+        # fine (and losetup/gvproxy don't apply), so we only wrap on Linux.
+        runtimeDeps = with pkgs;
+          [ curl gnutar gzip xz cpio ] ++ lib.optionals (!isDarwin) [ util-linux gvproxy ];
+
+        # The entitlement libkrun requires on macOS (Hypervisor.framework).
+        entitlements = ''
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>com.apple.security.hypervisor</key>
+            <true/>
+            <key>com.apple.security.cs.disable-library-validation</key>
+            <true/>
+          </dict>
+          </plist>
+        '';
 
         commonArgs = {
           inherit src;
@@ -40,35 +64,41 @@
           version = "0.1.0";
           strictDeps = true;
 
-          # llvm (llvm-config) + libclang are needed by bindgen-based crates.
+          # llvm (llvm-config) + libclang for bindgen-based crates.
           nativeBuildInputs = [ pkgs.pkg-config pkgs.llvmPackages.llvm ];
-          buildInputs = [ libkrun ];
+          buildInputs = lib.optionals (!isDarwin) [ libkrun ];
 
-          # build.rs links libkrun from here (skips brew/pkg-config probing).
-          LIBKRUN_PREFIX = "${libkrun}";
+          LIBKRUN_PREFIX = libkrunPrefix;
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
         };
 
-        # Build dependencies separately so CI can cache them (standard crane layout).
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
         bsdkrun = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
 
-          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.makeWrapper ];
-          # Put the runtime tools on PATH as a fallback (--suffix keeps any the
-          # user already has first).
-          postInstall = ''
+          nativeBuildInputs = commonArgs.nativeBuildInputs
+            ++ lib.optionals (!isDarwin) [ pkgs.makeWrapper ];
+
+          postInstall = lib.optionalString (!isDarwin) ''
             wrapProgram $out/bin/bsdkrun \
               --suffix PATH : ${lib.makeBinPath runtimeDeps}
           '';
 
+          # Re-sign with the hypervisor entitlement AFTER Nix's own darwin
+          # signing (postFixup runs after fixupPhase), so the entitlement sticks.
+          postFixup = lib.optionalString isDarwin ''
+            printf '%s' ${lib.escapeShellArg entitlements} > entitlements.plist
+            /usr/bin/codesign --entitlements entitlements.plist --force \
+              --sign - "$out/bin/bsdkrun"
+          '';
+
           meta = with lib; {
-            description = "Firecracker-style microVM launcher for BSD and Linux guests on libkrun (KVM)";
+            description = "Firecracker-style microVM launcher for BSD and Linux guests on libkrun";
             homepage = "https://github.com/tsirysndr/bsdkrun";
             license = licenses.mit;
             mainProgram = "bsdkrun";
-            platforms = [ "x86_64-linux" "aarch64-linux" ];
+            platforms = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
           };
         });
       in
@@ -89,22 +119,18 @@
 
         apps.default = flake-utils.lib.mkApp { drv = bsdkrun; };
 
-        # `nix develop` — toolchain + libkrun + everything bsdkrun needs at build
-        # and run time, plus zig/cargo-zigbuild for cross-building guest agents.
+        # `nix develop` — toolchain + libkrun (Linux) + everything bsdkrun needs,
+        # plus zig/cargo-zigbuild for cross-building guest agents.
         devShells.default = craneLib.devShell {
           checks = self.checks.${system};
 
-          LIBKRUN_PREFIX = "${libkrun}";
+          LIBKRUN_PREFIX = libkrunPrefix;
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
 
-          packages = with pkgs; [
-            pkg-config
-            llvmPackages.llvm
-            libkrun
-            qemu_kvm # KVM userspace tooling (bsdkrun itself drives /dev/kvm via libkrun)
-            cargo-zigbuild
-            zig
-          ] ++ runtimeDeps;
+          packages = with pkgs;
+            [ pkg-config llvmPackages.llvm cargo-zigbuild zig ]
+            ++ lib.optionals (!isDarwin) [ libkrun ]
+            ++ runtimeDeps;
         };
       });
 }

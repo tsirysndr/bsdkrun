@@ -289,7 +289,7 @@ struct FetchArgs {
     dir: PathBuf,
 
     /// Re-download even if the image is already cached.
-    #[arg(long)]
+    #[arg(short, long)]
     force: bool,
 }
 
@@ -410,7 +410,7 @@ struct BsdArgs {
     firmware: Option<PathBuf>,
 
     /// Re-download even if the image is already cached.
-    #[arg(long)]
+    #[arg(short, long)]
     force: bool,
 
     /// Additional disk to attach as virtio-blk (repeatable).
@@ -813,18 +813,21 @@ fn netbsd_cmdline() -> String {
 /// NetBSD boots via **direct kernel** — libkrun jumps straight into the kernel,
 /// no EFI firmware needed (unlike FreeBSD). The disk + kernel are arch-specific:
 ///
-/// - **arm64** uses NetBSD's evbarm `gzimg` live image + `GENERIC64` kernel.
+/// - **arm64** uses bsdkrun's bundled evbarm image (the `gzimg` with the agent
+///   injected) + the evbarm `GENERIC64` kernel from the NetBSD CDN (`root=dk1`).
 /// - **amd64** has no upstream disk image, so we use bsdkrun's bundled FFS rootfs
-///   + `MICROVM` kernel (both PVH-boot under libkrun); `--version` is ignored.
+///   + `MICROVM` kernel (both PVH-boot under libkrun; `root=ld0a`).
+///
+/// `--version` applies only to the arm64 kernel; the images themselves are pinned
+/// bundled assets.
 fn boot_netbsd(args: BsdArgs) -> Result<()> {
-    let cache = fetch::cache_dir()?;
     let (disk, kernel) = match host::Arch::current()? {
         host::Arch::X86_64 => (
             fetch::fetch_netbsd_amd64_image(args.force)?,
             fetch::fetch_netbsd_amd64_kernel(args.force)?,
         ),
         host::Arch::Aarch64 => (
-            fetch::fetch(fetch::Os::Netbsd, args.version.clone(), &cache, args.force)?,
+            fetch::fetch_netbsd_arm64_image(args.force)?,
             fetch::fetch_netbsd_kernel(args.version.clone(), args.force)?,
         ),
     };

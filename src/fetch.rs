@@ -20,13 +20,15 @@ const FREEBSD_VM_IMAGES: &str = "https://download.freebsd.org/releases/VM-IMAGES
 const NETBSD_PUB: &str = "https://cdn.netbsd.org/pub/NetBSD";
 const NETBSD_DAILY_HEAD: &str = "https://nycdn.netbsd.org/pub/NetBSD-daily/HEAD/latest";
 
-/// NetBSD publishes no ready-to-boot **amd64** disk image (only arm64/evbarm
-/// ships a `gzimg`), so bsdkrun hosts its own: an FFS rootfs built from the
-/// amd64 sets plus the matching `MICROVM` kernel (a PVH ELF libkrun can boot),
-/// produced by the `release-netbsd-amd64-image` workflow and pinned to this
-/// rolling release tag.
+/// bsdkrun hosts its own agent-injected NetBSD images (so `bsdkrun exec` works
+/// out of the box) on rolling release tags, built by the `release-netbsd-*-image`
+/// workflows. amd64 also carries the `MICROVM` kernel (NetBSD ships no amd64 disk
+/// image); arm64 is the evbarm `gzimg` with the agent injected (kernel still
+/// comes from the NetBSD CDN).
 const NETBSD_AMD64_BASE: &str =
     "https://github.com/tsirysndr/bsdkrun/releases/download/netbsd-amd64";
+const NETBSD_ARM64_BASE: &str =
+    "https://github.com/tsirysndr/bsdkrun/releases/download/netbsd-arm64";
 
 /// Guest operating systems bsdkrun can provision.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -344,6 +346,18 @@ pub fn fetch_netbsd_amd64_kernel(force: bool) -> Result<PathBuf> {
     fetch_gz_asset(
         &format!("{NETBSD_AMD64_BASE}/netbsd-MICROVM-amd64.gz"),
         "netbsd-MICROVM.amd64.kernel",
+        force,
+    )
+}
+
+/// bsdkrun-hosted NetBSD **arm64** root image — the upstream evbarm `gzimg` with
+/// the guest agent injected (so `bsdkrun exec` works out of the box). It keeps
+/// the gzimg's GPT layout, so it still boots the evbarm `GENERIC64` kernel with
+/// `root=dk1`. `--version` doesn't apply to the image (it's a pinned asset).
+pub fn fetch_netbsd_arm64_image(force: bool) -> Result<PathBuf> {
+    fetch_gz_asset(
+        &format!("{NETBSD_ARM64_BASE}/netbsd-arm64-root.img.gz"),
+        "netbsd-arm64-root.img",
         force,
     )
 }

@@ -163,22 +163,18 @@ jobs:
         continue-on-error: true
         run: |
           set -eux
-          # Use the DETACHED path: like the Linux smoke test, a foreground boot
-          # hangs in CI because libkrun's implicit console only writes to a real
-          # TTY (and CI's stdout is a pipe). Detached wires the console to a PTY
-          # broker, so `logs` shows the boot. Downloads the bundled amd64 MICROVM
-          # kernel + FFS rootfs and direct-boots (root=ld0a; tune via
-          # BSDKRUN_NETBSD_CMDLINE).
+          # Detached boot (never hangs CI). amd64 direct-boots the bundled MICROVM
+          # kernel + FFS rootfs (root=ld0a). `logs` shows the guest console, and
+          # `logs --boot` shows bsdkrun/libkrun's own boot log (fd 2 of the detached
+          # child) — where the boot error lands when the console stays empty.
           id=$(./target/release/bsdkrun --log-level 5 netbsd -d)
-          sleep 20                         # NetBSD's first boot is slower than Alpine
+          sleep 20
           ./target/release/bsdkrun ps || true
           echo "----- NetBSD console -----"
-          ./target/release/bsdkrun logs "$id" | tail -80 || true
-          echo "--------------------------"
-          out=$(timeout 30 ./target/release/bsdkrun exec "$id" uname -a || true)
-          echo "exec: $out"
-          ./target/release/bsdkrun logs "$id" > nb.log 2>&1 || true
-          ./target/release/bsdkrun stop "$id" || true
+          ./target/release/bsdkrun logs "$id" 2>&1 | tee nb.log | tail -120 || true
+          echo "----- NetBSD boot log (libkrun) -----"
+          ./target/release/bsdkrun logs --boot "$id" 2>&1 | tee -a nb.log | tail -120 || true
+          ./target/release/bsdkrun stop "$id" 2>/dev/null || true
           if grep -qiE "NetBSD|Copyright.*Berkeley|boot device|login:" nb.log; then
             echo "NetBSD kernel booted"
           else

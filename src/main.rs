@@ -186,6 +186,12 @@ struct LogsArgs {
     /// Follow the live console output.
     #[arg(short, long)]
     follow: bool,
+
+    /// Show bsdkrun's own boot log (libkrun diagnostics + boot errors) instead of
+    /// the guest console — useful when a machine dies before producing console
+    /// output. This is what `--log-level` writes for a detached machine.
+    #[arg(long)]
+    boot: bool,
 }
 
 #[derive(Parser)]
@@ -541,7 +547,7 @@ fn main() -> Result<()> {
         Command::Ps(args) => cmd_ps(args.all),
         Command::Images => cmd_images(),
         Command::Stop(args) => cmd_stop(&args.id),
-        Command::Logs(args) => cmd_logs(&args.id, args.follow),
+        Command::Logs(args) => cmd_logs(&args.id, args.follow, args.boot),
         Command::Shell(args) => cmd_shell(&args.id),
         Command::Exec(args) => cmd_exec(&args.id, &args.command, &args.env, args.tty),
         Command::Volume(args) => match args.cmd {
@@ -1554,16 +1560,49 @@ fn cmd_stop(id: &str) -> Result<()> {
     }
 }
 
-fn cmd_logs(id: &str, follow: bool) -> Result<()> {
+fn cmd_logs(id: &str, follow: bool, boot: bool) -> Result<()> {
     use std::io::Write;
     let db = db::Db::open()?;
     let vm = db.find_machine(id)?;
     let vdir = std::path::PathBuf::from(&vm.state_dir);
-    let log = vdir.join("console.log");
-    if let Ok(data) = std::fs::read(&log) {
-        std::io::stdout().write_all(&data).ok();
+    let console_log = vdir.join("console.log");
+    let boot_log = vdir.join("bsdkrun.log");
+
+    // `--boot`: bsdkrun/libkrun's own log (fd 2 of the detached child) — the boot
+    // diagnostics and any error that killed the machine before it reached console.
+    if boot {
+        match std::fs::read(&boot_log) {
+            Ok(data) => {
+                std::io::stdout().write_all(&data).ok();
+                std::io::stdout().flush().ok();
+                return Ok(());
+            }
+            Err(_) => anyhow::bail!(
+                "no boot log for {} (only detached machines, run with -d, have one)",
+                vm.id
+            ),
+        }
+    }
+
+    let console_data = std::fs::read(&console_log).unwrap_or_default();
+    if !console_data.is_empty() {
+        std::io::stdout().write_all(&console_data).ok();
         std::io::stdout().flush().ok();
     } else if !follow {
+        // No guest console output — the machine may have died during boot. Fall
+        // back to the boot log so the failure is actually visible (this is what
+        // bit NetBSD-under-libkrun: an empty console but a real error in the log).
+        if let Ok(boot_data) = std::fs::read(&boot_log) {
+            if !boot_data.is_empty() {
+                eprintln!(
+                    "── no guest console output; showing boot log ({}) ──",
+                    boot_log.display()
+                );
+                std::io::stdout().write_all(&boot_data).ok();
+                std::io::stdout().flush().ok();
+                return Ok(());
+            }
+        }
         anyhow::bail!(
             "no console log for {} (only detached machines, run with -d, have one)",
             vm.id

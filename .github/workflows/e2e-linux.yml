@@ -39,7 +39,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential git curl ca-certificates xz-utils python3 \
             python3-pyelftools pkg-config patchelf patch cpio kmod rsync zstd \
-            flex bison bc libelf-dev libssl-dev
+            flex bison bc libelf-dev libssl-dev \
+            clang libclang-dev llvm-dev musl-tools
 
       - name: Install gvproxy (user-mode networking)
         run: |

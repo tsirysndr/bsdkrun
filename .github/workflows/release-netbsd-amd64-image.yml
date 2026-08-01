@@ -48,10 +48,12 @@ jobs:
 
       - name: Build the FFS rootfs + stage the MICROVM kernel
         shell: cpa.sh {0}
-        env:
-          SNAP: ${{ inputs.snapshot }}
         run: |
           set -eux
+          # NOTE: the script runs inside the NetBSD VM, which does NOT inherit the
+          # host runner's env, so `env:` vars are invisible here. Interpolate the
+          # workflow input into the script text directly instead.
+          SNAP="${{ inputs.snapshot }}"
           WS="$(pwd)"                       # synced workspace (checkout + artifacts)
           BASEURL="https://nycdn.netbsd.org/pub/NetBSD-daily/HEAD/${SNAP}/amd64/binary"
           WORK="$HOME/build"                # outside the synced dir: big intermediates

@@ -788,13 +788,14 @@ fn boot_freebsd(args: BsdArgs) -> Result<()> {
     )
 }
 
-/// NetBSD kernel command line (override with `$BSDKRUN_NETBSD_CMDLINE`). NetBSD
-/// roots on the virtio-blk disk, which its kernel names `ld0` (partition `a`).
+/// NetBSD kernel command line (override with `$BSDKRUN_NETBSD_CMDLINE`). The
+/// fetched image is GPT-partitioned, so NetBSD exposes its root FFS as the wedge
+/// `dk1` (`dk0` is the EFI partition) rather than a plain `ld0a` slice.
 fn netbsd_cmdline() -> String {
     std::env::var("BSDKRUN_NETBSD_CMDLINE")
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "root=ld0a".to_string())
+        .unwrap_or_else(|| "root=dk1".to_string())
 }
 
 /// NetBSD boots via **direct kernel** — libkrun generates the FDT and jumps into

@@ -32,12 +32,15 @@
           makeFlags = (old.makeFlags or [ ]) ++ [ "BLK=1" "NET=1" ];
         });
 
-        # macOS: Homebrew's libkrun (override with LIBKRUN_PREFIX, needs --impure).
-        brewLibkrunPrefix =
-          let p = builtins.getEnv "LIBKRUN_PREFIX";
-          in if p != "" then p else "/opt/homebrew/opt/libkrun";
+        # macOS: import Homebrew's libkrun into the store so the sandboxed build
+        # can link it (a bare /opt/homebrew path isn't visible in the sandbox).
+        # Needs `nix build --impure`. Only forced on darwin (lazy elsewhere).
+        brewLibkrun = builtins.path {
+          path = /opt/homebrew/opt/libkrun;
+          name = "libkrun-brew";
+        };
 
-        libkrunPrefix = if isDarwin then brewLibkrunPrefix else "${libkrun}";
+        libkrunPrefix = if isDarwin then "${brewLibkrun}" else "${libkrun}";
 
         # Tools bsdkrun shells out to at runtime. On macOS the system versions are
         # fine (and losetup/gvproxy don't apply), so we only wrap on Linux.

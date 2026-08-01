@@ -788,23 +788,40 @@ fn boot_freebsd(args: BsdArgs) -> Result<()> {
     )
 }
 
-/// NetBSD kernel command line (override with `$BSDKRUN_NETBSD_CMDLINE`). The
-/// fetched image is GPT-partitioned, so NetBSD exposes its root FFS as the wedge
-/// `dk1` (`dk0` is the EFI partition) rather than a plain `ld0a` slice.
+/// NetBSD kernel command line (override with `$BSDKRUN_NETBSD_CMDLINE`). The root
+/// device is arch-specific: the arm64 image is GPT-partitioned, so its root FFS
+/// is the wedge `dk1` (`dk0` is the EFI partition); the amd64 image is a bare
+/// makefs FFS on a virtio-blk disk, which NetBSD roots as `ld0a`.
 fn netbsd_cmdline() -> String {
-    std::env::var("BSDKRUN_NETBSD_CMDLINE")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "root=dk1".to_string())
+    if let Ok(s) = std::env::var("BSDKRUN_NETBSD_CMDLINE") {
+        if !s.is_empty() {
+            return s;
+        }
+    }
+    match host::Arch::current() {
+        Ok(host::Arch::X86_64) => "root=ld0a".to_string(),
+        _ => "root=dk1".to_string(),
+    }
 }
 
-/// NetBSD boots via **direct kernel** — libkrun generates the FDT and jumps into
-/// the GENERIC kernel, no EFI firmware needed (unlike FreeBSD). We download the
-/// kernel (arch-aware) and attach the fetched image as the root disk.
+/// NetBSD boots via **direct kernel** — libkrun jumps straight into the kernel,
+/// no EFI firmware needed (unlike FreeBSD). The disk + kernel are arch-specific:
+///
+/// - **arm64** uses NetBSD's evbarm `gzimg` live image + `GENERIC64` kernel.
+/// - **amd64** has no upstream disk image, so we use bsdkrun's bundled FFS rootfs
+///   + `MICROVM` kernel (both PVH-boot under libkrun); `--version` is ignored.
 fn boot_netbsd(args: BsdArgs) -> Result<()> {
     let cache = fetch::cache_dir()?;
-    let disk = fetch::fetch(fetch::Os::Netbsd, args.version.clone(), &cache, args.force)?;
-    let kernel = fetch::fetch_netbsd_kernel(args.version.clone(), args.force)?;
+    let (disk, kernel) = match host::Arch::current()? {
+        host::Arch::X86_64 => (
+            fetch::fetch_netbsd_amd64_image(args.force)?,
+            fetch::fetch_netbsd_amd64_kernel(args.force)?,
+        ),
+        host::Arch::Aarch64 => (
+            fetch::fetch(fetch::Os::Netbsd, args.version.clone(), &cache, args.force)?,
+            fetch::fetch_netbsd_kernel(args.version.clone(), args.force)?,
+        ),
+    };
 
     let machine_id = id::short_id();
     let vdir = machine_dir_or_tmp(&machine_id);

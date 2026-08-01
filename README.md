@@ -59,9 +59,11 @@ the same machinery at **FreeBSD / NetBSD** guests.
   so we hand libkrun its bundled EDK2 firmware and let the guest's `loader.efi` take over from the
   EFI System Partition on the disk. That firmware ships only with **`libkrun-efi`, which is
   macOS-only**, so **`bsdkrun freebsd` is a macOS-only command** (compiled out on Linux).
-- **NetBSD:** boot via **direct kernel** — bsdkrun downloads the `GENERIC` kernel and libkrun
-  generates an FDT and jumps straight into it, **no bootloader or firmware**. Because it needs no
-  EFI firmware, `bsdkrun netbsd` works on **both macOS and Linux**.
+- **NetBSD:** boot via **direct kernel** — **no bootloader or firmware**, so `bsdkrun netbsd` works
+  on **both macOS and Linux**. On **arm64** it downloads NetBSD's evbarm `GENERIC64` kernel + live
+  `gzimg`. NetBSD ships no amd64 disk image, so on **amd64** bsdkrun uses its own bundled FFS rootfs
+  plus the **`MICROVM`** kernel (a PVH ELF libkrun boots exactly like the Linux vmlinux); both are
+  hosted as release assets (built by the `release-netbsd-amd64-image` workflow).
 - **Linux:** run any **OCI image** as a microVM — bsdkrun fetches a prebuilt kernel, pulls the
   image from any registry, extracts its rootfs, and boots it `docker run`-style, with internet
   access out of the box. See [`linux`](#linux--run-an-oci-image-as-a-microvm).
@@ -674,20 +676,18 @@ Downloaded images are cached under **`~/.cache/bsdkrun/`** (override with `BSDKR
 `XDG_CACHE_HOME`), so fetching a version you already have is instant — it just links the cached
 image into `--dir` (a hard link, no second copy). Use `--force` to re-download.
 
-### NetBSD: use `current`, not a release
+### NetBSD: version handling is arch-specific
 
-`bsdkrun netbsd` **direct-boots** the `GENERIC` kernel (no firmware): it downloads the kernel
-(`netbsd-GENERIC64.img` on arm64, `netbsd-GENERIC` on amd64) alongside the disk image, and libkrun
-generates the FDT and jumps into it, rooting on the virtio-blk disk (`ld0a` — override the kernel
-command line with `$BSDKRUN_NETBSD_CMDLINE`). But there's a catch: libkrun exposes **modern (v2)
-virtio-mmio**, and NetBSD's virtio-mmio driver only gained v2 support in **-current** (post-10.x).
-So:
+`bsdkrun netbsd` **direct-boots** the kernel (no firmware), rooting on the virtio-blk disk (override
+the kernel command line with `$BSDKRUN_NETBSD_CMDLINE`). The details differ by host arch:
 
-- **`bsdkrun fetch --os netbsd`** (→ `current`) boots all the way to `login:` with a working root
-  disk. ✅
-- Any NetBSD **release** (≤ 10.1) boots (kernel + console) but prints
-  `virtio: unknown version 0x02; giving up` and can't mount its root disk. `fetch` warns you if you
-  pin one.
+- **arm64** downloads NetBSD's evbarm `GENERIC64` kernel + live `gzimg` for the requested
+  `--version` (default `current`), rooting on the GPT wedge `dk1`. libkrun exposes **modern (v2)
+  virtio-mmio**, and NetBSD's driver only gained v2 support in **-current** (post-10.x): `current`
+  boots to `login:` ✅, while a **release** (≤ 10.1) boots but prints
+  `virtio: unknown version 0x02; giving up` and can't mount root. `fetch` warns you if you pin one.
+- **amd64** ignores `--version`: NetBSD ships no amd64 disk image, so bsdkrun downloads its own
+  bundled FFS rootfs + `MICROVM` kernel (release assets), rooting on `ld0a`.
 
 ### Resizing the disk
 

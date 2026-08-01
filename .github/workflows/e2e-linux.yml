@@ -155,19 +155,20 @@ jobs:
           ./target/release/bsdkrun volume ls
           ./target/release/bsdkrun stop "$id2"
 
-      # NetBSD boots via direct kernel — no EFI firmware — so it's the BSD guest
-      # that can run on Linux/KVM. Experimental (continue-on-error): NetBSD under
-      # libkrun is validated on arm64; amd64 direct-kernel boot is what this probes.
+      # NetBSD boots via direct kernel — no EFI firmware — so it can run on
+      # Linux/KVM too. On amd64 this pulls bsdkrun's bundled FFS rootfs + MICROVM
+      # kernel (a PVH ELF); experimental (continue-on-error), and a no-op until
+      # the release-netbsd-amd64-image workflow has published those assets.
       - name: e2e — NetBSD (direct kernel)
         continue-on-error: true
         run: |
           set -eux
-          # Downloads the amd64 GENERIC kernel + the disk image and direct-boots
-          # (libkrun generates the FDT; no firmware). Capture the console and check
-          # for the NetBSD banner. Tune the root/console via BSDKRUN_NETBSD_CMDLINE.
+          # Downloads the bundled amd64 MICROVM kernel + FFS rootfs and direct-boots
+          # (root=ld0a). Capture the console and check for the NetBSD banner. Tune
+          # the root/console via BSDKRUN_NETBSD_CMDLINE.
           timeout 180 ./target/release/bsdkrun --log-level 1 netbsd 2>&1 | tee nb.log || true
           if grep -qiE "NetBSD|Copyright.*Berkeley|boot device" nb.log; then
             echo "NetBSD kernel booted"
           else
-            echo "NetBSD boot not confirmed (amd64 direct-kernel under libkrun is experimental)"
+            echo "NetBSD boot not confirmed (amd64 MICROVM under libkrun is experimental)"
           fi

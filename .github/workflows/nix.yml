@@ -1,8 +1,9 @@
 name: nix
 
-# Build bsdkrun through the Nix flake (linking nixpkgs' libkrun) and run
-# `nix flake check` (package build + clippy + rustfmt) on both Linux arches.
-# This is a pure build — no KVM needed — so it runs on the standard runners.
+# Build bsdkrun through the Nix flake and run `nix flake check` (package build +
+# clippy + rustfmt). Linux links nixpkgs' libkrun; macOS links Homebrew's libkrun
+# impurely (`--impure`) and re-signs with the hypervisor entitlement. Pure build,
+# no KVM needed, so it runs on the standard runners.
 
 on:
   push:
@@ -12,15 +13,20 @@ on:
 
 jobs:
   build:
-    name: nix build · ${{ matrix.arch }}
+    name: nix · ${{ matrix.arch }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: x86_64-linux
             runner: ubuntu-latest
+            flags: ""
           - arch: aarch64-linux
             runner: ubuntu-24.04-arm
+            flags: ""
+          - arch: aarch64-darwin
+            runner: macos-latest
+            flags: "--impure" # links Homebrew libkrun via LIBKRUN_PREFIX
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -30,7 +36,16 @@ jobs:
         with:
           name: bsdkrun
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      # macOS has no libkrun in nixpkgs — the flake links Homebrew's (impurely).
+      - name: Install libkrun (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew tap libkrun/krun
+          brew trust libkrun/krun || true
+          brew install libkrun
+
       - name: nix build
-        run: nix build -L .#bsdkrun
+        run: nix build -L ${{ matrix.flags }} .#bsdkrun
       - name: nix flake check
-        run: nix flake check -L
+        run: nix flake check -L ${{ matrix.flags }}

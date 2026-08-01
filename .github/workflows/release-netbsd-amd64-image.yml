@@ -50,42 +50,52 @@ jobs:
         shell: cpa.sh {0}
         run: |
           set -eux
-          # The cpa.sh shell's PATH omits the sbin dirs, but pwd_mkdb and makefs
-          # live in /usr/sbin — put them on PATH.
-          export PATH="/usr/sbin:/sbin:$PATH"
           # NOTE: the script runs inside the NetBSD VM, which does NOT inherit the
           # host runner's env, so `env:` vars are invisible here. Interpolate the
           # workflow input into the script text directly instead.
           SNAP="${{ inputs.snapshot }}"
           WS="$(pwd)"                       # synced workspace (checkout + artifacts)
-          BASEURL="https://nycdn.netbsd.org/pub/NetBSD-daily/HEAD/${SNAP}/amd64/binary"
-          WORK="$HOME/build"                # outside the synced dir: big intermediates
-          ROOT="$WORK/rootfs"
-          mkdir -p "$ROOT" "$WS/dist"
+          mkdir -p "$WS/dist"
 
           # 0. Build the guest agent natively in this NetBSD VM (zig ships no NetBSD
-          #    libc, so it can't be cross-compiled). Keep target/ out of the synced
-          #    workspace so it isn't rsynced back to the host.
+          #    libc, so it can't be cross-compiled). Built as the normal user.
           sudo pkgin -y update
           sudo pkgin -y install rust
           export CARGO_TARGET_DIR="$HOME/agent-build"
           ( cd "$WS/agent" && cargo build --release --locked )
           AGENT_BIN="$CARGO_TARGET_DIR/release/bsdkrun-agent"
 
+          # 1-5. Assemble the rootfs AS ROOT. This matters: `tar -xp` only restores
+          #      the sets' root ownership + setuid bits when run as root; MAKEDEV
+          #      needs root to mknod the /dev nodes the guest boots from (the sets
+          #      ship none); and makefs must run as root to preserve all of that.
+          sudo env SNAP="$SNAP" WS="$WS" AGENT_BIN="$AGENT_BIN" /bin/sh -eux <<'ROOTEOF'
+          export PATH=/sbin:/usr/sbin:/bin:/usr/bin
+          BASEURL="https://nycdn.netbsd.org/pub/NetBSD-daily/HEAD/${SNAP}/amd64/binary"
+          WORK=/var/tmp/nbimg
+          ROOT="$WORK/rootfs"
+          rm -rf "$WORK"; mkdir -p "$ROOT"
           cd "$WORK"
 
-          # 1. Minimal sets + the MICROVM kernel, all from the same snapshot.
+          # Minimal sets + the MICROVM kernel, all from one snapshot (so the
+          # kernel's /stand modules match the userland).
           for s in base etc; do
             ftp -o "$s.tar.xz" "$BASEURL/sets/$s.tar.xz"
           done
           ftp -o netbsd-MICROVM.gz "$BASEURL/kernel/netbsd-MICROVM.gz"
 
-          # 2. Populate the rootfs (NetBSD tar autodetects xz).
+          # Populate the rootfs (root -> correct ownership + setuid bits; NetBSD
+          # tar autodetects xz).
           for s in base etc; do
             tar -xpf "$s.tar.xz" -C "$ROOT"
           done
 
-          # 3. Minimal config: DHCP networking, no swap, serial-console root login.
+          # Device nodes: the sets ship none, so the guest would have no
+          # /dev/console or /dev/ld0a to boot from. Create them with the target's
+          # own MAKEDEV (needs root for mknod).
+          ( cd "$ROOT/dev" && sh ./MAKEDEV all )
+
+          # Minimal config: DHCP networking, no swap, serial-console root login.
           cat > "$ROOT/etc/rc.conf" <<'EOF'
           rc_configured=YES
           hostname=bsdkrun
@@ -118,11 +128,10 @@ jobs:
             "$ROOT/etc/master.passwd" > "$ROOT/etc/master.passwd.new"
           mv "$ROOT/etc/master.passwd.new" "$ROOT/etc/master.passwd"
           chmod 600 "$ROOT/etc/master.passwd"
-          /usr/sbin/pwd_mkdb -d "$ROOT/etc" -p "$ROOT/etc/master.passwd"
+          pwd_mkdb -d "$ROOT/etc" -p "$ROOT/etc/master.passwd"
 
-          # 4. Bake in the guest agent (built in step 0) so `bsdkrun exec` works out
-          #    of the box, and start it at boot. NetBSD has no daemon(8), so the
-          #    rc.d script backgrounds it and tracks the pid itself.
+          # Bake in the guest agent so `bsdkrun exec` works out of the box, started
+          # at boot via rc.d (NetBSD has no daemon(8), so it tracks the pid itself).
           mkdir -p "$ROOT/usr/local/sbin"
           install -m 755 "$AGENT_BIN" "$ROOT/usr/local/sbin/bsdkrun-agent"
           cat > "$ROOT/etc/rc.d/bsdkrun_agent" <<'EOF'
@@ -161,12 +170,14 @@ jobs:
           chmod 555 "$ROOT/etc/rc.d/bsdkrun_agent"
           echo 'bsdkrun_agent=YES' >> "$ROOT/etc/rc.conf"
 
-          # 5. Build the FFS image (little-endian, FFSv2) and stage both assets.
-          #    Bump -s if base+etc ever outgrows it; the client can `bsdkrun grow`.
-          /usr/sbin/makefs -t ffs -B le -s 1536m -o version=2,bsize=16384,fsize=2048 \
+          # Build the FFS image (little-endian, FFSv2) + stage both assets. Bump -s
+          # if base+etc ever outgrows it; the client can `bsdkrun grow` afterwards.
+          makefs -t ffs -B le -s 1536m -o version=2,bsize=16384,fsize=2048 \
             "$WORK/netbsd-amd64-root.img" "$ROOT"
           gzip -9 -c "$WORK/netbsd-amd64-root.img" > "$WS/dist/netbsd-amd64-root.img.gz"
           cp "$WORK/netbsd-MICROVM.gz" "$WS/dist/netbsd-MICROVM-amd64.gz"
+          chmod 644 "$WS/dist"/*.gz
+          ROOTEOF
           ls -lh "$WS/dist"
 
       - name: Checksums

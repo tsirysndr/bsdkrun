@@ -28,7 +28,7 @@ jobs:
       - name: Setup Cachix
         uses: cachix/cachix-action@v17
         with:
-          name: bsdkarun
+          name: bsdkrun
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
       - name: nix build
         run: nix build -L .#bsdkrun

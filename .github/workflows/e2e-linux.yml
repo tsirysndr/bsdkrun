@@ -124,28 +124,34 @@ jobs:
           ( cd agent && cargo build --release --target x86_64-unknown-linux-musl )
           echo "BSDKRUN_AGENT_LINUX=$PWD/agent/target/x86_64-unknown-linux-musl/release/bsdkrun-agent" >> "$GITHUB_ENV"
 
-      - name: e2e — boot an OCI microVM and run a command
+      - name: e2e — boot an OCI microVM (detached) and exec a command
         run: |
           set -eux
-          # Max libkrun logging + a hard timeout so we always see how far the
-          # x86_64 boot got instead of hanging (guest console goes to stdout).
-          timeout 120 ./target/release/bsdkrun --log-level 5 \
-            linux alpine -- echo hello-from-kvm 2>&1 | tee boot.log || true
-          echo "----- checking for guest output -----"
-          grep -q hello-from-kvm boot.log
+          # Use the detached path: it wires the guest console to a per-machine PTY
+          # broker, so it works without the CI step having a real TTY on stdout
+          # (libkrun's implicit console only writes to a tty). `logs` then shows
+          # the boot; `exec` runs a command via the in-guest agent.
+          id=$(./target/release/bsdkrun --log-level 5 linux -d alpine -- sleep 300)
+          sleep 10
+          ./target/release/bsdkrun ps
+          echo "----- guest console -----"
+          ./target/release/bsdkrun logs "$id" | tail -40 || true
+          out=$(timeout 30 ./target/release/bsdkrun exec "$id" echo hello-from-kvm || true)
+          ./target/release/bsdkrun stop "$id" || true
+          echo "$out" | grep -q hello-from-kvm
 
       - name: e2e — detached machine + exec + volume persistence
         run: |
           set -eux
           id=$(./target/release/bsdkrun linux -d -v ci alpine -- sleep 120)
           sleep 6
-          ./target/release/bsdkrun exec "$id" uname -a
-          ./target/release/bsdkrun exec "$id" /bin/sh -c 'echo persisted > /root/x'
+          timeout 30 ./target/release/bsdkrun exec "$id" uname -a
+          timeout 30 ./target/release/bsdkrun exec "$id" /bin/sh -c 'echo persisted > /root/x'
           ./target/release/bsdkrun stop "$id"
           # reboot the volume, confirm persistence
           id2=$(./target/release/bsdkrun linux -d -v ci alpine -- sleep 60)
           sleep 6
-          ./target/release/bsdkrun exec "$id2" cat /root/x | grep -q persisted
+          timeout 30 ./target/release/bsdkrun exec "$id2" cat /root/x | grep -q persisted
           ./target/release/bsdkrun volume ls
           ./target/release/bsdkrun stop "$id2"
 

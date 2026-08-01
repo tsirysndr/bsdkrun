@@ -68,7 +68,7 @@ jobs:
           path: |
             libkrunfw
             libkrun
-          key: libkrun-build-x86_64-v2
+          key: libkrun-build-x86_64-v3
 
       # Build only on a cache miss. libkrun links libkrunfw, so libkrunfw must be
       # installed before libkrun builds. Use `cd`, NOT `make -C`: `-C` implies
@@ -81,7 +81,7 @@ jobs:
           git clone --depth 1 https://github.com/containers/libkrunfw
           ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
           git clone --depth 1 https://github.com/containers/libkrun
-          ( cd libkrun && make -j"$(nproc)" )
+          ( cd libkrun && make -j"$(nproc)" BLK=1 NET=1 )
 
       # Only cache a build that actually succeeded.
       - name: Save libkrun build
@@ -91,7 +91,7 @@ jobs:
           path: |
             libkrunfw
             libkrun
-          key: libkrun-build-x86_64-v2
+          key: libkrun-build-x86_64-v3
 
       # Install (fast) on every run — a cache hit restores the built trees but not
       # the system-installed libraries.
@@ -99,7 +99,7 @@ jobs:
         run: |
           set -eux
           ( cd libkrunfw && sudo make install )
-          ( cd libkrun && sudo make install )
+          ( cd libkrun && sudo make install BLK=1 NET=1 )
           # `make install` ships libkrun.so.<ver> (+ SONAME) but not the bare
           # `libkrun.so` dev symlink that `-lkrun` needs at link time — create it.
           so=$(basename "$(ls -1 /usr/local/lib/libkrun.so.* | sort -V | tail -1)")

@@ -23,6 +23,13 @@
         craneLib = crane.mkLib pkgs;
         src = craneLib.cleanCargoSource ./.;
 
+        # nixpkgs' libkrun builds with default `make` (no BLK/NET), which omits
+        # krun_add_disk / krun_add_net_unixgram. bsdkrun needs both, so rebuild
+        # libkrun with BLK=1 NET=1.
+        libkrun = pkgs.libkrun.overrideAttrs (old: {
+          makeFlags = (old.makeFlags or [ ]) ++ [ "BLK=1" "NET=1" ];
+        });
+
         # Tools bsdkrun shells out to at runtime (image/agent download, disk
         # prep, and gvproxy for user-mode networking).
         runtimeDeps = with pkgs; [ curl gnutar gzip xz cpio util-linux gvproxy ];
@@ -35,10 +42,10 @@
 
           # llvm (llvm-config) + libclang are needed by bindgen-based crates.
           nativeBuildInputs = [ pkgs.pkg-config pkgs.llvmPackages.llvm ];
-          buildInputs = [ pkgs.libkrun ];
+          buildInputs = [ libkrun ];
 
           # build.rs links libkrun from here (skips brew/pkg-config probing).
-          LIBKRUN_PREFIX = "${pkgs.libkrun}";
+          LIBKRUN_PREFIX = "${libkrun}";
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
         };
 
@@ -87,7 +94,7 @@
         devShells.default = craneLib.devShell {
           checks = self.checks.${system};
 
-          LIBKRUN_PREFIX = "${pkgs.libkrun}";
+          LIBKRUN_PREFIX = "${libkrun}";
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
 
           packages = with pkgs; [

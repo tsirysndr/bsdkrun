@@ -173,10 +173,15 @@ jobs:
           echo "----- NetBSD console -----"
           ./target/release/bsdkrun logs "$id" 2>&1 | tee nb.log | tail -120 || true
           echo "----- NetBSD boot log (libkrun) -----"
-          ./target/release/bsdkrun logs --boot "$id" 2>&1 | tee -a nb.log | tail -120 || true
+          ./target/release/bsdkrun logs --boot "$id" 2>&1 | tee nb-boot.log | tail -120 || true
           ./target/release/bsdkrun stop "$id" 2>/dev/null || true
-          if grep -qiE "NetBSD|Copyright.*Berkeley|boot device|login:" nb.log; then
-            echo "NetBSD kernel booted"
+          # Only a real guest console banner counts (the boot log mentions the
+          # machine kind "netbsd", so don't grep for that).
+          if grep -qE "Copyright .c. 198.* Berkeley|NetBSD/amd64|boot device|login:" nb.log; then
+            echo "NetBSD userland reached"
+          elif grep -q "KVM_EXIT_SHUTDOWN" nb-boot.log; then
+            echo "NetBSD MICROVM triple-faulted at the PVH entry (KVM_EXIT_SHUTDOWN, no"
+            echo "console output) — amd64 NetBSD under libkrun is not booting yet."
           else
             echo "NetBSD boot not confirmed (amd64 MICROVM under libkrun is experimental)"
           fi

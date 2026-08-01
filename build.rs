@@ -52,9 +52,14 @@ fn linux_link() {
         link_dir(&dir);
         return;
     }
-    for dir in ["/usr/local/lib", "/usr/lib", "/usr/lib64"] {
+    for dir in [
+        "/usr/local/lib64",
+        "/usr/local/lib",
+        "/usr/lib64",
+        "/usr/lib",
+    ] {
         let p = std::path::Path::new(dir);
-        if p.join("libkrun.so").exists() || p.join("libkrun.so.1").exists() {
+        if p.join("libkrun.so").exists() {
             link_dir(dir);
             return;
         }

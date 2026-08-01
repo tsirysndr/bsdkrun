@@ -62,13 +62,17 @@ jobs:
 
           sudo env WS="$WS" VERSION="$VERSION" /bin/sh -eux <<'ROOTEOF'
           export PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/local/bin
-          IMG="FreeBSD-${VERSION}-RELEASE-arm64-aarch64-ufs.raw"
-          URL="https://download.freebsd.org/releases/VM-IMAGES/${VERSION}-RELEASE/aarch64/Latest/${IMG}.xz"
+          SRC="FreeBSD-${VERSION}-RELEASE-arm64-aarch64-ufs.raw"
+          URL="https://download.freebsd.org/releases/VM-IMAGES/${VERSION}-RELEASE/aarch64/Latest/${SRC}.xz"
           WORK=/var/tmp/fbarm; rm -rf "$WORK"; mkdir -p "$WORK"; cd "$WORK"
 
-          # Fetch + decompress the upstream UFS VM image.
-          fetch -o "${IMG}.xz" "$URL"
-          xz -d "${IMG}.xz"                        # -> $IMG
+          # Fetch the upstream UFS VM image and decompress it straight into the
+          # synced dist/, operating on it in place. Re-compression is done on the
+          # host afterwards — the emulated arm64 VM is far too slow for xz.
+          IMG="$WS/dist/freebsd-arm64-root.raw"
+          fetch -o "${SRC}.xz" "$URL"
+          xz -dc "${SRC}.xz" > "$IMG"
+          rm -f "${SRC}.xz"
 
           # Attach it and find the freebsd-ufs partition by type (not a fixed index).
           MD="$(mdconfig -a -t vnode -f "$IMG")"   # e.g. md0
@@ -110,12 +114,17 @@ jobs:
 
           umount /mnt/root
           mdconfig -d -u "$MD"
-
-          # Recompress (multithreaded; the client fetch expects a .raw.xz).
-          xz -T0 -6 -c "$IMG" > "$WS/dist/freebsd-arm64-root.raw.xz"
-          chmod 644 "$WS/dist"/*.xz
+          chmod 644 "$IMG"
           ROOTEOF
           ls -lh "$WS/dist"
+
+      - name: Compress on the host (native x86_64 — fast)
+        run: |
+          set -eux
+          # The raw image synced back from the VM; xz it here (multithreaded), not
+          # in the slow emulated guest. The client fetch expects a .raw.xz.
+          xz -T0 -6 -f dist/freebsd-arm64-root.raw   # -> dist/freebsd-arm64-root.raw.xz
+          ls -lh dist
 
       - name: Checksums
         run: |

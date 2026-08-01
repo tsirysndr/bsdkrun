@@ -66,6 +66,7 @@ jobs:
           sudo pkgin -y update
           sudo pkgin -y install curl
           curl -fL -o "$WS/bsdkrun-agent" "$AGENT_URL"
+          chmod a+x "$WS/bsdkrun-agent"
 
           sudo env WS="$WS" SNAP="$SNAP" /bin/sh -eux <<'ROOTEOF'
           export PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/pkg/bin

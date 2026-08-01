@@ -100,7 +100,12 @@ jobs:
           set -eux
           ( cd libkrunfw && sudo make install )
           ( cd libkrun && sudo make install )
+          # `make install` ships libkrun.so.<ver> (+ SONAME) but not the bare
+          # `libkrun.so` dev symlink that `-lkrun` needs at link time — create it.
+          so=$(basename "$(ls -1 /usr/local/lib/libkrun.so.* | sort -V | tail -1)")
+          sudo ln -sf "$so" /usr/local/lib/libkrun.so
           sudo ldconfig
+          ls -l /usr/local/lib/libkrun.so*
 
       - name: Build bsdkrun
         run: cargo build --release

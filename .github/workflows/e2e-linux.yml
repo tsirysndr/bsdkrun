@@ -156,7 +156,7 @@ jobs:
       - name: e2e — detached machine + exec + volume persistence
         run: |
           set -eux
-          id=$(./target/release/bsdkrun linux -d -v ci alpine -- sleep 120)
+          id=$(./target/release/bsdkrun linux -d -v ci alpine -- sleep 60)
           sleep 10
           # Dump the guest console: the overlay stage-1 init echoes exactly which
           # step failed ("[bk] overlay mount failed", etc.) if the volume overlay

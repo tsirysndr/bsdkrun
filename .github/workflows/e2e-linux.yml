@@ -100,12 +100,13 @@ jobs:
           set -eux
           ( cd libkrunfw && sudo make install )
           ( cd libkrun && sudo make install BLK=1 NET=1 )
-          # `make install` ships libkrun.so.<ver> (+ SONAME) but not the bare
-          # `libkrun.so` dev symlink that `-lkrun` needs at link time — create it.
-          so=$(basename "$(ls -1 /usr/local/lib/libkrun.so.* | sort -V | tail -1)")
-          sudo ln -sf "$so" /usr/local/lib/libkrun.so
+          # libkrun installs into /usr/local/lib64 (with the libkrun.so dev
+          # symlink + a pkg-config file). Point pkg-config (used by build.rs) and
+          # the runtime loader at it.
+          echo "PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo /usr/local/lib64 | sudo tee /etc/ld.so.conf.d/libkrun.conf
           sudo ldconfig
-          ls -l /usr/local/lib/libkrun.so*
+          ls -l /usr/local/lib64/libkrun.so*
 
       - name: Build bsdkrun
         run: cargo build --release

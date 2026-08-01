@@ -778,8 +778,16 @@ fn firmware_machine(
 /// to macOS. On Linux there's no KRUN_EFI, so FreeBSD isn't offered.
 #[cfg(target_os = "macos")]
 fn boot_freebsd(args: BsdArgs) -> Result<()> {
-    let cache = fetch::cache_dir()?;
-    let disk = fetch::fetch(fetch::Os::Freebsd, args.version, &cache, args.force)?;
+    // Default (no --version) to bsdkrun's bundled arm64 image, which has the guest
+    // agent injected so `exec` works out of the box. An explicit --version (or a
+    // non-arm64 host) fetches the official FreeBSD VM image from download.freebsd.org.
+    let disk = match (host::Arch::current()?, &args.version) {
+        (host::Arch::Aarch64, None) => fetch::fetch_freebsd_arm64_image(args.force)?,
+        _ => {
+            let cache = fetch::cache_dir()?;
+            fetch::fetch(fetch::Os::Freebsd, args.version.clone(), &cache, args.force)?
+        }
+    };
     let firmware = match args.firmware {
         Some(f) => f,
         None => locate_krun_efi()?,

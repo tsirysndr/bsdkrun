@@ -217,7 +217,8 @@ The quickest way to a BSD guest — fetches the image (and, for NetBSD, the kern
 boots it:
 
 ```sh
-bsdkrun freebsd                 # latest FreeBSD, foreground   (macOS only — needs KRUN_EFI)
+bsdkrun freebsd                 # bundled FreeBSD arm64 image (agent baked in); macOS only
+bsdkrun freebsd --version 14.3  # official FreeBSD 14.3 VM image from download.freebsd.org
 bsdkrun netbsd  -d              # NetBSD-current in the background; prints its id
 bsdkrun netbsd  --version 10.1 -d --port 2222:22
 ```
@@ -229,7 +230,10 @@ and `ps`/`logs`/`shell`/`stop` all apply. They differ in how they boot:
 - **`freebsd`** wraps [`fetch`](#the-easy-way--bsdkrun-fetch) + [`firmware`](#firmware--boot-a-disk-through-its-uefi-loader):
   it auto-locates libkrun's `KRUN_EFI` firmware (via `$BSDKRUN_FIRMWARE`, a local
   `images/KRUN_EFI.fd`, or krunkit's Homebrew install; `--firmware` overrides). That firmware is
-  **macOS-only**, so **`freebsd` is a macOS-only command**.
+  **macOS-only**, so **`freebsd` is a macOS-only command**. By default (on arm64) it downloads
+  bsdkrun's **bundled image with the guest agent pre-installed**, so `exec`/`shell` work out of the
+  box; pass **`--version X`** to boot an official FreeBSD VM image from download.freebsd.org instead
+  (no agent — you'd install it manually).
 - **`netbsd`** wraps `fetch` + a **direct kernel** boot — no firmware — so it works on **macOS and
   Linux**.
 

@@ -1102,16 +1102,17 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
     let persistent = args.detach && args.command.is_empty();
 
     // Prepare the rootfs before forking so failures surface synchronously.
-    // A volume uses an overlayfs (shared image lower + persistent volume upper);
+    // A volume is a persistent, writable virtio-fs root (CoW-cloned on first use);
     // otherwise it's a per-machine virtio-fs clone, or an initramfs (--initramfs).
     let root_mode = match (&volume, args.virtiofs()) {
-        (Some(voldir), _) => {
-            linux::prepare_overlay_volume(voldir, &ep, net_up, persistent, &mounts)?;
-            LinuxRoot::Overlay {
-                base: image.rootfs.clone(),
-                volume: voldir.clone(),
-            }
-        }
+        (Some(voldir), _) => LinuxRoot::Virtiofs(linux::prepare_volume_root(
+            &image.rootfs,
+            &ep,
+            net_up,
+            persistent,
+            voldir,
+            &mounts,
+        )?),
         (None, true) => LinuxRoot::Virtiofs(linux::prepare_virtiofs_root(
             &image.rootfs,
             &ep,
@@ -1169,11 +1170,9 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
 enum LinuxRoot {
     /// Whole rootfs loaded into RAM (`--initramfs`).
     Initramfs(PathBuf),
-    /// Per-machine copy-on-write virtio-fs clone (the ephemeral default).
+    /// Copy-on-write virtio-fs clone. Ephemeral per-machine by default, or a
+    /// persistent named volume (`-v NAME`) whose clone lives in the volume dir.
     Virtiofs(PathBuf),
-    /// Persistent overlay: shared image `base` (read-only lower) + `volume`
-    /// (writable upper) merged in the guest (`-v NAME`).
-    Overlay { base: PathBuf, volume: PathBuf },
 }
 
 /// Configure networking + rootfs + kernel on `ctx` (shared by the foreground and
@@ -1198,28 +1197,6 @@ fn configure_linux_ctx(
     // We boot our own init in every virtio-fs mode (not libkrun's init.krun,
     // which is for the bundled libkrunfw kernel).
     match root {
-        LinuxRoot::Overlay { base, volume } => {
-            // Serve the shared image read-only as the root and inject a tiny
-            // stage-1 init (a virtual file — the on-disk image is untouched) that
-            // assembles the overlay from the image + volume and switch_roots.
-            ctx.set_root(base)
-                .context("configuring virtio-fs root (needs a CONFIG_VIRTIO_FS=y kernel)")?;
-            let stage1: &'static [u8] =
-                Box::leak(linux::overlay_stage1_init().into_bytes().into_boxed_slice());
-            for dir in ["bk_lower", "bk_vol", "bk_newroot"] {
-                ctx.fs_add_overlay_dir(krun::FS_ROOT_TAG, dir, 0o040755)
-                    .context("adding overlay mountpoint")?;
-            }
-            ctx.fs_add_overlay_file(krun::FS_ROOT_TAG, linux::OVERLAY_STAGE1, stage1, 0o100755)
-                .context("injecting overlay stage-1 init")?;
-            ctx.add_virtiofs(linux::OVERLAY_LOWER_TAG, base)
-                .context("sharing overlay lower (image)")?;
-            ctx.add_virtiofs(linux::OVERLAY_VOL_TAG, volume)
-                .context("sharing overlay upper (volume)")?;
-            let cmdline = linux::overlay_cmdline(&args.console, net_up);
-            ctx.set_kernel(kernel, linux::kernel_format(), None, &cmdline)
-                .context("configuring kernel")?;
-        }
         LinuxRoot::Virtiofs(dir) => {
             ctx.set_root(dir)
                 .context("configuring virtio-fs root (needs a CONFIG_VIRTIO_FS=y kernel)")?;

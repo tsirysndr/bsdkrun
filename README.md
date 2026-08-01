@@ -358,20 +358,21 @@ changes are thrown away when the machine exits. To keep them across reboots, nam
 the same for Linux, FreeBSD and NetBSD:
 
 ```sh
-bsdkrun linux   -d -v web alpine            # persistent Linux rootfs (overlayfs)
+bsdkrun linux   -d -v web alpine            # persistent Linux rootfs
 bsdkrun freebsd -d -v db                    # persistent FreeBSD disk
 ```
 
 Reuse the same `-v NAME` and the machine comes back up with your changes intact. It's a single
 writer at a time (run one machine per volume), and it's mutually exclusive with `--persist` (which
-writes to the base image itself). The mechanism differs by guest, but the behavior is the same:
+writes to the base image itself). The mechanism is the same idea for every guest — a copy-on-write
+clone that persists:
 
-- **Linux** uses an **overlayfs**: the OCI image stays a shared, read-only *lower* layer and only
-  your changes are written to the volume's *upper* layer — so a volume holds just the diffs (a few
-  hundred KB for a couple of edited files), not a whole rootfs. bsdkrun serves the image as the
-  root, injects a tiny stage-1 init that assembles the overlay and `chroot`s into it, and mounts
-  the image + volume as extra virtio-fs shares. Needs the default virtio-fs (not `--initramfs`,
-  a RAM disk with nothing to persist).
+- **Linux** serves the volume as a **writable virtio-fs root**. First use copy-on-write clones the
+  OCI image into the volume dir (`clonefile` on APFS / `reflink` on btrfs/xfs — instant, and only
+  grows as the guest writes; a plain copy elsewhere); later boots reuse it, so your changes persist.
+  Needs the default virtio-fs (not `--initramfs`, a RAM disk with nothing to persist). (Earlier
+  builds layered overlayfs over virtio-fs, but the Linux/KVM kernel rejects a virtio-fs overlay
+  upperdir, so a plain writable clone is used instead — it works identically on macOS and Linux.)
 - **FreeBSD / NetBSD** use an **APFS copy-on-write clone** of the disk image under
   `<state>/volumes/<NAME>` (instant, and only grows as the guest writes).
 

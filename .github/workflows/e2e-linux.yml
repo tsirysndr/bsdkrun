@@ -124,19 +124,6 @@ jobs:
           ( cd agent && cargo build --release --target x86_64-unknown-linux-musl )
           echo "BSDKRUN_AGENT_LINUX=$PWD/agent/target/x86_64-unknown-linux-musl/release/bsdkrun-agent" >> "$GITHUB_ENV"
 
-      # Diagnostic: boot in the foreground on the *serial* console (ttyS0). Unlike
-      # the implicit virtio-console (hvc0), the explicit serial console writes to
-      # fd 1 even when it isn't a TTY, so we capture the real kernel boot in CI.
-      # Run a command that exits so the VM powers off on its own. This tells us
-      # whether the x86_64 PVH kernel actually boots (vs. a networking/agent issue).
-      - name: e2e — foreground serial boot (diagnostic)
-        run: |
-          set -eux
-          timeout 90 ./target/release/bsdkrun --log-level 5 linux --console ttyS0 alpine -- echo hello-serial 2>&1 | tee boot.log || true
-          echo "===== boot.log (tail) ====="
-          tail -80 boot.log || true
-          grep -q hello-serial boot.log
-
       - name: e2e — boot an OCI microVM (detached) and exec a command
         run: |
           set -eux

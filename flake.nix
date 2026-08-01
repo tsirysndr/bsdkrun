@@ -32,15 +32,24 @@
           makeFlags = (old.makeFlags or [ ]) ++ [ "BLK=1" "NET=1" ];
         });
 
-        # macOS: import Homebrew's libkrun into the store so the sandboxed build
+        # macOS: Homebrew's libkrun. During an *impure* build (BSDKRUN_IMPURE=1 +
+        # `nix build --impure`) we import it into the store so the sandboxed build
         # can link it (a bare /opt/homebrew path isn't visible in the sandbox).
-        # Needs `nix build --impure`. Only forced on darwin (lazy elsewhere).
+        # During *pure* evaluation — e.g. `flakehub-push`, which inspects every
+        # system's drvPath on a Linux runner where /opt/homebrew is absent and
+        # absolute-path access is forbidden — `builtins.getEnv` returns "", so we
+        # fall back to a plain path string and never touch the forbidden path.
         brewLibkrun = builtins.path {
           path = /opt/homebrew/opt/libkrun;
           name = "libkrun-brew";
         };
 
-        libkrunPrefix = if isDarwin then "${brewLibkrun}" else "${libkrun}";
+        libkrunPrefix =
+          if isDarwin then
+            (if builtins.getEnv "BSDKRUN_IMPURE" != ""
+            then "${brewLibkrun}"
+            else "/opt/homebrew/opt/libkrun")
+          else "${libkrun}";
 
         # Tools bsdkrun shells out to at runtime. On macOS the system versions are
         # fine (and losetup/gvproxy don't apply), so we only wrap on Linux.

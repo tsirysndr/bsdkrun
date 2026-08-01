@@ -45,7 +45,14 @@ jobs:
           brew trust libkrun/krun || true
           brew install libkrun
 
+      # BSDKRUN_IMPURE=1 makes the flake import Homebrew's libkrun into the store
+      # for the (impure) darwin build. On Linux it's inert: no --impure is passed,
+      # so builtins.getEnv returns "" and the Linux path uses nixpkgs' libkrun.
       - name: nix build
+        env:
+          BSDKRUN_IMPURE: "1"
         run: nix build -L ${{ matrix.flags }} .#bsdkrun
       - name: nix flake check
+        env:
+          BSDKRUN_IMPURE: "1"
         run: nix flake check -L ${{ matrix.flags }}

@@ -50,6 +50,9 @@ jobs:
         shell: cpa.sh {0}
         run: |
           set -eux
+          # The cpa.sh shell's PATH omits the sbin dirs, but pwd_mkdb and makefs
+          # live in /usr/sbin — put them on PATH.
+          export PATH="/usr/sbin:/sbin:$PATH"
           # NOTE: the script runs inside the NetBSD VM, which does NOT inherit the
           # host runner's env, so `env:` vars are invisible here. Interpolate the
           # workflow input into the script text directly instead.

@@ -20,6 +20,14 @@ const FREEBSD_VM_IMAGES: &str = "https://download.freebsd.org/releases/VM-IMAGES
 const NETBSD_PUB: &str = "https://cdn.netbsd.org/pub/NetBSD";
 const NETBSD_DAILY_HEAD: &str = "https://nycdn.netbsd.org/pub/NetBSD-daily/HEAD/latest";
 
+/// NetBSD publishes no ready-to-boot **amd64** disk image (only arm64/evbarm
+/// ships a `gzimg`), so bsdkrun hosts its own: an FFS rootfs built from the
+/// amd64 sets plus the matching `MICROVM` kernel (a PVH ELF libkrun can boot),
+/// produced by the `release-netbsd-amd64-image` workflow and pinned to this
+/// rolling release tag.
+const NETBSD_AMD64_BASE: &str =
+    "https://github.com/tsirysndr/bsdkrun/releases/download/netbsd-amd64";
+
 /// Guest operating systems bsdkrun can provision.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Os {
@@ -286,6 +294,58 @@ pub fn fetch_netbsd_kernel(version: Option<String>, force: bool) -> Result<PathB
     )?;
     // gzip -d drops the .gz, leaving netbsd-<v>-<arch>.kernel.
     Ok(out)
+}
+
+/// Download + gunzip a `.gz` release asset into `cache/<out_name>` (cached).
+/// Shared by the NetBSD amd64 image + MICROVM kernel fetchers.
+fn fetch_gz_asset(url: &str, out_name: &str, force: bool) -> Result<PathBuf> {
+    let cache = cache_dir()?;
+    std::fs::create_dir_all(&cache)
+        .with_context(|| format!("creating cache dir {}", cache.display()))?;
+    let out = cache.join(out_name);
+    if out.exists() && !force {
+        info!(path = %out.display(), "using cached asset");
+        return Ok(out);
+    }
+    let gz = cache.join(format!("{out_name}.gz"));
+    let _ = std::fs::remove_file(&gz);
+    info!(%url, "downloading…");
+    run(
+        Command::new("curl")
+            .args(["-L", "--fail", "--progress-bar", "-o"])
+            .arg(&gz)
+            .arg(url),
+        "curl (download asset)",
+    )
+    .with_context(|| format!("downloading {url}"))?;
+    // gzip -d drops the .gz suffix, leaving `<out_name>`.
+    run(
+        Command::new("gzip").arg("-d").arg("-f").arg(&gz),
+        "gzip (decompress asset)",
+    )?;
+    Ok(out)
+}
+
+/// bsdkrun-hosted NetBSD **amd64** root filesystem (an FFS image; there is no
+/// upstream amd64 disk image). Booted as a virtio-blk root (`root=ld0a`) under
+/// the MICROVM kernel. The `--version` flag doesn't apply — this is a pinned,
+/// bundled asset built by the `release-netbsd-amd64-image` workflow.
+pub fn fetch_netbsd_amd64_image(force: bool) -> Result<PathBuf> {
+    fetch_gz_asset(
+        &format!("{NETBSD_AMD64_BASE}/netbsd-amd64-root.img.gz"),
+        "netbsd-amd64-root.img",
+        force,
+    )
+}
+
+/// bsdkrun-hosted NetBSD **amd64** MICROVM kernel (a PVH ELF — the same
+/// `PHYS32_ENTRY`-note boot path libkrun uses for the Linux vmlinux).
+pub fn fetch_netbsd_amd64_kernel(force: bool) -> Result<PathBuf> {
+    fetch_gz_asset(
+        &format!("{NETBSD_AMD64_BASE}/netbsd-MICROVM-amd64.gz"),
+        "netbsd-MICROVM.amd64.kernel",
+        force,
+    )
 }
 
 /// Grow a raw disk image to `size` (e.g. "8G"). Only ever enlarges the file.

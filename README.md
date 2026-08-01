@@ -13,8 +13,9 @@ image** (`bsdkrun linux alpine` pulls it from any registry, extracts the rootfs,
 > **Platforms:** **macOS on Apple Silicon** (Hypervisor.framework) and **Linux on amd64 or arm64**
 > (KVM). A hardware-virtualized guest runs the host's CPU arch, so bsdkrun detects the arch and
 > pulls the matching kernel, OCI image, and agent automatically. macOS is arm64-only; Linux works
-> on both x86_64 and aarch64. _(Linux support is new — see the [KVM e2e
-> CI](.github/workflows/e2e-linux.yml); BSD guests under KVM are still experimental.)_
+> on both x86_64 and aarch64. **FreeBSD is macOS-only** (its EFI firmware ships only with the
+> macOS `libkrun-efi`); **NetBSD** direct-boots its kernel, so it runs on both. _(Linux support is
+> new — see the [KVM e2e CI](.github/workflows/e2e-linux.yml).)_
 
 <p align="center">
   <img src=".github/assets/preview.png" alt="FreeBSD 15 arm64 booting under bsdkrun on macOS" width="800">
@@ -54,13 +55,15 @@ VM tooling (QEMU, `vftool`, UTM) isn't microVM-shaped. libkrun gives you a Firec
 aimed at Linux guests, and `bsdkrun` both leans into that (running OCI images directly) and points
 the same machinery at **FreeBSD / NetBSD** guests.
 
-- **FreeBSD (arm64):** boot via **firmware/EFI** — these systems expect to come up
-  through a UEFI loader, so we hand libkrun its bundled EDK2 firmware and let the guest's
-  `loader.efi` take over from the EFI System Partition on the disk.
-- **NetBSD (evbarm):** boot via **direct kernel** — libkrun generates an FDT and jumps straight
-  into the kernel, no bootloader.
-- **Linux (arm64):** run any **OCI image** as a microVM — bsdkrun fetches a prebuilt kernel, pulls
-  the image from any registry, extracts its rootfs, and boots it `docker run`-style, with internet
+- **FreeBSD:** boot via **firmware/EFI** — these systems expect to come up through a UEFI loader,
+  so we hand libkrun its bundled EDK2 firmware and let the guest's `loader.efi` take over from the
+  EFI System Partition on the disk. That firmware ships only with **`libkrun-efi`, which is
+  macOS-only**, so **`bsdkrun freebsd` is a macOS-only command** (compiled out on Linux).
+- **NetBSD:** boot via **direct kernel** — bsdkrun downloads the `GENERIC` kernel and libkrun
+  generates an FDT and jumps straight into it, **no bootloader or firmware**. Because it needs no
+  EFI firmware, `bsdkrun netbsd` works on **both macOS and Linux**.
+- **Linux:** run any **OCI image** as a microVM — bsdkrun fetches a prebuilt kernel, pulls the
+  image from any registry, extracts its rootfs, and boots it `docker run`-style, with internet
   access out of the box. See [`linux`](#linux--run-an-oci-image-as-a-microvm).
 
 > DragonFly BSD is out of scope: there's no arm64 port.
@@ -144,9 +147,10 @@ sudo ldconfig
 Some BSD image-prep steps (`losetup`/`mount`) need root, and bsdkrun runs them with `sudo`
 automatically when needed.
 
-> BSD guests under KVM are still **experimental**. The `linux` (OCI) path is what the e2e CI
-> boots — on x86_64 only, since GitHub's arm64 runners have no `/dev/kvm`; arm64-on-Linux (which
-> reuses the aarch64 kernel + agent) is validated on a KVM-capable host.
+> On Linux the CI boots the `linux` (OCI) path and the `netbsd` (direct-kernel) path — on x86_64
+> only, since GitHub's arm64 runners have no `/dev/kvm`; arm64-on-Linux (which reuses the aarch64
+> kernel + agent) is validated on a KVM-capable host. `freebsd` needs the macOS-only EFI firmware,
+> so it's not offered on Linux; NetBSD-under-KVM on amd64 is still experimental.
 
 ---
 
@@ -196,20 +200,25 @@ make run ARGS="probe"
 
 ### `freebsd` / `netbsd` — one-liner BSD microVMs
 
-The quickest way to a BSD guest — fetches the image if needed, auto-locates libkrun's `KRUN_EFI`
-firmware, and boots it (the shorthand for [`fetch`](#the-easy-way--bsdkrun-fetch) + `firmware`, just
-like `bsdkrun linux alpine` does for Linux):
+The quickest way to a BSD guest — fetches the image (and, for NetBSD, the kernel) if needed, then
+boots it:
 
 ```sh
-bsdkrun freebsd                 # latest FreeBSD, foreground
+bsdkrun freebsd                 # latest FreeBSD, foreground   (macOS only — needs KRUN_EFI)
 bsdkrun netbsd  -d              # NetBSD-current in the background; prints its id
-bsdkrun freebsd --version 15.1 -d --port 2222:22
+bsdkrun netbsd  --version 10.1 -d --port 2222:22
 ```
 
-Carries the usual machine options (`-d`, `--persist`, `-v/--volume`, `--version`, `--attach-disk`,
-`--port`, `--cpus`/`--mem`), so per-machine [CoW disk clones](#managing-machines) and
-`ps`/`logs`/`shell`/`stop` all apply. The firmware is found via `$BSDKRUN_FIRMWARE`, a local
-`images/KRUN_EFI.fd`, or krunkit's Homebrew install (`--firmware` overrides).
+Both carry the usual machine options (`-d`, `--persist`, `-v/--volume`, `--version`,
+`--attach-disk`, `--port`, `--cpus`/`--mem`), so per-machine [CoW disk clones](#managing-machines)
+and `ps`/`logs`/`shell`/`stop` all apply. They differ in how they boot:
+
+- **`freebsd`** wraps [`fetch`](#the-easy-way--bsdkrun-fetch) + [`firmware`](#firmware--boot-a-disk-through-its-uefi-loader):
+  it auto-locates libkrun's `KRUN_EFI` firmware (via `$BSDKRUN_FIRMWARE`, a local
+  `images/KRUN_EFI.fd`, or krunkit's Homebrew install; `--firmware` overrides). That firmware is
+  **macOS-only**, so **`freebsd` is a macOS-only command**.
+- **`netbsd`** wraps `fetch` + a **direct kernel** boot — no firmware — so it works on **macOS and
+  Linux**.
 
 ### `firmware` — boot a disk through its UEFI loader
 
@@ -655,10 +664,12 @@ image into `--dir` (a hard link, no second copy). Use `--force` to re-download.
 
 ### NetBSD: use `current`, not a release
 
-NetBSD boots through the **same `firmware` path** as FreeBSD (its `efiboot` + `GENERIC64` kernel
-run under libkrun, and the kernel auto-selects libkrun's PL011 UART as console — no `loader.env`
-needed). But there's a catch: libkrun exposes **modern (v2) virtio-mmio**, and NetBSD's
-virtio-mmio driver only gained v2 support in **-current** (post-10.x). So:
+`bsdkrun netbsd` **direct-boots** the `GENERIC` kernel (no firmware): it downloads the kernel
+(`netbsd-GENERIC64.img` on arm64, `netbsd-GENERIC` on amd64) alongside the disk image, and libkrun
+generates the FDT and jumps into it, rooting on the virtio-blk disk (`ld0a` — override the kernel
+command line with `$BSDKRUN_NETBSD_CMDLINE`). But there's a catch: libkrun exposes **modern (v2)
+virtio-mmio**, and NetBSD's virtio-mmio driver only gained v2 support in **-current** (post-10.x).
+So:
 
 - **`bsdkrun fetch --os netbsd`** (→ `current`) boots all the way to `login:` with a working root
   disk. ✅

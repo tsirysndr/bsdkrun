@@ -90,10 +90,11 @@ enum Command {
     /// Run an OCI image (Docker Hub / any registry) as a Linux machine.
     Linux(LinuxArgs),
 
-    /// Run FreeBSD — fetches the image if needed, then boots it (fetch + firmware).
+    /// Run FreeBSD — fetch + EFI-firmware boot (macOS only; needs KRUN_EFI).
+    #[cfg(target_os = "macos")]
     Freebsd(BsdArgs),
 
-    /// Run NetBSD — fetches the image if needed, then boots it (fetch + firmware).
+    /// Run NetBSD — fetch + direct-kernel boot (no firmware needed).
     Netbsd(BsdArgs),
 
     /// List machines.
@@ -534,8 +535,9 @@ fn main() -> Result<()> {
         Command::Versions(args) => fetch::list_versions(args.os),
         Command::Grow(args) => fetch::grow(&args.disk, &args.size),
         Command::Linux(args) => boot_linux(args),
-        Command::Freebsd(args) => boot_bsd(fetch::Os::Freebsd, args),
-        Command::Netbsd(args) => boot_bsd(fetch::Os::Netbsd, args),
+        #[cfg(target_os = "macos")]
+        Command::Freebsd(args) => boot_freebsd(args),
+        Command::Netbsd(args) => boot_netbsd(args),
         Command::Ps(args) => cmd_ps(args.all),
         Command::Images => cmd_images(),
         Command::Stop(args) => cmd_stop(&args.id),
@@ -765,9 +767,13 @@ fn firmware_machine(
 
 /// `freebsd` / `netbsd`: fetch the image if needed, auto-locate the firmware,
 /// then boot it — the one-liner equivalent of `fetch` + `firmware`.
-fn boot_bsd(os: fetch::Os, args: BsdArgs) -> Result<()> {
+/// FreeBSD boots through its `loader.efi`, which needs libkrun's EDK2 firmware —
+/// only available on macOS (the `libkrun-efi` flavor), so this command is gated
+/// to macOS. On Linux there's no KRUN_EFI, so FreeBSD isn't offered.
+#[cfg(target_os = "macos")]
+fn boot_freebsd(args: BsdArgs) -> Result<()> {
     let cache = fetch::cache_dir()?;
-    let disk = fetch::fetch(os, args.version, &cache, args.force)?;
+    let disk = fetch::fetch(fetch::Os::Freebsd, args.version, &cache, args.force)?;
     let firmware = match args.firmware {
         Some(f) => f,
         None => locate_krun_efi()?,
@@ -782,9 +788,67 @@ fn boot_bsd(os: fetch::Os, args: BsdArgs) -> Result<()> {
     )
 }
 
+/// NetBSD kernel command line (override with `$BSDKRUN_NETBSD_CMDLINE`). NetBSD
+/// roots on the virtio-blk disk, which its kernel names `ld0` (partition `a`).
+fn netbsd_cmdline() -> String {
+    std::env::var("BSDKRUN_NETBSD_CMDLINE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "root=ld0a".to_string())
+}
+
+/// NetBSD boots via **direct kernel** — libkrun generates the FDT and jumps into
+/// the GENERIC kernel, no EFI firmware needed (unlike FreeBSD). We download the
+/// kernel (arch-aware) and attach the fetched image as the root disk.
+fn boot_netbsd(args: BsdArgs) -> Result<()> {
+    let cache = fetch::cache_dir()?;
+    let disk = fetch::fetch(fetch::Os::Netbsd, args.version.clone(), &cache, args.force)?;
+    let kernel = fetch::fetch_netbsd_kernel(args.version.clone(), args.force)?;
+
+    let machine_id = id::short_id();
+    let vdir = machine_dir_or_tmp(&machine_id);
+    let image = basename(&disk);
+    let volume = args.run.volume.as_deref().map(volume_dir).transpose()?;
+    let root_disk = prepare_bsd_disk(&disk, &vdir, args.run.persist, volume.as_deref())?;
+
+    let build = || -> Result<(Ctx, Option<Gvproxy>)> {
+        let ctx = Ctx::new()?;
+        ctx.set_vm_config(args.vm.cpus, args.vm.mem)?;
+        ctx.attach_stdio_serial_console()
+            .context("wiring guest serial console to stdio")?;
+        db::record_disk(&disk.to_string_lossy());
+        ctx.add_disk("root", &root_disk, false)
+            .with_context(|| format!("attaching root disk {}", root_disk.display()))?;
+        attach_extra_disks(&ctx, &args.attach_disk)?;
+        let gvproxy = setup_networking_with_agent(&ctx, &args.net, Some(&vdir))?;
+        ctx.set_kernel(&kernel, linux::kernel_format(), None, &netbsd_cmdline())
+            .context("configuring kernel")?;
+        Ok((ctx, gvproxy))
+    };
+
+    if let (Some(name), Some(dir)) = (args.run.volume.as_deref(), &volume) {
+        db::record_volume(name, "netbsd", &image, &dir.to_string_lossy());
+    }
+    run_machine(
+        &machine_id,
+        &vdir,
+        "netbsd",
+        &image,
+        "",
+        args.vm.cpus,
+        args.vm.mem,
+        args.run.detach,
+        true,
+        args.run.volume.as_deref(),
+        build,
+    )
+}
+
 /// Locate libkrun's EDK2 firmware (`KRUN_EFI`), keeping a copy in bsdkrun's own
 /// cache dir (not the current directory). Overridden by `$BSDKRUN_FIRMWARE` (and
-/// by the `--firmware` flag before this is called).
+/// by the `--firmware` flag before this is called). macOS only — the EFI
+/// firmware ships with libkrun-efi, which is macOS-only.
+#[cfg(target_os = "macos")]
 fn locate_krun_efi() -> Result<PathBuf> {
     if let Some(f) = std::env::var_os("BSDKRUN_FIRMWARE") {
         let p = PathBuf::from(f);

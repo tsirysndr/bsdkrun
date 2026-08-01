@@ -244,6 +244,50 @@ pub fn fetch(os: Os, version: Option<String>, dir: &Path, force: bool) -> Result
     Ok(ready)
 }
 
+/// Download + decompress the NetBSD `GENERIC` kernel for the host arch (cached),
+/// for direct-kernel boot — no EFI firmware needed. arm64 gets the raw `Image`
+/// (`netbsd-GENERIC64.img`); amd64 gets the ELF (`netbsd-GENERIC`).
+pub fn fetch_netbsd_kernel(version: Option<String>, force: bool) -> Result<PathBuf> {
+    use crate::host::Arch;
+    let arch = Arch::current()?;
+    let version = version.unwrap_or_else(|| "current".to_string());
+    let (port, kfile) = match arch {
+        Arch::Aarch64 => ("evbarm-aarch64", "netbsd-GENERIC64.img"),
+        Arch::X86_64 => ("amd64", "netbsd-GENERIC"),
+    };
+    let url = if version == "current" {
+        format!("{NETBSD_DAILY_HEAD}/{port}/binary/kernel/{kfile}.gz")
+    } else {
+        format!("{NETBSD_PUB}/NetBSD-{version}/{port}/binary/kernel/{kfile}.gz")
+    };
+
+    let cache = cache_dir()?;
+    std::fs::create_dir_all(&cache)
+        .with_context(|| format!("creating cache dir {}", cache.display()))?;
+    let out = cache.join(format!("netbsd-{version}-{}.kernel", arch.slug()));
+    if out.exists() && !force {
+        info!(path = %out.display(), "using cached NetBSD kernel");
+        return Ok(out);
+    }
+    let gz = cache.join(format!("netbsd-{version}-{}.kernel.gz", arch.slug()));
+    let _ = std::fs::remove_file(&gz);
+    info!(%url, "downloading NetBSD kernel…");
+    run(
+        Command::new("curl")
+            .args(["-L", "--fail", "--progress-bar", "-o"])
+            .arg(&gz)
+            .arg(&url),
+        "curl (download NetBSD kernel)",
+    )
+    .with_context(|| format!("downloading NetBSD kernel {version} ({})", arch.slug()))?;
+    run(
+        Command::new("gzip").arg("-d").arg("-f").arg(&gz),
+        "gzip (decompress NetBSD kernel)",
+    )?;
+    // gzip -d drops the .gz, leaving netbsd-<v>-<arch>.kernel.
+    Ok(out)
+}
+
 /// Grow a raw disk image to `size` (e.g. "8G"). Only ever enlarges the file.
 ///
 /// NetBSD's arm64 image expands its root filesystem to fill the new space

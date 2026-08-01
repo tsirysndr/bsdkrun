@@ -145,25 +145,19 @@ jobs:
           ./target/release/bsdkrun volume ls
           ./target/release/bsdkrun stop "$id2"
 
-      # FreeBSD under KVM is experimental (continue-on-error). This exercises the
-      # arch-aware amd64 image fetch and the Linux losetup/mount ESP prep, then
-      # attempts a boot — which currently needs the KRUN_EFI firmware that has no
-      # Linux package yet (krunkit is macOS-only), so the boot step just reports
-      # how far it got.
-      - name: e2e — FreeBSD (experimental)
+      # NetBSD boots via direct kernel — no EFI firmware — so it's the BSD guest
+      # that can run on Linux/KVM. Experimental (continue-on-error): NetBSD under
+      # libkrun is validated on arm64; amd64 direct-kernel boot is what this probes.
+      - name: e2e — NetBSD (direct kernel)
         continue-on-error: true
         run: |
           set -eux
-          # Fetch + prepare the amd64 image (downloads, decompresses, writes the
-          # serial-console loader.env onto the ESP via losetup — needs sudo, which
-          # bsdkrun invokes itself). Validates the BSD-on-Linux disk tooling.
-          ./target/release/bsdkrun fetch --os freebsd
-          # Attempt the boot. Without KRUN_EFI it stops at firmware lookup; capture
-          # output and show how far it got. Provide a firmware via BSDKRUN_FIRMWARE
-          # once a Linux KRUN_EFI build is available.
-          timeout 120 ./target/release/bsdkrun freebsd 2>&1 | tee fb.log || true
-          if grep -qiE "FreeBSD|beastie|Booting|loader\.efi" fb.log; then
-            echo "FreeBSD boot progressed"
+          # Downloads the amd64 GENERIC kernel + the disk image and direct-boots
+          # (libkrun generates the FDT; no firmware). Capture the console and check
+          # for the NetBSD banner. Tune the root/console via BSDKRUN_NETBSD_CMDLINE.
+          timeout 180 ./target/release/bsdkrun --log-level 1 netbsd 2>&1 | tee nb.log || true
+          if grep -qiE "NetBSD|Copyright.*Berkeley|boot device" nb.log; then
+            echo "NetBSD kernel booted"
           else
-            echo "FreeBSD boot not reached — likely missing KRUN_EFI firmware (Linux BSD boot is experimental)"
+            echo "NetBSD boot not confirmed (amd64 direct-kernel under libkrun is experimental)"
           fi

@@ -887,7 +887,9 @@ fn locate_krun_efi() -> Result<PathBuf> {
     Ok(cached)
 }
 
-/// Find krunkit's `KRUN_EFI.silent.fd` in its Homebrew install.
+/// Find krunkit's `KRUN_EFI.silent.fd` in its Homebrew install. macOS only —
+/// krunkit (and the EFI firmware) exist only there.
+#[cfg(target_os = "macos")]
 fn find_krunkit_firmware() -> Result<PathBuf> {
     let mut prefixes: Vec<PathBuf> = Vec::new();
     if let Ok(out) = std::process::Command::new("brew")

@@ -38,7 +38,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential git curl ca-certificates xz-utils python3 \
-            pkg-config patchelf flex bison bc libelf-dev libssl-dev
+            python3-pyelftools pkg-config patchelf patch cpio kmod rsync zstd \
+            flex bison bc libelf-dev libssl-dev
+
+      - name: Install gvproxy (user-mode networking)
+        run: |
+          set -eux
+          sudo curl -fL -o /usr/local/bin/gvproxy \
+            https://github.com/containers/gvisor-tap-vsock/releases/latest/download/gvproxy-linux-amd64
+          sudo chmod +x /usr/local/bin/gvproxy
+          gvproxy --help >/dev/null 2>&1 || which gvproxy
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -46,17 +55,37 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # libkrun links libkrunfw (the bundled kernel). Building libkrunfw compiles
-      # a Linux kernel from source — slow, but the reliable way to get libkrun on
-      # Ubuntu (no distro package). Use `cd`, NOT `make -C`: `-C` implies `-w`,
-      # which leaves a stray `w` in MAKEFLAGS that libkrunfw passes to the kernel
-      # sub-make as a bogus target ("No rule to make target 'w'").
-      - name: Build + install libkrun
+      # a Linux kernel from source (~15-20 min), so cache the built trees and skip
+      # straight to install on a hit. Bump CACHE_KEY below to force a rebuild.
+      - name: Cache libkrun/libkrunfw build
+        id: libkrun-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-v1
+
+      # Build only on a cache miss. libkrun links libkrunfw, so libkrunfw must be
+      # installed before libkrun builds. Use `cd`, NOT `make -C`: `-C` implies
+      # `-w`, which leaves a stray `w` in MAKEFLAGS that libkrunfw passes to the
+      # kernel sub-make as a bogus target ("No rule to make target 'w'").
+      - name: Build libkrun (cache miss)
+        if: steps.libkrun-cache.outputs.cache-hit != 'true'
         run: |
           set -eux
           git clone --depth 1 https://github.com/containers/libkrunfw
           ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
           git clone --depth 1 https://github.com/containers/libkrun
-          ( cd libkrun && make -j"$(nproc)" && sudo make install )
+          ( cd libkrun && make -j"$(nproc)" )
+
+      # Install (fast) on every run — a cache hit restores the built trees but not
+      # the system-installed libraries.
+      - name: Install libkrun
+        run: |
+          set -eux
+          ( cd libkrunfw && sudo make install )
+          ( cd libkrun && sudo make install )
           sudo ldconfig
 
       - name: Build bsdkrun

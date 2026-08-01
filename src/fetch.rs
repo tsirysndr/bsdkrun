@@ -30,6 +30,13 @@ const NETBSD_AMD64_BASE: &str =
 const NETBSD_ARM64_BASE: &str =
     "https://github.com/tsirysndr/bsdkrun/releases/download/netbsd-arm64";
 
+/// bsdkrun also hosts an agent-injected FreeBSD arm64 image (the upstream UFS VM
+/// image with the guest agent baked in), built by `release-freebsd-arm64-image`.
+/// It's the default for `bsdkrun freebsd` (no `--version`); an explicit version
+/// downloads the official FreeBSD VM image instead.
+const FREEBSD_ARM64_BASE: &str =
+    "https://github.com/tsirysndr/bsdkrun/releases/download/freebsd-arm64";
+
 /// Guest operating systems bsdkrun can provision.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Os {
@@ -298,9 +305,15 @@ pub fn fetch_netbsd_kernel(version: Option<String>, force: bool) -> Result<PathB
     Ok(out)
 }
 
-/// Download + gunzip a `.gz` release asset into `cache/<out_name>` (cached).
-/// Shared by the NetBSD amd64 image + MICROVM kernel fetchers.
-fn fetch_gz_asset(url: &str, out_name: &str, force: bool) -> Result<PathBuf> {
+/// Download + decompress a release asset into `cache/<out_name>` (cached).
+/// `ext`/`bin` are the compression suffix + decompressor (`gz`/`gzip`, `xz`/`xz`).
+fn fetch_compressed_asset(
+    url: &str,
+    out_name: &str,
+    ext: &str,
+    bin: &str,
+    force: bool,
+) -> Result<PathBuf> {
     let cache = cache_dir()?;
     std::fs::create_dir_all(&cache)
         .with_context(|| format!("creating cache dir {}", cache.display()))?;
@@ -309,23 +322,33 @@ fn fetch_gz_asset(url: &str, out_name: &str, force: bool) -> Result<PathBuf> {
         info!(path = %out.display(), "using cached asset");
         return Ok(out);
     }
-    let gz = cache.join(format!("{out_name}.gz"));
-    let _ = std::fs::remove_file(&gz);
+    let comp = cache.join(format!("{out_name}.{ext}"));
+    let _ = std::fs::remove_file(&comp);
     info!(%url, "downloading…");
     run(
         Command::new("curl")
             .args(["-L", "--fail", "--progress-bar", "-o"])
-            .arg(&gz)
+            .arg(&comp)
             .arg(url),
         "curl (download asset)",
     )
     .with_context(|| format!("downloading {url}"))?;
-    // gzip -d drops the .gz suffix, leaving `<out_name>`.
+    // `<bin> -d -f` drops the .<ext> suffix, leaving `<out_name>`.
     run(
-        Command::new("gzip").arg("-d").arg("-f").arg(&gz),
-        "gzip (decompress asset)",
+        Command::new(bin).arg("-d").arg("-f").arg(&comp),
+        &format!("{bin} (decompress asset)"),
     )?;
     Ok(out)
+}
+
+/// Download + gunzip a `.gz` release asset (NetBSD images/kernels).
+fn fetch_gz_asset(url: &str, out_name: &str, force: bool) -> Result<PathBuf> {
+    fetch_compressed_asset(url, out_name, "gz", "gzip", force)
+}
+
+/// Download + unxz a `.xz` release asset (FreeBSD images).
+fn fetch_xz_asset(url: &str, out_name: &str, force: bool) -> Result<PathBuf> {
+    fetch_compressed_asset(url, out_name, "xz", "xz", force)
 }
 
 /// bsdkrun-hosted NetBSD **amd64** root filesystem (an FFS image; there is no
@@ -358,6 +381,17 @@ pub fn fetch_netbsd_arm64_image(force: bool) -> Result<PathBuf> {
     fetch_gz_asset(
         &format!("{NETBSD_ARM64_BASE}/netbsd-arm64-root.img.gz"),
         "netbsd-arm64-root.img",
+        force,
+    )
+}
+
+/// bsdkrun-hosted FreeBSD **arm64** image — the upstream UFS VM image with the
+/// guest agent injected. The default for `bsdkrun freebsd` on arm64; keeps the
+/// same GPT + EFI layout, so it boots through `loader.efi` like the official one.
+pub fn fetch_freebsd_arm64_image(force: bool) -> Result<PathBuf> {
+    fetch_xz_asset(
+        &format!("{FREEBSD_ARM64_BASE}/freebsd-arm64-root.raw.xz"),
+        "freebsd-arm64-root.raw",
         force,
     )
 }

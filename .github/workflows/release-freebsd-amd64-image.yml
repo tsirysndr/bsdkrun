@@ -15,9 +15,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "FreeBSD release (must match the build VM; native build)"
+        description: "FreeBSD release to build (native in the same-version VM)"
         required: false
-        default: "14.2"
+        default: "15.1"
         type: string
       release_tag:
         description: "Rolling release tag to publish the assets to"
@@ -44,7 +44,7 @@ jobs:
         uses: cross-platform-actions/action@v1.3.0
         with:
           operating_system: freebsd
-          version: "14.2"
+          version: "15.1"
           architecture: x86-64
           shell: bash
           memory: 12G

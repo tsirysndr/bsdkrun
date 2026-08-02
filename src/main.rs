@@ -838,9 +838,36 @@ fn freebsd_cmdline() -> String {
             return s;
         }
     }
-    "vfs.root.mountfrom=ufs:/dev/vtbd0 console=comconsole hw.uart.console=io:0x3f8 \
-     hint.uart.0.at=isa hint.uart.0.port=0x3f8 hint.uart.0.flags=0x10 hint.uart.0.irq=4"
-        .to_string()
+    let mut cmdline = String::from(
+        "vfs.root.mountfrom=ufs:/dev/vtbd0 console=comconsole hw.uart.console=io:0x3f8 \
+         hint.uart.0.at=isa hint.uart.0.port=0x3f8 hint.uart.0.flags=0x10 hint.uart.0.irq=4",
+    );
+    // Hand FreeBSD the TSC frequency so it skips calibration entirely. It can't
+    // derive it under libkrun on its own: with `machdep.disable_tsc_calibration`
+    // (FIRECRACKER's default) tsc_freq stays 0 → `lapic_init` panics "TSC not
+    // initialized"; with calibration on, its PVH `DELAY` is `xen_delay`, which
+    // reads a Xen pvclock that doesn't exist under KVM → a page fault in
+    // `pvclock_get_timecount`. Real Firecracker sidesteps both by exposing the
+    // TSC KHz via a CPUID leaf; we're on AMD (no Intel TSC leaf) and libkrun
+    // exposes no KVM one. KVM runs the guest TSC at the host rate, so the host's
+    // `tsc_freq_khz` is the guest's — pass it as the `machdep.tsc_freq` tunable.
+    if let Some(hz) = host_tsc_freq_hz() {
+        cmdline.push_str(&format!(" machdep.tsc_freq={hz}"));
+    }
+    cmdline
+}
+
+/// The host TSC frequency in Hz, read from sysfs (present on modern x86 Linux
+/// when the TSC is the clocksource). `None` if unavailable — the guest then
+/// falls back to its own (broken-under-libkrun) TSC init.
+#[cfg(target_os = "linux")]
+fn host_tsc_freq_hz() -> Option<u64> {
+    let khz: u64 = std::fs::read_to_string("/sys/devices/system/cpu/cpu0/tsc_freq_khz")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    (khz > 0).then_some(khz * 1000)
 }
 
 /// Linux/amd64 PVH direct boot: enter the GENERIC kernel at its `PHYS32_ENTRY`,

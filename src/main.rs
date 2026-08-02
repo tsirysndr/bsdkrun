@@ -806,6 +806,12 @@ fn boot_freebsd(args: BsdArgs) -> Result<()> {
 /// device is arch-specific: the arm64 image is GPT-partitioned, so its root FFS
 /// is the wedge `dk1` (`dk0` is the EFI partition); the amd64 image is a bare
 /// makefs FFS on a virtio-blk disk, which NetBSD roots as `ld0a`.
+///
+/// amd64 also needs `console=com`: in a PVH direct boot there's no NetBSD
+/// bootloader to hand over bootinfo, and without it the kernel defaults its
+/// console to VGA text ("pc") — which libkrun doesn't have — so all output
+/// silently vanishes. `console=com` selects the serial console libkrun provides
+/// (same as the upstream NetBSD-on-Firecracker setup).
 fn netbsd_cmdline() -> String {
     if let Ok(s) = std::env::var("BSDKRUN_NETBSD_CMDLINE") {
         if !s.is_empty() {
@@ -813,7 +819,7 @@ fn netbsd_cmdline() -> String {
         }
     }
     match host::Arch::current() {
-        Ok(host::Arch::X86_64) => "root=ld0a".to_string(),
+        Ok(host::Arch::X86_64) => "root=ld0a console=com".to_string(),
         _ => "root=dk1".to_string(),
     }
 }

@@ -114,6 +114,9 @@ enum Command {
     /// Run a command inside a running machine (via its guest agent).
     Exec(ExecArgs),
 
+    /// Manage tailscale inside a running machine (install/start/status/setup).
+    Tailscale(TailscaleArgs),
+
     /// Manage persistent volumes (list / remove).
     Volume(VolumeArgs),
 }
@@ -160,6 +163,24 @@ struct ExecArgs {
     /// Command and arguments to run inside the guest.
     #[arg(value_name = "COMMAND", required = true, trailing_var_arg = true)]
     command: Vec<String>,
+}
+
+#[derive(Parser)]
+struct TailscaleArgs {
+    /// machine id (a unique prefix is enough).
+    #[arg(value_name = "ID")]
+    id: String,
+
+    /// Action + arguments for the in-guest agent:
+    /// `setup [--authkey K] [--hostname H]`, `status`, `install`,
+    /// `start [--kernel-tun]`. Extra `setup` args pass through to `tailscale up`.
+    #[arg(
+        value_name = "ACTION",
+        required = true,
+        trailing_var_arg = true,
+        allow_hyphen_values = true
+    )]
+    args: Vec<String>,
 }
 
 #[derive(Parser)]
@@ -548,6 +569,7 @@ fn main() -> Result<()> {
         Command::Logs(args) => cmd_logs(&args.id, args.follow, args.boot),
         Command::Shell(args) => cmd_shell(&args.id),
         Command::Exec(args) => cmd_exec(&args.id, &args.command, &args.env, args.tty),
+        Command::Tailscale(args) => cmd_tailscale(&args.id, &args.args),
         Command::Volume(args) => match args.cmd {
             VolumeCmd::Ls => cmd_volume_ls(),
             VolumeCmd::Rm(a) => cmd_volume_rm(&a.names, a.force),
@@ -1807,8 +1829,8 @@ fn agent_error(kind: &str, e: anyhow::Error) -> anyhow::Error {
     }
 }
 
-/// Run a command inside a running machine via its guest agent.
-fn cmd_exec(id: &str, command: &[String], env: &[String], tty: bool) -> Result<()> {
+/// Resolve a running machine and its exec-agent port (shared by exec/tailscale).
+fn agent_target(id: &str) -> Result<(db::MachineRow, u16)> {
     let db = db::Db::open()?;
     let vm = db.find_machine(id)?;
     if !vm.pid.map(db::pid_alive).unwrap_or(false) {
@@ -1822,6 +1844,52 @@ fn cmd_exec(id: &str, command: &[String], env: &[String], tty: bool) -> Result<(
             vm.id
         )
     })?;
+    Ok((vm, port))
+}
+
+/// Run a command inside a running machine via its guest agent.
+fn cmd_exec(id: &str, command: &[String], env: &[String], tty: bool) -> Result<()> {
+    let (vm, port) = agent_target(id)?;
     let code = agent::exec(port, command, env, tty).map_err(|e| agent_error(&vm.kind, e))?;
+    std::process::exit(code);
+}
+
+/// `bsdkrun tailscale <id> <action...>` — run the agent's built-in tailscale
+/// CLI inside the guest, trying the known agent locations (Linux OCI guests
+/// carry it at /sbin, the bundled BSD images at /usr/local/sbin). Exit code
+/// 127 means "couldn't spawn" — i.e. wrong path — so try the next candidate.
+fn cmd_tailscale(id: &str, args: &[String]) -> Result<()> {
+    let (vm, port) = agent_target(id)?;
+
+    // Forward the host's TS_AUTHKEY so `bsdkrun tailscale <id> setup` works
+    // without pasting the key on the command line (shell history, ps, ...).
+    let mut env: Vec<String> = Vec::new();
+    if let Ok(k) = std::env::var("TS_AUTHKEY") {
+        if !k.is_empty() {
+            env.push(format!("TS_AUTHKEY={k}"));
+        }
+    }
+
+    let candidates: &[&str] = if vm.kind == "linux" {
+        &["/sbin/bsdkrun-agent", "/usr/local/sbin/bsdkrun-agent"]
+    } else {
+        &["/usr/local/sbin/bsdkrun-agent", "/sbin/bsdkrun-agent"]
+    };
+    let mut code = 127;
+    for cand in candidates {
+        let mut argv: Vec<String> = vec![cand.to_string(), "tailscale".to_string()];
+        argv.extend(args.iter().cloned());
+        code = agent::exec(port, &argv, &env, false).map_err(|e| agent_error(&vm.kind, e))?;
+        if code != 127 {
+            break;
+        }
+    }
+    if code == 127 {
+        anyhow::bail!(
+            "bsdkrun-agent binary not found inside the guest (tried {}) — the image \
+             predates the tailscale-capable agent; rebuild/refetch it",
+            candidates.join(", ")
+        );
+    }
     std::process::exit(code);
 }

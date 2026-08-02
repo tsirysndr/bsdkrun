@@ -624,16 +624,18 @@ command installs tailscale the OS-native way, starts `tailscaled`, and joins the
 
 ```sh
 # one-shot: install + start + `tailscale up` (get an auth key from the admin console)
-bsdkrun exec <id> bsdkrun-agent tailscale setup --authkey tskey-auth-...
+bsdkrun tailscale <id> setup --authkey tskey-auth-...
+# or keep the key out of shell history / ps:
+TS_AUTHKEY=tskey-auth-... bsdkrun tailscale <id> setup
 
-bsdkrun exec <id> bsdkrun-agent tailscale status    # who am I / peers
-bsdkrun exec <id> bsdkrun-agent tailscale install   # just install
-bsdkrun exec <id> bsdkrun-agent tailscale start     # just start tailscaled
+bsdkrun tailscale <id> status               # who am I / peers
+bsdkrun tailscale <id> install              # just install
+bsdkrun tailscale <id> start                # just start tailscaled
 ```
 
-(If `bsdkrun-agent` isn't on the guest's `PATH`, use its full path — the bundled BSD images
-install it at `/usr/local/sbin/bsdkrun-agent`. `TS_AUTHKEY` in the exec environment works
-instead of `--authkey`.)
+`bsdkrun tailscale` finds the in-guest agent binary itself; the equivalent explicit form is
+`bsdkrun exec <id> /usr/local/sbin/bsdkrun-agent tailscale ...` (Linux OCI guests carry the
+agent at `/sbin/bsdkrun-agent`).
 
 Install goes through each OS's native channel: `apk` (Alpine) or the official static tarball on
 Linux, `pkg install` on FreeBSD, `pkg_add` from the pkgsrc CDN on NetBSD. `tailscaled` runs with

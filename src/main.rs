@@ -824,14 +824,13 @@ fn boot_freebsd_efi(args: BsdArgs) -> Result<()> {
 /// virtio-blk disk (`vtbd0`); `console=comconsole` routes the console to the
 /// serial libkrun provides at COM1.
 ///
-/// The `hint.uart.0.*` entries matter: GENERIC normally gets its UART hints from
-/// `/boot/device.hints`, loaded by the BOOTLOADER — which a PVH direct boot
-/// bypasses. Without them the kernel never probes a COM port and the console
-/// binds to nothing (total silence, even panics). Passing the standard COM1
-/// hints on the cmdline puts them in the kernel env, exactly like the compiled-
-/// in `env` block of FreeBSD's FIRECRACKER kernel config (flags 0x10 marks the
-/// port as console-capable). virtio-mmio device hints are appended by libkrun
-/// itself (via `KRUN_VIRTIO_MMIO_HINTS=freebsd`).
+/// `hw.uart.console=io:0x3f8` is the key: it points FreeBSD's `uart(4)` low-level
+/// console straight at libkrun's 16550 I/O port, so the console comes up at
+/// `cninit` — the earliest console init — without needing the `device.hints` the
+/// BOOTLOADER normally supplies (a PVH direct boot has no loader). We also pass
+/// the equivalent `hint.uart.0.*` so `uart0` fully attaches as a device later.
+/// virtio-mmio device hints are appended by libkrun itself (via
+/// `KRUN_VIRTIO_MMIO_HINTS=freebsd`).
 #[cfg(target_os = "linux")]
 fn freebsd_cmdline() -> String {
     if let Ok(s) = std::env::var("BSDKRUN_FREEBSD_CMDLINE") {
@@ -839,8 +838,8 @@ fn freebsd_cmdline() -> String {
             return s;
         }
     }
-    "vfs.root.mountfrom=ufs:/dev/vtbd0 console=comconsole \
-     hint.uart.0.at=isa hint.uart.0.port=0x3F8 hint.uart.0.flags=0x10 hint.uart.0.irq=4"
+    "vfs.root.mountfrom=ufs:/dev/vtbd0 console=comconsole hw.uart.console=io:0x3f8 \
+     hint.uart.0.at=isa hint.uart.0.port=0x3f8 hint.uart.0.flags=0x10 hint.uart.0.irq=4"
         .to_string()
 }
 

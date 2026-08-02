@@ -279,11 +279,12 @@ jobs:
             for i in 1 2 3 4 5; do
               sshout=$(ssh -i nb_key -p 2223 -o StrictHostKeyChecking=no \
                 -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes \
-                -o ConnectTimeout=5 root@127.0.0.1 uname -s 2>/dev/null || true)
+                -o ConnectTimeout=5 root@127.0.0.1 uname -s 2>>ssh_client.err || true)
               [ -n "$sshout" ] && break
               sleep 3
             done
             echo "ssh says: $sshout"
+            if [ -z "$sshout" ]; then echo "--- ssh client errors ---"; tail -20 ssh_client.err || true; fi
             if [ "$sshout" = "NetBSD" ]; then echo "🎉 ssh into NetBSD works (agent-installed key)"; fi
             # tailscale via pkg_add from the pkgsrc CDN (no auth key: install+start only)
             ./target/release/bsdkrun tailscale "$id" install || true
@@ -336,11 +337,12 @@ jobs:
             for i in 1 2 3 4 5; do
               sshout=$(ssh -i fb_key -p 2224 -o StrictHostKeyChecking=no \
                 -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes \
-                -o ConnectTimeout=5 root@127.0.0.1 uname -s 2>/dev/null || true)
+                -o ConnectTimeout=5 root@127.0.0.1 uname -s 2>>ssh_client.err || true)
               [ -n "$sshout" ] && break
               sleep 3
             done
             echo "ssh says: $sshout"
+            if [ -z "$sshout" ]; then echo "--- ssh client errors ---"; tail -20 ssh_client.err || true; fi
             if [ "$sshout" = "FreeBSD" ]; then echo "🎉 ssh into FreeBSD works (agent-installed key)"; fi
             # tailscale via pkg (bootstraps pkg itself; no auth key: install+start only)
             ./target/release/bsdkrun tailscale "$id" install || true

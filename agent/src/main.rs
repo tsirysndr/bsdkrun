@@ -71,6 +71,14 @@ async fn main() {
             eprintln!("bsdkrun-agent: systemd is a Linux-guest feature (BSDs use rc.d)");
             std::process::exit(1);
         }
+        // Flags, not a subcommand: older BSD image rc scripts accidentally exec
+        // the agent itself with daemon(8)-style flags (-f -P <pid> -r <path>)
+        // because rc.subr treats ${name}_program as an override of $command.
+        // The pre-CLI agent ignored argv, so those images booted fine — keep
+        // them booting: warn and run the daemon.
+        Some(flag) if flag.starts_with('-') => {
+            eprintln!("bsdkrun-agent: ignoring legacy flags {args:?}; starting the exec daemon");
+        }
         Some(other) => {
             eprintln!("bsdkrun-agent: unknown command {other:?} (try: tailscale, ssh, systemd)");
             std::process::exit(2);

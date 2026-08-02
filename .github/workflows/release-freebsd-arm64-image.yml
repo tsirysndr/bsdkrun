@@ -101,11 +101,12 @@ jobs:
           load_rc_config $name
 
           : ${bsdkrun_agent_enable:="NO"}
-          : ${bsdkrun_agent_program:="/usr/local/sbin/bsdkrun-agent"}
-
           pidfile="/var/run/${name}.pid"
+          # NB: daemon(8) wrapper. Deliberately NOT using a bsdkrun_agent_program
+          # variable: rc.subr treats ${name}_program as an OVERRIDE of $command,
+          # which made rc exec the agent itself with daemon(8)'s flags as argv.
           command="/usr/sbin/daemon"
-          command_args="-f -P ${pidfile} -r ${bsdkrun_agent_program}"
+          command_args="-f -P ${pidfile} -r /usr/local/sbin/bsdkrun-agent"
 
           run_rc_command "$1"
           EOF

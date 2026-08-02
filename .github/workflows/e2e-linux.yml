@@ -284,7 +284,7 @@ jobs:
               sleep 3
             done
             echo "ssh says: $sshout"
-            [ "$sshout" = "NetBSD" ] && echo "🎉 ssh into NetBSD works (agent-installed key)"
+            if [ "$sshout" = "NetBSD" ]; then echo "🎉 ssh into NetBSD works (agent-installed key)"; fi
             # tailscale via pkg_add from the pkgsrc CDN (no auth key: install+start only)
             ./target/release/bsdkrun tailscale "$id" install || true
             ./target/release/bsdkrun tailscale "$id" start || true
@@ -341,7 +341,7 @@ jobs:
               sleep 3
             done
             echo "ssh says: $sshout"
-            [ "$sshout" = "FreeBSD" ] && echo "🎉 ssh into FreeBSD works (agent-installed key)"
+            if [ "$sshout" = "FreeBSD" ]; then echo "🎉 ssh into FreeBSD works (agent-installed key)"; fi
             # tailscale via pkg (bootstraps pkg itself; no auth key: install+start only)
             ./target/release/bsdkrun tailscale "$id" install || true
             ./target/release/bsdkrun tailscale "$id" start || true

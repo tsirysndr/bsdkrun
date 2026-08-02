@@ -177,7 +177,6 @@ jobs:
         continue-on-error: true
         run: |
           set -eux
-          export BSDKRUN_NETBSD_AMD64=1
           id=$(./target/release/bsdkrun --log-level 5 netbsd -d)
           # A microVM boots in seconds — poll the baked-in agent with exec early
           # and often instead of one long fixed sleep.
@@ -216,7 +215,6 @@ jobs:
         continue-on-error: true
         run: |
           set -eux
-          export BSDKRUN_FREEBSD_AMD64=1
           id=$(./target/release/bsdkrun --log-level 5 freebsd -d)
           sleep 5
           ./target/release/bsdkrun ps || true

@@ -402,6 +402,24 @@ fn generate_init(ep: &Entrypoint, net: bool, persistent: bool, mounts: &[BindMou
     // devpts is required for openpty (used by `exec -t` / `shell` in the agent).
     s.push_str("mkdir -p /dev/pts 2>/dev/null\n");
     s.push_str("mount -t devpts devpts /dev/pts 2>/dev/null\n");
+    // Set the clock when the guest has none: aarch64 microVMs get no RTC, so
+    // the kernel boots at epoch 0 (Jan 1 1970) and ALL TLS fails ("certificate
+    // not valid yet") — apk/apt, tailscale downloads, everything. This script
+    // is generated at boot, so the host's wall clock (UTC, in POSIX
+    // MMDDhhmmYYYY.ss form — the one form busybox and coreutils both accept)
+    // is baked in; skipped when a working clock source (e.g. kvmclock on
+    // x86_64) already set a sane time.
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let (y, mo, d, h, mi, sec) = utc_parts(now);
+        s.push_str(&format!(
+            "[ \"$(date +%s)\" -lt 1000000000 ] && date -u {mo:02}{d:02}{h:02}{mi:02}{y:04}.{sec:02} >/dev/null 2>&1\n"
+        ));
+    }
     // Bind-mounted host directories (`--mount HOST:GUEST[:ro]`), over virtio-fs.
     for (i, m) in mounts.iter().enumerate() {
         let g = sh_quote(&m.guest);
@@ -494,6 +512,25 @@ fn generate_init(ep: &Entrypoint, net: bool, persistent: bool, mounts: &[BindMou
 /// POSIX-sh single-quote a string.
 fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Split a unix timestamp into UTC (year, month, day, hour, min, sec) — the
+/// civil-from-days algorithm (Howard Hinnant), no chrono dependency needed.
+fn utc_parts(epoch: u64) -> (u64, u64, u64, u64, u64, u64) {
+    let days = epoch / 86_400;
+    let secs = epoch % 86_400;
+    let (h, mi, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u64;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u64;
+    let y = (if m <= 2 { y + 1 } else { y }) as u64;
+    (y, m, d, h, mi, s)
 }
 
 /// Log a friendly hint about memory sizing for the initramfs path.

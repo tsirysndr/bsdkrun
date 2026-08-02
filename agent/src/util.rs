@@ -16,6 +16,23 @@ pub const EXTRA_DIRS: &[&str] = &[
     "/sbin",
 ];
 
+/// Make $PATH sane. The agent daemon is spawned by bsdkrun's minimal /init
+/// with little or no PATH (musl's fallback is /usr/local/bin:/bin:/usr/bin —
+/// no sbin!), so bare `Command::new("apk")` & friends fail with ENOENT even
+/// though find_bin() sees them, and child processes (apk/pkg install scripts)
+/// inherit the same broken PATH. Called once at startup: appends any standard
+/// dir that's missing, preserving whatever was already there.
+pub fn normalize_path() {
+    let cur = std::env::var("PATH").unwrap_or_default();
+    let mut parts: Vec<&str> = cur.split(':').filter(|s| !s.is_empty()).collect();
+    for d in EXTRA_DIRS {
+        if !parts.contains(d) {
+            parts.push(d);
+        }
+    }
+    std::env::set_var("PATH", parts.join(":"));
+}
+
 /// Look for `name` in $PATH plus the usual package prefixes.
 pub fn find_bin(name: &str) -> Option<PathBuf> {
     let path = std::env::var("PATH").unwrap_or_default();

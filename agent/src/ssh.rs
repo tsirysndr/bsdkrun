@@ -22,7 +22,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::util::{find_bin, run_cmd, run_quiet};
+use crate::util::{find_bin, run_quiet};
+#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "netbsd"))]
+use crate::util::run_cmd;
 
 const SSHD_CONFIG: &str = "/etc/ssh/sshd_config";
 
@@ -121,8 +123,52 @@ fn setup(args: &[String]) -> i32 {
     //    prohibit-password, which is exactly right — only fix explicit "no").
     ensure_root_login();
 
-    // 5. Enable + start.
+    // 5. Linux OCI guests: the rootfs is served over virtio-fs from an
+    //    unprivileged host process, so pre-existing files appear owned by the
+    //    HOST user (not root) and chown back is EPERM. sshd then rejects both
+    //    /var/empty (privsep dir must be root-owned) and, via StrictModes,
+    //    authorized_keys under a non-root-owned $HOME. Fix what can be fixed
+    //    (tmpfs over /var/empty — guest-root owned by construction) and relax
+    //    StrictModes only when the quirk is actually present.
+    #[cfg(target_os = "linux")]
+    fixup_virtiofs_root();
+
+    // 6. Enable + start.
     start_sshd()
+}
+
+/// See setup() step 5. No-ops on roots with sane ownership (initramfs boots,
+/// real disks).
+#[cfg(target_os = "linux")]
+fn fixup_virtiofs_root() {
+    use std::os::unix::fs::MetadataExt;
+
+    let uid_of = |p: &str| std::fs::metadata(p).map(|m| m.uid()).ok();
+
+    if uid_of("/var/empty") != Some(0) {
+        let _ = std::fs::create_dir_all("/var/empty");
+        let _ = crate::util::sh("mount -t tmpfs -o mode=0755 tmpfs /var/empty");
+        println!("virtio-fs root: tmpfs over /var/empty (sshd privsep dir)");
+    }
+    // $HOME (e.g. /root) owned by the host user => StrictModes would refuse
+    // the authorized_keys we just installed. Relax it only in that case.
+    if uid_of("/root") != Some(0) {
+        let cfg = std::fs::read_to_string(SSHD_CONFIG).unwrap_or_default();
+        let already = cfg
+            .lines()
+            .any(|l| l.trim().to_lowercase().starts_with("strictmodes"));
+        if !already {
+            let mut out = cfg;
+            out.push_str(
+                "\n# bsdkrun: rootfs is virtio-fs (host-owned files); ownership checks\n\
+                 # can't pass and chown is EPERM, so disable them. Key-only logins are\n\
+                 # still enforced by PermitRootLogin prohibit-password.\n\
+                 StrictModes no\n",
+            );
+            let _ = std::fs::write(SSHD_CONFIG, out);
+            println!("virtio-fs root: StrictModes no (host-owned $HOME)");
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -281,15 +327,19 @@ fn start_sshd() -> i32 {
         return 0;
     }
     let code = start_sshd_os();
-    if code == 0 && sshd_running() {
-        println!("sshd running");
-        0
-    } else if code == 0 {
-        eprintln!("sshd start reported success but no sshd process found");
-        1
-    } else {
-        code
+    if code != 0 {
+        return code;
     }
+    // sshd double-forks; give it a moment before declaring it dead.
+    for _ in 0..50 {
+        if sshd_running() {
+            println!("sshd running");
+            return 0;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    eprintln!("sshd start reported success but no sshd process found");
+    1
 }
 
 #[cfg(target_os = "freebsd")]

@@ -31,10 +31,11 @@ jobs:
             slug: x86_64
     steps:
       - name: Checkout
+        # Deliberately no `ref:` — build the CURRENT branch's agent; the `tag`
+        # input is only the release to attach to. (Building the tag's code
+        # silently shipped stale agents: this matrix also builds x86_64 and
+        # once overwrote a fresh amd64 agent with the tag's pre-CLI one.)
         uses: actions/checkout@v4
-        with:
-          # Build the tag's code.
-          ref: ${{ inputs.tag }}
 
       - name: Start NetBSD ${{ matrix.slug }} VM
         uses: cross-platform-actions/action@v1.3.0

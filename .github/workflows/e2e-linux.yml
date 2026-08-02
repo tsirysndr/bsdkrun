@@ -169,36 +169,33 @@ jobs:
           ./target/release/bsdkrun stop "$id2"
 
       # NetBSD boots via direct kernel — no EFI firmware — so it can run on
-      # Linux/KVM too. On amd64 this pulls bsdkrun's bundled FFS rootfs + MICROVM
-      # kernel (a PVH ELF); experimental (continue-on-error), and a no-op until
-      # the release-netbsd-amd64-image workflow has published those assets.
-      - name: e2e — NetBSD (direct kernel)
+      # Linux/KVM too. amd64 direct-boots the bundled MICROVM kernel (PVH, via our
+      # libkrun fork's KRUN_PVH path) + FFS rootfs (root=ld0a). The guest agent is
+      # baked into that image (rc.d), so `exec` is the definitive boot test.
+      # Experimental (continue-on-error).
+      - name: e2e — NetBSD (direct kernel, PVH)
         continue-on-error: true
         run: |
           set -eux
-          # Detached boot (never hangs CI). amd64 direct-boots the bundled MICROVM
-          # kernel + FFS rootfs (root=ld0a). `logs` shows the guest console, and
-          # `logs --boot` shows bsdkrun/libkrun's own boot log (fd 2 of the detached
-          # child) — where the boot error lands when the console stays empty.
-          # amd64 NetBSD is gated off (libkrun has no PVH; it triple-faults). Set
-          # the escape hatch so CI still exercises the boot and would catch a future
-          # PVH-capable libkrun that makes it work.
           export BSDKRUN_NETBSD_AMD64=1
           id=$(./target/release/bsdkrun --log-level 5 netbsd -d)
-          sleep 20
+          # NetBSD's first boot does real work (rc, dev, dhcpcd, agent start) —
+          # give it time, then prove multiuser via the baked-in agent.
+          sleep 45
           ./target/release/bsdkrun ps || true
-          echo "----- NetBSD console -----"
-          ./target/release/bsdkrun logs "$id" 2>&1 | tee nb.log | tail -120 || true
-          echo "----- NetBSD boot log (libkrun) -----"
-          ./target/release/bsdkrun logs --boot "$id" 2>&1 | tee nb-boot.log | tail -120 || true
+          out=$(timeout 60 ./target/release/bsdkrun exec "$id" uname -a || true)
+          echo "exec uname -a: $out"
+          # Early boot log (device setup + first guest activity), not just the tail.
+          echo "----- boot log (head) -----"
+          ./target/release/bsdkrun logs --boot "$id" 2>/dev/null | head -60 || true
+          echo "----- console (may be empty; serial capture is a known gap) -----"
+          ./target/release/bsdkrun logs "$id" 2>/dev/null | head -100 > nb.log || true
+          head -100 nb.log || true
           ./target/release/bsdkrun stop "$id" 2>/dev/null || true
-          # Only a real guest console banner counts (the boot log mentions the
-          # machine kind "netbsd", so don't grep for that).
-          if grep -qE "Copyright .c. 198.* Berkeley|NetBSD/amd64|boot device|login:" nb.log; then
-            echo "NetBSD userland reached"
-          elif grep -q "KVM_EXIT_SHUTDOWN" nb-boot.log; then
-            echo "NetBSD MICROVM triple-faulted at the PVH entry (KVM_EXIT_SHUTDOWN, no"
-            echo "console output) — amd64 NetBSD under libkrun is not booting yet."
+          if echo "$out" | grep -q "NetBSD"; then
+            echo "🎉 NetBSD amd64 BOOTED under libkrun (PVH) — agent exec works"
+          elif grep -qE "Copyright .c. 19.* The NetBSD Foundation|NetBSD [0-9]" nb.log; then
+            echo "NetBSD booted (console banner seen); agent not reachable yet"
           else
-            echo "NetBSD boot not confirmed (amd64 MICROVM under libkrun is experimental)"
+            echo "NetBSD executing but not confirmed (no exec reply, no console captured)"
           fi

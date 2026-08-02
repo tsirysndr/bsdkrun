@@ -845,6 +845,13 @@ fn boot_netbsd(args: BsdArgs) -> Result<()> {
         );
     }
 
+    // amd64 NetBSD is a PVH kernel (MICROVM). Tell libkrun to enter via the
+    // PHYS32_ENTRY note instead of the Linux boot protocol. Harmless on a libkrun
+    // without PVH support (the flag is simply ignored).
+    if matches!(arch, host::Arch::X86_64) {
+        std::env::set_var("KRUN_PVH", "1");
+    }
+
     let (disk, kernel) = match arch {
         host::Arch::X86_64 => (
             fetch::fetch_netbsd_amd64_image(args.force)?,

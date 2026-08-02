@@ -74,6 +74,16 @@ jobs:
           fetch -o src.txz "$BASE/src.txz"
           tar -xpf src.txz -C /            # -> /usr/src
 
+          # FIRECRACKER disables TSC calibration because real Firecracker has no
+          # i8254 PIT and hands the TSC frequency to the guest via a CPUID leaf.
+          # libkrun is different: it DOES emulate the KVM in-kernel PIT and does
+          # NOT expose a KVM tsc-freq CPUID leaf, and we run on AMD (no Intel TSC
+          # CPUID leaf). So with calibration disabled tsc_freq stays 0 and
+          # lapic_init panics "TSC not initialized". Re-enable calibration so
+          # FreeBSD measures the TSC against libkrun's PIT.
+          CONF=/usr/src/sys/amd64/conf/FIRECRACKER
+          grep -v 'disable_tsc_calibration' "$CONF" > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
+
           # 2. Build the FIRECRACKER kernel (no ACPI, MPTable, virtio-mmio + serial
           #    console built in). -DNO_MODULES: the config is monolithic, so skip the
           #    (slow) module build. Dump the tail on failure.

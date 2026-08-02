@@ -90,8 +90,7 @@ enum Command {
     /// Run an OCI image (Docker Hub / any registry) as a Linux machine.
     Linux(LinuxArgs),
 
-    /// Run FreeBSD — fetch + EFI-firmware boot (macOS only; needs KRUN_EFI).
-    #[cfg(target_os = "macos")]
+    /// Run FreeBSD — EFI-firmware boot on macOS; PVH direct boot on Linux/amd64.
     Freebsd(BsdArgs),
 
     /// Run NetBSD — fetch + direct-kernel boot (no firmware needed).
@@ -541,7 +540,6 @@ fn main() -> Result<()> {
         Command::Versions(args) => fetch::list_versions(args.os),
         Command::Grow(args) => fetch::grow(&args.disk, &args.size),
         Command::Linux(args) => boot_linux(args),
-        #[cfg(target_os = "macos")]
         Command::Freebsd(args) => boot_freebsd(args),
         Command::Netbsd(args) => boot_netbsd(args),
         Command::Ps(args) => cmd_ps(args.all),
@@ -772,12 +770,31 @@ fn firmware_machine(
 }
 
 /// `freebsd` / `netbsd`: fetch the image if needed, auto-locate the firmware,
-/// then boot it — the one-liner equivalent of `fetch` + `firmware`.
-/// FreeBSD boots through its `loader.efi`, which needs libkrun's EDK2 firmware —
-/// only available on macOS (the `libkrun-efi` flavor), so this command is gated
-/// to macOS. On Linux there's no KRUN_EFI, so FreeBSD isn't offered.
-#[cfg(target_os = "macos")]
+/// then boot it. How it boots depends on the host OS:
+///
+/// - **macOS** boots through FreeBSD's `loader.efi`, which needs libkrun's EDK2
+///   firmware (the `libkrun-efi` flavor, macOS-only) — see [`boot_freebsd_efi`].
+/// - **Linux/amd64** direct-boots the GENERIC kernel via **PVH** (no firmware),
+///   like `netbsd` — see [`boot_freebsd_pvh`]. Needs the PVH libkrun fork.
 fn boot_freebsd(args: BsdArgs) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        boot_freebsd_efi(args)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        boot_freebsd_pvh(args)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = args;
+        anyhow::bail!("bsdkrun freebsd is only supported on macOS and Linux");
+    }
+}
+
+/// macOS EFI-firmware boot: FreeBSD's `loader.efi` takes over from the ESP.
+#[cfg(target_os = "macos")]
+fn boot_freebsd_efi(args: BsdArgs) -> Result<()> {
     // Default (no --version) to bsdkrun's bundled arm64 image, which has the guest
     // agent injected so `exec` works out of the box. An explicit --version (or a
     // non-arm64 host) fetches the official FreeBSD VM image from download.freebsd.org.
@@ -799,6 +816,91 @@ fn boot_freebsd(args: BsdArgs) -> Result<()> {
         &args.run,
         &args.net,
         &args.vm,
+    )
+}
+
+/// FreeBSD command line for the Linux/amd64 PVH boot (override with
+/// `$BSDKRUN_FREEBSD_CMDLINE`). The bundled image is a bare makefs UFS on a
+/// virtio-blk disk (`vtbd0`); `console=comconsole` routes the console to the
+/// serial libkrun provides (a PVH boot passes no bootinfo, so it would otherwise
+/// default to a nonexistent VGA console). virtio-mmio device hints are appended
+/// by libkrun itself (via `KRUN_VIRTIO_MMIO_HINTS=freebsd`).
+#[cfg(target_os = "linux")]
+fn freebsd_cmdline() -> String {
+    if let Ok(s) = std::env::var("BSDKRUN_FREEBSD_CMDLINE") {
+        if !s.is_empty() {
+            return s;
+        }
+    }
+    "vfs.root.mountfrom=ufs:/dev/vtbd0 console=comconsole".to_string()
+}
+
+/// Linux/amd64 PVH direct boot: enter the GENERIC kernel at its `PHYS32_ENTRY`,
+/// no firmware. Requires the PVH-capable libkrun fork; gated behind
+/// `BSDKRUN_FREEBSD_AMD64=1` since stock libkrun would triple-fault.
+#[cfg(target_os = "linux")]
+fn boot_freebsd_pvh(args: BsdArgs) -> Result<()> {
+    let arch = host::Arch::current()?;
+    if !matches!(arch, host::Arch::X86_64) {
+        anyhow::bail!(
+            "FreeBSD on Linux is only supported on amd64 (PVH direct boot) for now; \
+             this host is {}.",
+            arch.slug()
+        );
+    }
+    if std::env::var_os("BSDKRUN_FREEBSD_AMD64").is_none() {
+        anyhow::bail!(
+            "FreeBSD amd64 on Linux needs a PVH-capable libkrun (tsirysndr/libkrun \
+             feat/pvh-boot); stock libkrun boots x86_64 kernels with the Linux protocol \
+             and would triple-fault. Set BSDKRUN_FREEBSD_AMD64=1 to boot against the fork."
+        );
+    }
+
+    // Tell libkrun to enter via the kernel's PHYS32_ENTRY note and to advertise
+    // its virtio-mmio devices as FreeBSD newbus hints (FreeBSD doesn't parse the
+    // Linux `virtio_mmio.device=` form).
+    std::env::set_var("KRUN_PVH", "1");
+    std::env::set_var("KRUN_VIRTIO_MMIO_HINTS", "freebsd");
+
+    let disk = fetch::fetch_freebsd_amd64_image(args.force)?;
+    let kernel = fetch::fetch_freebsd_amd64_kernel(args.force)?;
+
+    let machine_id = id::short_id();
+    let vdir = machine_dir_or_tmp(&machine_id);
+    let image = basename(&disk);
+    let volume = args.run.volume.as_deref().map(volume_dir).transpose()?;
+    let root_disk = prepare_bsd_disk(&disk, &vdir, args.run.persist, volume.as_deref())?;
+
+    let build = || -> Result<(Ctx, Option<Gvproxy>)> {
+        let ctx = Ctx::new()?;
+        ctx.set_vm_config(args.vm.cpus, args.vm.mem)?;
+        ctx.attach_stdio_serial_console()
+            .context("wiring guest serial console to stdio")?;
+        db::record_disk(&disk.to_string_lossy());
+        ctx.add_disk("root", &root_disk, false)
+            .with_context(|| format!("attaching root disk {}", root_disk.display()))?;
+        attach_extra_disks(&ctx, &args.attach_disk)?;
+        let gvproxy = setup_networking_with_agent(&ctx, &args.net, Some(&vdir))?;
+        ctx.set_kernel(&kernel, linux::kernel_format(), None, &freebsd_cmdline())
+            .context("configuring kernel")?;
+        Ok((ctx, gvproxy))
+    };
+
+    if let (Some(name), Some(dir)) = (args.run.volume.as_deref(), &volume) {
+        db::record_volume(name, "freebsd", &image, &dir.to_string_lossy());
+    }
+    run_machine(
+        &machine_id,
+        &vdir,
+        "freebsd",
+        &image,
+        "",
+        args.vm.cpus,
+        args.vm.mem,
+        args.run.detach,
+        true,
+        args.run.volume.as_deref(),
+        build,
     )
 }
 

@@ -37,6 +37,14 @@ const NETBSD_ARM64_BASE: &str =
 const FREEBSD_ARM64_BASE: &str =
     "https://github.com/tsirysndr/bsdkrun/releases/download/freebsd-arm64";
 
+/// bsdkrun-hosted FreeBSD **amd64** PVH assets — a minimal UFS rootfs (agent
+/// injected) + the GENERIC kernel (a PVH ELF), built by
+/// `release-freebsd-amd64-image`. Used on Linux/amd64, where FreeBSD direct-boots
+/// via PVH (no EFI firmware) under the PVH libkrun fork.
+#[cfg(target_os = "linux")]
+const FREEBSD_AMD64_BASE: &str =
+    "https://github.com/tsirysndr/bsdkrun/releases/download/freebsd-amd64";
+
 /// Guest operating systems bsdkrun can provision.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Os {
@@ -392,6 +400,28 @@ pub fn fetch_freebsd_arm64_image(force: bool) -> Result<PathBuf> {
     fetch_xz_asset(
         &format!("{FREEBSD_ARM64_BASE}/freebsd-arm64-root.raw.xz"),
         "freebsd-arm64-root.raw",
+        force,
+    )
+}
+
+/// bsdkrun-hosted FreeBSD **amd64** UFS rootfs (agent injected). Booted as a
+/// virtio-blk root (`vtbd0`) under the GENERIC kernel via PVH.
+#[cfg(target_os = "linux")]
+pub fn fetch_freebsd_amd64_image(force: bool) -> Result<PathBuf> {
+    fetch_gz_asset(
+        &format!("{FREEBSD_AMD64_BASE}/freebsd-amd64-root.img.gz"),
+        "freebsd-amd64-root.img",
+        force,
+    )
+}
+
+/// bsdkrun-hosted FreeBSD **amd64** GENERIC kernel (a PVH ELF — the same
+/// `PHYS32_ENTRY` boot path used for NetBSD MICROVM and the Linux vmlinux).
+#[cfg(target_os = "linux")]
+pub fn fetch_freebsd_amd64_kernel(force: bool) -> Result<PathBuf> {
+    fetch_gz_asset(
+        &format!("{FREEBSD_AMD64_BASE}/freebsd-kernel-amd64.gz"),
+        "freebsd-kernel.amd64",
         force,
     )
 }

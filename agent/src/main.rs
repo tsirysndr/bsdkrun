@@ -55,6 +55,11 @@ async fn main() {
     // CLI mode: `bsdkrun-agent tailscale <install|start|status|setup> ...` —
     // typically invoked *through* the daemon via `bsdkrun exec`. Everything
     // else (no args) is the exec daemon below.
+    // The daemon (and the CLI when exec'd through it) starts with the minimal
+    // environment /init gave it — no usable $PATH. Fix it before anything
+    // spawns children (package managers, sshd, tailscaled all need it).
+    util::normalize_path();
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("tailscale") => std::process::exit(tailscale::run(&args[1..])),

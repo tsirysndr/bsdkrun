@@ -65,10 +65,11 @@ the same machinery at **FreeBSD / NetBSD** guests.
   EFI System Partition on the disk. That firmware ships only with **`libkrun-efi`, which is
   macOS-only**, so **`bsdkrun freebsd` is a macOS-only command** (compiled out on Linux).
 - **NetBSD:** boot via **direct kernel** — **no bootloader or firmware**, so `bsdkrun netbsd` works
-  on **both macOS and Linux**. On **arm64** it downloads NetBSD's evbarm `GENERIC64` kernel + live
-  `gzimg`. NetBSD ships no amd64 disk image, so on **amd64** bsdkrun uses its own bundled FFS rootfs
-  plus the **`MICROVM`** kernel (a PVH ELF libkrun boots exactly like the Linux vmlinux); both are
-  hosted as release assets (built by the `release-netbsd-amd64-image` workflow).
+  on **both macOS and Linux**. On **arm64** it uses NetBSD's evbarm `GENERIC64` kernel + bsdkrun's
+  agent-injected `gzimg`. NetBSD ships no amd64 disk image, so on **amd64** bsdkrun uses its own
+  bundled FFS rootfs plus the **`MICROVM`** kernel, entered via **PVH** — which needs our
+  [PVH-enabled libkrun fork](https://github.com/tsirysndr/libkrun/tree/feat/pvh-boot) (see the
+  [NetBSD notes](#netbsd-version-handling-is-arch-specific)).
 - **Linux:** run any **OCI image** as a microVM — bsdkrun fetches a prebuilt kernel, pulls the
   image from any registry, extracts its rootfs, and boots it `docker run`-style, with internet
   access out of the box. See [`linux`](#linux--run-an-oci-image-as-a-microvm).
@@ -170,10 +171,11 @@ sudo ldconfig
 Some BSD image-prep steps (`losetup`/`mount`) need root, and bsdkrun runs them with `sudo`
 automatically when needed.
 
-> On Linux the CI boots the `linux` (OCI) path and the `netbsd` (direct-kernel) path — on x86_64
-> only, since GitHub's arm64 runners have no `/dev/kvm`; arm64-on-Linux (which reuses the aarch64
-> kernel + agent) is validated on a KVM-capable host. `freebsd` needs the macOS-only EFI firmware,
-> so it's not offered on Linux; NetBSD-under-KVM on amd64 is still experimental.
+> On Linux the CI boots the `linux` (OCI) path and the `netbsd` (direct-kernel, PVH) path — on
+> x86_64 only, since GitHub's arm64 runners have no `/dev/kvm`; arm64-on-Linux (which reuses the
+> aarch64 kernel + agent) is validated on a KVM-capable host. `freebsd` needs the macOS-only EFI
+> firmware, so it's not offered on Linux. NetBSD-under-KVM on amd64 boots via our
+> [PVH libkrun fork](https://github.com/tsirysndr/libkrun/tree/feat/pvh-boot), which the CI builds.
 
 ---
 
@@ -700,12 +702,16 @@ the kernel command line with `$BSDKRUN_NETBSD_CMDLINE`). The details differ by h
   exposes **modern (v2) virtio-mmio**, and NetBSD's driver only gained v2 support in **-current**
   (post-10.x): the bundled image is `current`, so `--version` only affects the kernel — pinning a
   **release** (≤ 10.1) kernel prints `virtio: unknown version 0x02; giving up`.
-- **amd64** ❌ is **not supported under libkrun** and is gated off with a clear error. libkrun boots
-  x86_64 kernels with the **Linux boot protocol** (a `boot_params` zero page), not **PVH**, so the
-  NetBSD kernel triple-faults instantly (`KVM_EXIT_SHUTDOWN`, no console) — this is a libkrun
-  limitation, not a NetBSD one (arm64 works because libkrun uses the OS-agnostic Image+FDT there).
-  The bundled amd64 FFS rootfs + `MICROVM` kernel are built and ready for a PVH-capable libkrun; set
-  `BSDKRUN_NETBSD_AMD64=1` to attempt the boot against one.
+- **amd64** ✅ boots via **PVH** — but it needs a **PVH-capable libkrun**:
+  [tsirysndr/libkrun `feat/pvh-boot`](https://github.com/tsirysndr/libkrun/tree/feat/pvh-boot)
+  (stock libkrun only speaks the Linux boot protocol, under which any NetBSD kernel triple-faults
+  instantly). bsdkrun downloads its bundled FFS rootfs + the NetBSD `MICROVM` kernel (a PVH ELF),
+  sets `KRUN_PVH=1` so libkrun enters via the kernel's `PHYS32_ENTRY` note, and boots with
+  `root=ld0a console=com` (`console=com` matters: a PVH boot passes no bootinfo, so without it
+  NetBSD's console defaults to nonexistent VGA and all output vanishes). The agent is baked into
+  the image, so `exec`/`shell` work out of the box. Because stock libkrun can't boot it, the path
+  is gated behind `BSDKRUN_NETBSD_AMD64=1` until PVH lands upstream — see the
+  [KVM e2e](.github/workflows/e2e-linux.yml), which builds the fork and boots it on every run.
 
 ### Resizing the disk
 

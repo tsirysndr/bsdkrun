@@ -88,7 +88,7 @@ jobs:
           path: |
             libkrunfw
             libkrun
-          key: libkrun-build-x86_64-pvh-v8
+          key: libkrun-build-x86_64-pvh-v9
 
       # Build only on a cache miss. libkrun links libkrunfw, so libkrunfw must be
       # installed before libkrun builds. Use `cd`, NOT `make -C`: `-C` implies
@@ -111,7 +111,7 @@ jobs:
           path: |
             libkrunfw
             libkrun
-          key: libkrun-build-x86_64-pvh-v8
+          key: libkrun-build-x86_64-pvh-v9
 
       # Install (fast) on every run — a cache hit restores the built trees but not
       # the system-installed libraries.
@@ -204,4 +204,38 @@ jobs:
             echo "NetBSD booted (console banner seen); agent not reachable yet"
           else
             echo "NetBSD executing but not confirmed (no exec reply, no console captured)"
+          fi
+
+      # FreeBSD amd64 also direct-boots via PVH (its GENERIC kernel has the
+      # PHYS32_ENTRY note + built-in virtio-mmio/blk/vtnet/UFS). libkrun advertises
+      # its virtio-mmio devices as FreeBSD newbus hints (KRUN_VIRTIO_MMIO_HINTS,
+      # set by bsdkrun). Experimental (continue-on-error), and a no-op until the
+      # release-freebsd-amd64-image workflow has published the assets.
+      - name: e2e — FreeBSD (direct kernel, PVH)
+        continue-on-error: true
+        run: |
+          set -eux
+          export BSDKRUN_FREEBSD_AMD64=1
+          id=$(./target/release/bsdkrun --log-level 5 freebsd -d)
+          sleep 30
+          ./target/release/bsdkrun ps || true
+          out=""
+          for i in 1 2 3 4; do
+            out=$(timeout 30 ./target/release/bsdkrun exec "$id" uname -a 2>/dev/null || true)
+            [ -n "$out" ] && break
+            sleep 15
+          done
+          echo "exec uname -a: $out"
+          echo "----- console (head: kernel banner + device probe) -----"
+          ./target/release/bsdkrun logs "$id" 2>/dev/null > fb.log || true
+          head -80 fb.log || true
+          echo "----- console (tail: rc / where boot currently is) -----"
+          tail -40 fb.log || true
+          ./target/release/bsdkrun stop "$id" 2>/dev/null || true
+          if echo "$out" | grep -q "FreeBSD"; then
+            echo "🎉 FreeBSD amd64 BOOTED under libkrun (PVH) — agent exec works"
+          elif grep -qE "FreeBSD .* GENERIC|Copyright .c. 19.* The FreeBSD" fb.log; then
+            echo "FreeBSD booted (console banner seen); agent not reachable yet"
+          else
+            echo "FreeBSD executing but not confirmed (no exec reply, no console captured)"
           fi

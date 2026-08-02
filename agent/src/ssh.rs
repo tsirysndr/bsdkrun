@@ -120,9 +120,14 @@ fn setup(args: &[String]) -> i32 {
         eprintln!("note: no public keys given (use --key or $BSDKRUN_SSH_KEYS) — sshd will start, but key logins need a key");
     }
 
-    // 4. Key-based root login must not be blocked (OpenSSH's default is
-    //    prohibit-password, which is exactly right — only fix explicit "no").
-    ensure_root_login();
+    // 4. Key-based root login must not be blocked. If the config changed while
+    //    sshd is already up (e.g. re-running setup), HUP it to reload.
+    if ensure_root_login() && sshd_running() {
+        if let Some(pkill) = find_bin("pkill") {
+            let _ = run_quiet(Command::new(pkill).args(["-HUP", "-x", "sshd"]));
+            println!("sshd reloaded (HUP)");
+        }
+    }
 
     // 5. Linux OCI guests: the rootfs is served over virtio-fs from an
     //    unprivileged host process, so pre-existing files appear owned by the
@@ -286,33 +291,56 @@ fn passwd_entry(user: &str) -> Option<(String, libc::uid_t, libc::gid_t)> {
     None
 }
 
-/// Only rewrite sshd_config when an explicit `PermitRootLogin no` would block
-/// key logins; OpenSSH's default (prohibit-password) already allows keys.
-fn ensure_root_login() {
+/// Make sure key-based root login is allowed; returns true when the config
+/// changed. Two cases:
+/// - an explicit `PermitRootLogin no` line → rewrite to prohibit-password;
+/// - NO active PermitRootLogin directive at all → append one. This is the
+///   FreeBSD/NetBSD case: both patch OpenSSH's COMPILED default to "no" (the
+///   shipped config only has a `#PermitRootLogin no` comment documenting it),
+///   so root pubkey is refused and the client falls through to
+///   keyboard-interactive → "PAM: Authentication error for root" spam.
+///   On Linux appending prohibit-password just restates the upstream default.
+fn ensure_root_login() -> bool {
     let Ok(cfg) = std::fs::read_to_string(SSHD_CONFIG) else {
-        return;
+        return false;
     };
-    let mut changed = false;
+    let mut rewrote = false;
+    let mut has_active = false;
     let new: String = cfg
         .lines()
         .map(|l| {
             let t = l.trim();
-            if !t.starts_with('#')
-                && t.to_lowercase().starts_with("permitrootlogin")
-                && t.to_lowercase().ends_with(" no")
-            {
-                changed = true;
-                "PermitRootLogin prohibit-password".to_string()
-            } else {
-                l.to_string()
+            if !t.starts_with('#') && t.to_lowercase().starts_with("permitrootlogin") {
+                has_active = true;
+                if t.to_lowercase().ends_with(" no") {
+                    rewrote = true;
+                    return "PermitRootLogin prohibit-password".to_string();
+                }
             }
+            l.to_string()
         })
         .collect::<Vec<_>>()
         .join("\n");
-    if changed {
+    if rewrote {
         let _ = std::fs::write(SSHD_CONFIG, new + "\n");
         println!("sshd_config: PermitRootLogin no -> prohibit-password (key logins)");
+        return true;
     }
+    if !has_active {
+        let mut out = cfg;
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(
+            "# bsdkrun: FreeBSD/NetBSD compile PermitRootLogin's default to \"no\";\n\
+             # allow key-only root logins (never passwords).\n\
+             PermitRootLogin prohibit-password\n",
+        );
+        let _ = std::fs::write(SSHD_CONFIG, out);
+        println!("sshd_config: PermitRootLogin prohibit-password added (key logins)");
+        return true;
+    }
+    false
 }
 
 /// "Running" = something answers on 127.0.0.1:22 — the property ssh actually

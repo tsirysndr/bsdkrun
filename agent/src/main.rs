@@ -13,6 +13,12 @@
 //!   frame    (both directions):      u8 channel; u32 len; len bytes
 //!     channels: 0 stdin, 1 stdout, 2 stderr, 3 exit (payload = u32 code),
 //!               4 winsize (payload = u16 rows, u16 cols)
+//!
+//! The same binary doubles as an in-guest CLI: `bsdkrun-agent tailscale
+//! <install|start|status|setup>` (see the `tailscale` module) — run it through
+//! `bsdkrun exec`/`shell` to put the guest on a tailnet.
+
+mod tailscale;
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
@@ -41,6 +47,18 @@ type Writer = Arc<Mutex<OwnedWriteHalf>>;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    // CLI mode: `bsdkrun-agent tailscale <install|start|status|setup> ...` —
+    // typically invoked *through* the daemon via `bsdkrun exec`. Everything
+    // else (no args) is the exec daemon below.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("tailscale") {
+        std::process::exit(tailscale::run(&args[1..]));
+    }
+    if !args.is_empty() {
+        eprintln!("bsdkrun-agent: unknown command {:?} (try: tailscale)", args[0]);
+        std::process::exit(2);
+    }
+
     let listener = match TcpListener::bind(("0.0.0.0", PORT)).await {
         Ok(l) => l,
         Err(e) => {

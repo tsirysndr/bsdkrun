@@ -120,6 +120,9 @@ enum Command {
     /// Set up key-based SSH inside a running machine (setup/add-key/status).
     Ssh(SshArgs),
 
+    /// Configure systemd as PID 1 in a Linux guest (setup/status/disable).
+    Systemd(SystemdArgs),
+
     /// Manage persistent volumes (list / remove).
     Volume(VolumeArgs),
 }
@@ -196,6 +199,23 @@ struct SshArgs {
     /// `setup [--user U] [--key K]...`, `add-key --key K...`, `status`.
     /// `--key` accepts a literal public key or a local `.pub` file path.
     /// With no `--key`, `setup`/`add-key` install your local `~/.ssh/id_*.pub`.
+    #[arg(
+        value_name = "ACTION",
+        required = true,
+        trailing_var_arg = true,
+        allow_hyphen_values = true
+    )]
+    args: Vec<String>,
+}
+
+#[derive(Parser)]
+struct SystemdArgs {
+    /// machine id (a unique prefix is enough).
+    #[arg(value_name = "ID")]
+    id: String,
+
+    /// Action for the in-guest agent: `setup` (install + mark for next boot),
+    /// `status`, `disable`. Boot on a volume (-v) so the change persists.
     #[arg(
         value_name = "ACTION",
         required = true,
@@ -593,6 +613,7 @@ fn main() -> Result<()> {
         Command::Exec(args) => cmd_exec(&args.id, &args.command, &args.env, args.tty),
         Command::Tailscale(args) => cmd_tailscale(&args.id, &args.args),
         Command::Ssh(args) => cmd_ssh(&args.id, &args.args),
+        Command::Systemd(args) => run_agent_cli(&args.id, "systemd", &args.args, &[]),
         Command::Volume(args) => match args.cmd {
             VolumeCmd::Ls => cmd_volume_ls(),
             VolumeCmd::Rm(a) => cmd_volume_rm(&a.names, a.force),

@@ -412,13 +412,30 @@ fn generate_init(ep: &Entrypoint, net: bool, persistent: bool, mounts: &[BindMou
             mount_tag(i)
         ));
     }
-    // Start the exec agent (TCP; for `exec`/`shell`) in the background.
-    s.push_str("[ -x /sbin/bsdkrun-agent ] && /sbin/bsdkrun-agent >/dev/null 2>&1 &\n");
     if net {
         s.push_str(&format!(
             "echo 'nameserver {GATEWAY_IP}' > /etc/resolv.conf 2>/dev/null\n"
         ));
     }
+    // systemd handoff: `bsdkrun-agent systemd setup` installs systemd, writes
+    // an agent unit, and drops this marker — from then on the guest boots a
+    // full systemd system. exec keeps it PID 1 (which systemd requires); the
+    // agent is NOT pre-started here in that case, its unit owns it (two agents
+    // would fight over the TCP port). Everything after this line is the plain
+    // bsdkrun init path.
+    s.push_str(
+        "if [ -f /etc/bsdkrun-systemd ]; then\n\
+         \tfor sd in /lib/systemd/systemd /usr/lib/systemd/systemd; do\n\
+         \t\tif [ -x \"$sd\" ]; then\n\
+         \t\t\techo '[bsdkrun] handing PID 1 to systemd'\n\
+         \t\t\texec \"$sd\"\n\
+         \t\tfi\n\
+         \tdone\n\
+         \techo '[bsdkrun] /etc/bsdkrun-systemd set but no systemd binary found; continuing'\n\
+         fi\n",
+    );
+    // Start the exec agent (TCP; for `exec`/`shell`) in the background.
+    s.push_str("[ -x /sbin/bsdkrun-agent ] && /sbin/bsdkrun-agent >/dev/null 2>&1 &\n");
     for e in &ep.env {
         if let Some((k, v)) = e.split_once('=') {
             s.push_str(&format!("export {k}={}\n", sh_quote(v)));

@@ -348,6 +348,27 @@ Notes:
 - Either way the image must have a `/bin/sh` (scratch/distroless images won't boot this way), and
   the console defaults to `hvc0` (libkrun's virtio-console; `--console` overrides it).
 
+### systemd — turn an OCI guest into a full systemd system
+
+OCI images boot with bsdkrun's tiny generated `/init` as PID 1 — great for `docker run`-style
+workloads, but no services, journal, or timers. One command flips a **debian/ubuntu/fedora**
+guest to real systemd:
+
+```sh
+id=$(bsdkrun linux -d -v dev debian -- sleep infinity)
+bsdkrun systemd $id setup      # installs systemd if missing + the agent unit, marks the rootfs
+bsdkrun stop $id
+id=$(bsdkrun linux -d -v dev debian)   # same volume -> boots systemd as PID 1
+bsdkrun systemd $id status     # "PID 1: systemd"
+```
+
+`setup` installs systemd where missing (`apt-get`/`dnf` — Alpine has no systemd and fails with a
+clear message), writes + enables a `bsdkrun-agent.service` unit (so `exec`/`shell` keep working
+under systemd), and drops a marker (`/etc/bsdkrun-systemd`) that makes the generated init **exec
+systemd as PID 1** on the next boot. `disable` removes the marker. In systemd mode the image
+entrypoint/`--` command is not run — systemd owns userspace; manage workloads as units. Boot on a
+**volume** (`-v`) so the installed packages + marker survive across machines.
+
 ---
 
 ## Managing machines

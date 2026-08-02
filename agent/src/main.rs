@@ -17,8 +17,11 @@
 //! The same binary doubles as an in-guest CLI, run through `bsdkrun exec`:
 //!   `bsdkrun-agent tailscale <install|start|status|setup>`  (tailnet access)
 //!   `bsdkrun-agent ssh <setup|add-key|status>`              (key-based sshd)
+//!   `bsdkrun-agent systemd <setup|status|disable>`          (Linux: systemd as PID 1)
 
 mod ssh;
+#[cfg(target_os = "linux")]
+mod systemd;
 mod tailscale;
 mod util;
 
@@ -56,8 +59,15 @@ async fn main() {
     match args.first().map(String::as_str) {
         Some("tailscale") => std::process::exit(tailscale::run(&args[1..])),
         Some("ssh") => std::process::exit(ssh::run(&args[1..])),
+        #[cfg(target_os = "linux")]
+        Some("systemd") => std::process::exit(systemd::run(&args[1..])),
+        #[cfg(not(target_os = "linux"))]
+        Some("systemd") => {
+            eprintln!("bsdkrun-agent: systemd is a Linux-guest feature (BSDs use rc.d)");
+            std::process::exit(1);
+        }
         Some(other) => {
-            eprintln!("bsdkrun-agent: unknown command {other:?} (try: tailscale, ssh)");
+            eprintln!("bsdkrun-agent: unknown command {other:?} (try: tailscale, ssh, systemd)");
             std::process::exit(2);
         }
         None => {} // no args: run the exec daemon below

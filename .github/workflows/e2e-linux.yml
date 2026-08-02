@@ -168,6 +168,86 @@ jobs:
           ./target/release/bsdkrun volume ls
           ./target/release/bsdkrun stop "$id2"
 
+      # The agent doubles as a feature CLI (ssh/tailscale/systemd) driven by the
+      # matching host wrappers. ssh is the full loop: agent installs the key,
+      # then we REALLY ssh in through a forwarded port.
+      - name: e2e — ssh setup (Linux guest)
+        run: |
+          set -eux
+          ssh-keygen -t ed25519 -N '' -q -f ci_key
+          id=$(./target/release/bsdkrun linux -d --port 2222:22 alpine -- sleep 300)
+          sleep 5
+          # alpine images ship root LOCKED (shadow "root:!..."), and sshd
+          # refuses even key logins for locked accounts — unlock to "no
+          # password" (key-only logins still enforced by prohibit-password).
+          timeout 30 ./target/release/bsdkrun exec "$id" /bin/sh -c \
+            "sed -i 's/^root:!:/root::/' /etc/shadow"
+          ./target/release/bsdkrun ssh "$id" setup --key ci_key.pub
+          ./target/release/bsdkrun ssh "$id" status
+          out=""
+          for i in $(seq 1 10); do
+            out=$(ssh -i ci_key -p 2222 -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes \
+              -o ConnectTimeout=5 root@127.0.0.1 uname -a 2>/dev/null || true)
+            [ -n "$out" ] && break
+            sleep 3
+          done
+          echo "ssh says: $out"
+          ./target/release/bsdkrun stop "$id" || true
+          echo "$out" | grep -q Linux
+          echo "🎉 ssh into the Linux guest works (agent-installed key)"
+
+      # No tailnet auth key in CI, so this validates install (apk) + daemon
+      # start + status reachability; with a TS_AUTHKEY secret set it goes all
+      # the way to `tailscale up` and checks for a tailnet IP.
+      - name: e2e — tailscale (Linux guest)
+        continue-on-error: true
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          set -eux
+          id=$(./target/release/bsdkrun linux -d alpine -- sleep 300)
+          sleep 5
+          ./target/release/bsdkrun tailscale "$id" install
+          ./target/release/bsdkrun tailscale "$id" start
+          if [ -n "${TS_AUTHKEY:-}" ]; then
+            ./target/release/bsdkrun tailscale "$id" setup --hostname bsdkrun-ci
+            ./target/release/bsdkrun tailscale "$id" status | tee ts.out
+            grep -Eq '(^| )100\.' ts.out
+            echo "🎉 tailscale joined the tailnet (userspace networking)"
+          else
+            # logged-out status exits nonzero but must answer over the socket
+            ./target/release/bsdkrun tailscale "$id" status >ts.out 2>&1 || true
+            cat ts.out
+            grep -Eiq 'logged out|log in|stopped|needslogin' ts.out
+            echo "🎉 tailscaled installed + running (no auth key in CI)"
+          fi
+          ./target/release/bsdkrun stop "$id" || true
+
+      # systemd handoff: setup on a volume-backed debian guest, reboot, and the
+      # generated init execs systemd as PID 1; the agent survives as a unit.
+      - name: e2e — systemd as PID 1 (debian + volume)
+        continue-on-error: true
+        run: |
+          set -eux
+          id=$(./target/release/bsdkrun linux -d -v sysd debian -- sleep 300)
+          sleep 8
+          timeout 420 ./target/release/bsdkrun systemd "$id" setup
+          ./target/release/bsdkrun systemd "$id" status
+          ./target/release/bsdkrun stop "$id"
+          # second boot, same volume -> marker + packages persisted -> systemd
+          id2=$(./target/release/bsdkrun linux -d -v sysd debian -- sleep 300)
+          sleep 15
+          ./target/release/bsdkrun ps || true
+          ./target/release/bsdkrun logs "$id2" 2>/dev/null | tail -25 || true
+          ./target/release/bsdkrun systemd "$id2" status | tee sd.out
+          grep -Eq 'PID 1:.*systemd' sd.out
+          # exec still works because the bsdkrun-agent.service unit owns the agent
+          timeout 60 ./target/release/bsdkrun exec "$id2" systemctl is-system-running --wait || true
+          timeout 30 ./target/release/bsdkrun exec "$id2" systemctl is-active bsdkrun-agent.service
+          ./target/release/bsdkrun stop "$id2" || true
+          echo "🎉 systemd is PID 1 after reboot; agent unit active"
+
       # NetBSD boots via direct kernel — no EFI firmware — so it can run on
       # Linux/KVM too. amd64 direct-boots the bundled MICROVM kernel (PVH, via our
       # libkrun fork's KRUN_PVH path) + FFS rootfs (root=ld0a). The guest agent is
@@ -177,7 +257,7 @@ jobs:
         continue-on-error: true
         run: |
           set -eux
-          id=$(./target/release/bsdkrun --log-level 5 netbsd -d)
+          id=$(./target/release/bsdkrun --log-level 5 netbsd -d --port 2223:22)
           # A microVM boots in seconds — poll the baked-in agent with exec early
           # and often instead of one long fixed sleep.
           sleep 5
@@ -189,6 +269,27 @@ jobs:
             sleep 5
           done
           echo "exec uname -a: $out"
+          # Agent feature CLIs (soft-fail: the whole step is experimental).
+          # ssh: NetBSD's default sshd_config has an explicit PermitRootLogin
+          # no, so this also exercises the agent's prohibit-password rewrite.
+          if [ -n "$out" ]; then
+            ssh-keygen -t ed25519 -N '' -q -f nb_key
+            ./target/release/bsdkrun ssh "$id" setup --key nb_key.pub || true
+            sshout=""
+            for i in 1 2 3 4 5; do
+              sshout=$(ssh -i nb_key -p 2223 -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes \
+                -o ConnectTimeout=5 root@127.0.0.1 uname -s 2>/dev/null || true)
+              [ -n "$sshout" ] && break
+              sleep 3
+            done
+            echo "ssh says: $sshout"
+            [ "$sshout" = "NetBSD" ] && echo "🎉 ssh into NetBSD works (agent-installed key)"
+            # tailscale via pkg_add from the pkgsrc CDN (no auth key: install+start only)
+            ./target/release/bsdkrun tailscale "$id" install || true
+            ./target/release/bsdkrun tailscale "$id" start || true
+            ./target/release/bsdkrun tailscale "$id" status || true
+          fi
           # console=com is now on the amd64 cmdline, so the guest console (dmesg,
           # rc, any panic or prompt) lands in console.log — show both ends.
           echo "----- console (head: kernel banner + autoconf) -----"
@@ -215,7 +316,7 @@ jobs:
         continue-on-error: true
         run: |
           set -eux
-          id=$(./target/release/bsdkrun --log-level 5 freebsd -d)
+          id=$(./target/release/bsdkrun --log-level 5 freebsd -d --port 2224:22)
           sleep 5
           ./target/release/bsdkrun ps || true
           out=""
@@ -225,6 +326,27 @@ jobs:
             sleep 5
           done
           echo "exec uname -a: $out"
+          # Agent feature CLIs (soft-fail: the whole step is experimental).
+          # ssh: FreeBSD's default sshd_config also says PermitRootLogin no —
+          # exercises the agent's prohibit-password rewrite + sysrc/service path.
+          if [ -n "$out" ]; then
+            ssh-keygen -t ed25519 -N '' -q -f fb_key
+            ./target/release/bsdkrun ssh "$id" setup --key fb_key.pub || true
+            sshout=""
+            for i in 1 2 3 4 5; do
+              sshout=$(ssh -i fb_key -p 2224 -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes \
+                -o ConnectTimeout=5 root@127.0.0.1 uname -s 2>/dev/null || true)
+              [ -n "$sshout" ] && break
+              sleep 3
+            done
+            echo "ssh says: $sshout"
+            [ "$sshout" = "FreeBSD" ] && echo "🎉 ssh into FreeBSD works (agent-installed key)"
+            # tailscale via pkg (bootstraps pkg itself; no auth key: install+start only)
+            ./target/release/bsdkrun tailscale "$id" install || true
+            ./target/release/bsdkrun tailscale "$id" start || true
+            ./target/release/bsdkrun tailscale "$id" status || true
+          fi
           echo "----- console (head: kernel banner + device probe) -----"
           ./target/release/bsdkrun logs "$id" 2>/dev/null > fb.log || true
           head -80 fb.log || true

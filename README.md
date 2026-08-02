@@ -617,6 +617,26 @@ INFO networking up — SSH into the guest with: ssh -p 58851 user@127.0.0.1
 
 `--mac AA:BB:CC:DD:EE:FF` overrides the guest NIC's MAC (default: a fixed locally-administered one).
 
+### SSH — key-based access in one command
+
+The guest agent also manages sshd on **Linux, FreeBSD and NetBSD** guests. The one-liner
+installs your local `~/.ssh/id_*.pub` keys, installs sshd where the OS lacks it (Linux OCI
+guests — the BSDs ship it in base), generates host keys, and enables + starts the service:
+
+```sh
+bsdkrun ssh <id> setup                      # your local public keys, root login
+ssh -p <port> root@127.0.0.1                # port from `bsdkrun ps` / the boot banner
+
+bsdkrun ssh <id> setup --key ~/.ssh/work.pub --user tsiry   # explicit key / other user
+bsdkrun ssh <id> add-key --key "ssh-ed25519 AAAA..."        # append a key later
+bsdkrun ssh <id> status                     # sshd state + installed key count
+```
+
+`--key` takes a literal public key or a local `.pub` file path (the wrapper inlines file
+contents before sending). Keys are deduplicated by key material, written with the modes sshd
+insists on (`700`/`600`, owned by the target user), and an explicit `PermitRootLogin no` is
+relaxed to `prohibit-password` — key-only, never passwords.
+
 ### Tailscale — put a guest on your tailnet
 
 The guest agent doubles as a tailscale manager on **Linux, FreeBSD and NetBSD** guests — one

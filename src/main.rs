@@ -117,6 +117,9 @@ enum Command {
     /// Manage tailscale inside a running machine (install/start/status/setup).
     Tailscale(TailscaleArgs),
 
+    /// Set up key-based SSH inside a running machine (setup/add-key/status).
+    Ssh(SshArgs),
+
     /// Manage persistent volumes (list / remove).
     Volume(VolumeArgs),
 }
@@ -174,6 +177,25 @@ struct TailscaleArgs {
     /// Action + arguments for the in-guest agent:
     /// `setup [--authkey K] [--hostname H]`, `status`, `install`,
     /// `start [--kernel-tun]`. Extra `setup` args pass through to `tailscale up`.
+    #[arg(
+        value_name = "ACTION",
+        required = true,
+        trailing_var_arg = true,
+        allow_hyphen_values = true
+    )]
+    args: Vec<String>,
+}
+
+#[derive(Parser)]
+struct SshArgs {
+    /// machine id (a unique prefix is enough).
+    #[arg(value_name = "ID")]
+    id: String,
+
+    /// Action + arguments for the in-guest agent:
+    /// `setup [--user U] [--key K]...`, `add-key --key K...`, `status`.
+    /// `--key` accepts a literal public key or a local `.pub` file path.
+    /// With no `--key`, `setup`/`add-key` install your local `~/.ssh/id_*.pub`.
     #[arg(
         value_name = "ACTION",
         required = true,
@@ -570,6 +592,7 @@ fn main() -> Result<()> {
         Command::Shell(args) => cmd_shell(&args.id),
         Command::Exec(args) => cmd_exec(&args.id, &args.command, &args.env, args.tty),
         Command::Tailscale(args) => cmd_tailscale(&args.id, &args.args),
+        Command::Ssh(args) => cmd_ssh(&args.id, &args.args),
         Command::Volume(args) => match args.cmd {
             VolumeCmd::Ls => cmd_volume_ls(),
             VolumeCmd::Rm(a) => cmd_volume_rm(&a.names, a.force),
@@ -1854,21 +1877,12 @@ fn cmd_exec(id: &str, command: &[String], env: &[String], tty: bool) -> Result<(
     std::process::exit(code);
 }
 
-/// `bsdkrun tailscale <id> <action...>` — run the agent's built-in tailscale
-/// CLI inside the guest, trying the known agent locations (Linux OCI guests
-/// carry it at /sbin, the bundled BSD images at /usr/local/sbin). Exit code
-/// 127 means "couldn't spawn" — i.e. wrong path — so try the next candidate.
-fn cmd_tailscale(id: &str, args: &[String]) -> Result<()> {
+/// Run one of the agent's built-in CLI families (`tailscale`, `ssh`) inside
+/// the guest, trying the known agent locations (Linux OCI guests carry it at
+/// /sbin, the bundled BSD images at /usr/local/sbin). Exit code 127 means
+/// "couldn't spawn" — i.e. wrong path — so try the next candidate.
+fn run_agent_cli(id: &str, family: &str, args: &[String], env: &[String]) -> Result<()> {
     let (vm, port) = agent_target(id)?;
-
-    // Forward the host's TS_AUTHKEY so `bsdkrun tailscale <id> setup` works
-    // without pasting the key on the command line (shell history, ps, ...).
-    let mut env: Vec<String> = Vec::new();
-    if let Ok(k) = std::env::var("TS_AUTHKEY") {
-        if !k.is_empty() {
-            env.push(format!("TS_AUTHKEY={k}"));
-        }
-    }
 
     let candidates: &[&str] = if vm.kind == "linux" {
         &["/sbin/bsdkrun-agent", "/usr/local/sbin/bsdkrun-agent"]
@@ -1877,9 +1891,9 @@ fn cmd_tailscale(id: &str, args: &[String]) -> Result<()> {
     };
     let mut code = 127;
     for cand in candidates {
-        let mut argv: Vec<String> = vec![cand.to_string(), "tailscale".to_string()];
+        let mut argv: Vec<String> = vec![cand.to_string(), family.to_string()];
         argv.extend(args.iter().cloned());
-        code = agent::exec(port, &argv, &env, false).map_err(|e| agent_error(&vm.kind, e))?;
+        code = agent::exec(port, &argv, env, false).map_err(|e| agent_error(&vm.kind, e))?;
         if code != 127 {
             break;
         }
@@ -1887,9 +1901,93 @@ fn cmd_tailscale(id: &str, args: &[String]) -> Result<()> {
     if code == 127 {
         anyhow::bail!(
             "bsdkrun-agent binary not found inside the guest (tried {}) — the image \
-             predates the tailscale-capable agent; rebuild/refetch it",
+             predates the {family}-capable agent; rebuild/refetch it",
             candidates.join(", ")
         );
     }
     std::process::exit(code);
+}
+
+/// `bsdkrun tailscale <id> <action...>` — see the agent's tailscale module.
+fn cmd_tailscale(id: &str, args: &[String]) -> Result<()> {
+    // Forward the host's TS_AUTHKEY so `bsdkrun tailscale <id> setup` works
+    // without pasting the key on the command line (shell history, ps, ...).
+    let mut env: Vec<String> = Vec::new();
+    if let Ok(k) = std::env::var("TS_AUTHKEY") {
+        if !k.is_empty() {
+            env.push(format!("TS_AUTHKEY={k}"));
+        }
+    }
+    run_agent_cli(id, "tailscale", args, &env)
+}
+
+/// `bsdkrun ssh <id> <action...>` — key-based SSH via the agent's ssh module.
+///
+/// Host-side sugar on top of the raw agent CLI:
+/// - a `--key` value that names a local file is replaced by its contents, so
+///   `--key ~/.ssh/id_ed25519.pub` Just Works;
+/// - when `setup`/`add-key` is called with no `--key` at all, the local
+///   `~/.ssh/id_*.pub` keys are collected and forwarded via $BSDKRUN_SSH_KEYS
+///   — the one-liner path: `bsdkrun ssh <id> setup`.
+fn cmd_ssh(id: &str, args: &[String]) -> Result<()> {
+    let mut out_args: Vec<String> = Vec::with_capacity(args.len());
+    let mut have_key = false;
+    let mut it = args.iter().peekable();
+    while let Some(a) = it.next() {
+        if a == "--key" {
+            have_key = true;
+            out_args.push(a.clone());
+            if let Some(v) = it.next() {
+                let p = std::path::Path::new(v);
+                if p.is_file() {
+                    let k = std::fs::read_to_string(p)
+                        .with_context(|| format!("reading key file {v}"))?;
+                    out_args.push(k.trim().to_string());
+                } else {
+                    out_args.push(v.clone());
+                }
+            }
+        } else {
+            out_args.push(a.clone());
+        }
+    }
+
+    let mut env: Vec<String> = Vec::new();
+    let action = args.first().map(String::as_str);
+    if !have_key && matches!(action, Some("setup") | Some("add-key")) {
+        let keys = local_public_keys();
+        if !keys.is_empty() {
+            println!(
+                "using {} local public key(s) from ~/.ssh (pass --key to override)",
+                keys.len()
+            );
+            env.push(format!("BSDKRUN_SSH_KEYS={}", keys.join("\n")));
+        }
+    }
+    run_agent_cli(id, "ssh", &out_args, &env)
+}
+
+/// The user's `~/.ssh/id_*.pub` keys, one per line, comments and all.
+fn local_public_keys() -> Vec<String> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Vec::new();
+    };
+    let dir = std::path::Path::new(&home).join(".ssh");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut keys = Vec::new();
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with("id_") && name.ends_with(".pub") {
+            if let Ok(s) = std::fs::read_to_string(e.path()) {
+                let s = s.trim();
+                if !s.is_empty() {
+                    keys.push(s.to_string());
+                }
+            }
+        }
+    }
+    keys.sort();
+    keys
 }

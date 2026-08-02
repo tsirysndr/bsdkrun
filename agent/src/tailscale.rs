@@ -26,26 +26,19 @@
 //! the killer feature — reaching the guest (ssh etc.) over the tailnet.
 //! Force the kernel path with `--kernel-tun` on `start`/`setup`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
+
+use crate::util::{find_bin, run_cmd};
+#[cfg(target_os = "linux")]
+use crate::util::sh;
+#[cfg(any(target_os = "linux", target_os = "netbsd"))]
+use crate::util::uname;
 
 const STATE_DIR: &str = "/var/lib/tailscale";
 const RUN_DIR: &str = "/var/run/tailscale";
 const SOCKET: &str = "/var/run/tailscale/tailscaled.sock";
 const LOG_FILE: &str = "/var/log/tailscaled.log";
-
-/// Dirs searched for the binaries beyond $PATH (pkg installs to /usr/local on
-/// FreeBSD, /usr/pkg on NetBSD; the static tarball goes to /usr/local/bin).
-const EXTRA_DIRS: &[&str] = &[
-    "/usr/local/bin",
-    "/usr/local/sbin",
-    "/usr/pkg/bin",
-    "/usr/pkg/sbin",
-    "/usr/bin",
-    "/usr/sbin",
-    "/bin",
-    "/sbin",
-];
 
 /// Entry point: `args` are everything after the `tailscale` word. Returns the
 /// process exit code.
@@ -355,57 +348,7 @@ fn setup(args: &[String]) -> i32 {
     code
 }
 
-// --- helpers ---------------------------------------------------------------------
-
-/// Look for `name` in $PATH plus the usual package prefixes.
-fn find_bin(name: &str) -> Option<PathBuf> {
-    let path = std::env::var("PATH").unwrap_or_default();
-    for dir in path.split(':').chain(EXTRA_DIRS.iter().copied()) {
-        if dir.is_empty() {
-            continue;
-        }
-        let p = Path::new(dir).join(name);
-        if is_executable(&p) {
-            return Some(p);
-        }
-    }
-    None
-}
-
-fn is_executable(p: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    p.metadata()
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-/// Run a command inheriting stdio; map the exit status to a code.
-fn run_cmd(cmd: &mut Command) -> i32 {
-    match cmd.status() {
-        Ok(s) => s.code().unwrap_or(1),
-        Err(e) => {
-            eprintln!("failed to run {:?}: {e}", cmd.get_program());
-            1
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn sh(script: &str) -> i32 {
-    run_cmd(Command::new("/bin/sh").arg("-c").arg(script))
-}
-
 #[cfg(target_os = "linux")]
 fn uname_m() -> String {
     uname("-m")
-}
-
-#[cfg(any(target_os = "linux", target_os = "netbsd"))]
-fn uname(flag: &str) -> String {
-    Command::new("uname")
-        .arg(flag)
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
 }

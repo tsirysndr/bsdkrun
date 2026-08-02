@@ -35,16 +35,14 @@
     },
     "libkrun-pvh": {
       "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
+        "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1785698555,
-        "narHash": "sha256-HuJa/tjpzydJswTSowo/WfJSYdT55A3m9Z/EIrLdy1Q=",
+        "lastModified": 1785699516,
+        "narHash": "sha256-nW0ZBqNuuOO8qY/cqkfvYScTi++1ozvUjwdRioZgACo=",
         "owner": "tsirysndr",
         "repo": "libkrun",
-        "rev": "4a866f3330f9dff40f97521bcf3cdd5bc2ec1e6d",
+        "rev": "c3cea52a141e72a6211e5b0abc394df82f78d12a",
         "type": "github"
       },
       "original": {
@@ -55,6 +53,22 @@
       }
     },
     "nixpkgs": {
+      "locked": {
+        "lastModified": 1785571196,
+        "narHash": "sha256-KoTsyMQqnXQZq8deCEnu4QkyldkwH/bpMMhUcfMdGIw=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "148bab9c1c3c53136ecb44a6ea356a0ed5b39b06",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
       "locked": {
         "lastModified": 1785454630,
         "narHash": "sha256-LQy14TZp77TwbQf40gg1V3jo8FwJG0jGDkAH+zRHqg8=",
@@ -75,7 +89,7 @@
         "crane": "crane",
         "flake-utils": "flake-utils",
         "libkrun-pvh": "libkrun-pvh",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs_2"
       }
     },
     "systems": {

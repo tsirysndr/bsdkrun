@@ -14,11 +14,13 @@
 //!     channels: 0 stdin, 1 stdout, 2 stderr, 3 exit (payload = u32 code),
 //!               4 winsize (payload = u16 rows, u16 cols)
 //!
-//! The same binary doubles as an in-guest CLI: `bsdkrun-agent tailscale
-//! <install|start|status|setup>` (see the `tailscale` module) — run it through
-//! `bsdkrun exec`/`shell` to put the guest on a tailnet.
+//! The same binary doubles as an in-guest CLI, run through `bsdkrun exec`:
+//!   `bsdkrun-agent tailscale <install|start|status|setup>`  (tailnet access)
+//!   `bsdkrun-agent ssh <setup|add-key|status>`              (key-based sshd)
 
+mod ssh;
 mod tailscale;
+mod util;
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
@@ -51,12 +53,14 @@ async fn main() {
     // typically invoked *through* the daemon via `bsdkrun exec`. Everything
     // else (no args) is the exec daemon below.
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("tailscale") {
-        std::process::exit(tailscale::run(&args[1..]));
-    }
-    if !args.is_empty() {
-        eprintln!("bsdkrun-agent: unknown command {:?} (try: tailscale)", args[0]);
-        std::process::exit(2);
+    match args.first().map(String::as_str) {
+        Some("tailscale") => std::process::exit(tailscale::run(&args[1..])),
+        Some("ssh") => std::process::exit(ssh::run(&args[1..])),
+        Some(other) => {
+            eprintln!("bsdkrun-agent: unknown command {other:?} (try: tailscale, ssh)");
+            std::process::exit(2);
+        }
+        None => {} // no args: run the exec daemon below
     }
 
     let listener = match TcpListener::bind(("0.0.0.0", PORT)).await {

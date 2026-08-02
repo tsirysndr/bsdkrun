@@ -1,6 +1,15 @@
 {
   description = "bsdkrun - a Firecracker-style microVM launcher for BSD and Linux guests, on libkrun";
 
+  # Both bsdkrun's and the libkrun fork's CI push to this cache — declaring it
+  # here lets `nix build`/`nix develop` substitute libkrun-pvh (and bsdkrun
+  # itself) instead of compiling; nix asks once to trust it.
+  nixConfig = {
+    extra-substituters = [ "https://bsdkrun.cachix.org" ];
+    extra-trusted-public-keys =
+      [ "bsdkrun.cachix.org-1:KzvN59TR6k15k7Fl7SxTEhxJnE0MvbxLC2HpxdVlC9Q=" ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -10,11 +19,11 @@
 
     # The PVH-enabled libkrun fork — what boots NetBSD/FreeBSD amd64 on
     # Linux/KVM (stock libkrun only speaks the Linux boot protocol there).
-    # Its CI pushes builds to the `bsdkrun` Cachix cache.
-    libkrun-pvh = {
-      url = "github:tsirysndr/libkrun/feat/pvh-boot";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    # Its CI pushes builds to the `bsdkrun` Cachix cache. Deliberately NO
+    # `nixpkgs.follows`: rewriting the fork's nixpkgs would change its
+    # derivation hash and miss the cache its CI populated — to substitute a
+    # producer's build, consume it with the producer's own locked inputs.
+    libkrun-pvh.url = "github:tsirysndr/libkrun/feat/pvh-boot";
   };
 
   outputs = { self, nixpkgs, crane, flake-utils, libkrun-pvh, ... }:

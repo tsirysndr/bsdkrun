@@ -18,9 +18,10 @@ image** (`bsdkrun linux alpine` pulls it from any registry, extracts the rootfs,
 > **Platforms:** **macOS on Apple Silicon** (Hypervisor.framework) and **Linux on amd64 or arm64**
 > (KVM). A hardware-virtualized guest runs the host's CPU arch, so bsdkrun detects the arch and
 > pulls the matching kernel, OCI image, and agent automatically. macOS is arm64-only; Linux works
-> on both x86_64 and aarch64. **FreeBSD is macOS-only** (its EFI firmware ships only with the
-> macOS `libkrun-efi`); **NetBSD** direct-boots its kernel, so it runs on both. _(Linux support is
-> new — see the [KVM e2e CI](.github/workflows/e2e-linux.yml).)_
+> on both x86_64 and aarch64. **FreeBSD** boots via EFI on macOS and via **PVH direct kernel** on
+> Linux/amd64; **NetBSD** direct-boots its kernel everywhere. The amd64 PVH boots need our
+> [PVH-enabled libkrun fork](https://github.com/tsirysndr/libkrun/tree/feat/pvh-boot). _(Linux
+> support is new — see the [KVM e2e CI](.github/workflows/e2e-linux.yml).)_
 
 <p align="center">
   <img src=".github/assets/preview.png" alt="FreeBSD 15 arm64 booting under bsdkrun on macOS" width="800">
@@ -60,10 +61,13 @@ VM tooling (QEMU, `vftool`, UTM) isn't microVM-shaped. libkrun gives you a Firec
 aimed at Linux guests, and `bsdkrun` both leans into that (running OCI images directly) and points
 the same machinery at **FreeBSD / NetBSD** guests.
 
-- **FreeBSD:** boot via **firmware/EFI** — these systems expect to come up through a UEFI loader,
-  so we hand libkrun its bundled EDK2 firmware and let the guest's `loader.efi` take over from the
-  EFI System Partition on the disk. That firmware ships only with **`libkrun-efi`, which is
-  macOS-only**, so **`bsdkrun freebsd` is a macOS-only command** (compiled out on Linux).
+- **FreeBSD:** on **macOS**, boot via **firmware/EFI** — we hand libkrun its bundled EDK2 firmware
+  and let the guest's `loader.efi` take over from the EFI System Partition on the disk (that
+  firmware ships only with the macOS `libkrun-efi`). On **Linux/amd64**, boot via **PVH direct
+  kernel**: bsdkrun downloads its bundled agent-injected UFS rootfs + FreeBSD's **`FIRECRACKER`**
+  kernel (no ACPI, MPTable, virtio-mmio built in) and enters it at its `PHYS32_ENTRY` — which
+  needs our [PVH-enabled libkrun fork](https://github.com/tsirysndr/libkrun/tree/feat/pvh-boot)
+  (see the [FreeBSD notes](#freebsd--netbsd--one-liner-bsd-microvms)).
 - **NetBSD:** boot via **direct kernel** — **no bootloader or firmware**, so `bsdkrun netbsd` works
   on **both macOS and Linux**. On **arm64** it uses NetBSD's evbarm `GENERIC64` kernel + bsdkrun's
   agent-injected `gzimg`. NetBSD ships no amd64 disk image, so on **amd64** bsdkrun uses its own
@@ -171,11 +175,11 @@ sudo ldconfig
 Some BSD image-prep steps (`losetup`/`mount`) need root, and bsdkrun runs them with `sudo`
 automatically when needed.
 
-> On Linux the CI boots the `linux` (OCI) path and the `netbsd` (direct-kernel, PVH) path — on
-> x86_64 only, since GitHub's arm64 runners have no `/dev/kvm`; arm64-on-Linux (which reuses the
-> aarch64 kernel + agent) is validated on a KVM-capable host. `freebsd` needs the macOS-only EFI
-> firmware, so it's not offered on Linux. NetBSD-under-KVM on amd64 boots via our
-> [PVH libkrun fork](https://github.com/tsirysndr/libkrun/tree/feat/pvh-boot), which the CI builds.
+> On Linux the CI boots the `linux` (OCI), `netbsd`, and `freebsd` (both direct-kernel, PVH) paths
+> — on x86_64 only, since GitHub's arm64 runners have no `/dev/kvm`; arm64-on-Linux (which reuses
+> the aarch64 kernel + agent) is validated on a KVM-capable host. The BSD-under-KVM amd64 boots go
+> via our [PVH libkrun fork](https://github.com/tsirysndr/libkrun/tree/feat/pvh-boot), which the
+> CI builds.
 
 ---
 
@@ -229,7 +233,7 @@ The quickest way to a BSD guest — fetches the image (and, for NetBSD, the kern
 boots it:
 
 ```sh
-bsdkrun freebsd                 # bundled FreeBSD arm64 image (agent baked in); macOS only
+bsdkrun freebsd                 # bundled FreeBSD image (agent baked in): EFI on macOS, PVH on Linux/amd64
 bsdkrun freebsd --version 14.3  # official FreeBSD 14.3 VM image from download.freebsd.org
 bsdkrun netbsd  -d              # NetBSD-current in the background; prints its id
 bsdkrun netbsd  --version 10.1 -d --port 2222:22
@@ -239,13 +243,19 @@ Both carry the usual machine options (`-d`, `--persist`, `-v/--volume`, `--versi
 `--attach-disk`, `--port`, `--cpus`/`--mem`), so per-machine [CoW disk clones](#managing-machines)
 and `ps`/`logs`/`shell`/`stop` all apply. They differ in how they boot:
 
-- **`freebsd`** wraps [`fetch`](#the-easy-way--bsdkrun-fetch) + [`firmware`](#firmware--boot-a-disk-through-its-uefi-loader):
-  it auto-locates libkrun's `KRUN_EFI` firmware (via `$BSDKRUN_FIRMWARE`, a local
-  `images/KRUN_EFI.fd`, or krunkit's Homebrew install; `--firmware` overrides). That firmware is
-  **macOS-only**, so **`freebsd` is a macOS-only command**. By default (on arm64) it downloads
-  bsdkrun's **bundled image with the guest agent pre-installed**, so `exec`/`shell` work out of the
-  box; pass **`--version X`** to boot an official FreeBSD VM image from download.freebsd.org instead
-  (no agent — you'd install it manually).
+- **`freebsd`** boots differently per host OS:
+  - On **macOS** it wraps [`fetch`](#the-easy-way--bsdkrun-fetch) + [`firmware`](#firmware--boot-a-disk-through-its-uefi-loader):
+    it auto-locates libkrun's `KRUN_EFI` firmware (via `$BSDKRUN_FIRMWARE`, a local
+    `images/KRUN_EFI.fd`, or krunkit's Homebrew install; `--firmware` overrides). By default (on
+    arm64) it downloads bsdkrun's **bundled image with the guest agent pre-installed**, so
+    `exec`/`shell` work out of the box; pass **`--version X`** to boot an official FreeBSD VM image
+    from download.freebsd.org instead (no agent — you'd install it manually).
+  - On **Linux/amd64** it **PVH-direct-boots** bsdkrun's bundled agent-injected UFS rootfs + the
+    FreeBSD **`FIRECRACKER`** kernel (no ACPI, MPTable enumeration, virtio-mmio + serial built in;
+    built from source by the
+    [image workflow](.github/workflows/release-freebsd-amd64-image.yml)). Needs the
+    [PVH libkrun fork](https://github.com/tsirysndr/libkrun/tree/feat/pvh-boot); override the
+    kernel command line with `$BSDKRUN_FREEBSD_CMDLINE`.
 - **`netbsd`** wraps `fetch` + a **direct kernel** boot — no firmware — so it works on **macOS and
   Linux**.
 
@@ -709,8 +719,8 @@ the kernel command line with `$BSDKRUN_NETBSD_CMDLINE`). The details differ by h
   sets `KRUN_PVH=1` so libkrun enters via the kernel's `PHYS32_ENTRY` note, and boots with
   `root=ld0a console=com` (`console=com` matters: a PVH boot passes no bootinfo, so without it
   NetBSD's console defaults to nonexistent VGA and all output vanishes). The agent is baked into
-  the image, so `exec`/`shell` work out of the box. Because stock libkrun can't boot it, the path
-  is gated behind `BSDKRUN_NETBSD_AMD64=1` until PVH lands upstream — see the
+  the image, so `exec`/`shell` work out of the box. Against stock libkrun the boot triple-faults
+  (`KRUN_PVH` is simply ignored) — build the fork until PVH lands upstream; see the
   [KVM e2e](.github/workflows/e2e-linux.yml), which builds the fork and boots it on every run.
 
 ### Resizing the disk
@@ -871,20 +881,30 @@ with no NIC; `--no-net` silences the warning.
 
 ## Status
 
-Both guests boot to a `login:` prompt via the `firmware` subcommand on macOS Apple Silicon, through
-libkrun's EDK2 firmware and the guest's own EFI loader:
+On **macOS Apple Silicon**, both guests boot to a `login:` prompt via the `firmware` subcommand,
+through libkrun's EDK2 firmware and the guest's own EFI loader:
 
 - **FreeBSD 15.1 / arm64** — full multi-user rc sequence to `login:`. `fetch` + `firmware`.
 - **NetBSD-current / arm64** (evbarm `GENERIC64`) — efiboot → kernel → root-on-ffs → `login:`.
   `fetch --os netbsd` + `firmware`. (NetBSD *releases* ≤ 10.1 boot but can't mount root — their
   virtio-mmio driver is legacy-only; modern v2 support is only in -current.)
 
-The blocker that made guests look dead — console output going to a PL011 serial libkrun wasn't
+On **Linux/amd64 (KVM)**, both guests boot to multi-user via **PVH direct kernel** on the
+[PVH libkrun fork](https://github.com/tsirysndr/libkrun/tree/feat/pvh-boot), validated on every
+[KVM e2e](.github/workflows/e2e-linux.yml) run (the in-guest agent answers `exec`):
+
+- **NetBSD 10.1 / amd64** — bundled `MICROVM` kernel + FFS rootfs, `root=ld0a console=com`.
+- **FreeBSD 15.1 / amd64** — bundled `FIRECRACKER` kernel (no ACPI; MPTable; virtio-mmio + serial
+  built in) + UFS rootfs. The fork supplies what the kernel can't discover on its own: an MPTable,
+  the TSC frequency (CPUID leaf `0x40000010`), and FreeBSD's numbered `virtio_mmio.device_N=`
+  cmdline keys.
+
+The blocker that made guests look dead — console output going to a serial port libkrun wasn't
 forwarding — is fixed by bsdkrun's serial-console wiring (see
 [Console](#console-how-output-reaches-your-terminal)). Guest-side virtio-mmio device discovery
-under libkrun is confirmed working for FreeBSD and NetBSD-current.
+under libkrun is confirmed working for FreeBSD and NetBSD on both platforms.
 
-Next: interactive login + networking shakedown, and `kernel`-mode direct boot experiments.
+Next: interactive login + networking shakedown, and upstreaming the PVH work to libkrun.
 
 ## License
 

@@ -75,7 +75,7 @@ jobs:
           path: |
             libkrunfw
             libkrun
-          key: libkrun-build-x86_64-v4
+          key: libkrun-build-x86_64-pvh-v1
 
       # Build only on a cache miss. libkrun links libkrunfw, so libkrunfw must be
       # installed before libkrun builds. Use `cd`, NOT `make -C`: `-C` implies
@@ -87,7 +87,7 @@ jobs:
           set -eux
           git clone --depth 1 -b v5.5.0 https://github.com/containers/libkrunfw
           ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
-          git clone --depth 1 -b v1.19.4 https://github.com/containers/libkrun
+          git clone --depth 1 -b feat/pvh-boot https://github.com/tsirysndr/libkrun  # PVH boot for NetBSD amd64
           ( cd libkrun && make -j"$(nproc)" BLK=1 NET=1 )
 
       # Only cache a build that actually succeeded.
@@ -98,7 +98,7 @@ jobs:
           path: |
             libkrunfw
             libkrun
-          key: libkrun-build-x86_64-v4
+          key: libkrun-build-x86_64-pvh-v1
 
       # Install (fast) on every run — a cache hit restores the built trees but not
       # the system-installed libraries.

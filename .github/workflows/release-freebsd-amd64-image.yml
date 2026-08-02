@@ -132,13 +132,22 @@ jobs:
           EOF
           chmod 555 "$ROOT/usr/local/etc/rc.d/bsdkrun_agent"
 
-          # 5. Build the UFS image + stage both assets (the FIRECRACKER kernel is
-          #    the PVH kernel we direct-boot).
-          makefs -t ffs -s 2g -o version=2 "$WORK/freebsd-amd64-root.img" "$ROOT"
-          gzip -9 -c "$WORK/freebsd-amd64-root.img" > "$WS/dist/freebsd-amd64-root.img.gz"
-          gzip -9 -c "$KERNEL" > "$WS/dist/freebsd-kernel-amd64.gz"
+          # 5. Build the UFS image + stage both RAW assets into the synced dist/.
+          #    Compression is done on the host afterwards — gzip -9 of a 2 GB image
+          #    is painfully slow inside the VM. (FIRECRACKER kernel = the PVH kernel.)
+          makefs -t ffs -s 2g -o version=2 "$WS/dist/freebsd-amd64-root.img" "$ROOT"
+          cp "$KERNEL" "$WS/dist/freebsd-kernel-amd64"
+          chmod 644 "$WS/dist"/*
           ls -lh "$WS/dist"
           ROOTEOF
+
+      - name: Compress on the host (native — fast)
+        run: |
+          set -eux
+          # The raw image + kernel synced back from the VM; gzip them here.
+          gzip -9 -f dist/freebsd-amd64-root.img   # -> dist/freebsd-amd64-root.img.gz
+          gzip -9 -f dist/freebsd-kernel-amd64     # -> dist/freebsd-kernel-amd64.gz
+          ls -lh dist
 
       - name: Checksums
         run: |

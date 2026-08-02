@@ -39,6 +39,19 @@ jobs:
           sudo chmod 0666 /dev/kvm
           ls -l /dev/kvm
 
+      # PVH boots the guest with paging OFF. On Intel *without* VMX unrestricted
+      # guest (common on nested KVM), the host can't virtualize CR0.PG=0 and the
+      # guest triple-faults — which is what NetBSD MICROVM is hitting. Log it.
+      - name: KVM virtualization capabilities
+        run: |
+          set -eux
+          grep -m1 "model name" /proc/cpuinfo
+          grep -qm1 hypervisor /proc/cpuinfo && echo "nested (runs under a hypervisor)" || echo "bare metal"
+          grep -ochm1 -e vmx -e svm /proc/cpuinfo || true
+          echo -n "kvm_intel unrestricted_guest: "; cat /sys/module/kvm_intel/parameters/unrestricted_guest 2>/dev/null || echo "(kvm_intel not loaded)"
+          echo -n "kvm_intel nested: "; cat /sys/module/kvm_intel/parameters/nested 2>/dev/null || echo n/a
+          echo -n "kvm_amd nested: ";   cat /sys/module/kvm_amd/parameters/nested   2>/dev/null || echo n/a
+
       - name: Install build deps (incl. libkrun/libkrunfw build requirements)
         run: |
           set -eux

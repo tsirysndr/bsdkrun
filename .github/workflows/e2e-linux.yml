@@ -180,17 +180,23 @@ jobs:
           export BSDKRUN_NETBSD_AMD64=1
           id=$(./target/release/bsdkrun --log-level 5 netbsd -d)
           # NetBSD's first boot does real work (rc, dev, dhcpcd, agent start) —
-          # give it time, then prove multiuser via the baked-in agent.
-          sleep 45
+          # poll the baked-in agent with exec instead of one fixed sleep.
+          sleep 30
           ./target/release/bsdkrun ps || true
-          out=$(timeout 60 ./target/release/bsdkrun exec "$id" uname -a || true)
+          out=""
+          for i in 1 2 3 4; do
+            out=$(timeout 30 ./target/release/bsdkrun exec "$id" uname -a 2>/dev/null || true)
+            [ -n "$out" ] && break
+            sleep 15
+          done
           echo "exec uname -a: $out"
-          # Early boot log (device setup + first guest activity), not just the tail.
-          echo "----- boot log (head) -----"
-          ./target/release/bsdkrun logs --boot "$id" 2>/dev/null | head -60 || true
-          echo "----- console (may be empty; serial capture is a known gap) -----"
-          ./target/release/bsdkrun logs "$id" 2>/dev/null | head -100 > nb.log || true
-          head -100 nb.log || true
+          # console=com is now on the amd64 cmdline, so the guest console (dmesg,
+          # rc, any panic or prompt) lands in console.log — show both ends.
+          echo "----- console (head: kernel banner + autoconf) -----"
+          ./target/release/bsdkrun logs "$id" 2>/dev/null > nb.log || true
+          head -80 nb.log || true
+          echo "----- console (tail: rc / where boot currently is) -----"
+          tail -40 nb.log || true
           ./target/release/bsdkrun stop "$id" 2>/dev/null || true
           if echo "$out" | grep -q "NetBSD"; then
             echo "🎉 NetBSD amd64 BOOTED under libkrun (PVH) — agent exec works"

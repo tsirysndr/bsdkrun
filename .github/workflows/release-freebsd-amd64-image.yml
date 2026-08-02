@@ -1,0 +1,154 @@
+name: Release (FreeBSD amd64 image)
+
+# FreeBSD amd64's GENERIC kernel is PVH-bootable (it carries a Xen PHYS32_ENTRY
+# note) and has virtio-mmio / virtio_blk / vtnet / UFS built in — so, like NetBSD
+# amd64, it can direct-boot under our PVH libkrun fork with no loader/firmware.
+# This builds a minimal UFS rootfs from the amd64 sets with the guest agent
+# injected, extracts the PVH kernel, and publishes both as release assets.
+#
+# makefs is a FreeBSD tool, so the image is assembled inside a FreeBSD VM
+# (cross-platform-actions). The prebuilt amd64 agent is downloaded and injected.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "FreeBSD release to build from (e.g. 15.1)"
+        required: false
+        default: "15.1"
+        type: string
+      release_tag:
+        description: "Rolling release tag to publish the assets to"
+        required: false
+        default: "freebsd-amd64"
+        type: string
+      agent_url:
+        description: "URL of the FreeBSD x86_64 agent to inject"
+        required: false
+        default: "https://github.com/tsirysndr/bsdkrun/releases/download/v0.2.0/bsdkrun-agent.freebsd-x86_64"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build image (in FreeBSD VM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start FreeBSD amd64 VM
+        uses: cross-platform-actions/action@v1.3.0
+        with:
+          operating_system: freebsd
+          version: "14.2"
+          architecture: x86-64
+          shell: bash
+          memory: 8G
+          cpu_count: 4
+
+      - name: Build the UFS rootfs + extract the PVH kernel
+        shell: cpa.sh {0}
+        run: |
+          set -eux
+          VERSION="${{ inputs.version }}"
+          AGENT_URL="${{ inputs.agent_url }}"
+          WS="$(pwd)"
+          mkdir -p "$WS/dist"
+          # Download the agent as the normal user; the rest needs root.
+          fetch -o "$WS/bsdkrun-agent" "$AGENT_URL"
+          chmod a+x "$WS/bsdkrun-agent"
+
+          sudo env WS="$WS" VERSION="$VERSION" /bin/sh -eux <<'ROOTEOF'
+          BASE="https://download.freebsd.org/releases/amd64/${VERSION}-RELEASE"
+          WORK=/var/tmp/fbimg
+          ROOT="$WORK/rootfs"
+          rm -rf "$WORK"; mkdir -p "$ROOT"
+          cd "$WORK"
+
+          # Minimal userland (base) + the GENERIC kernel (has the PVH note + built-in
+          # virtio-mmio/blk/vtnet drivers, so it needs no loader/modules).
+          fetch -o base.txz "$BASE/base.txz"
+          fetch -o kernel.txz "$BASE/kernel.txz"
+          tar -xpf base.txz -C "$ROOT"
+          tar -xpf kernel.txz -C "$ROOT"
+
+          # Root on the virtio-blk disk (a bare makefs UFS -> vtbd0), DHCP on the
+          # virtio-net iface (gvproxy leases 192.168.127.2), serial console.
+          cat > "$ROOT/etc/rc.conf" <<'EOF'
+          hostname="bsdkrun"
+          ifconfig_vtnet0="DHCP"
+          sshd_enable="NO"
+          sendmail_enable="NONE"
+          bsdkrun_agent_enable="YES"
+          EOF
+
+          cat > "$ROOT/etc/fstab" <<'EOF'
+          /dev/vtbd0  /  ufs  rw  1  1
+          EOF
+
+          # Root login on the serial console for debugging (dev image). ttyu0 is
+          # `onifconsole` by default, so it auto-enables when console=comconsole.
+          awk -F: 'BEGIN{OFS=":"} $1=="root"{$2=""} {print}' \
+            "$ROOT/etc/master.passwd" > "$ROOT/etc/master.passwd.new"
+          mv "$ROOT/etc/master.passwd.new" "$ROOT/etc/master.passwd"
+          chmod 600 "$ROOT/etc/master.passwd"
+          pwd_mkdb -d "$ROOT/etc" -p "$ROOT/etc/master.passwd"
+
+          # Bake in the guest agent + an rc.d service (FreeBSD has daemon(8): -r
+          # restarts it if it exits, -P tracks the pid).
+          mkdir -p "$ROOT/usr/local/sbin" "$ROOT/usr/local/etc/rc.d"
+          install -m 755 "$WS/bsdkrun-agent" "$ROOT/usr/local/sbin/bsdkrun-agent"
+          cat > "$ROOT/usr/local/etc/rc.d/bsdkrun_agent" <<'EOF'
+          #!/bin/sh
+          #
+          # PROVIDE: bsdkrun_agent
+          # REQUIRE: NETWORKING
+          # KEYWORD: shutdown
+
+          . /etc/rc.subr
+
+          name="bsdkrun_agent"
+          rcvar="bsdkrun_agent_enable"
+
+          load_rc_config $name
+
+          : ${bsdkrun_agent_enable:="NO"}
+          : ${bsdkrun_agent_program:="/usr/local/sbin/bsdkrun-agent"}
+
+          pidfile="/var/run/${name}.pid"
+          command="/usr/sbin/daemon"
+          command_args="-f -P ${pidfile} -r ${bsdkrun_agent_program}"
+
+          run_rc_command "$1"
+          EOF
+          chmod 555 "$ROOT/usr/local/etc/rc.d/bsdkrun_agent"
+
+          # Build the UFS image (little-endian on amd64) + gzip both assets. Bump
+          # -s if base ever outgrows it; the client can `bsdkrun grow` afterwards.
+          makefs -t ffs -s 2g -o version=2 "$WORK/freebsd-amd64-root.img" "$ROOT"
+          gzip -9 -c "$WORK/freebsd-amd64-root.img" > "$WS/dist/freebsd-amd64-root.img.gz"
+          # The PVH kernel to direct-boot (loaded to p_paddr=0x200000).
+          gzip -9 -c "$ROOT/boot/kernel/kernel" > "$WS/dist/freebsd-kernel-amd64.gz"
+          ls -lh "$WS/dist"
+          ROOTEOF
+
+      - name: Checksums
+        run: |
+          set -eux
+          cd dist
+          for f in *.gz; do sha256sum "$f" > "$f.sha256"; done
+          ls -lh
+
+      - name: Publish to the rolling release tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -eux
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "FreeBSD amd64 (PVH rootfs + kernel + bsdkrun agent)" \
+              --notes "Minimal FreeBSD amd64 UFS rootfs (from the release sets) with the bsdkrun guest agent injected (rc.d autostart), plus the GENERIC kernel to PVH-direct-boot under the tsirysndr/libkrun feat/pvh-boot fork. Rebuilt by the release-freebsd-amd64-image workflow."
+          gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"

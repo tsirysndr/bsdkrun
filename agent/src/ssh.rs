@@ -27,6 +27,7 @@ use crate::util::{find_bin, run_quiet};
 use crate::util::run_cmd;
 
 const SSHD_CONFIG: &str = "/etc/ssh/sshd_config";
+const SSHD_LOG: &str = "/var/log/sshd.log";
 
 pub fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
@@ -314,7 +315,15 @@ fn ensure_root_login() {
     }
 }
 
+/// "Running" = something answers on 127.0.0.1:22 — the property ssh actually
+/// needs, and far more reliable than pgrep across busybox/BSD ps variants.
 fn sshd_running() -> bool {
+    use std::net::TcpStream;
+    use std::time::Duration;
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 22));
+    if TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok() {
+        return true;
+    }
     find_bin("pgrep")
         .map(|p| run_quiet(Command::new(p).args(["-x", "sshd"])))
         .unwrap_or(false)
@@ -330,15 +339,22 @@ fn start_sshd() -> i32 {
     if code != 0 {
         return code;
     }
-    // sshd double-forks; give it a moment before declaring it dead.
-    for _ in 0..50 {
+    // sshd double-forks; give it a moment (10s) before declaring it dead.
+    for _ in 0..100 {
         if sshd_running() {
             println!("sshd running");
             return 0;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    eprintln!("sshd start reported success but no sshd process found");
+    eprintln!("sshd started but nothing listens on :22 — its log:");
+    if let Ok(log) = std::fs::read_to_string(SSHD_LOG) {
+        for l in log.lines().rev().take(15).collect::<Vec<_>>().into_iter().rev() {
+            eprintln!("  {l}");
+        }
+    } else {
+        eprintln!("  ({SSHD_LOG} not written)");
+    }
     1
 }
 
@@ -367,10 +383,11 @@ fn start_sshd_os() -> i32 {
 fn start_sshd_os() -> i32 {
     // OCI microVM guests have no service manager — run sshd directly (it
     // daemonizes itself). Needs the privilege-separation dir on some distros.
+    // -E: keep the daemon's complaints somewhere we can show on failure.
     let _ = std::fs::create_dir_all("/var/empty");
     let _ = std::fs::create_dir_all("/run/sshd");
     let sshd = find_bin("sshd").expect("checked in setup()");
-    run_cmd(&mut Command::new(sshd))
+    run_cmd(Command::new(sshd).args(["-E", SSHD_LOG]))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "netbsd")))]

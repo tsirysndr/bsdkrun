@@ -617,6 +617,32 @@ INFO networking up — SSH into the guest with: ssh -p 58851 user@127.0.0.1
 
 `--mac AA:BB:CC:DD:EE:FF` overrides the guest NIC's MAC (default: a fixed locally-administered one).
 
+### Tailscale — put a guest on your tailnet
+
+The guest agent doubles as a tailscale manager on **Linux, FreeBSD and NetBSD** guests — one
+command installs tailscale the OS-native way, starts `tailscaled`, and joins the tailnet:
+
+```sh
+# one-shot: install + start + `tailscale up` (get an auth key from the admin console)
+bsdkrun exec <id> bsdkrun-agent tailscale setup --authkey tskey-auth-...
+
+bsdkrun exec <id> bsdkrun-agent tailscale status    # who am I / peers
+bsdkrun exec <id> bsdkrun-agent tailscale install   # just install
+bsdkrun exec <id> bsdkrun-agent tailscale start     # just start tailscaled
+```
+
+(If `bsdkrun-agent` isn't on the guest's `PATH`, use its full path — the bundled BSD images
+install it at `/usr/local/sbin/bsdkrun-agent`. `TS_AUTHKEY` in the exec environment works
+instead of `--authkey`.)
+
+Install goes through each OS's native channel: `apk` (Alpine) or the official static tarball on
+Linux, `pkg install` on FreeBSD, `pkg_add` from the pkgsrc CDN on NetBSD. `tailscaled` runs with
+`--tun=userspace-networking` by default — the microVM kernels bsdkrun boots (Linux microvm,
+NetBSD `MICROVM`, FreeBSD `FIRECRACKER`) generally lack tun/tap, and userspace mode still makes
+the guest **reachable over the tailnet** (ssh, agent port, anything listening). Pass
+`--kernel-tun` to `start`/`setup` to use a real TUN device where the kernel has one
+(e.g. full Linux kernels with `/dev/net/tun` — detected automatically there).
+
 ---
 
 ## Disks

@@ -7,9 +7,17 @@
     crane.url = "github:ipetkov/crane";
 
     flake-utils.url = "github:numtide/flake-utils";
+
+    # The PVH-enabled libkrun fork — what boots NetBSD/FreeBSD amd64 on
+    # Linux/KVM (stock libkrun only speaks the Linux boot protocol there).
+    # Its CI pushes builds to the `bsdkrun` Cachix cache.
+    libkrun-pvh = {
+      url = "github:tsirysndr/libkrun/feat/pvh-boot";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, crane, flake-utils, ... }:
+  outputs = { self, nixpkgs, crane, flake-utils, libkrun-pvh, ... }:
     # Linux (KVM) uses nixpkgs' libkrun. macOS (Hypervisor.framework) has no
     # libkrun in nixpkgs, so it links Homebrew's — an *impure* build:
     #   brew install libkrun && nix build --impure .#bsdkrun
@@ -26,11 +34,11 @@
         craneLib = crane.mkLib pkgs;
         src = craneLib.cleanCargoSource ./.;
 
-        # Linux: nixpkgs' libkrun, rebuilt with BLK=1 NET=1 (its default `make`
-        # omits krun_add_disk / krun_add_net_unixgram, which bsdkrun needs).
-        libkrun = pkgs.libkrun.overrideAttrs (old: {
-          makeFlags = (old.makeFlags or [ ]) ++ [ "BLK=1" "NET=1" ];
-        });
+        # Linux: the PVH libkrun fork's flake (built with BLK=1 NET=1 there).
+        # Beyond stock libkrun it adds the PVH direct-boot path that NetBSD's
+        # MICROVM and FreeBSD's FIRECRACKER amd64 kernels need. Only defined
+        # for Linux systems — never forced on darwin (guarded by !isDarwin).
+        libkrun = libkrun-pvh.packages.${system}.default;
 
         # macOS: Homebrew's libkrun. During an *impure* build (BSDKRUN_IMPURE=1 +
         # `nix build --impure`) we import it into the store so the sandboxed build

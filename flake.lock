@@ -33,6 +33,27 @@
         "type": "github"
       }
     },
+    "libkrun-pvh": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1785698555,
+        "narHash": "sha256-HuJa/tjpzydJswTSowo/WfJSYdT55A3m9Z/EIrLdy1Q=",
+        "owner": "tsirysndr",
+        "repo": "libkrun",
+        "rev": "4a866f3330f9dff40f97521bcf3cdd5bc2ec1e6d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "tsirysndr",
+        "ref": "feat/pvh-boot",
+        "repo": "libkrun",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1785454630,
@@ -53,6 +74,7 @@
       "inputs": {
         "crane": "crane",
         "flake-utils": "flake-utils",
+        "libkrun-pvh": "libkrun-pvh",
         "nixpkgs": "nixpkgs"
       }
     },

@@ -1,5 +1,9 @@
 # bsdkrun
 
+[![nix](https://github.com/tsirysndr/bsdkrun/actions/workflows/nix.yml/badge.svg)](https://github.com/tsirysndr/bsdkrun/actions/workflows/nix.yml)
+[![e2e (Linux / KVM)](https://github.com/tsirysndr/bsdkrun/actions/workflows/e2e-linux.yml/badge.svg)](https://github.com/tsirysndr/bsdkrun/actions/workflows/e2e-linux.yml)
+
+
 A Firecracker-style **microVM launcher for BSD and Linux guests on macOS and Linux**, built on
 [libkrun](https://github.com/containers/libkrun) (which drives Apple's Hypervisor.framework on
 macOS and KVM on Linux).

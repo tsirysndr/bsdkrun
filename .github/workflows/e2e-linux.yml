@@ -88,7 +88,7 @@ jobs:
           path: |
             libkrunfw
             libkrun
-          key: libkrun-build-x86_64-pvh-v11
+          key: libkrun-build-x86_64-pvh-v12
 
       # Build only on a cache miss. libkrun links libkrunfw, so libkrunfw must be
       # installed before libkrun builds. Use `cd`, NOT `make -C`: `-C` implies
@@ -111,7 +111,7 @@ jobs:
           path: |
             libkrunfw
             libkrun
-          key: libkrun-build-x86_64-pvh-v11
+          key: libkrun-build-x86_64-pvh-v12
 
       # Install (fast) on every run — a cache hit restores the built trees but not
       # the system-installed libraries.
@@ -179,15 +179,15 @@ jobs:
           set -eux
           export BSDKRUN_NETBSD_AMD64=1
           id=$(./target/release/bsdkrun --log-level 5 netbsd -d)
-          # NetBSD's first boot does real work (rc, dev, dhcpcd, agent start) —
-          # poll the baked-in agent with exec instead of one fixed sleep.
-          sleep 30
+          # A microVM boots in seconds — poll the baked-in agent with exec early
+          # and often instead of one long fixed sleep.
+          sleep 5
           ./target/release/bsdkrun ps || true
           out=""
-          for i in 1 2 3 4; do
+          for i in $(seq 1 12); do
             out=$(timeout 30 ./target/release/bsdkrun exec "$id" uname -a 2>/dev/null || true)
             [ -n "$out" ] && break
-            sleep 15
+            sleep 5
           done
           echo "exec uname -a: $out"
           # console=com is now on the amd64 cmdline, so the guest console (dmesg,
@@ -206,9 +206,10 @@ jobs:
             echo "NetBSD executing but not confirmed (no exec reply, no console captured)"
           fi
 
-      # FreeBSD amd64 also direct-boots via PVH (its GENERIC kernel has the
-      # PHYS32_ENTRY note + built-in virtio-mmio/blk/vtnet/UFS). libkrun advertises
-      # its virtio-mmio devices as FreeBSD newbus hints (KRUN_VIRTIO_MMIO_HINTS,
+      # FreeBSD amd64 also direct-boots via PVH (the bundled FIRECRACKER kernel:
+      # no ACPI, MPTable, virtio-mmio + serial built in). libkrun advertises its
+      # virtio-mmio devices in FreeBSD's numbered-key cmdline form
+      # (virtio_mmio.device=, virtio_mmio.device_1=, ... — KRUN_VIRTIO_MMIO_HINTS,
       # set by bsdkrun). Experimental (continue-on-error), and a no-op until the
       # release-freebsd-amd64-image workflow has published the assets.
       - name: e2e — FreeBSD (direct kernel, PVH)
@@ -217,13 +218,13 @@ jobs:
           set -eux
           export BSDKRUN_FREEBSD_AMD64=1
           id=$(./target/release/bsdkrun --log-level 5 freebsd -d)
-          sleep 30
+          sleep 5
           ./target/release/bsdkrun ps || true
           out=""
-          for i in 1 2 3 4; do
+          for i in $(seq 1 12); do
             out=$(timeout 30 ./target/release/bsdkrun exec "$id" uname -a 2>/dev/null || true)
             [ -n "$out" ] && break
-            sleep 15
+            sleep 5
           done
           echo "exec uname -a: $out"
           echo "----- console (head: kernel banner + device probe) -----"

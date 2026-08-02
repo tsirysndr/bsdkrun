@@ -872,8 +872,10 @@ fn boot_freebsd_pvh(args: BsdArgs) -> Result<()> {
     }
 
     // Tell libkrun to enter via the kernel's PHYS32_ENTRY note and to advertise
-    // its virtio-mmio devices as FreeBSD newbus hints (FreeBSD doesn't parse the
-    // Linux `virtio_mmio.device=` form).
+    // its virtio-mmio devices in FreeBSD's numbered-key cmdline form
+    // (`virtio_mmio.device=`, `virtio_mmio.device_1=`, ...). FreeBSD can't read
+    // the Linux form: Linux repeats the key, but FreeBSD's kernel environment
+    // hides duplicate keys past the first.
     std::env::set_var("KRUN_PVH", "1");
     std::env::set_var("KRUN_VIRTIO_MMIO_HINTS", "freebsd");
 

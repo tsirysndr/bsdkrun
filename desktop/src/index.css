@@ -1,0 +1,109 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Agave — the monospace used for terminals, logs and code-ish UI. */
+@font-face {
+  font-family: "Agave";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./assets/fonts/Agave-Regular.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Agave";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("./assets/fonts/Agave-Bold.ttf") format("truetype");
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+/* The app shell is a fixed-height, non-scrolling window. Locking overflow on
+   BOTH html and body keeps any overlay scroll-lock library (react-aria's
+   WebKit/Safari path fires inside Tauri's WKWebView) from shifting the page —
+   which otherwise scrolls the top bar and nav out of view when a modal closes. */
+html {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* HeroUI mounts its color tokens on the provider; make the app fill the window. */
+#root > main {
+  height: 100%;
+}
+
+/* Native title-bar drag region (Tauri overlay title bar). */
+.drag-region {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Thin, unobtrusive scrollbars that match the dark UI. */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+  background-clip: content-box;
+}
+
+/* xterm terminal container fills its pane. */
+.term-host,
+.term-host .xterm {
+  height: 100%;
+  width: 100%;
+}
+.term-host .xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+}
+
+/* Subtle app-wide selection color. */
+::selection {
+  background: rgba(124, 139, 255, 0.35);
+}
+
+/* Neutral (not blue/primary) borders on bordered inputs, selects and
+   textareas — including on hover/focus — for a calmer form UI. */
+[data-slot="input-wrapper"],
+[data-slot="trigger"] {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: none !important;
+}
+[data-slot="input-wrapper"]:hover,
+[data-slot="trigger"]:hover {
+  border-color: rgba(255, 255, 255, 0.18) !important;
+}
+[data-slot="input-wrapper"][data-focus="true"],
+[data-slot="input-wrapper"][data-focus-visible="true"],
+[data-slot="trigger"][data-focus="true"],
+[data-slot="trigger"][data-open="true"] {
+  border-color: rgba(255, 255, 255, 0.28) !important;
+}

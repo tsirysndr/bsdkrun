@@ -507,6 +507,12 @@ struct BsdArgs {
     #[command(flatten)]
     vm: VmConfig,
 
+    /// Stream the guest's boot console live while waiting for its agent (instead
+    /// of the terse "waiting…" line), so you see the full BSD boot. The command
+    /// output / shell follows once the agent is up.
+    #[arg(long)]
+    verbose: bool,
+
     /// Command (and args) to run inside the guest via its agent once it's
     /// booted, like `bsdkrun linux`. Everything after `--` is passed through.
     /// Without `-d` this is one-shot: the guest boots, runs the command
@@ -799,6 +805,7 @@ fn boot_kernel(args: KernelArgs) -> Result<()> {
         args.run.volume.as_deref(),
         &[],
         false,
+        false,
         build,
     )
 }
@@ -812,6 +819,7 @@ fn boot_firmware(args: FirmwareArgs) -> Result<()> {
         &args.net,
         &args.vm,
         &[],
+        false,
         false,
     )
 }
@@ -828,6 +836,7 @@ fn firmware_machine(
     vm: &VmConfig,
     exec_after: &[String],
     interactive: bool,
+    verbose: bool,
 ) -> Result<()> {
     ensure_net_for_exec(net, exec_after)?;
     let machine_id = id::short_id();
@@ -868,6 +877,7 @@ fn firmware_machine(
         run.volume.as_deref(),
         exec_after,
         interactive,
+        verbose,
         build,
     )
 }
@@ -958,6 +968,7 @@ fn boot_freebsd_efi(args: BsdArgs) -> Result<()> {
         &args.vm,
         &exec_after,
         interactive,
+        args.verbose,
     )
 }
 
@@ -1057,6 +1068,7 @@ fn boot_freebsd_pvh(args: BsdArgs) -> Result<()> {
         args.run.volume.as_deref(),
         &exec_after,
         interactive,
+        args.verbose,
         build,
     )
 }
@@ -1154,6 +1166,7 @@ fn boot_netbsd(args: BsdArgs) -> Result<()> {
         args.run.volume.as_deref(),
         &exec_after,
         interactive,
+        args.verbose,
         build,
     )
 }
@@ -1345,6 +1358,7 @@ fn run_machine(
     volume: Option<&str>,
     exec_after: &[String],
     interactive: bool,
+    verbose: bool,
     build: impl FnOnce() -> Result<(Ctx, Option<Gvproxy>)>,
 ) -> Result<()> {
     // A trailing command runs in the guest via its agent once it's up, which
@@ -1353,7 +1367,7 @@ fn run_machine(
     if detach || !exec_after.is_empty() {
         return run_detached(
             machine_id, vdir, kind, image, command, cpus, mem, volume, exec_after, detach,
-            interactive, build,
+            interactive, verbose, build,
         );
     }
     db::record_machine(
@@ -1483,6 +1497,7 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
         args.volume.as_deref(),
         &[],
         false,
+        false,
         build,
     )
 }
@@ -1562,6 +1577,7 @@ fn run_detached(
     exec_after: &[String],
     keep_running: bool,
     interactive: bool,
+    verbose: bool,
     build: impl FnOnce() -> Result<(Ctx, Option<Gvproxy>)>,
 ) -> Result<()> {
     use std::io::Write;
@@ -1605,6 +1621,7 @@ fn run_detached(
             exec_after,
             keep_running,
             interactive,
+            verbose,
             pid as libc::pid_t,
         );
     }
@@ -1656,54 +1673,97 @@ fn run_detached(
 const GUEST_AGENT_BOOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
 /// Poll a booting machine's guest agent until it answers (or we time out / the
-/// machine dies), returning the forwarded host port to `exec` against. A BSD
-/// guest takes ~15-20s to reach the agent, so show a live "still booting"
-/// counter on a terminal — otherwise the wait looks like a hang.
-fn wait_for_agent(id: &str, kind: &str) -> Result<u16> {
-    use std::io::{IsTerminal, Write};
-    let show = std::io::stderr().is_terminal();
+/// machine dies), returning the forwarded host port to `exec` against.
+///
+/// A BSD guest takes ~15-20s to reach the agent. When `console` is given
+/// (`--verbose`), stream the guest's boot console to **stdout** while we wait —
+/// so CI (and the curious) see the full boot, and e2e can assert on it.
+/// Otherwise show a terse "still booting" counter on a terminal so the wait
+/// doesn't look like a hang.
+fn wait_for_agent(id: &str, kind: &str, console: Option<&std::path::Path>) -> Result<u16> {
+    use std::io::{IsTerminal, Read, Seek, SeekFrom, Write};
+    let counter = console.is_none() && std::io::stderr().is_terminal();
+    // A little braille spinner for the counter — cycles each poll.
+    const SPIN: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let mut frame = 0usize;
     let start = std::time::Instant::now();
     let deadline = start + GUEST_AGENT_BOOT_TIMEOUT;
-    loop {
-        // agent_target() also confirms the machine's pid is alive; ping() does a
-        // real agent round-trip, so it's only true once the guest agent is up.
-        if let Ok((_vm, port)) = agent_target(id) {
-            if agent::ping(port) {
-                if show {
-                    eprint!("\r\x1b[K"); // clear the progress line
-                    let _ = std::io::stderr().flush();
-                }
-                return Ok(port);
-            }
+    // Verbose: tail the console log, remembering how far we've streamed.
+    let mut tail: Option<std::fs::File> = None;
+    let mut off: u64 = 0;
+    let mut drain_console = || {
+        let Some(path) = console else { return };
+        if tail.is_none() {
+            tail = std::fs::File::open(path).ok();
         }
-        // Fail fast if the guest died during boot instead of waiting out the timeout.
-        if let Ok(db) = db::Db::open() {
-            if let Ok(vm) = db.find_machine(id) {
-                if vm.status == "exited" || !vm.pid.map(db::pid_alive).unwrap_or(false) {
-                    if show {
-                        eprint!("\r\x1b[K");
+        if let Some(f) = tail.as_mut() {
+            if f.seek(SeekFrom::Start(off)).is_ok() {
+                let mut buf = Vec::new();
+                if let Ok(n) = f.read_to_end(&mut buf) {
+                    if n > 0 {
+                        let out = std::io::stdout();
+                        let mut h = out.lock();
+                        let _ = h.write_all(&buf);
+                        let _ = h.flush();
+                        off += n as u64;
                     }
-                    anyhow::bail!(
-                        "machine {id} exited before its agent came up — see `bsdkrun logs {id}`"
-                    );
                 }
             }
         }
-        if std::time::Instant::now() >= deadline {
+    };
+    // Animate/stream at a smooth ~12fps, but only actually poll the agent (a real
+    // round-trip) about twice a second.
+    let tick = std::time::Duration::from_millis(if counter { 80 } else { 250 });
+    let mut last_poll = start - std::time::Duration::from_secs(1); // poll immediately
+    loop {
+        let now = std::time::Instant::now();
+        if now.duration_since(last_poll) >= std::time::Duration::from_millis(500) {
+            last_poll = now;
+            // agent_target() also confirms the machine's pid is alive; ping() does
+            // a real agent round-trip, so it's only true once the agent is up.
+            if let Ok((_vm, port)) = agent_target(id) {
+                if agent::ping(port) {
+                    drain_console(); // flush any final boot output
+                    if counter {
+                        eprint!("\r\x1b[K"); // clear the progress line
+                        let _ = std::io::stderr().flush();
+                    }
+                    return Ok(port);
+                }
+            }
+            // Fail fast if the guest died during boot rather than wait out the timeout.
+            if let Ok(db) = db::Db::open() {
+                if let Ok(vm) = db.find_machine(id) {
+                    if vm.status == "exited" || !vm.pid.map(db::pid_alive).unwrap_or(false) {
+                        drain_console();
+                        if counter {
+                            eprint!("\r\x1b[K");
+                        }
+                        anyhow::bail!(
+                            "machine {id} exited before its agent came up — see `bsdkrun logs {id}`"
+                        );
+                    }
+                }
+            }
+        }
+        if now >= deadline {
             anyhow::bail!(
                 "timed out after {}s waiting for the guest agent on machine {id} \
                  (still booting? try `bsdkrun logs {id}`)",
                 GUEST_AGENT_BOOT_TIMEOUT.as_secs()
             );
         }
-        if show {
+        drain_console();
+        if counter {
             eprint!(
-                "\r\x1b[K⋯ booting {kind} microVM — waiting for the guest agent ({}s)…",
+                "\r\x1b[K\x1b[36m{}\x1b[0m booting {kind} microVM — waiting for the guest agent ({}s)…",
+                SPIN[frame % SPIN.len()],
                 start.elapsed().as_secs()
             );
             let _ = std::io::stderr().flush();
+            frame += 1;
         }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(tick);
     }
 }
 
@@ -1716,10 +1776,17 @@ fn run_guest_command(
     argv: &[String],
     keep_running: bool,
     interactive: bool,
+    verbose: bool,
     child_pid: libc::pid_t,
 ) -> Result<()> {
     use std::io::IsTerminal;
-    let port = wait_for_agent(id, kind)?;
+    // `--verbose`: stream the guest's boot console (its state_dir/console.log)
+    // while we wait for the agent.
+    let console = verbose
+        .then(|| db::Db::open().ok().and_then(|db| db.find_machine(id).ok()))
+        .flatten()
+        .map(|vm| std::path::PathBuf::from(vm.state_dir).join("console.log"));
+    let port = wait_for_agent(id, kind, console.as_deref())?;
     // Only the synthesized shell gets a PTY, and only when both ends are a real
     // terminal. Explicit commands run non-interactively so their output isn't
     // lost to the guest agent's PTY drain race on a fast exit.

@@ -274,6 +274,14 @@ bsdkrun freebsd        # boot, then an interactive /bin/sh; exit (Ctrl-D) powers
 bsdkrun netbsd -d      # no shell — just background it and print the id (use exec/ssh/shell)
 ```
 
+Add **`--verbose`** to stream the guest's **boot console to stdout** while it comes up (instead of
+the terse spinner) — handy for watching a boot or asserting on it in CI. The command output / shell
+follows once the agent is up:
+
+```sh
+bsdkrun freebsd --verbose -- uname -a   # full boot log, then the command output, on stdout
+```
+
 Both carry the usual machine options (`-d`, `--persist`, `-v/--volume`, `--version`,
 `--attach-disk`, `--port`, `--cpus`/`--mem`), so per-machine [CoW disk clones](#managing-machines)
 and `ps`/`logs`/`shell`/`stop` all apply. They differ in how they boot:

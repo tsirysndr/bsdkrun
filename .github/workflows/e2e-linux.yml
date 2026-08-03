@@ -257,22 +257,18 @@ jobs:
         continue-on-error: true
         run: |
           set -eux
-          id=$(./target/release/bsdkrun --log-level 5 netbsd -d --port 2223:22)
-          # A microVM boots in seconds — poll the baked-in agent with exec early
-          # and often instead of one long fixed sleep.
-          sleep 5
-          ./target/release/bsdkrun ps || true
-          out=""
-          for i in $(seq 1 12); do
-            out=$(timeout 30 ./target/release/bsdkrun exec "$id" uname -a 2>/dev/null || true)
-            [ -n "$out" ] && break
+          # One-shot with --verbose: the guest's boot console streams to stdout
+          # (so this CI log shows the full boot — kernel banner, autoconf, rc),
+          # then the baked-in agent runs `uname -a` and the VM powers off. `tee`
+          # keeps a copy to assert on. The pipe makes stdout non-interactive.
+          timeout 200 ./target/release/bsdkrun --log-level 5 netbsd --verbose -- uname -a \
+            | tee nb.out || true
+          # ssh + tailscale need a live VM — only worth it if the guest came up.
+          if grep -q "NetBSD" nb.out; then
+            id=$(./target/release/bsdkrun netbsd -d --port 2223:22)
             sleep 5
-          done
-          echo "exec uname -a: $out"
-          # Agent feature CLIs (soft-fail: the whole step is experimental).
-          # ssh: NetBSD's default sshd_config has an explicit PermitRootLogin
-          # no, so this also exercises the agent's prohibit-password rewrite.
-          if [ -n "$out" ]; then
+            # ssh: NetBSD's default sshd_config says PermitRootLogin no, so this
+            # also exercises the agent's prohibit-password rewrite.
             ssh-keygen -t ed25519 -N '' -q -f nb_key
             ./target/release/bsdkrun ssh "$id" setup --key nb_key.pub || true
             sshout=""
@@ -284,27 +280,17 @@ jobs:
               sleep 3
             done
             echo "ssh says: $sshout"
-            if [ -z "$sshout" ]; then echo "--- ssh client errors ---"; tail -20 ssh_client.err || true; fi
-            if [ "$sshout" = "NetBSD" ]; then echo "🎉 ssh into NetBSD works (agent-installed key)"; fi
+            [ "$sshout" = "NetBSD" ] && echo "🎉 ssh into NetBSD works (agent-installed key)"
             # tailscale via pkg_add from the pkgsrc CDN (no auth key: install+start only)
             ./target/release/bsdkrun tailscale "$id" install || true
             ./target/release/bsdkrun tailscale "$id" start || true
             ./target/release/bsdkrun tailscale "$id" status || true
+            ./target/release/bsdkrun stop "$id" 2>/dev/null || true
           fi
-          # console=com is now on the amd64 cmdline, so the guest console (dmesg,
-          # rc, any panic or prompt) lands in console.log — show both ends.
-          echo "----- console (head: kernel banner + autoconf) -----"
-          ./target/release/bsdkrun logs "$id" 2>/dev/null > nb.log || true
-          head -80 nb.log || true
-          echo "----- console (tail: rc / where boot currently is) -----"
-          tail -40 nb.log || true
-          ./target/release/bsdkrun stop "$id" 2>/dev/null || true
-          if echo "$out" | grep -q "NetBSD"; then
-            echo "🎉 NetBSD amd64 BOOTED under libkrun (PVH) — agent exec works"
-          elif grep -qE "Copyright .c. 19.* The NetBSD Foundation|NetBSD [0-9]" nb.log; then
-            echo "NetBSD booted (console banner seen); agent not reachable yet"
+          if grep -q "NetBSD" nb.out; then
+            echo "🎉 NetBSD amd64 BOOTED under libkrun (PVH) — agent exec works (boot console above)"
           else
-            echo "NetBSD executing but not confirmed (no exec reply, no console captured)"
+            echo "NetBSD not confirmed — inspect the streamed boot console above"
           fi
 
       # FreeBSD amd64 also direct-boots via PVH (the bundled FIRECRACKER kernel:
@@ -317,20 +303,17 @@ jobs:
         continue-on-error: true
         run: |
           set -eux
-          id=$(./target/release/bsdkrun --log-level 5 freebsd -d --port 2224:22)
-          sleep 5
-          ./target/release/bsdkrun ps || true
-          out=""
-          for i in $(seq 1 12); do
-            out=$(timeout 30 ./target/release/bsdkrun exec "$id" uname -a 2>/dev/null || true)
-            [ -n "$out" ] && break
+          # One-shot with --verbose: the guest's boot console (kernel banner,
+          # device probe, rc) streams to stdout for this CI log, then the agent
+          # runs `uname -a` and the VM powers off. `tee` keeps a copy to assert on.
+          timeout 200 ./target/release/bsdkrun --log-level 5 freebsd --verbose -- uname -a \
+            | tee fb.out || true
+          # ssh + tailscale need a live VM — only worth it if the guest came up.
+          if grep -q "FreeBSD" fb.out; then
+            id=$(./target/release/bsdkrun freebsd -d --port 2224:22)
             sleep 5
-          done
-          echo "exec uname -a: $out"
-          # Agent feature CLIs (soft-fail: the whole step is experimental).
-          # ssh: FreeBSD's default sshd_config also says PermitRootLogin no —
-          # exercises the agent's prohibit-password rewrite + sysrc/service path.
-          if [ -n "$out" ]; then
+            # ssh: FreeBSD's default sshd_config says PermitRootLogin no —
+            # exercises the agent's prohibit-password rewrite + sysrc/service path.
             ssh-keygen -t ed25519 -N '' -q -f fb_key
             ./target/release/bsdkrun ssh "$id" setup --key fb_key.pub || true
             sshout=""
@@ -342,23 +325,15 @@ jobs:
               sleep 3
             done
             echo "ssh says: $sshout"
-            if [ -z "$sshout" ]; then echo "--- ssh client errors ---"; tail -20 ssh_client.err || true; fi
-            if [ "$sshout" = "FreeBSD" ]; then echo "🎉 ssh into FreeBSD works (agent-installed key)"; fi
+            [ "$sshout" = "FreeBSD" ] && echo "🎉 ssh into FreeBSD works (agent-installed key)"
             # tailscale via pkg (bootstraps pkg itself; no auth key: install+start only)
             ./target/release/bsdkrun tailscale "$id" install || true
             ./target/release/bsdkrun tailscale "$id" start || true
             ./target/release/bsdkrun tailscale "$id" status || true
+            ./target/release/bsdkrun stop "$id" 2>/dev/null || true
           fi
-          echo "----- console (head: kernel banner + device probe) -----"
-          ./target/release/bsdkrun logs "$id" 2>/dev/null > fb.log || true
-          head -80 fb.log || true
-          echo "----- console (tail: rc / where boot currently is) -----"
-          tail -40 fb.log || true
-          ./target/release/bsdkrun stop "$id" 2>/dev/null || true
-          if echo "$out" | grep -q "FreeBSD"; then
-            echo "🎉 FreeBSD amd64 BOOTED under libkrun (PVH) — agent exec works"
-          elif grep -qE "FreeBSD .* GENERIC|Copyright .c. 19.* The FreeBSD" fb.log; then
-            echo "FreeBSD booted (console banner seen); agent not reachable yet"
+          if grep -q "FreeBSD" fb.out; then
+            echo "🎉 FreeBSD amd64 BOOTED under libkrun (PVH) — agent exec works (boot console above)"
           else
-            echo "FreeBSD executing but not confirmed (no exec reply, no console captured)"
+            echo "FreeBSD not confirmed — inspect the streamed boot console above"
           fi

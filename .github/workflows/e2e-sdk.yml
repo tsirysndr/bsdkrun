@@ -1,0 +1,150 @@
+name: e2e (SDK / Ubuntu KVM)
+
+# Builds bsdkrun + the guest agent under KVM, then runs the TypeScript SDK's
+# unit + end-to-end tests (the e2e suite boots a real Alpine microVM and drives
+# it through the SDK). Ubuntu-only: only GitHub's x86_64 runners expose
+# /dev/kvm, which the boot path needs.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - "main"
+    paths:
+      - "src/**"
+      - "agent/**"
+      - "build.rs"
+      - "sdk/typescript/**"
+      - ".github/workflows/e2e-sdk.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "agent/**"
+      - "sdk/typescript/**"
+      - ".github/workflows/e2e-sdk.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  sdk:
+    name: sdk e2e (x86_64)
+    runs-on: ubuntu-latest # x86_64; has /dev/kvm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          set -eux
+          test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 0666 /dev/kvm
+
+      - name: Install build deps (incl. libkrun/libkrunfw build requirements)
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl ca-certificates xz-utils python3 \
+            python3-pyelftools pkg-config patchelf patch cpio kmod rsync zstd \
+            flex bison bc libelf-dev libssl-dev \
+            clang libclang-dev llvm-dev musl-tools
+
+      - name: Install gvproxy (user-mode networking)
+        run: |
+          set -eux
+          sudo curl -fL -o /usr/local/bin/gvproxy \
+            https://github.com/containers/gvisor-tap-vsock/releases/latest/download/gvproxy-linux-amd64
+          sudo chmod +x /usr/local/bin/gvproxy
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # libkrun links libkrunfw (a from-source kernel build, ~15-20 min). Cache
+      # the built trees; the key matches the main e2e workflow so a warm cache is
+      # shared. Restore/save separately so a failed build never poisons the cache.
+      - name: Restore libkrun build
+        id: libkrun-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v13
+
+      - name: Build libkrun (cache miss)
+        if: steps.libkrun-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          git clone --depth 1 -b v5.5.0 https://github.com/containers/libkrunfw
+          ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
+          git clone --depth 1 -b feat/pvh-boot https://github.com/tsirysndr/libkrun
+          ( cd libkrun && make -j"$(nproc)" BLK=1 NET=1 )
+
+      - name: Save libkrun build
+        if: steps.libkrun-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v13
+
+      - name: Install libkrun
+        run: |
+          set -eux
+          ( cd libkrunfw && sudo make install )
+          ( cd libkrun && sudo make install BLK=1 NET=1 )
+          echo "PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo /usr/local/lib64 | sudo tee /etc/ld.so.conf.d/libkrun.conf
+          sudo ldconfig
+
+      - name: Build bsdkrun
+        run: cargo build --release
+
+      - name: Build guest agent (static musl)
+        run: |
+          set -eux
+          ( cd agent && cargo build --release --target x86_64-unknown-linux-musl )
+          echo "BSDKRUN_AGENT_LINUX=$PWD/agent/target/x86_64-unknown-linux-musl/release/bsdkrun-agent" >> "$GITHUB_ENV"
+
+      - name: Install SDK deps
+        working-directory: sdk/typescript
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck SDK
+        working-directory: sdk/typescript
+        run: bun run typecheck
+
+      - name: SDK unit tests
+        working-directory: sdk/typescript
+        run: bun test test/unit.test.ts
+
+      - name: SDK e2e tests (boots a real microVM)
+        working-directory: sdk/typescript
+        env:
+          # Point the SDK at the release binary we just built, and switch the
+          # e2e suite on. (No auto-install on Linux — libkrun is built above.)
+          BSDKRUN_BIN: ${{ github.workspace }}/target/release/bsdkrun
+          BSDKRUN_E2E: "1"
+        run: bun test test/e2e.test.ts
+
+      - name: Dump machine state on failure
+        if: failure()
+        run: |
+          set -eux
+          ./target/release/bsdkrun ps -a || true
+          for id in $(./target/release/bsdkrun ps -a --json | python3 -c 'import sys,json;[print(m["id"]) for m in json.load(sys.stdin)]' 2>/dev/null); do
+            echo "===== logs $id ====="
+            ./target/release/bsdkrun logs "$id" 2>/dev/null | tail -30 || true
+          done

@@ -1982,7 +1982,14 @@ fn run_guest_command(
     // terminal. Explicit commands run non-interactively so their output isn't
     // lost to the guest agent's PTY drain race on a fast exit.
     let tty = interactive && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-    let code = agent::exec(port, argv, &[], tty).map_err(|e| agent_error(kind, e))?;
+    // The synthesized interactive shell (`interactive`) prefers bash and sets a
+    // sane TERM on BSD; an explicit command runs verbatim with no injected env.
+    let (argv, env): (Vec<String>, Vec<String>) = if interactive {
+        (interactive_shell_argv(), interactive_shell_env(kind))
+    } else {
+        (argv.to_vec(), Vec::new())
+    };
+    let code = agent::exec(port, &argv, &env, tty).map_err(|e| agent_error(kind, e))?;
     if !keep_running {
         // One-shot: tear the VM down (SIGTERM -> the child's cleanup + poweroff).
         unsafe { libc::kill(child_pid, libc::SIGTERM) };
@@ -2384,8 +2391,9 @@ fn cmd_shell(id: &str) -> Result<()> {
     // Prefer the guest agent (a fresh interactive shell over TCP). Fall back to
     // the persistent-console attach for machines booted without an agent port.
     if let Some(port) = agent::read_port(&vdir) {
-        let code = agent::exec(port, &[default_shell()], &[], true)
-            .map_err(|e| agent_error(&vm.kind, e))?;
+        let argv = interactive_shell_argv();
+        let env = interactive_shell_env(&vm.kind);
+        let code = agent::exec(port, &argv, &env, true).map_err(|e| agent_error(&vm.kind, e))?;
         std::process::exit(code);
     }
     if !vm.detached {
@@ -2394,10 +2402,30 @@ fn cmd_shell(id: &str) -> Result<()> {
     console::attach_interactive(&vdir)
 }
 
-/// The interactive shell to launch inside a guest.
-/// `/bin/sh` exists on Alpine/busybox Linux images and on FreeBSD/NetBSD.
-fn default_shell() -> String {
-    "/bin/sh".to_string()
+/// argv that opens an interactive shell inside a guest, preferring `bash` when
+/// it's on the guest's PATH and falling back to `/bin/sh` otherwise. The choice
+/// is made in the guest (only it knows its PATH) via a `/bin/sh -c` wrapper that
+/// `exec`s the winner so it inherits the agent's PTY. `/bin/sh` exists on
+/// Alpine/busybox Linux images and on FreeBSD/NetBSD.
+fn interactive_shell_argv() -> Vec<String> {
+    vec![
+        "/bin/sh".to_string(),
+        "-c".to_string(),
+        "if command -v bash >/dev/null 2>&1; then exec bash; else exec /bin/sh; fi".to_string(),
+    ]
+}
+
+/// Extra environment for an interactive shell over the agent. FreeBSD/NetBSD
+/// guests boot with no `TERM` set on the agent PTY, which leaves line editing
+/// and full-screen tools broken; `xterm` is in both guests' terminfo and gives
+/// color plus the usual key sequences. Linux images set their own `TERM`, so
+/// leave them alone.
+fn interactive_shell_env(kind: &str) -> Vec<String> {
+    if is_bsd(kind) {
+        vec!["TERM=xterm".to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Whether a machine is a non-Linux guest (where we can't auto-inject the agent

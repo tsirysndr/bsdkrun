@@ -359,6 +359,19 @@ impl Db {
         }
     }
 
+    /// Delete a machine's DB row (its state dir is removed separately).
+    pub fn delete_machine(&self, id: &str) -> Result<()> {
+        self.rt
+            .block_on(async {
+                sqlx::query("DELETE FROM machines WHERE id = ?")
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .map_err(Into::into)
+    }
+
     // ---- disks ----------------------------------------------------------
 
     /// Record a disk by path (idempotent). Returns its short id.

@@ -105,6 +105,10 @@ enum Command {
     /// Stop a running machine.
     Stop(IdArgs),
 
+    /// Remove one or more machines (and their state). Refuses a running
+    /// machine unless `-f`, which stops it first.
+    Rm(RmArgs),
+
     /// Show a machine's console log.
     Logs(LogsArgs),
 
@@ -255,6 +259,17 @@ struct IdArgs {
     /// machine id (a unique prefix is enough).
     #[arg(value_name = "ID")]
     id: String,
+}
+
+#[derive(Parser)]
+struct RmArgs {
+    /// Remove even if the machine is still running (stops it first).
+    #[arg(short, long)]
+    force: bool,
+
+    /// machine id(s) to remove (a unique prefix is enough).
+    #[arg(value_name = "ID", required = true)]
+    ids: Vec<String>,
 }
 
 #[derive(Parser)]
@@ -641,6 +656,7 @@ fn main() -> Result<()> {
         Command::Ps(args) => cmd_ps(args.all, args.json),
         Command::Images(args) => cmd_images(args.json),
         Command::Stop(args) => cmd_stop(&args.id),
+        Command::Rm(args) => cmd_rm(&args.ids, args.force),
         Command::Logs(args) => cmd_logs(&args.id, args.follow, args.boot),
         Command::Shell(args) => cmd_shell(&args.id),
         Command::Exec(args) => cmd_exec(&args.id, &args.command, &args.env, args.tty),
@@ -2280,6 +2296,28 @@ fn cmd_stop(id: &str) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn cmd_rm(ids: &[String], force: bool) -> Result<()> {
+    let db = db::Db::open()?;
+    for id in ids {
+        let vm = db.find_machine(id)?;
+        let running = vm.status == "running" && vm.pid.map(db::pid_alive).unwrap_or(false);
+        if running {
+            if !force {
+                anyhow::bail!("machine {} is running (stop it first, or use -f)", vm.id);
+            }
+            if let Some(pid) = vm.pid {
+                unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+            }
+        }
+        // Remove the per-machine state dir (console log, sockets, CoW disk clone),
+        // then drop the DB row.
+        std::fs::remove_dir_all(std::path::PathBuf::from(&vm.state_dir)).ok();
+        db.delete_machine(&vm.id)?;
+        println!("{}", vm.id);
+    }
+    Ok(())
 }
 
 fn cmd_logs(id: &str, follow: bool, boot: bool) -> Result<()> {

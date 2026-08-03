@@ -5,19 +5,26 @@
 // SHA-256, and unpacks it into ./binaries/ where the bin shim expects it.
 //
 // Escape hatches (env vars):
-//   BSDKRUN_SKIP_DOWNLOAD=1   skip everything (e.g. developing this package)
-//   BSDKRUN_BINARY=/path      copy a local binary instead of downloading
-//   BSDKRUN_DOWNLOAD_BASE=url  override the release download base URL
+//   BSDKRUN_SKIP_DOWNLOAD=1     skip everything (e.g. developing this package)
+//   BSDKRUN_BINARY=/path        copy a local binary instead of downloading
+//   BSDKRUN_DOWNLOAD_BASE=url    override the release download base URL
+//   BSDKRUN_SKIP_GVPROXY=1      skip the gvproxy (user-mode networking) download
+//   BSDKRUN_GVPROXY=/path       already have gvproxy — skip its download
+//   BSDKRUN_GVPROXY_VERSION=vX  pin a gvproxy release tag (default: latest)
 
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
-const { detect, binaryPath } = require("./platform.js");
+const { detect, binaryPath, gvproxyAsset, gvproxyPath } = require("./platform.js");
 
 const VERSION = require("../package.json").version;
 const REPO = "tsirysndr/bsdkrun";
 const DEFAULT_BASE = `https://github.com/${REPO}/releases/download/v${VERSION}`;
+
+// gvproxy (gvisor-tap-vsock) provides the guest's user-mode networking. bsdkrun
+// boots fine without it (just no NIC), so this download is best-effort.
+const GVPROXY_REPO = "containers/gvisor-tap-vsock";
 
 async function main() {
   if (process.env.BSDKRUN_SKIP_DOWNLOAD) {
@@ -75,6 +82,60 @@ async function main() {
   fs.chmodSync(dest, 0o755);
 
   console.log(`[bsdkrun] installed bsdkrun ${VERSION} -> ${dest}`);
+
+  // Best-effort: also fetch gvproxy for user-mode guest networking. Never fail
+  // the install over it — bsdkrun degrades gracefully to a NIC-less boot.
+  await installGvproxy();
+}
+
+/**
+ * Download the gvproxy binary for this platform into ./binaries/gvproxy so guest
+ * networking works out of the box. Best-effort: any failure just warns, since
+ * the guest can still boot without a NIC and users can `brew install gvproxy`
+ * or set BSDKRUN_GVPROXY themselves.
+ */
+async function installGvproxy() {
+  if (process.env.BSDKRUN_SKIP_GVPROXY) {
+    console.log("[bsdkrun] BSDKRUN_SKIP_GVPROXY set — skipping gvproxy download.");
+    return;
+  }
+  if (process.env.BSDKRUN_GVPROXY) {
+    console.log(
+      `[bsdkrun] BSDKRUN_GVPROXY=${process.env.BSDKRUN_GVPROXY} set — skipping gvproxy download.`
+    );
+    return;
+  }
+
+  const asset = gvproxyAsset();
+  if (!asset) return; // unsupported platform already handled by detect()
+
+  const dest = gvproxyPath();
+  if (fs.existsSync(dest)) {
+    console.log(`[bsdkrun] gvproxy already present at ${dest}`);
+    return;
+  }
+
+  const version = process.env.BSDKRUN_GVPROXY_VERSION;
+  const base = version
+    ? `https://github.com/${GVPROXY_REPO}/releases/download/${version}`
+    : `https://github.com/${GVPROXY_REPO}/releases/latest/download`;
+  const url = `${base}/${asset}`;
+
+  try {
+    console.log(`[bsdkrun] downloading ${url}`);
+    const bin = await download(url);
+    // gvproxy assets are raw executables (no archive) — write and mark runnable.
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, bin);
+    fs.chmodSync(dest, 0o755);
+    console.log(`[bsdkrun] installed gvproxy -> ${dest}`);
+  } catch (err) {
+    console.warn(
+      `[bsdkrun] could not download gvproxy (${err && err.message ? err.message : err}).\n` +
+        "         Guest networking will be unavailable until you install gvproxy\n" +
+        "         (`brew install gvproxy`) or set BSDKRUN_GVPROXY to its path."
+    );
+  }
 }
 
 /** Fetch a URL to a Buffer, following redirects, with a clear error on failure. */

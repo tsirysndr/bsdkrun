@@ -6,9 +6,19 @@
 
 const fs = require("node:fs");
 const { spawnSync } = require("node:child_process");
-const { binaryPath } = require("../scripts/platform.js");
+const { binaryPath, gvproxyPath } = require("../scripts/platform.js");
 
 const bin = binaryPath();
+
+// Point bsdkrun at the gvproxy postinstall bundled, unless the user already
+// picked one (BSDKRUN_GVPROXY takes precedence in the native binary too, but
+// setting it here also wins over a different gvproxy on PATH).
+if (!process.env.BSDKRUN_GVPROXY) {
+  const gv = gvproxyPath();
+  if (fs.existsSync(gv)) {
+    process.env.BSDKRUN_GVPROXY = gv;
+  }
+}
 
 if (!fs.existsSync(bin)) {
   console.error(

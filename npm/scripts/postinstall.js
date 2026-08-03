@@ -174,7 +174,16 @@ async function verifyChecksum(archive, sidecarUrl, asset) {
   console.log(`[bsdkrun] checksum OK (${actual.slice(0, 12)}…)`);
 }
 
-main().catch((err) => {
-  console.error("\n[bsdkrun] install failed:\n" + (err && err.message ? err.message : err));
-  process.exit(1);
-});
+// Exported so the bin shim can self-heal: under `bunx` (and any install run
+// with lifecycle scripts disabled) postinstall never runs, so the launcher
+// calls install() on first use to fetch the binary on demand.
+module.exports = { install: main };
+
+// Only auto-run when executed directly (`node scripts/postinstall.js`), not
+// when require()'d by the bin shim.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("\n[bsdkrun] install failed:\n" + (err && err.message ? err.message : err));
+    process.exit(1);
+  });
+}

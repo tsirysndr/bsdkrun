@@ -62,6 +62,15 @@ export function useSettings() {
   });
 }
 
+export function useSystemStats() {
+  return useQuery({
+    queryKey: ["system-stats"] as const,
+    queryFn: () => api.systemStats(),
+    refetchInterval: 2000,
+    placeholderData: (prev) => prev,
+  });
+}
+
 export function useVersions(os: string, enabled: boolean) {
   return useQuery({
     queryKey: qk.versions(os),

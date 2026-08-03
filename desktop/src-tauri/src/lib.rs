@@ -6,7 +6,9 @@
 
 mod bsdkrun;
 mod menu;
+mod system;
 mod term;
+mod tray;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -25,9 +27,18 @@ pub struct Settings {
     pub binary_path: String,
 }
 
-#[derive(Default)]
 struct AppState {
     settings: Mutex<Settings>,
+    sys: Mutex<sysinfo::System>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            settings: Mutex::new(Settings::default()),
+            sys: Mutex::new(sysinfo::System::new()),
+        }
+    }
 }
 
 impl AppState {
@@ -86,6 +97,12 @@ fn set_settings(app: tauri::AppHandle, state: State<AppState>, binary_path: Stri
     s.clone()
 }
 
+/// Update the menu-bar tray status line (called by the frontend on probe).
+#[tauri::command]
+fn set_tray_status(app: tauri::AppHandle, ok: bool, detail: String) {
+    tray::set_status(&app, ok, &detail);
+}
+
 /// Resolve + `bsdkrun probe` — reports whether libkrun links and the hypervisor
 /// is reachable, so the UI can show a connection indicator.
 #[tauri::command]
@@ -138,6 +155,30 @@ async fn list_volumes(state: State<'_, AppState>) -> Result<Vec<Volume>, BkError
 async fn list_versions(state: State<'_, AppState>, os: String) -> Result<Vec<VersionEntry>, BkError> {
     let bin = state.binary()?;
     bsdkrun::list_versions(&bin, &os).await
+}
+
+/// Host CPU% + RAM and the real on-disk size of all microVMs (status bar).
+#[tauri::command]
+async fn system_stats(state: State<'_, AppState>) -> Result<system::SystemStats, String> {
+    use sysinfo::{MemoryRefreshKind, RefreshKind};
+    let (cpu, mem_used, mem_total) = {
+        let mut sys = state.sys.lock().unwrap();
+        sys.refresh_cpu_usage();
+        sys.refresh_specifics(
+            RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
+        );
+        (sys.global_cpu_usage(), sys.used_memory(), sys.total_memory())
+    };
+    let (vm_disk, vm_count) = tokio::task::spawn_blocking(system::vm_disk_usage)
+        .await
+        .unwrap_or((0, 0));
+    Ok(system::SystemStats {
+        cpu,
+        mem_used,
+        mem_total,
+        vm_disk,
+        vm_count,
+    })
 }
 
 // ---- lifecycle -------------------------------------------------------------
@@ -321,6 +362,18 @@ async fn term_open(
     term::open(&app, &terminals, &bin, &id, command, rows.max(1), cols.max(1))
 }
 
+/// Open an interactive terminal on the HOST (the machine running this app),
+/// not a guest. Used by the bottom panel when no machine terminal is open.
+#[tauri::command]
+async fn term_open_host(
+    app: tauri::AppHandle,
+    terminals: State<'_, Terminals>,
+    rows: u16,
+    cols: u16,
+) -> Result<String, String> {
+    term::open_host(&app, &terminals, rows.max(1), cols.max(1))
+}
+
 #[tauri::command]
 async fn term_write(terminals: State<'_, Terminals>, session: String, data: String) -> Result<(), String> {
     term::write(&terminals, &session, &data)
@@ -349,22 +402,38 @@ pub fn run() {
         .manage(AppState::default())
         .manage(Terminals::default())
         .manage(LogStreams::default())
+        .manage(tray::TrayStatus::default())
         .setup(|app| {
             // Load persisted settings into managed state.
             let loaded = load_settings(app.handle());
             *app.state::<AppState>().settings.lock().unwrap() = loaded;
             // Native application menu (macOS top bar + Windows/Linux window menu).
             menu::install(app.handle())?;
+            // macOS-style system tray (Docker-Desktop-like).
+            tray::install(app.handle())?;
+            // Close the window to the tray instead of quitting (app stays alive
+            // in the menu bar; use the tray/Cmd-Q to actually quit).
+            if let Some(win) = app.get_webview_window("main") {
+                let w = win.clone();
+                win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = w.hide();
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
             set_settings,
+            set_tray_status,
             probe,
             list_machines,
             list_images,
             list_volumes,
             list_versions,
+            system_stats,
             run_machine,
             stop_machine,
             remove_machine,
@@ -373,6 +442,7 @@ pub fn run() {
             start_log_stream,
             stop_log_stream,
             term_open,
+            term_open_host,
             term_write,
             term_resize,
             term_close,

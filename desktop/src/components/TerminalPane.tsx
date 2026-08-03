@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { api, onTermData, onTermExit } from "../lib/api";
+import { HOST_MACHINE } from "../state/atoms";
 
 const THEME = {
   background: "#0a0d13",
@@ -100,7 +101,10 @@ export default function TerminalPane({
 
       const { rows, cols } = term;
       try {
-        session = await api.termOpen(machineId, command, rows, cols);
+        session =
+          machineId === HOST_MACHINE
+            ? await api.termOpenHost(rows, cols)
+            : await api.termOpen(machineId, command, rows, cols);
         setStatus("open");
         term.focus();
       } catch (e) {
@@ -136,7 +140,9 @@ export default function TerminalPane({
       <div ref={hostRef} className="term-host p-2" />
       {status === "connecting" && (
         <div className="pointer-events-none absolute inset-0 grid place-items-center text-xs text-foreground-500">
-          Connecting to guest agent…
+          {machineId === HOST_MACHINE
+            ? "Starting host shell…"
+            : "Connecting to guest agent…"}
         </div>
       )}
     </div>

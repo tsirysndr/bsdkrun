@@ -49,6 +49,14 @@ export interface ProbeResult {
   binary: string | null;
 }
 
+export interface SystemStats {
+  cpu: number; // host CPU usage %
+  mem_used: number; // bytes
+  mem_total: number; // bytes
+  vm_disk: number; // real bytes used by all microVMs
+  vm_count: number;
+}
+
 export interface Settings {
   binary_path: string;
 }

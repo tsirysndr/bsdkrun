@@ -6,16 +6,30 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish assets to (e.g. v0.3.0). Required for a manual run to attach binaries to a release."
+        required: false
+        default: ""
+      include_macos:
+        description: "Also (re)build + publish the macOS arm64 binary. Off by default — the macOS binary is usually already published; a manual run just adds the missing Linux binaries."
+        type: boolean
+        default: false
 
 permissions:
   contents: write # create the release and upload assets
 
 jobs:
   macos:
+    # Skip on a Linux-only manual run (macOS binary is already on the release);
+    # opt back in with the include_macos input.
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.include_macos }}
     runs-on: macos-latest # Apple Silicon — needed for aarch64 + libkrun
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && inputs.tag || github.ref }}
 
       # libkrun provides the C ABI bsdkrun links against (build.rs finds it via
       # `brew --prefix libkrun`). It lives in a third-party tap, which Homebrew
@@ -64,12 +78,15 @@ jobs:
           mkdir -p dist
           # The signed host binary (tar keeps the exec bit + codesignature).
           tar -C target/release -czf dist/bsdkrun-aarch64-apple-darwin.tar.gz bsdkrun
+          # Per-tarball checksum sidecar (the @bsdkrun/cli postinstall verifies it).
+          ( cd dist && shasum -a 256 bsdkrun-aarch64-apple-darwin.tar.gz \
+              > bsdkrun-aarch64-apple-darwin.tar.gz.sha256 )
           # All cross-built guest agents (linux/freebsd × aarch64/x86_64). BSD
           # ones are for manual injection into a running VM.
           cp src/agent-bin/bsdkrun-agent.* dist/
           # Subshell so cwd doesn't leak; scope the glob so the sums file
-          # doesn't hash itself.
-          ( cd dist && shasum -a 256 bsdkrun-* > SHA256SUMS.txt )
+          # doesn't hash itself (and skip the .sha256 sidecar).
+          ( cd dist && shasum -a 256 bsdkrun-*.tar.gz bsdkrun-agent.* > SHA256SUMS.txt )
           cat dist/SHA256SUMS.txt
 
       # Always expose the build as workflow artifacts (handy for manual runs).
@@ -79,11 +96,124 @@ jobs:
           name: bsdkrun-macos-aarch64
           path: dist/*
 
-      # On a version tag, create/update the GitHub release with the assets.
+      # On a version tag (or a manual run given a tag), create/update the GitHub
+      # release and append these assets (existing assets are left in place).
       - name: Publish release assets
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.tag != '' }}
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
           files: dist/*
           fail_on_unmatched_files: true
           generate_release_notes: true
+
+  # Linux host binaries (amd64 + arm64). Built here so the @bsdkrun/cli npm
+  # package can download a matching `bsdkrun` for Linux. A manual run
+  # (workflow_dispatch with `tag`) appends these to an existing release — handy
+  # when the macOS binary is already published and only Linux is missing.
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest # x86_64
+            triple: x86_64-unknown-linux-gnu
+          - arch: aarch64
+            runner: ubuntu-24.04-arm # GitHub-hosted arm64 runner
+            triple: aarch64-unknown-linux-gnu
+    name: linux-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60 # first run compiles a kernel (libkrunfw); ~15-20 min
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && inputs.tag || github.ref }}
+
+      # build.rs links libkrun; libkrun links libkrunfw (a from-source kernel).
+      # Same deps the KVM e2e job uses.
+      - name: Install build deps (incl. libkrun/libkrunfw build requirements)
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl ca-certificates xz-utils python3 \
+            python3-pyelftools pkg-config patchelf patch cpio kmod rsync zstd \
+            flex bison bc libelf-dev libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Cache the built libkrunfw/libkrun trees per arch — the kernel compile is
+      # the slow part. Restore/save split so a failed build can't poison the cache.
+      - name: Restore libkrun build
+        id: libkrun-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-${{ matrix.arch }}-pvh-v13
+
+      # Build only on a cache miss. libkrunfw must be installed before libkrun
+      # builds. Use `cd`, NOT `make -C` (a stray `w` in MAKEFLAGS breaks the
+      # kernel sub-make).
+      - name: Build libkrun (cache miss)
+        if: steps.libkrun-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          git clone --depth 1 -b v5.5.0 https://github.com/containers/libkrunfw
+          ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
+          git clone --depth 1 -b feat/pvh-boot https://github.com/tsirysndr/libkrun  # PVH boot for amd64 BSD
+          ( cd libkrun && make -j"$(nproc)" BLK=1 NET=1 )
+
+      - name: Save libkrun build
+        if: steps.libkrun-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-${{ matrix.arch }}-pvh-v13
+
+      # Install on every run (a cache hit restores the trees but not the
+      # system-installed libraries) and point pkg-config/loader at /usr/local/lib64.
+      - name: Install libkrun
+        run: |
+          set -eux
+          ( cd libkrunfw && sudo make install )
+          ( cd libkrun && sudo make install BLK=1 NET=1 )
+          echo "PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo /usr/local/lib64 | sudo tee /etc/ld.so.conf.d/libkrun.conf
+          sudo ldconfig
+          ls -l /usr/local/lib64/libkrun.so*
+
+      - name: Build bsdkrun (release)
+        run: cargo build --release
+
+      - name: Package artifacts
+        run: |
+          set -eux
+          mkdir -p dist
+          # A single `bsdkrun` entry — matches what @bsdkrun/cli's postinstall
+          # extracts. Nothing to codesign on Linux.
+          tar -C target/release -czf "dist/bsdkrun-${{ matrix.triple }}.tar.gz" bsdkrun
+          ( cd dist && shasum -a 256 "bsdkrun-${{ matrix.triple }}.tar.gz" \
+              > "bsdkrun-${{ matrix.triple }}.tar.gz.sha256" )
+          cat "dist/bsdkrun-${{ matrix.triple }}.tar.gz.sha256"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bsdkrun-linux-${{ matrix.arch }}
+          path: dist/*
+
+      # Append the Linux tarball + checksum to the release (leaves existing
+      # macOS/agent assets untouched).
+      - name: Publish release assets
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.tag != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
+          files: dist/*
+          fail_on_unmatched_files: true

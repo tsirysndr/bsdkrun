@@ -61,10 +61,12 @@ jobs:
           # the ftp command). Download the agent as the normal user; the rest needs
           # root (vnconfig, mount), so hand the paths to a root shell.
           # Point pkgin at the HTTPS CDN — the VM's default ftp mirror is very slow.
+          # Install curl + tailscale into the build VM (same arch as the target), so
+          # the tailscale binaries can be copied straight into the mounted rootfs.
           echo 'https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/aarch64/10.1/All' \
             | sudo tee /usr/pkg/etc/pkgin/repositories.conf
           sudo pkgin -y update
-          sudo pkgin -y install curl
+          sudo pkgin -y install curl tailscale
           curl -fL -o "$WS/bsdkrun-agent" "$AGENT_URL"
           chmod a+x "$WS/bsdkrun-agent"
 
@@ -129,6 +131,64 @@ jobs:
           EOF
           chmod 555 /mnt/root/etc/rc.d/bsdkrun_agent
           echo 'bsdkrun_agent=YES' >> /mnt/root/etc/rc.conf
+
+          # Bake in tailscale: copy the two static Go binaries the build VM's pkgin
+          # fetched (exact-arch match; they link only base libc/ld.elf_so, so no
+          # pkgsrc runtime deps land in the image) + an rc.d service, and enable it
+          # in userspace-networking mode (starts cleanly with no TUN device).
+          mkdir -p /mnt/root/usr/pkg/bin
+          install -m 755 /usr/pkg/bin/tailscale  /mnt/root/usr/pkg/bin/tailscale
+          install -m 755 /usr/pkg/bin/tailscaled /mnt/root/usr/pkg/bin/tailscaled
+          cat > /mnt/root/etc/rc.d/tailscaled <<'EOF'
+          #!/bin/sh
+          #
+          # PROVIDE: tailscaled
+          # REQUIRE: NETWORKING
+          #
+          # tailscaled=YES
+          # tailscaled_flags="--tun=userspace-networking"
+
+          . /etc/rc.subr
+
+          name="tailscaled"
+          rcvar=$name
+          command="/usr/pkg/bin/tailscaled"
+          pidfile="/var/run/tailscale/${name}.pid"
+          tailscaled_socket="/var/run/tailscale/${name}.sock"
+
+          start_precmd="tailscaled_precmd"
+          start_cmd="tailscaled_start"
+          stop_cmd="tailscaled_stop"
+
+          tailscaled_precmd()
+          {
+          	[ -d /var/run/tailscale ] || /bin/mkdir -p /var/run/tailscale
+          	[ -e "${tailscaled_socket}" ] && /bin/rm -f "${tailscaled_socket}"
+          	return 0
+          }
+
+          tailscaled_start()
+          {
+          	echo "Starting ${name}."
+          	${command} ${tailscaled_flags} &
+          	echo $! > ${pidfile}
+          }
+
+          tailscaled_stop()
+          {
+          	if [ -f ${pidfile} ]; then
+          		kill "$(cat ${pidfile})" 2>/dev/null && rm -f ${pidfile}
+          	fi
+          }
+
+          load_rc_config $name
+          run_rc_command "$1"
+          EOF
+          chmod 555 /mnt/root/etc/rc.d/tailscaled
+          {
+          	echo 'tailscaled=YES'
+          	echo 'tailscaled_flags="--tun=userspace-networking"'
+          } >> /mnt/root/etc/rc.conf
 
           umount /mnt/root
           vnconfig -u vnd0

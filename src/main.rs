@@ -100,7 +100,7 @@ enum Command {
     Ps(PsArgs),
 
     /// List downloaded images.
-    Images,
+    Images(ImagesArgs),
 
     /// Stop a running machine.
     Stop(IdArgs),
@@ -136,9 +136,23 @@ struct VolumeArgs {
 #[derive(Subcommand)]
 enum VolumeCmd {
     /// List persistent volumes.
-    Ls,
+    Ls(VolumeLsArgs),
     /// Remove one or more volumes (and their data).
     Rm(VolumeRmArgs),
+}
+
+#[derive(Parser)]
+struct VolumeLsArgs {
+    /// Emit the volume list as a JSON array (for scripting / the SDK).
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct ImagesArgs {
+    /// Emit the image list as a JSON array (for scripting / the SDK).
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -230,6 +244,10 @@ struct PsArgs {
     /// Show all machines (default shows only running ones).
     #[arg(short, long)]
     all: bool,
+
+    /// Emit the machine list as a JSON array (for scripting / the SDK).
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -605,8 +623,8 @@ fn main() -> Result<()> {
         Command::Linux(args) => boot_linux(args),
         Command::Freebsd(args) => boot_freebsd(args),
         Command::Netbsd(args) => boot_netbsd(args),
-        Command::Ps(args) => cmd_ps(args.all),
-        Command::Images => cmd_images(),
+        Command::Ps(args) => cmd_ps(args.all, args.json),
+        Command::Images(args) => cmd_images(args.json),
         Command::Stop(args) => cmd_stop(&args.id),
         Command::Logs(args) => cmd_logs(&args.id, args.follow, args.boot),
         Command::Shell(args) => cmd_shell(&args.id),
@@ -615,7 +633,7 @@ fn main() -> Result<()> {
         Command::Ssh(args) => cmd_ssh(&args.id, &args.args),
         Command::Systemd(args) => run_agent_cli(&args.id, "systemd", &args.args, &[]),
         Command::Volume(args) => match args.cmd {
-            VolumeCmd::Ls => cmd_volume_ls(),
+            VolumeCmd::Ls(a) => cmd_volume_ls(a.json),
             VolumeCmd::Rm(a) => cmd_volume_rm(&a.names, a.force),
         },
     }
@@ -1552,9 +1570,40 @@ fn truncate(s: &str, n: usize) -> String {
 }
 
 #[allow(clippy::print_literal)] // padded tabular headers read clearer as args
-fn cmd_ps(all: bool) -> Result<()> {
+fn cmd_ps(all: bool, json: bool) -> Result<()> {
     let db = db::Db::open()?;
     let machines = db.list_machines()?;
+    if json {
+        let mut out = Vec::new();
+        for m in machines {
+            let running = m.status == "running" && m.pid.map(db::pid_alive).unwrap_or(false);
+            if m.status == "running" && !running {
+                db.set_machine_status(&m.id, "exited", m.exit_code).ok();
+            }
+            if !all && !running {
+                continue;
+            }
+            out.push(serde_json::json!({
+                "id": m.id,
+                "image": m.image,
+                "kind": m.kind,
+                "command": m.command,
+                "status": if running { "running" } else { "exited" },
+                "running": running,
+                "exit_code": m.exit_code,
+                "pid": m.pid,
+                "detached": m.detached,
+                "cpus": m.cpus,
+                "mem": m.mem,
+                "volume": m.volume,
+                "state_dir": m.state_dir,
+                "created_at": m.created_at,
+                "finished_at": m.finished_at,
+            }));
+        }
+        println!("{}", serde_json::to_string(&out)?);
+        return Ok(());
+    }
     println!(
         "{:<14}  {:<22}  {:<26}  {:<16}  {}",
         "ID", "IMAGE", "STATUS", "CREATED", "COMMAND"
@@ -1625,10 +1674,27 @@ fn reconcile_bsd_images() {
 }
 
 #[allow(clippy::print_literal)] // padded tabular headers read clearer as args
-fn cmd_images() -> Result<()> {
+fn cmd_images(json: bool) -> Result<()> {
     reconcile_bsd_images();
     let db = db::Db::open()?;
     let images = db.list_images()?;
+    if json {
+        let out: Vec<_> = images
+            .iter()
+            .map(|im| {
+                serde_json::json!({
+                    "id": im.id,
+                    "reference": im.reference,
+                    "digest": im.digest,
+                    "size": im.size,
+                    "rootfs": im.rootfs,
+                    "created_at": im.created_at,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string(&out)?);
+        return Ok(());
+    }
     println!(
         "{:<14}  {:<32}  {:<10}  {}",
         "ID", "REFERENCE", "SIZE", "CREATED"
@@ -1645,10 +1711,42 @@ fn cmd_images() -> Result<()> {
     Ok(())
 }
 
-fn cmd_volume_ls() -> Result<()> {
+fn cmd_volume_ls(json: bool) -> Result<()> {
     let db = db::Db::open()?;
     let rows = db.list_volumes()?;
     let tracked: std::collections::HashSet<String> = rows.iter().map(|v| v.name.clone()).collect();
+    if json {
+        let mut out = Vec::new();
+        for v in &rows {
+            out.push(serde_json::json!({
+                "name": v.name,
+                "guest": v.kind,
+                "base": v.base,
+                "path": v.path,
+                "size": volume_size(&v.path),
+                "created_at": v.created_at,
+                "tracked": true,
+            }));
+        }
+        if let Ok(entries) = std::fs::read_dir(db::volumes_dir()?) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if e.path().is_dir() && !tracked.contains(&name) {
+                    out.push(serde_json::json!({
+                        "name": name,
+                        "guest": serde_json::Value::Null,
+                        "base": serde_json::Value::Null,
+                        "path": e.path().to_string_lossy(),
+                        "size": volume_size(&e.path().to_string_lossy()),
+                        "created_at": serde_json::Value::Null,
+                        "tracked": false,
+                    }));
+                }
+            }
+        }
+        println!("{}", serde_json::to_string(&out)?);
+        return Ok(());
+    }
     println!(
         "{:<20}  {:<9}  {:<28}  {:<10}  {}",
         "NAME", "GUEST", "BASE", "SIZE", "CREATED"

@@ -18,6 +18,16 @@ const ASSETS = {
   "linux arm64": "bsdkrun-aarch64-unknown-linux-gnu.tar.gz",
 };
 
+// process.platform + process.arch  ->  gvproxy release asset (a raw executable
+// published by containers/gvisor-tap-vsock). gvproxy provides the guest's
+// user-mode networking; bsdkrun degrades gracefully without it, so its download
+// is best-effort. macOS ships a single universal `gvproxy-darwin`.
+const GVPROXY_ASSETS = {
+  "darwin arm64": "gvproxy-darwin",
+  "linux x64": "gvproxy-linux-amd64",
+  "linux arm64": "gvproxy-linux-arm64",
+};
+
 /** Human-readable list of what we do support, for error messages. */
 const SUPPORTED = "macOS/arm64, Linux/x64, Linux/arm64";
 
@@ -50,4 +60,22 @@ function binaryPath() {
   return path.join(__dirname, "..", "binaries", name);
 }
 
-module.exports = { detect, binaryPath, ASSETS, SUPPORTED };
+/** The gvproxy release asset for the current platform, or null if none maps. */
+function gvproxyAsset() {
+  return GVPROXY_ASSETS[process.platform + " " + process.arch] || null;
+}
+
+/** Absolute path to where the downloaded gvproxy binary lives inside the package. */
+function gvproxyPath() {
+  return path.join(__dirname, "..", "binaries", "gvproxy");
+}
+
+module.exports = {
+  detect,
+  binaryPath,
+  gvproxyAsset,
+  gvproxyPath,
+  ASSETS,
+  GVPROXY_ASSETS,
+  SUPPORTED,
+};

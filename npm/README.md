@@ -39,21 +39,29 @@ the install will fail with a clear message.
 ## Runtime prerequisites
 
 - **macOS:** install **libkrun** (the binary links it at runtime):
-  `brew tap libkrun/krun && brew install libkrun`. Homebrew pulls in `gvproxy` too.
+  `brew tap libkrun/krun && brew install libkrun`.
 - **Linux:** **libkrun is bundled** — the archive ships `libkrun.so`/`libkrunfw.so`
   (from the [PVH-enabled fork](https://github.com/tsirysndr/libkrun/tree/feat/pvh-boot))
   next to `bsdkrun`, rpath'd to `$ORIGIN`, so no separate libkrun install is needed.
-  Guest **networking** still uses `gvproxy` — put it on `PATH` (or set
-  `BSDKRUN_GVPROXY`); boots without networking don't need it. You also need KVM
-  access (`/dev/kvm`).
+  You also need KVM access (`/dev/kvm`).
+
+**Guest networking (`gvproxy`) is auto-installed.** Postinstall also downloads the
+matching [`gvproxy`](https://github.com/containers/gvisor-tap-vsock) for your
+platform into the package and wires `bsdkrun` to it, so user-mode networking works
+out of the box. It's best-effort — if the download fails the guest still boots
+without a NIC, and you can install gvproxy yourself (`brew install gvproxy`) or set
+`BSDKRUN_GVPROXY`. Skip it with `BSDKRUN_SKIP_GVPROXY=1`.
 
 ## Environment variables
 
-| Variable                | Effect                                                       |
-| ----------------------- | ------------------------------------------------------------ |
-| `BSDKRUN_SKIP_DOWNLOAD` | Skip the postinstall download entirely.                      |
-| `BSDKRUN_BINARY`        | Install a local binary (path) instead of downloading.        |
-| `BSDKRUN_DOWNLOAD_BASE` | Override the release download base URL (for mirrors/testing).|
+| Variable                  | Effect                                                        |
+| ------------------------- | ------------------------------------------------------------ |
+| `BSDKRUN_SKIP_DOWNLOAD`   | Skip the postinstall download entirely.                      |
+| `BSDKRUN_BINARY`          | Install a local binary (path) instead of downloading.        |
+| `BSDKRUN_DOWNLOAD_BASE`   | Override the release download base URL (for mirrors/testing).|
+| `BSDKRUN_SKIP_GVPROXY`    | Skip the gvproxy (user-mode networking) download.            |
+| `BSDKRUN_GVPROXY`         | Path to an existing gvproxy; skips its download and is used at runtime. |
+| `BSDKRUN_GVPROXY_VERSION` | Pin a gvproxy release tag (default: latest).                 |
 
 ## License
 

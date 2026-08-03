@@ -55,12 +55,28 @@ pub enum Os {
 /// FreeBSD's `/boot/loader.conf` lives on UFS (macOS can't write it), but the
 /// EFI loader reads this from the FAT ESP before mounting UFS. NetBSD needs no
 /// such hint — its kernel auto-selects the PL011 UART as console.
+///
+/// `autoboot_delay=-1` skips the loader's ~10s countdown and boots straight
+/// through (a microVM wants to boot now, not wait for a keypress that can't
+/// come); `beastie_disable` drops the ASCII boot menu for the same reason.
 const FREEBSD_LOADER_ENV: &str = "\
 console=efi,eficom
 boot_serial=YES
 boot_multicons=YES
 comconsole_speed=115200
 efi_com_speed=115200
+autoboot_delay=-1
+beastie_disable=YES
+";
+
+/// The bundled arm64 image already ships a working console, so it only needs the
+/// countdown skipped — writing the full console env could fight its own
+/// `loader.conf`. Just the autoboot hints. (arm64 FreeBSD boots via EFI only on
+/// macOS; the Linux/amd64 path is PVH direct-boot with no loader countdown.)
+#[cfg(target_os = "macos")]
+const FREEBSD_ARM64_LOADER_ENV: &str = "\
+autoboot_delay=-1
+beastie_disable=YES
 ";
 
 impl Os {
@@ -160,7 +176,7 @@ impl Os {
         match self {
             Os::Freebsd => {
                 info!("writing serial-console loader.env onto the image's ESP…");
-                write_freebsd_loader_env(raw)
+                write_freebsd_loader_env(raw, FREEBSD_LOADER_ENV)
             }
             // NetBSD picks up the PL011 UART on its own.
             Os::Netbsd => Ok(()),
@@ -397,11 +413,19 @@ pub fn fetch_netbsd_arm64_image(force: bool) -> Result<PathBuf> {
 /// guest agent injected. The default for `bsdkrun freebsd` on arm64; keeps the
 /// same GPT + EFI layout, so it boots through `loader.efi` like the official one.
 pub fn fetch_freebsd_arm64_image(force: bool) -> Result<PathBuf> {
-    fetch_xz_asset(
+    let raw = fetch_xz_asset(
         &format!("{FREEBSD_ARM64_BASE}/freebsd-arm64-root.raw.xz"),
         "freebsd-arm64-root.raw",
         force,
-    )
+    )?;
+    // Skip the loader countdown so `bsdkrun freebsd` boots straight through.
+    // Best-effort: an ESP-write hiccup shouldn't block the boot (worst case, the
+    // countdown just stays). macOS-only — arm64 FreeBSD isn't booted elsewhere.
+    #[cfg(target_os = "macos")]
+    if let Err(e) = write_freebsd_loader_env(&raw, FREEBSD_ARM64_LOADER_ENV) {
+        warn!("couldn't write loader.env to skip the boot countdown: {e}");
+    }
+    Ok(raw)
 }
 
 /// bsdkrun-hosted FreeBSD **amd64** UFS rootfs (agent injected). Booted as a
@@ -567,9 +591,10 @@ fn materialize(cached: &Path, dir: &Path) -> Result<PathBuf> {
     Ok(out)
 }
 
-/// Mount the image's FAT ESP and write FreeBSD's `loader.env` onto it.
+/// Mount the image's FAT ESP and write FreeBSD's `loader.env` (the given
+/// contents) onto it.
 #[cfg(target_os = "macos")]
-fn write_freebsd_loader_env(raw: &Path) -> Result<()> {
+fn write_freebsd_loader_env(raw: &Path, env: &str) -> Result<()> {
     // Attach the raw image without mounting, and find the EFI (FAT) slice.
     let out = Command::new("hdiutil")
         .args([
@@ -601,7 +626,7 @@ fn write_freebsd_loader_env(raw: &Path) -> Result<()> {
         .to_string();
 
     // Everything after attach must be balanced by a detach, so wrap the work.
-    let result = mount_and_write(&esp_dev);
+    let result = mount_and_write(&esp_dev, env);
     let _ = Command::new("hdiutil")
         .arg("detach")
         .arg(&whole_disk)
@@ -610,7 +635,7 @@ fn write_freebsd_loader_env(raw: &Path) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn mount_and_write(esp_dev: &str) -> Result<()> {
+fn mount_and_write(esp_dev: &str, env: &str) -> Result<()> {
     let mount = std::env::temp_dir().join(format!("bsdkrun-esp-{}", std::process::id()));
     std::fs::create_dir_all(&mount).context("creating ESP mountpoint")?;
 
@@ -629,7 +654,7 @@ fn mount_and_write(esp_dev: &str) -> Result<()> {
     let write_result = (|| -> Result<()> {
         let dir = mount.join("EFI/freebsd");
         std::fs::create_dir_all(&dir).context("creating EFI/freebsd on ESP")?;
-        std::fs::write(dir.join("loader.env"), FREEBSD_LOADER_ENV).context("writing loader.env")?;
+        std::fs::write(dir.join("loader.env"), env).context("writing loader.env")?;
         let _ = Command::new("dot_clean").arg(&mount).output();
         for junk in [".fseventsd", "EFI/._freebsd", "EFI/freebsd/._loader.env"] {
             let _ = std::fs::remove_dir_all(mount.join(junk));
@@ -659,7 +684,7 @@ fn mount_and_write(esp_dev: &str) -> Result<()> {
 ///
 /// EXPERIMENTAL / untested — BSD guests under KVM need validation on a Linux host.
 #[cfg(not(target_os = "macos"))]
-fn write_freebsd_loader_env(raw: &Path) -> Result<()> {
+fn write_freebsd_loader_env(raw: &Path, env: &str) -> Result<()> {
     use crate::host::root_command;
 
     // losetup -Pf --show: attach with partition scanning, print the loop device.
@@ -693,7 +718,7 @@ fn write_freebsd_loader_env(raw: &Path) -> Result<()> {
         let write = (|| -> Result<()> {
             let dir = mount.join("EFI/freebsd");
             std::fs::create_dir_all(&dir).context("creating EFI/freebsd on ESP")?;
-            std::fs::write(dir.join("loader.env"), FREEBSD_LOADER_ENV).context("writing loader.env")
+            std::fs::write(dir.join("loader.env"), env).context("writing loader.env")
         })();
         let _ = run(root_command("umount").arg(&mount), "umount (ESP)");
         let _ = std::fs::remove_dir(&mount);

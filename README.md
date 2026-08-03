@@ -252,6 +252,18 @@ bsdkrun netbsd  -d              # NetBSD-current in the background; prints its i
 bsdkrun netbsd  --version 10.1 -d --port 2222:22
 ```
 
+Like `bsdkrun linux`, you can pass a **command to run inside the guest** after `--`. The guest
+boots, its agent runs the command (streaming stdout/stderr), and — without `-d` — the VM powers
+off afterward, with bsdkrun exiting on the command's status (a one-shot, à la `docker run`). With
+`-d` the machine is left running once the command returns. Needs networking (the agent), so it's
+incompatible with `--no-net`:
+
+```sh
+bsdkrun freebsd -- uname -a           # boot, run, print, power off; exit = command's status
+bsdkrun netbsd  -- sh -c 'sysctl hw.model'
+bsdkrun freebsd -d -- pkg install -y curl   # run a setup step, then leave the VM up
+```
+
 Both carry the usual machine options (`-d`, `--persist`, `-v/--volume`, `--version`,
 `--attach-disk`, `--port`, `--cpus`/`--mem`), so per-machine [CoW disk clones](#managing-machines)
 and `ps`/`logs`/`shell`/`stop` all apply. They differ in how they boot:

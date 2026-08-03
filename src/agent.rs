@@ -150,6 +150,31 @@ pub fn read_port(machine_dir: &Path) -> Option<u16> {
         .ok()
 }
 
+/// Readiness probe: run a no-op (`/bin/sh -c :`) in the guest and report whether
+/// the agent answered with an exit frame. Because gvproxy accepts the host
+/// connection before the guest's agent is up, a bare TCP connect isn't enough —
+/// this does a full protocol round-trip, so it only returns true once the guest
+/// agent is actually serving. Idempotent, so it's safe to poll in a boot loop.
+pub fn ping(host_port: u16) -> bool {
+    let Ok(stream) = TcpStream::connect(("127.0.0.1", host_port)) else {
+        return false;
+    };
+    stream.set_nodelay(true).ok();
+    stream.set_read_timeout(Some(Duration::from_secs(3))).ok();
+    let argv = ["/bin/sh".to_string(), "-c".to_string(), ":".to_string()];
+    if write_request(&stream, false, &argv, &[]).is_err() {
+        return false;
+    }
+    let mut reader = stream;
+    loop {
+        match read_frame(&mut reader) {
+            Some((CH_EXIT, _)) => return true,
+            Some(_) => continue,  // drain any stdout/stderr frames
+            None => return false, // closed or timed out before EXIT: not ready
+        }
+    }
+}
+
 /// Run `argv` inside the guest via its agent (a gvproxy-forwarded TCP port on
 /// loopback), forwarding stdio and returning the guest process's exit code.
 /// `tty` requests a PTY (interactive).

@@ -506,6 +506,15 @@ struct BsdArgs {
 
     #[command(flatten)]
     vm: VmConfig,
+
+    /// Command (and args) to run inside the guest via its agent once it's
+    /// booted, like `bsdkrun linux`. Everything after `--` is passed through.
+    /// Without `-d` this is one-shot: the guest boots, runs the command
+    /// (streaming its output), then powers off, and bsdkrun exits with the
+    /// command's status. With `-d` the machine is left running afterward.
+    /// Needs networking (the agent) — incompatible with `--no-net`.
+    #[arg(last = true, value_name = "CMD")]
+    command: Vec<String>,
 }
 
 #[derive(Parser)]
@@ -788,6 +797,7 @@ fn boot_kernel(args: KernelArgs) -> Result<()> {
         args.run.detach,
         true, // BSD: use the SMP-shutdown watchdog on the foreground path
         args.run.volume.as_deref(),
+        &[],
         build,
     )
 }
@@ -800,11 +810,13 @@ fn boot_firmware(args: FirmwareArgs) -> Result<()> {
         &args.run,
         &args.net,
         &args.vm,
+        &[],
     )
 }
 
 /// Boot a machine via UEFI firmware + a root disk (shared by `firmware` and the
 /// `freebsd`/`netbsd` shortcuts). The root disk is CoW-cloned per machine.
+#[allow(clippy::too_many_arguments)]
 fn firmware_machine(
     firmware: &std::path::Path,
     disk: &std::path::Path,
@@ -812,7 +824,9 @@ fn firmware_machine(
     run: &RunConfig,
     net: &NetConfig,
     vm: &VmConfig,
+    exec_after: &[String],
 ) -> Result<()> {
+    ensure_net_for_exec(net, exec_after)?;
     let machine_id = id::short_id();
     let vdir = machine_dir_or_tmp(&machine_id);
     let image = basename(disk);
@@ -843,14 +857,27 @@ fn firmware_machine(
         &vdir,
         "firmware",
         &image,
-        "",
+        &exec_after.join(" "),
         vm.cpus,
         vm.mem,
         run.detach,
         true,
         run.volume.as_deref(),
+        exec_after,
         build,
     )
+}
+
+/// A trailing command runs in the guest via its agent, which rides the guest
+/// NIC — so it's incompatible with `--no-net`. Fail early with a clear message.
+fn ensure_net_for_exec(net: &NetConfig, exec_after: &[String]) -> Result<()> {
+    if !exec_after.is_empty() && net.no_net {
+        anyhow::bail!(
+            "running a command in the guest needs networking (the agent talks over the \
+             guest NIC), but --no-net was given"
+        );
+    }
+    Ok(())
 }
 
 /// `freebsd` / `netbsd`: fetch the image if needed, auto-locate the firmware,
@@ -879,6 +906,7 @@ fn boot_freebsd(args: BsdArgs) -> Result<()> {
 /// macOS EFI-firmware boot: FreeBSD's `loader.efi` takes over from the ESP.
 #[cfg(target_os = "macos")]
 fn boot_freebsd_efi(args: BsdArgs) -> Result<()> {
+    ensure_net_for_exec(&args.net, &args.command)?;
     // Default (no --version) to bsdkrun's bundled arm64 image, which has the guest
     // agent injected so `exec` works out of the box. An explicit --version (or a
     // non-arm64 host) fetches the official FreeBSD VM image from download.freebsd.org.
@@ -900,6 +928,7 @@ fn boot_freebsd_efi(args: BsdArgs) -> Result<()> {
         &args.run,
         &args.net,
         &args.vm,
+        &args.command,
     )
 }
 
@@ -954,6 +983,7 @@ fn boot_freebsd_pvh(args: BsdArgs) -> Result<()> {
     // (`virtio_mmio.device=`, `virtio_mmio.device_1=`, ...). FreeBSD can't read
     // the Linux form: Linux repeats the key, but FreeBSD's kernel environment
     // hides duplicate keys past the first.
+    ensure_net_for_exec(&args.net, &args.command)?;
     std::env::set_var("KRUN_PVH", "1");
     std::env::set_var("KRUN_VIRTIO_MMIO_HINTS", "freebsd");
 
@@ -989,12 +1019,13 @@ fn boot_freebsd_pvh(args: BsdArgs) -> Result<()> {
         &vdir,
         "freebsd",
         &image,
-        "",
+        &args.command.join(" "),
         args.vm.cpus,
         args.vm.mem,
         args.run.detach,
         true,
         args.run.volume.as_deref(),
+        &args.command,
         build,
     )
 }
@@ -1033,6 +1064,7 @@ fn netbsd_cmdline() -> String {
 /// `--version` applies only to the arm64 kernel; the images themselves are pinned
 /// bundled assets.
 fn boot_netbsd(args: BsdArgs) -> Result<()> {
+    ensure_net_for_exec(&args.net, &args.command)?;
     let arch = host::Arch::current()?;
 
     // amd64 NetBSD is a PVH kernel (MICROVM). Tell libkrun to enter via the
@@ -1082,12 +1114,13 @@ fn boot_netbsd(args: BsdArgs) -> Result<()> {
         &vdir,
         "netbsd",
         &image,
-        "",
+        &args.command.join(" "),
         args.vm.cpus,
         args.vm.mem,
         args.run.detach,
         true,
         args.run.volume.as_deref(),
+        &args.command,
         build,
     )
 }
@@ -1277,11 +1310,15 @@ fn run_machine(
     detach: bool,
     watchdog: bool,
     volume: Option<&str>,
+    exec_after: &[String],
     build: impl FnOnce() -> Result<(Ctx, Option<Gvproxy>)>,
 ) -> Result<()> {
-    if detach {
+    // A trailing command runs in the guest via its agent once it's up, which
+    // needs the VM in the background — so a one-shot command boots detached too
+    // (but doesn't announce the id and powers the VM off when the command ends).
+    if detach || !exec_after.is_empty() {
         return run_detached(
-            machine_id, vdir, kind, image, command, cpus, mem, volume, build,
+            machine_id, vdir, kind, image, command, cpus, mem, volume, exec_after, detach, build,
         );
     }
     db::record_machine(
@@ -1409,6 +1446,7 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
         args.detach,
         false,
         args.volume.as_deref(),
+        &[],
         build,
     )
 }
@@ -1485,6 +1523,8 @@ fn run_detached(
     cpus: u8,
     mem: u32,
     volume: Option<&str>,
+    exec_after: &[String],
+    keep_running: bool,
     build: impl FnOnce() -> Result<(Ctx, Option<Gvproxy>)>,
 ) -> Result<()> {
     use std::io::Write;
@@ -1511,8 +1551,24 @@ fn run_detached(
             &vdir.to_string_lossy(),
             volume,
         );
-        println!("{machine_id}");
-        return Ok(());
+        // No trailing command: classic `-d`, just announce the id.
+        if exec_after.is_empty() {
+            println!("{machine_id}");
+            return Ok(());
+        }
+        // Command mode: the VM boots in the child (above); here in the parent we
+        // wait for its agent, run the command against it, then (for a one-shot)
+        // power the VM off. `-d` keeps it running and prints the id first.
+        if keep_running {
+            println!("{machine_id}");
+        }
+        return run_guest_command(
+            machine_id,
+            kind,
+            exec_after,
+            keep_running,
+            pid as libc::pid_t,
+        );
     }
 
     // Child: detach from the terminal/session, wire the console, boot.
@@ -1555,6 +1611,67 @@ fn run_detached(
         }
     };
     unsafe { libc::_exit(code) };
+}
+
+/// How long to wait for a freshly-booted guest's agent before giving up on a
+/// trailing command. A BSD guest takes tens of seconds to reach multiuser.
+const GUEST_AGENT_BOOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// Poll a booting machine's guest agent until it answers (or we time out / the
+/// machine dies), returning the forwarded host port to `exec` against.
+fn wait_for_agent(id: &str) -> Result<u16> {
+    let deadline = std::time::Instant::now() + GUEST_AGENT_BOOT_TIMEOUT;
+    loop {
+        // agent_target() also confirms the machine's pid is alive; ping() does a
+        // real agent round-trip, so it's only true once the guest agent is up.
+        if let Ok((_vm, port)) = agent_target(id) {
+            if agent::ping(port) {
+                return Ok(port);
+            }
+        }
+        // Fail fast if the guest died during boot instead of waiting out the timeout.
+        if let Ok(db) = db::Db::open() {
+            if let Ok(vm) = db.find_machine(id) {
+                if vm.status == "exited" || !vm.pid.map(db::pid_alive).unwrap_or(false) {
+                    anyhow::bail!(
+                        "machine {id} exited before its agent came up — see `bsdkrun logs {id}`"
+                    );
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "timed out after {}s waiting for the guest agent on machine {id} \
+                 (still booting? try `bsdkrun logs {id}`)",
+                GUEST_AGENT_BOOT_TIMEOUT.as_secs()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
+/// Parent-side of a BSD boot with a trailing command: wait for the guest agent,
+/// run the command against it (streaming stdio), and — unless `keep_running`
+/// (`-d`) — power the VM off afterward. Exits with the command's status.
+fn run_guest_command(
+    id: &str,
+    kind: &str,
+    argv: &[String],
+    keep_running: bool,
+    child_pid: libc::pid_t,
+) -> Result<()> {
+    use std::io::IsTerminal;
+    let port = wait_for_agent(id)?;
+    // Interactive (PTY) only when both ends are a real terminal — matches how a
+    // one-liner exec feels while staying clean when piped/redirected.
+    let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let code = agent::exec(port, argv, &[], tty).map_err(|e| agent_error(kind, e))?;
+    if !keep_running {
+        // One-shot: tear the VM down (SIGTERM -> the child's cleanup + poweroff).
+        unsafe { libc::kill(child_pid, libc::SIGTERM) };
+        db::update_machine_status(id, "exited", Some(128 + libc::SIGTERM as i64));
+    }
+    std::process::exit(code);
 }
 
 // ---- management subcommands -------------------------------------------------

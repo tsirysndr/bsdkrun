@@ -880,6 +880,23 @@ fn ensure_net_for_exec(net: &NetConfig, exec_after: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// The command a `freebsd`/`netbsd` boot should run in the guest.
+///
+/// The bundled BSD images are headless (no console getty), so a plain foreground
+/// `bsdkrun freebsd` would boot to a console that just sits at the last rc line.
+/// Instead, default it to an interactive shell over the agent — you drop into a
+/// prompt and the VM powers off when you exit, like foreground `bsdkrun linux`.
+/// This needs the agent (networking); `-d`, an explicit command, or `--no-net`
+/// all opt out and keep their own behavior (background / that command / classic
+/// console boot).
+fn bsd_exec_after(command: &[String], detach: bool, no_net: bool) -> Vec<String> {
+    if command.is_empty() && !detach && !no_net {
+        vec!["/bin/sh".to_string()]
+    } else {
+        command.to_vec()
+    }
+}
+
 /// `freebsd` / `netbsd`: fetch the image if needed, auto-locate the firmware,
 /// then boot it. How it boots depends on the host OS:
 ///
@@ -906,7 +923,9 @@ fn boot_freebsd(args: BsdArgs) -> Result<()> {
 /// macOS EFI-firmware boot: FreeBSD's `loader.efi` takes over from the ESP.
 #[cfg(target_os = "macos")]
 fn boot_freebsd_efi(args: BsdArgs) -> Result<()> {
-    ensure_net_for_exec(&args.net, &args.command)?;
+    // No explicit command on a foreground boot → drop into an interactive shell.
+    let exec_after = bsd_exec_after(&args.command, args.run.detach, args.net.no_net);
+    ensure_net_for_exec(&args.net, &exec_after)?;
     // Default (no --version) to bsdkrun's bundled arm64 image, which has the guest
     // agent injected so `exec` works out of the box. An explicit --version (or a
     // non-arm64 host) fetches the official FreeBSD VM image from download.freebsd.org.
@@ -928,7 +947,7 @@ fn boot_freebsd_efi(args: BsdArgs) -> Result<()> {
         &args.run,
         &args.net,
         &args.vm,
-        &args.command,
+        &exec_after,
     )
 }
 
@@ -983,7 +1002,8 @@ fn boot_freebsd_pvh(args: BsdArgs) -> Result<()> {
     // (`virtio_mmio.device=`, `virtio_mmio.device_1=`, ...). FreeBSD can't read
     // the Linux form: Linux repeats the key, but FreeBSD's kernel environment
     // hides duplicate keys past the first.
-    ensure_net_for_exec(&args.net, &args.command)?;
+    let exec_after = bsd_exec_after(&args.command, args.run.detach, args.net.no_net);
+    ensure_net_for_exec(&args.net, &exec_after)?;
     std::env::set_var("KRUN_PVH", "1");
     std::env::set_var("KRUN_VIRTIO_MMIO_HINTS", "freebsd");
 
@@ -1019,13 +1039,13 @@ fn boot_freebsd_pvh(args: BsdArgs) -> Result<()> {
         &vdir,
         "freebsd",
         &image,
-        &args.command.join(" "),
+        &exec_after.join(" "),
         args.vm.cpus,
         args.vm.mem,
         args.run.detach,
         true,
         args.run.volume.as_deref(),
-        &args.command,
+        &exec_after,
         build,
     )
 }
@@ -1064,7 +1084,8 @@ fn netbsd_cmdline() -> String {
 /// `--version` applies only to the arm64 kernel; the images themselves are pinned
 /// bundled assets.
 fn boot_netbsd(args: BsdArgs) -> Result<()> {
-    ensure_net_for_exec(&args.net, &args.command)?;
+    let exec_after = bsd_exec_after(&args.command, args.run.detach, args.net.no_net);
+    ensure_net_for_exec(&args.net, &exec_after)?;
     let arch = host::Arch::current()?;
 
     // amd64 NetBSD is a PVH kernel (MICROVM). Tell libkrun to enter via the
@@ -1114,13 +1135,13 @@ fn boot_netbsd(args: BsdArgs) -> Result<()> {
         &vdir,
         "netbsd",
         &image,
-        &args.command.join(" "),
+        &exec_after.join(" "),
         args.vm.cpus,
         args.vm.mem,
         args.run.detach,
         true,
         args.run.volume.as_deref(),
-        &args.command,
+        &exec_after,
         build,
     )
 }
@@ -1618,14 +1639,23 @@ fn run_detached(
 const GUEST_AGENT_BOOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
 /// Poll a booting machine's guest agent until it answers (or we time out / the
-/// machine dies), returning the forwarded host port to `exec` against.
-fn wait_for_agent(id: &str) -> Result<u16> {
-    let deadline = std::time::Instant::now() + GUEST_AGENT_BOOT_TIMEOUT;
+/// machine dies), returning the forwarded host port to `exec` against. A BSD
+/// guest takes ~15-20s to reach the agent, so show a live "still booting"
+/// counter on a terminal — otherwise the wait looks like a hang.
+fn wait_for_agent(id: &str, kind: &str) -> Result<u16> {
+    use std::io::{IsTerminal, Write};
+    let show = std::io::stderr().is_terminal();
+    let start = std::time::Instant::now();
+    let deadline = start + GUEST_AGENT_BOOT_TIMEOUT;
     loop {
         // agent_target() also confirms the machine's pid is alive; ping() does a
         // real agent round-trip, so it's only true once the guest agent is up.
         if let Ok((_vm, port)) = agent_target(id) {
             if agent::ping(port) {
+                if show {
+                    eprint!("\r\x1b[K"); // clear the progress line
+                    let _ = std::io::stderr().flush();
+                }
                 return Ok(port);
             }
         }
@@ -1633,6 +1663,9 @@ fn wait_for_agent(id: &str) -> Result<u16> {
         if let Ok(db) = db::Db::open() {
             if let Ok(vm) = db.find_machine(id) {
                 if vm.status == "exited" || !vm.pid.map(db::pid_alive).unwrap_or(false) {
+                    if show {
+                        eprint!("\r\x1b[K");
+                    }
                     anyhow::bail!(
                         "machine {id} exited before its agent came up — see `bsdkrun logs {id}`"
                     );
@@ -1645,6 +1678,13 @@ fn wait_for_agent(id: &str) -> Result<u16> {
                  (still booting? try `bsdkrun logs {id}`)",
                 GUEST_AGENT_BOOT_TIMEOUT.as_secs()
             );
+        }
+        if show {
+            eprint!(
+                "\r\x1b[K⋯ booting {kind} microVM — waiting for the guest agent ({}s)…",
+                start.elapsed().as_secs()
+            );
+            let _ = std::io::stderr().flush();
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
@@ -1661,7 +1701,7 @@ fn run_guest_command(
     child_pid: libc::pid_t,
 ) -> Result<()> {
     use std::io::IsTerminal;
-    let port = wait_for_agent(id)?;
+    let port = wait_for_agent(id, kind)?;
     // Interactive (PTY) only when both ends are a real terminal — matches how a
     // one-liner exec feels while staying clean when piped/redirected.
     let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();

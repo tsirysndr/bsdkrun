@@ -264,6 +264,16 @@ bsdkrun netbsd  -- sh -c 'sysctl hw.model'
 bsdkrun freebsd -d -- pkg install -y curl   # run a setup step, then leave the VM up
 ```
 
+With **no command** (and no `-d`), a foreground `bsdkrun freebsd` / `bsdkrun netbsd` drops you
+straight into an **interactive shell** over the agent — the bundled images are headless (no console
+login), so this is the way in — and powers the VM off when you exit, like foreground `bsdkrun
+linux`. A short `⋯ waiting for the guest agent` line shows while the guest boots (~15-20s).
+
+```sh
+bsdkrun freebsd        # boot, then an interactive /bin/sh; exit (Ctrl-D) powers it off
+bsdkrun netbsd -d      # no shell — just background it and print the id (use exec/ssh/shell)
+```
+
 Both carry the usual machine options (`-d`, `--persist`, `-v/--volume`, `--version`,
 `--attach-disk`, `--port`, `--cpus`/`--mem`), so per-machine [CoW disk clones](#managing-machines)
 and `ps`/`logs`/`shell`/`stop` all apply. They differ in how they boot:

@@ -419,13 +419,42 @@ pub fn fetch_freebsd_arm64_image(force: bool) -> Result<PathBuf> {
         force,
     )?;
     // Skip the loader countdown so `bsdkrun freebsd` boots straight through.
-    // Best-effort: an ESP-write hiccup shouldn't block the boot (worst case, the
-    // countdown just stays). macOS-only — arm64 FreeBSD isn't booted elsewhere.
     #[cfg(target_os = "macos")]
-    if let Err(e) = write_freebsd_loader_env(&raw, FREEBSD_ARM64_LOADER_ENV) {
-        warn!("couldn't write loader.env to skip the boot countdown: {e}");
-    }
+    ensure_freebsd_arm64_autoboot(&raw);
     Ok(raw)
+}
+
+/// Write the "skip the loader countdown" loader.env onto the bundled arm64
+/// image's ESP — but only ONCE per (re)downloaded image, not on every boot.
+///
+/// The mount uses `hdiutil`/`diskutil`, which is slow (a few seconds) and can
+/// stall; doing it on every `bsdkrun freebsd` made the CLI look hung right after
+/// "using cached asset". A sentinel file next to the image records that we've
+/// already patched it; we redo the write only when the image is newer than the
+/// sentinel (i.e. it was re-downloaded). Best-effort throughout: a failure just
+/// means the countdown stays.
+#[cfg(target_os = "macos")]
+fn ensure_freebsd_arm64_autoboot(raw: &Path) {
+    let sentinel = raw.with_file_name(format!(
+        "{}.autoboot-patched",
+        raw.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let already = match (std::fs::metadata(&sentinel), std::fs::metadata(raw)) {
+        (Ok(s), Ok(r)) => match (s.modified(), r.modified()) {
+            (Ok(sm), Ok(rm)) => sm >= rm, // sentinel at least as new as the image
+            _ => false,
+        },
+        _ => false,
+    };
+    if already {
+        return;
+    }
+    match write_freebsd_loader_env(raw, FREEBSD_ARM64_LOADER_ENV) {
+        Ok(()) => {
+            let _ = std::fs::write(&sentinel, b"");
+        }
+        Err(e) => warn!("couldn't write loader.env to skip the boot countdown: {e}"),
+    }
 }
 
 /// bsdkrun-hosted FreeBSD **amd64** UFS rootfs (agent injected). Booted as a

@@ -798,6 +798,7 @@ fn boot_kernel(args: KernelArgs) -> Result<()> {
         true, // BSD: use the SMP-shutdown watchdog on the foreground path
         args.run.volume.as_deref(),
         &[],
+        false,
         build,
     )
 }
@@ -811,6 +812,7 @@ fn boot_firmware(args: FirmwareArgs) -> Result<()> {
         &args.net,
         &args.vm,
         &[],
+        false,
     )
 }
 
@@ -825,6 +827,7 @@ fn firmware_machine(
     net: &NetConfig,
     vm: &VmConfig,
     exec_after: &[String],
+    interactive: bool,
 ) -> Result<()> {
     ensure_net_for_exec(net, exec_after)?;
     let machine_id = id::short_id();
@@ -864,6 +867,7 @@ fn firmware_machine(
         true,
         run.volume.as_deref(),
         exec_after,
+        interactive,
         build,
     )
 }
@@ -889,11 +893,16 @@ fn ensure_net_for_exec(net: &NetConfig, exec_after: &[String]) -> Result<()> {
 /// This needs the agent (networking); `-d`, an explicit command, or `--no-net`
 /// all opt out and keep their own behavior (background / that command / classic
 /// console boot).
-fn bsd_exec_after(command: &[String], detach: bool, no_net: bool) -> Vec<String> {
+///
+/// Returns `(command, interactive)`. `interactive` is true only for the shell we
+/// synthesize, so it gets a PTY; an *explicit* command runs non-interactively
+/// (like `docker run` without `-t`). That also sidesteps a guest-agent PTY drain
+/// race that swallows a fast command's output when a tty is allocated.
+fn bsd_exec_after(command: &[String], detach: bool, no_net: bool) -> (Vec<String>, bool) {
     if command.is_empty() && !detach && !no_net {
-        vec!["/bin/sh".to_string()]
+        (vec!["/bin/sh".to_string()], true)
     } else {
-        command.to_vec()
+        (command.to_vec(), false)
     }
 }
 
@@ -924,7 +933,7 @@ fn boot_freebsd(args: BsdArgs) -> Result<()> {
 #[cfg(target_os = "macos")]
 fn boot_freebsd_efi(args: BsdArgs) -> Result<()> {
     // No explicit command on a foreground boot → drop into an interactive shell.
-    let exec_after = bsd_exec_after(&args.command, args.run.detach, args.net.no_net);
+    let (exec_after, interactive) = bsd_exec_after(&args.command, args.run.detach, args.net.no_net);
     ensure_net_for_exec(&args.net, &exec_after)?;
     // Default (no --version) to bsdkrun's bundled arm64 image, which has the guest
     // agent injected so `exec` works out of the box. An explicit --version (or a
@@ -948,6 +957,7 @@ fn boot_freebsd_efi(args: BsdArgs) -> Result<()> {
         &args.net,
         &args.vm,
         &exec_after,
+        interactive,
     )
 }
 
@@ -1002,7 +1012,7 @@ fn boot_freebsd_pvh(args: BsdArgs) -> Result<()> {
     // (`virtio_mmio.device=`, `virtio_mmio.device_1=`, ...). FreeBSD can't read
     // the Linux form: Linux repeats the key, but FreeBSD's kernel environment
     // hides duplicate keys past the first.
-    let exec_after = bsd_exec_after(&args.command, args.run.detach, args.net.no_net);
+    let (exec_after, interactive) = bsd_exec_after(&args.command, args.run.detach, args.net.no_net);
     ensure_net_for_exec(&args.net, &exec_after)?;
     std::env::set_var("KRUN_PVH", "1");
     std::env::set_var("KRUN_VIRTIO_MMIO_HINTS", "freebsd");
@@ -1046,6 +1056,7 @@ fn boot_freebsd_pvh(args: BsdArgs) -> Result<()> {
         true,
         args.run.volume.as_deref(),
         &exec_after,
+        interactive,
         build,
     )
 }
@@ -1084,7 +1095,7 @@ fn netbsd_cmdline() -> String {
 /// `--version` applies only to the arm64 kernel; the images themselves are pinned
 /// bundled assets.
 fn boot_netbsd(args: BsdArgs) -> Result<()> {
-    let exec_after = bsd_exec_after(&args.command, args.run.detach, args.net.no_net);
+    let (exec_after, interactive) = bsd_exec_after(&args.command, args.run.detach, args.net.no_net);
     ensure_net_for_exec(&args.net, &exec_after)?;
     let arch = host::Arch::current()?;
 
@@ -1142,6 +1153,7 @@ fn boot_netbsd(args: BsdArgs) -> Result<()> {
         true,
         args.run.volume.as_deref(),
         &exec_after,
+        interactive,
         build,
     )
 }
@@ -1332,6 +1344,7 @@ fn run_machine(
     watchdog: bool,
     volume: Option<&str>,
     exec_after: &[String],
+    interactive: bool,
     build: impl FnOnce() -> Result<(Ctx, Option<Gvproxy>)>,
 ) -> Result<()> {
     // A trailing command runs in the guest via its agent once it's up, which
@@ -1339,7 +1352,8 @@ fn run_machine(
     // (but doesn't announce the id and powers the VM off when the command ends).
     if detach || !exec_after.is_empty() {
         return run_detached(
-            machine_id, vdir, kind, image, command, cpus, mem, volume, exec_after, detach, build,
+            machine_id, vdir, kind, image, command, cpus, mem, volume, exec_after, detach,
+            interactive, build,
         );
     }
     db::record_machine(
@@ -1468,6 +1482,7 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
         false,
         args.volume.as_deref(),
         &[],
+        false,
         build,
     )
 }
@@ -1546,6 +1561,7 @@ fn run_detached(
     volume: Option<&str>,
     exec_after: &[String],
     keep_running: bool,
+    interactive: bool,
     build: impl FnOnce() -> Result<(Ctx, Option<Gvproxy>)>,
 ) -> Result<()> {
     use std::io::Write;
@@ -1588,6 +1604,7 @@ fn run_detached(
             kind,
             exec_after,
             keep_running,
+            interactive,
             pid as libc::pid_t,
         );
     }
@@ -1698,13 +1715,15 @@ fn run_guest_command(
     kind: &str,
     argv: &[String],
     keep_running: bool,
+    interactive: bool,
     child_pid: libc::pid_t,
 ) -> Result<()> {
     use std::io::IsTerminal;
     let port = wait_for_agent(id, kind)?;
-    // Interactive (PTY) only when both ends are a real terminal — matches how a
-    // one-liner exec feels while staying clean when piped/redirected.
-    let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    // Only the synthesized shell gets a PTY, and only when both ends are a real
+    // terminal. Explicit commands run non-interactively so their output isn't
+    // lost to the guest agent's PTY drain race on a fast exit.
+    let tty = interactive && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let code = agent::exec(port, argv, &[], tty).map_err(|e| agent_error(kind, e))?;
     if !keep_running {
         // One-shot: tear the VM down (SIGTERM -> the child's cleanup + poweroff).

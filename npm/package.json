@@ -1,0 +1,49 @@
+{
+  "name": "@bsdkrun/cli",
+  "version": "0.3.0",
+  "description": "Firecracker-style microVM launcher for BSD and Linux (OCI) guests, built on libkrun. Installs the prebuilt bsdkrun host binary for your platform.",
+  "license": "MIT",
+  "homepage": "https://github.com/tsirysndr/bsdkrun#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tsirysndr/bsdkrun.git",
+    "directory": "npm"
+  },
+  "bugs": {
+    "url": "https://github.com/tsirysndr/bsdkrun/issues"
+  },
+  "keywords": [
+    "bsdkrun",
+    "microvm",
+    "libkrun",
+    "freebsd",
+    "netbsd",
+    "vm",
+    "sandbox",
+    "firecracker",
+    "cli"
+  ],
+  "bin": {
+    "bsdkrun": "bin/bsdkrun.js"
+  },
+  "files": [
+    "bin/bsdkrun.js",
+    "scripts/postinstall.js",
+    "scripts/platform.js",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}

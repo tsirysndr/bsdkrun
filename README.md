@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./.github/assets/desktop.png" alt="bsdkrun Desktop — machines list with a tabbed terminal panel" width="900">
+</p>
+
 # bsdkrun
 
 [![nix](https://github.com/tsirysndr/bsdkrun/actions/workflows/nix.yml/badge.svg)](https://github.com/tsirysndr/bsdkrun/actions/workflows/nix.yml)

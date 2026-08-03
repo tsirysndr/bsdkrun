@@ -674,12 +674,21 @@ bsdkrun tailscale <id> install              # just install
 bsdkrun tailscale <id> start                # just start tailscaled
 ```
 
+> **NetBSD images ship tailscale pre-baked.** bsdkrun's bundled NetBSD images (both **amd64** and
+> **arm64**) now carry the `tailscale`/`tailscaled` binaries plus an `/etc/rc.d/tailscaled` service
+> enabled with `--tun=userspace-networking`, so `tailscaled` is **already running at boot** — no
+> `install`/`start` needed. Go straight to `bsdkrun tailscale <id> status` (shows `Logged out.` on a
+> fresh guest) or join a tailnet with `bsdkrun tailscale <id> setup --authkey …`. The two static Go
+> binaries come from pkgsrc and carry no extra dependencies (they link only base `libc`). Other
+> guests (Linux OCI, FreeBSD) still install on demand via the OS-native paths below.
+
 `bsdkrun tailscale` finds the in-guest agent binary itself; the equivalent explicit form is
 `bsdkrun exec <id> /usr/local/sbin/bsdkrun-agent tailscale ...` (Linux OCI guests carry the
 agent at `/sbin/bsdkrun-agent`).
 
 Install goes through each OS's native channel: `apk` (Alpine) or the official static tarball on
-Linux, `pkg install` on FreeBSD, `pkg_add` from the pkgsrc CDN on NetBSD. `tailscaled` runs with
+Linux, `pkg install` on FreeBSD, `pkg_add` from the pkgsrc CDN on NetBSD (a no-op on the bundled
+NetBSD images, where it's already baked in). `tailscaled` runs with
 `--tun=userspace-networking` by default — the microVM kernels bsdkrun boots (Linux microvm,
 NetBSD `MICROVM`, FreeBSD `FIRECRACKER`) generally lack tun/tap, and userspace mode still makes
 the guest **reachable over the tailnet** (ssh, agent port, anything listening). Pass
@@ -776,19 +785,21 @@ image into `--dir` (a hard link, no second copy). Use `--force` to re-download.
 `bsdkrun netbsd` **direct-boots** the kernel (no firmware), rooting on the virtio-blk disk (override
 the kernel command line with `$BSDKRUN_NETBSD_CMDLINE`). The details differ by host arch:
 
-- **arm64** ✅ downloads bsdkrun's bundled evbarm image (the live `gzimg` with the agent injected)
-  + the evbarm `GENERIC64` kernel from the NetBSD CDN, rooting on the GPT wedge `dk1`. libkrun
-  exposes **modern (v2) virtio-mmio**, and NetBSD's driver only gained v2 support in **-current**
-  (post-10.x): the bundled image is `current`, so `--version` only affects the kernel — pinning a
-  **release** (≤ 10.1) kernel prints `virtio: unknown version 0x02; giving up`.
+- **arm64** ✅ downloads bsdkrun's bundled evbarm image (the live `gzimg` with the agent **and
+  tailscale** injected) + the evbarm `GENERIC64` kernel from the NetBSD CDN, rooting on the GPT
+  wedge `dk1`. libkrun exposes **modern (v2) virtio-mmio**, and NetBSD's driver only gained v2
+  support in **-current** (post-10.x): the bundled image is `current`, so `--version` only affects
+  the kernel — pinning a **release** (≤ 10.1) kernel prints `virtio: unknown version 0x02; giving
+  up`.
 - **amd64** ✅ boots via **PVH** — but it needs a **PVH-capable libkrun**:
   [tsirysndr/libkrun `feat/pvh-boot`](https://github.com/tsirysndr/libkrun/tree/feat/pvh-boot)
   (stock libkrun only speaks the Linux boot protocol, under which any NetBSD kernel triple-faults
   instantly). bsdkrun downloads its bundled FFS rootfs + the NetBSD `MICROVM` kernel (a PVH ELF),
   sets `KRUN_PVH=1` so libkrun enters via the kernel's `PHYS32_ENTRY` note, and boots with
   `root=ld0a console=com` (`console=com` matters: a PVH boot passes no bootinfo, so without it
-  NetBSD's console defaults to nonexistent VGA and all output vanishes). The agent is baked into
-  the image, so `exec`/`shell` work out of the box. Against stock libkrun the boot triple-faults
+  NetBSD's console defaults to nonexistent VGA and all output vanishes). The agent **and tailscale**
+  are baked into the image, so `exec`/`shell` (and a boot-time `tailscaled`) work out of the box.
+  Against stock libkrun the boot triple-faults
   (`KRUN_PVH` is simply ignored) — build the fork until PVH lands upstream; see the
   [KVM e2e](.github/workflows/e2e-linux.yml), which builds the fork and boots it on every run.
 

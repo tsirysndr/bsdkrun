@@ -243,8 +243,24 @@ fn start(kernel_tun: bool) -> i32 {
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    eprintln!("tailscaled did not come up within 10s — check {LOG_FILE}");
+    eprintln!("tailscaled did not come up within 10s — last log lines ({LOG_FILE}):");
+    print_log_tail(20);
     1
+}
+
+/// Echo the last `n` lines of the tailscaled log to stderr, so a failed
+/// `start` is self-diagnosing instead of pointing at a file the caller has to
+/// go fetch over `exec`.
+fn print_log_tail(n: usize) {
+    match std::fs::read_to_string(LOG_FILE) {
+        Ok(s) if !s.trim().is_empty() => {
+            let lines: Vec<&str> = s.lines().collect();
+            for line in lines.iter().skip(lines.len().saturating_sub(n)) {
+                eprintln!("  | {line}");
+            }
+        }
+        _ => eprintln!("  | (log empty — tailscaled likely failed to exec; check `tailscaled --version`)"),
+    }
 }
 
 /// The daemon is up when its control socket answers `tailscale version`.

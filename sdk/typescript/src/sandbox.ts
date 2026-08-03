@@ -1,13 +1,15 @@
-import { buildCreateArgs } from "./args.ts";
-import { CommandFailedError, SandboxNotFoundError } from "./errors.ts";
-import { runCli, spawnCli } from "./process.ts";
+import { buildCreateArgs } from "./args.js";
+import { readAgentPort } from "./agent-protocol.js";
+import { CommandFailedError, SandboxNotFoundError } from "./errors.js";
+import { runCli, spawnCli } from "./process.js";
 import {
   CommandResult,
   createSh,
   type Sh,
   type ShellRunOptions,
-} from "./shell.ts";
-import type { CreateOptions, SandboxInfo } from "./types.ts";
+} from "./shell.js";
+import { Terminal, type TerminalOptions } from "./terminal.js";
+import type { CreateOptions, SandboxInfo } from "./types.js";
 
 /** Advanced options for {@link Sandbox.exec}. */
 export interface ExecOptions {
@@ -81,6 +83,8 @@ export class Sandbox {
 
   /** Run a shell script in the guest via a tagged template. */
   readonly sh: Sh;
+
+  #stateDirCache?: string;
 
   private constructor(id: string, sshPort?: number) {
     this.id = id;
@@ -275,31 +279,149 @@ export class Sandbox {
   }
 
   /**
-   * Manage key-based SSH in the guest: `setup`, `add-key`, `status`.
+   * Key-based SSH in the guest, via the agent. Typed helpers plus `.raw()` for
+   * arbitrary args.
    *
    * ```ts
-   * await box.ssh(["setup"]);                 // install local ~/.ssh/*.pub keys
-   * await box.ssh(["add-key", "--key", key]); // append a key
+   * await box.ssh.setup();                      // install local ~/.ssh/*.pub
+   * await box.ssh.setup({ user: "tsiry", key: "~/.ssh/work.pub" });
+   * await box.ssh.addKey("ssh-ed25519 AAAA...");
+   * await box.ssh.status();
    * ```
    */
-  ssh(action: string[]): Promise<CommandResult> {
-    return this.#agent("ssh", action);
+  get ssh() {
+    const run = (action: string[]) => this.#agent("ssh", action);
+    return {
+      /** `ssh setup` — install keys (local `~/.ssh/*.pub` when none given). */
+      setup: (opts: SshSetupOptions = {}) => {
+        const a = ["setup"];
+        if (opts.user) a.push("--user", opts.user);
+        for (const k of keyList(opts.key)) a.push("--key", k);
+        return run(a);
+      },
+      /** `ssh add-key` — append one or more authorized keys. */
+      addKey: (key: string | string[]) => {
+        const a = ["add-key"];
+        for (const k of keyList(key)) a.push("--key", k);
+        return run(a);
+      },
+      /** `ssh status` — sshd state + installed key count. */
+      status: () => run(["status"]),
+      /** Escape hatch: pass raw args to `bsdkrun ssh <id> …`. */
+      raw: (action: string[]) => run(action),
+    };
   }
 
   /**
-   * Manage tailscale in the guest: `setup`, `status`, `install`, `start`.
-   * Pass an auth key via the option (forwarded as `TS_AUTHKEY`) or inline args.
+   * Tailscale in the guest, via the agent. Installs the OS-native way, runs
+   * `tailscaled` (userspace networking by default), and joins your tailnet.
+   *
+   * ```ts
+   * await box.tailscale.up({ authkey: "tskey-auth-...", hostname: "web" });
+   * await box.tailscale.status();
+   * ```
    */
-  tailscale(
-    action: string[],
-    opts: { authkey?: string } = {},
-  ): Promise<CommandResult> {
-    const env = opts.authkey ? { TS_AUTHKEY: opts.authkey } : undefined;
-    return this.#agent("tailscale", action, env);
+  get tailscale() {
+    const run = (action: string[], authkey?: string) =>
+      this.#agent("tailscale", action, authkey ? { TS_AUTHKEY: authkey } : undefined);
+    return {
+      /** `tailscale setup` — install + start + `tailscale up` (join a tailnet). */
+      up: (opts: TailscaleUpOptions = {}) => {
+        const a = ["setup"];
+        if (opts.hostname) a.push("--hostname", opts.hostname);
+        if (opts.args) a.push(...opts.args);
+        return run(a, opts.authkey);
+      },
+      /** Alias for {@link up}. */
+      setup: (opts: TailscaleUpOptions = {}) => this.tailscale.up(opts),
+      /** `tailscale install` — install the binaries only. */
+      install: () => run(["install"]),
+      /** `tailscale start` — start `tailscaled` only. */
+      start: (opts: { kernelTun?: boolean } = {}) =>
+        run(["start", ...(opts.kernelTun ? ["--kernel-tun"] : [])]),
+      /** `tailscale status` — who am I / peers. */
+      status: () => run(["status"]),
+      /** Escape hatch: pass raw args to `bsdkrun tailscale <id> …`. */
+      raw: (action: string[], authkey?: string) => run(action, authkey),
+    };
   }
 
-  /** Configure systemd as PID 1: `setup`, `status`, `disable`. */
-  systemd(action: string[]): Promise<CommandResult> {
-    return this.#agent("systemd", action);
+  /**
+   * Configure systemd as PID 1 in a Linux guest. Boot on a volume so the change
+   * persists across reboots.
+   *
+   * **Only works on systemd-based Linux guests — debian / ubuntu / fedora.**
+   * Alpine (no systemd) and the BSD guests (freebsd / netbsd) don't support it;
+   * `setup` errors clearly there. Manage BSD services with `rc.d` instead.
+   *
+   * ```ts
+   * await box.systemd.setup();   // install + mark for next boot (debian/ubuntu/fedora)
+   * await box.systemd.status();
+   * ```
+   */
+  get systemd() {
+    const run = (action: string[]) => this.#agent("systemd", action);
+    return {
+      /** `systemd setup` — install systemd + agent unit, mark for next boot. */
+      setup: () => run(["setup"]),
+      /** `systemd status` — reports whether PID 1 is systemd. */
+      status: () => run(["status"]),
+      /** `systemd disable` — remove the marker. */
+      disable: () => run(["disable"]),
+    };
   }
+
+  /** Resolve (and cache) this machine's state dir, for direct agent access. */
+  async #stateDir(): Promise<string> {
+    if (this.#stateDirCache) return this.#stateDirCache;
+    const info = await this.status();
+    if (!info) throw new SandboxNotFoundError(this.id);
+    this.#stateDirCache = info.stateDir;
+    return info.stateDir;
+  }
+
+  /**
+   * Open an interactive PTY session in the guest, streamed over the agent's TCP
+   * protocol — the browser-terminal entrypoint. Feed {@link Terminal.onData}
+   * into xterm.js, forward its input to {@link Terminal.write}, and wire its
+   * `onResize` to {@link Terminal.resize}. See `examples/08-browser-terminal`.
+   *
+   * ```ts
+   * const term = await box.terminal({ cols: 120, rows: 30 });
+   * term.onData((chunk) => process.stdout.write(chunk));
+   * term.write("uname -a\n");
+   * ```
+   */
+  async terminal(opts: TerminalOptions = {}): Promise<Terminal> {
+    const stateDir = await this.#stateDir();
+    const port = readAgentPort(stateDir, this.id);
+    return Terminal.open(opts.host ?? "127.0.0.1", port, this.id, opts);
+  }
+}
+
+/** Normalize a key option (literal key or `.pub` path) to a list. */
+function keyList(key: string | string[] | undefined): string[] {
+  if (!key) return [];
+  return Array.isArray(key) ? key : [key];
+}
+
+/** Options for {@link Sandbox.ssh.setup}. */
+export interface SshSetupOptions {
+  /** Target user (default root). */
+  user?: string;
+  /**
+   * Public key(s): a literal `ssh-...` string or a local `.pub` file path (the
+   * CLI inlines file contents). Omit to install your local `~/.ssh/id_*.pub`.
+   */
+  key?: string | string[];
+}
+
+/** Options for {@link Sandbox.tailscale.up}. */
+export interface TailscaleUpOptions {
+  /** Tailnet auth key (forwarded as `TS_AUTHKEY`, kept off the arg list). */
+  authkey?: string;
+  /** Machine name on the tailnet. */
+  hostname?: string;
+  /** Extra args passed through to `tailscale up`. */
+  args?: string[];
 }

@@ -13,25 +13,56 @@
  * ```
  */
 
-export { Sandbox } from "./sandbox.ts";
-export type { ExecOptions, LogsOptions } from "./sandbox.ts";
+export { Sandbox } from "./sandbox.js";
+export type {
+  ExecOptions,
+  LogsOptions,
+  SshSetupOptions,
+  TailscaleUpOptions,
+} from "./sandbox.js";
 
-export { createSh, raw, CommandResult, ShellPromise } from "./shell.ts";
-export type { Sh, ShellRunOptions, ShellRunner } from "./shell.ts";
+export { Terminal } from "./terminal.js";
+export type {
+  TerminalOptions,
+  DataSink,
+  WebSocketLike,
+} from "./terminal.js";
 
-export { images, listImages } from "./images.ts";
-export { volumes, listVolumes, removeVolume } from "./volumes.ts";
-export { probe, fetchImage, versions, growDisk } from "./system.ts";
+export {
+  AgentConnection,
+  AgentUnavailableError,
+  readAgentPort,
+} from "./agent-protocol.js";
+export type { AgentConnectOptions, AgentHandlers } from "./agent-protocol.js";
 
-export { setBinaryPath, resolveBinary, resetBinaryCache } from "./binary.ts";
-export { ensurePreflight, resetPreflight } from "./preflight.ts";
+export { createSh, raw, CommandResult, ShellPromise } from "./shell.js";
+export type { Sh, ShellRunOptions, ShellRunner } from "./shell.js";
+
+export { images, listImages } from "./images.js";
+export { volumes, listVolumes, removeVolume } from "./volumes.js";
+export { probe, fetchImage, versions, growDisk } from "./system.js";
+
+export { setBinaryPath, resolveBinary, resetBinaryCache } from "./binary.js";
+export {
+  ensurePreflight,
+  resetPreflight,
+  cachedPreflightEnv,
+  libkrunTarballUrl,
+  linuxArchSlug,
+} from "./preflight.js";
+export type { PreflightEnv } from "./preflight.js";
+
+export { runCli, spawnCli } from "./process.js";
+export type { RunOptions, RawResult, SpawnOptions } from "./process.js";
+
+export { buildCreateArgs } from "./args.js";
 
 export {
   BsdkrunError,
   BinaryNotFoundError,
   CommandFailedError,
   SandboxNotFoundError,
-} from "./errors.ts";
+} from "./errors.js";
 
 export type {
   CreateOptions,
@@ -49,4 +80,4 @@ export type {
   SandboxInfo,
   ImageInfo,
   VolumeInfo,
-} from "./types.ts";
+} from "./types.js";

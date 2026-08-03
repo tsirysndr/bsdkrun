@@ -1,4 +1,4 @@
-import { CommandFailedError } from "./errors.ts";
+import { CommandFailedError } from "./errors.js";
 
 /** Wrapper marking a value that must be interpolated verbatim (not quoted). */
 class RawValue {

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>bsdkrun · browser terminal</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
+    <style>
+      html, body { margin: 0; height: 100%; background: #0b0e14; }
+      #bar { color: #9aa5b1; font: 13px ui-monospace, monospace; padding: 8px 12px; }
+      #term { height: calc(100% - 34px); padding: 0 8px; }
+    </style>
+  </head>
+  <body>
+    <div id="bar">bsdkrun — Alpine microVM · <span id="status">connecting…</span></div>
+    <div id="term"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+    <script>
+      const term = new Terminal({
+        fontFamily: "ui-monospace, monospace",
+        fontSize: 13,
+        cursorBlink: true,
+        theme: { background: "#0b0e14", foreground: "#c5cdd9" },
+      });
+      const fit = new FitAddon.FitAddon();
+      term.loadAddon(fit);
+      term.open(document.getElementById("term"));
+      fit.fit();
+
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      const ws = new WebSocket(`${proto}://${location.host}/ws`);
+      const status = document.getElementById("status");
+
+      const sendResize = () => {
+        fit.fit();
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ resize: [term.cols, term.rows] }));
+        }
+      };
+
+      ws.onopen = () => { status.textContent = "connected"; sendResize(); };
+      ws.onclose = () => { status.textContent = "disconnected"; term.write("\r\n[session ended]\r\n"); };
+      ws.onmessage = (ev) => term.write(ev.data);
+
+      // Browser keystrokes -> guest; window resize -> guest PTY resize.
+      term.onData((data) => ws.readyState === WebSocket.OPEN && ws.send(data));
+      term.onResize(() => sendResize());
+      window.addEventListener("resize", sendResize);
+    </script>
+  </body>
+</html>

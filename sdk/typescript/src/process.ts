@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import process from "node:process";
-import { resolveBinary } from "./binary.ts";
-import { ensurePreflight } from "./preflight.ts";
+import { resolveBinary } from "./binary.js";
+import { cachedPreflightEnv, ensurePreflight } from "./preflight.js";
 
 export interface RunOptions {
   /** Extra environment variables merged onto the current process env. */
@@ -36,11 +36,11 @@ export async function runCli(
   args: string[],
   opts: RunOptions = {},
 ): Promise<RawResult> {
-  await ensurePreflight();
+  const preflightEnv = await ensurePreflight();
   const bin = resolveBinary();
   return new Promise((resolve, reject) => {
     const child = spawn(bin, withGlobals(args, opts.logLevel), {
-      env: { ...process.env, ...opts.env },
+      env: { ...process.env, ...preflightEnv, ...opts.env },
       stdio: ["pipe", "pipe", "pipe"],
       signal: opts.signal,
     });
@@ -81,7 +81,7 @@ export function spawnCli(args: string[], opts: SpawnOptions = {}) {
   const bin = resolveBinary();
   const stdio = opts.stdio ?? "inherit";
   return spawn(bin, withGlobals(args, opts.logLevel), {
-    env: { ...process.env, ...opts.env },
+    env: { ...process.env, ...cachedPreflightEnv(), ...opts.env },
     stdio,
     signal: opts.signal,
   });

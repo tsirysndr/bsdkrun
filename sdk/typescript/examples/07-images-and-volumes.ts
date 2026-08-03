@@ -2,7 +2,7 @@
  * Host-level inventory: list downloaded images, list + remove persistent
  * volumes, and run a toolchain probe. Mirrors `bsdkrun images` / `volume`.
  */
-import { images, probe, volumes } from "../src/index.ts";
+import { images, probe, volumes } from "../src/index.js";
 
 // Verify libkrun links and a context can be configured (does not boot).
 console.log("toolchain ok?", await probe());

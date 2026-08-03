@@ -2,7 +2,7 @@
  * Machine lifecycle: create detached, list, reconnect by id, read the console
  * log, inspect status, and stop. Mirrors `bsdkrun ps` / `logs` / `stop`.
  */
-import { Sandbox } from "../src/index.ts";
+import { Sandbox } from "../src/index.js";
 
 // Give it a long-running command so it stays up while we poke at it.
 const box = await Sandbox.create({

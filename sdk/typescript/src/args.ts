@@ -3,7 +3,7 @@ import type {
   DiskPersistenceOptions,
   NetworkOptions,
   ResourceOptions,
-} from "./types.ts";
+} from "./types.js";
 
 function netArgs(net: NetworkOptions | undefined): string[] {
   const a: string[] = [];

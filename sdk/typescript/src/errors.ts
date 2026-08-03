@@ -1,4 +1,4 @@
-import type { CommandResult } from "./shell.ts";
+import type { CommandResult } from "./shell.js";
 
 /** Base class for every error the SDK throws. */
 export class BsdkrunError extends Error {

@@ -3,7 +3,7 @@
  * `freebsd` boots via EFI on macOS and PVH on Linux/amd64. Both carry the same
  * machine options and — on bsdkrun's bundled images — the exec agent.
  */
-import { Sandbox } from "../src/index.ts";
+import { Sandbox } from "../src/index.js";
 
 // NetBSD current, in the background, with a persistent volume.
 const nb = await Sandbox.create({

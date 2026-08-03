@@ -1,6 +1,6 @@
-import { CommandFailedError } from "./errors.ts";
-import { runCli } from "./process.ts";
-import { CommandResult } from "./shell.ts";
+import { CommandFailedError } from "./errors.js";
+import { runCli } from "./process.js";
+import { CommandResult } from "./shell.js";
 
 function check(
   res: { stdout: string; stderr: string; exitCode: number },

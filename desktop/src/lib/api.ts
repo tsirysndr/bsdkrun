@@ -6,6 +6,7 @@ import type {
   ProbeResult,
   RunSpec,
   Settings,
+  SystemStats,
   VersionEntry,
   Volume,
 } from "./types";
@@ -16,11 +17,14 @@ export const api = {
     invoke<Settings>("set_settings", { binaryPath }),
 
   probe: () => invoke<ProbeResult>("probe"),
+  setTrayStatus: (ok: boolean, detail: string) =>
+    invoke<void>("set_tray_status", { ok, detail }),
 
   listMachines: (all: boolean) => invoke<Machine[]>("list_machines", { all }),
   listImages: () => invoke<Image[]>("list_images"),
   listVolumes: () => invoke<Volume[]>("list_volumes"),
   listVersions: (os: string) => invoke<VersionEntry[]>("list_versions", { os }),
+  systemStats: () => invoke<SystemStats>("system_stats"),
 
   runMachine: (spec: RunSpec) => invoke<string>("run_machine", { spec }),
   stopMachine: (id: string) => invoke<void>("stop_machine", { id }),
@@ -36,6 +40,8 @@ export const api = {
 
   termOpen: (id: string, command: string[], rows: number, cols: number) =>
     invoke<string>("term_open", { id, command, rows, cols }),
+  termOpenHost: (rows: number, cols: number) =>
+    invoke<string>("term_open_host", { rows, cols }),
   termWrite: (session: string, data: string) =>
     invoke<void>("term_write", { session, data }),
   termResize: (session: string, rows: number, cols: number) =>

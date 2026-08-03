@@ -24,17 +24,34 @@ export interface TerminalTab {
 export const terminalTabsAtom = atom<TerminalTab[]>([]);
 export const activeTerminalAtom = atom<string | null>(null);
 export const terminalFullscreenAtom = atom<boolean>(false);
+// Hide the docked terminal panel without closing its tabs (topbar toggle).
+export const terminalCollapsedAtom = atom<boolean>(false);
 
 // Docked terminal panel height in px (drag-to-resize; persists across opens).
 export const terminalHeightAtom = atom<number>(320);
 
 let termSeq = 1;
 
+/** Sentinel machineId for a terminal running on the host (not a guest). */
+export const HOST_MACHINE = "__host__";
+
 /** Open a NEW terminal tab for a machine (never replaces an existing one). */
 export const openTerminalAtom = atom(null, (get, set, machineId: string) => {
   const id = `term-tab-${termSeq++}`;
   set(terminalTabsAtom, [...get(terminalTabsAtom), { id, machineId }]);
   set(activeTerminalAtom, id);
+  set(terminalCollapsedAtom, false);
+});
+
+/** Open a NEW terminal tab on the host machine. */
+export const openHostTerminalAtom = atom(null, (get, set) => {
+  const id = `term-tab-${termSeq++}`;
+  set(terminalTabsAtom, [
+    ...get(terminalTabsAtom),
+    { id, machineId: HOST_MACHINE },
+  ]);
+  set(activeTerminalAtom, id);
+  set(terminalCollapsedAtom, false);
 });
 
 /** Close a tab; activate a neighbour, and drop out of fullscreen if it was last. */
@@ -55,6 +72,7 @@ export const runOpenAtom = atom<boolean>(false);
 export const settingsOpenAtom = atom<boolean>(false);
 export const paletteOpenAtom = atom<boolean>(false);
 export const shortcutsOpenAtom = atom<boolean>(false);
+export const cliModalOpenAtom = atom<boolean>(false);
 
 // Prefill for the Run dialog (e.g. launched from an image row).
 export const runPrefillAtom = atom<{ kind?: string; image?: string } | null>(

@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Button, Kbd, Spinner, Tooltip } from "@heroui/react";
 import { useAtom, useSetAtom } from "jotai";
 import {
@@ -7,9 +8,22 @@ import {
   IconCircleFilled,
   IconLayoutSidebar,
   IconLayoutSidebarFilled,
+  IconLayoutBottombar,
+  IconLayoutBottombarFilled,
+  IconTerminal2,
 } from "@tabler/icons-react";
-import { paletteOpenAtom, runOpenAtom, sidebarVisibleAtom } from "../state/atoms";
+import { useAtomValue } from "jotai";
+import {
+  cliModalOpenAtom,
+  openHostTerminalAtom,
+  paletteOpenAtom,
+  runOpenAtom,
+  sidebarVisibleAtom,
+  terminalCollapsedAtom,
+  terminalTabsAtom,
+} from "../state/atoms";
 import { useMachines, useProbe, useRefreshAll } from "../lib/queries";
+import { api } from "../lib/api";
 
 export default function TopBar() {
   const { data: probe } = useProbe();
@@ -17,8 +31,28 @@ export default function TopBar() {
   const setRunOpen = useSetAtom(runOpenAtom);
   const setPalette = useSetAtom(paletteOpenAtom);
   const [sidebar, setSidebar] = useAtom(sidebarVisibleAtom);
+  const [termCollapsed, setTermCollapsed] = useAtom(terminalCollapsedAtom);
+  const termTabs = useAtomValue(terminalTabsAtom);
+  const openHostTerminal = useSetAtom(openHostTerminalAtom);
+  const setCliOpen = useSetAtom(cliModalOpenAtom);
   const refreshAll = useRefreshAll();
   const loading = isFetching;
+
+  // Mirror the engine status into the menu-bar tray line.
+  useEffect(() => {
+    if (probe) {
+      api.setTrayStatus(probe.ok, probe.ok ? "" : probe.message || "").catch(
+        () => {},
+      );
+    }
+  }, [probe?.ok, probe?.message]);
+
+  // No tabs → open a host terminal; otherwise hide/show the panel.
+  const panelHidden = termTabs.length === 0 || termCollapsed;
+  const toggleTerminal = () => {
+    if (termTabs.length === 0) openHostTerminal();
+    else setTermCollapsed((c) => !c);
+  };
 
   const status = probe?.ok
     ? { color: "text-emerald-400", label: "Engine running" }
@@ -31,24 +65,51 @@ export default function TopBar() {
       data-tauri-drag-region
       className="flex h-12 shrink-0 items-center gap-3 border-b border-white/10 bg-content1/70 pl-20 pr-3"
     >
-      <Tooltip
-        content={sidebar ? "Hide sidebar" : "Show sidebar"}
-        placement="bottom"
-      >
-        <Button
-          isIconOnly
-          size="sm"
-          variant="light"
-          className="no-drag text-foreground-400 hover:text-foreground"
-          onPress={() => setSidebar((s) => !s)}
+      <div className="flex items-center gap-0.5">
+        <Tooltip
+          content={sidebar ? "Hide sidebar" : "Show sidebar"}
+          placement="bottom"
         >
-          {sidebar ? (
-            <IconLayoutSidebarFilled size={18} />
-          ) : (
-            <IconLayoutSidebar size={18} />
-          )}
-        </Button>
-      </Tooltip>
+          <Button
+            isIconOnly
+            size="sm"
+            variant="light"
+            className="no-drag text-foreground-400 hover:text-foreground"
+            onPress={() => setSidebar((s) => !s)}
+          >
+            {sidebar ? (
+              <IconLayoutSidebarFilled size={18} />
+            ) : (
+              <IconLayoutSidebar size={18} />
+            )}
+          </Button>
+        </Tooltip>
+
+        <Tooltip
+          content={
+            termTabs.length === 0
+              ? "Open a host terminal"
+              : termCollapsed
+                ? "Show terminal panel"
+                : "Hide terminal panel"
+          }
+          placement="bottom"
+        >
+          <Button
+            isIconOnly
+            size="sm"
+            variant="light"
+            className="no-drag text-foreground-400 hover:text-foreground"
+            onPress={toggleTerminal}
+          >
+            {panelHidden ? (
+              <IconLayoutBottombar size={18} />
+            ) : (
+              <IconLayoutBottombarFilled size={18} />
+            )}
+          </Button>
+        </Tooltip>
+      </div>
 
       <div data-tauri-drag-region className="flex items-center gap-2">
         <div className="pointer-events-none grid h-6 w-6 place-items-center rounded-md bg-gradient-to-br from-[#5f6bff] to-[#9b5cff] font-mono text-sm font-bold text-white shadow">
@@ -70,6 +131,16 @@ export default function TopBar() {
         <span>Search or run a command</span>
         <Kbd className="ml-1 bg-transparent text-foreground-400">/</Kbd>
       </button>
+
+      <Tooltip content="How to install the bsdkrun CLI" placement="bottom">
+        <button
+          onClick={() => setCliOpen(true)}
+          className="no-drag flex h-8 items-center gap-1.5 rounded-lg border border-white/10 bg-content2/60 px-2.5 text-xs font-medium text-foreground-400 transition hover:border-white/20 hover:text-foreground-200"
+        >
+          <IconTerminal2 size={14} />
+          CLI
+        </button>
+      </Tooltip>
 
       <Tooltip content={probe?.message || status.label} placement="bottom">
         <div className="no-drag flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs">

@@ -9,6 +9,8 @@ import {
 import {
   activeTerminalAtom,
   closeTerminalAtom,
+  HOST_MACHINE,
+  terminalCollapsedAtom,
   terminalFullscreenAtom,
   terminalHeightAtom,
   terminalTabsAtom,
@@ -30,6 +32,7 @@ export default function TerminalPanel() {
   const [active, setActive] = useAtom(activeTerminalAtom);
   const [fullscreen, setFullscreen] = useAtom(terminalFullscreenAtom);
   const [height, setHeight] = useAtom(terminalHeightAtom);
+  const collapsed = useAtomValue(terminalCollapsedAtom);
   const closeTab = useSetAtom(closeTerminalAtom);
   const { data: machines = [] } = useMachines();
 
@@ -64,11 +67,11 @@ export default function TerminalPanel() {
   return (
     <div
       style={fullscreen ? undefined : { height }}
-      className={
+      className={`${collapsed ? "hidden " : ""}${
         fullscreen
           ? "absolute inset-0 z-30 flex flex-col bg-[#0a0d13]"
           : "relative flex shrink-0 flex-col border-t border-white/10 bg-[#0a0d13]"
-      }
+      }`}
     >
       {!fullscreen && (
         <div
@@ -83,9 +86,12 @@ export default function TerminalPanel() {
       <div className="flex items-center gap-1 border-b border-white/10 bg-content1/70 px-2 py-1">
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           {tabs.map((t) => {
-            const m = machines.find((x) => x.id === t.machineId);
+            const isHost = t.machineId === HOST_MACHINE;
+            const m = isHost
+              ? undefined
+              : machines.find((x) => x.id === t.machineId);
             const kc = m ? kindColor(m.kind, m.image) : null;
-            const label = m?.image || shortId(t.machineId);
+            const label = isHost ? "Host" : m?.image || shortId(t.machineId);
             const isActive = t.id === activeId;
             return (
               <div
@@ -143,7 +149,10 @@ export default function TerminalPanel() {
       {/* Bodies — all mounted, stacked; only the active one is visible. */}
       <div className="relative min-h-0 flex-1 overflow-hidden">
         {tabs.map((t) => {
-          const m = machines.find((x) => x.id === t.machineId);
+          const isHost = t.machineId === HOST_MACHINE;
+          const m = isHost
+            ? undefined
+            : machines.find((x) => x.id === t.machineId);
           const isActive = t.id === activeId;
           return (
             <div
@@ -154,7 +163,7 @@ export default function TerminalPanel() {
                   : "pointer-events-none z-0 opacity-0"
               }`}
             >
-              {m?.running ? (
+              {isHost || m?.running ? (
                 <TerminalPane machineId={t.machineId} command={EMPTY} />
               ) : (
                 <div className="grid h-full place-items-center px-6 text-center text-xs text-foreground-500">

@@ -11,7 +11,9 @@ import MachineDetail from "./components/MachineDetail";
 import CommandPalette from "./components/CommandPalette";
 import ShortcutsModal from "./components/ShortcutsModal";
 import SettingsModal from "./components/SettingsModal";
+import CliModal from "./components/CliModal";
 import TerminalPanel from "./components/TerminalPanel";
+import StatusBar from "./components/StatusBar";
 import { Toaster } from "./state/toast";
 
 export default function App() {
@@ -33,6 +35,7 @@ export default function App() {
         </div>
         <TerminalPanel />
       </div>
+      <StatusBar />
 
       {/* Overlays */}
       <RunDialog />
@@ -40,6 +43,7 @@ export default function App() {
       <CommandPalette />
       <ShortcutsModal />
       <SettingsModal />
+      <CliModal />
       <Toaster />
     </div>
   );

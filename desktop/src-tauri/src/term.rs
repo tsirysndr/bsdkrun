@@ -43,6 +43,15 @@ struct TermExit {
     code: Option<i32>,
 }
 
+/// Inherit the environment plus an augmented PATH + a sane TERM.
+fn env_setup(cmd: &mut CommandBuilder) {
+    for (k, v) in std::env::vars() {
+        cmd.env(k, v);
+    }
+    cmd.env("PATH", bsdkrun::augmented_path());
+    cmd.env("TERM", "xterm-256color");
+}
+
 /// Open a PTY running `bsdkrun exec -t <id> <cmd...>` (defaults to `/bin/sh`).
 pub fn open(
     app: &AppHandle,
@@ -53,11 +62,6 @@ pub fn open(
     rows: u16,
     cols: u16,
 ) -> Result<String, String> {
-    let pty = native_pty_system();
-    let pair = pty
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-        .map_err(|e| e.to_string())?;
-
     let mut cmd = CommandBuilder::new(bin);
     cmd.arg("exec");
     cmd.arg("-t");
@@ -69,12 +73,40 @@ pub fn open(
             cmd.arg(a);
         }
     }
-    // Inherit the environment plus an augmented PATH so bsdkrun finds its tools.
-    for (k, v) in std::env::vars() {
-        cmd.env(k, v);
+    env_setup(&mut cmd);
+    spawn_pty(app, sessions, cmd, rows, cols)
+}
+
+/// Open a PTY running the *host's* login shell (`$SHELL`, else `/bin/zsh`).
+pub fn open_host(
+    app: &AppHandle,
+    sessions: &Terminals,
+    rows: u16,
+    cols: u16,
+) -> Result<String, String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let mut cmd = CommandBuilder::new(&shell);
+    cmd.arg("-l");
+    env_setup(&mut cmd);
+    if let Ok(home) = std::env::var("HOME") {
+        cmd.cwd(home);
     }
-    cmd.env("PATH", bsdkrun::augmented_path());
-    cmd.env("TERM", "xterm-256color");
+    spawn_pty(app, sessions, cmd, rows, cols)
+}
+
+/// Spawn a prepared command under a fresh PTY, register the session, and stream
+/// its output to the webview. Shared by guest (`exec`) and host shells.
+fn spawn_pty(
+    app: &AppHandle,
+    sessions: &Terminals,
+    cmd: CommandBuilder,
+    rows: u16,
+    cols: u16,
+) -> Result<String, String> {
+    let pty = native_pty_system();
+    let pair = pty
+        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| e.to_string())?;
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);

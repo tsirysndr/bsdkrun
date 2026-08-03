@@ -38,6 +38,7 @@ import { useToast } from "../state/toast";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState, ViewShell } from "./ViewShell";
 import { TableSkeleton } from "./Skeletons";
+import { useInfiniteRows } from "../hooks/useInfiniteRows";
 import type { Machine } from "../lib/types";
 
 function StatusPill({ m }: { m: Machine }) {
@@ -142,6 +143,9 @@ export default function MachinesView() {
     );
   }, [machines, filter]);
 
+  const { visible, sentinelRef, hasMore } = useInfiniteRows(rows.length);
+  const visibleRows = useMemo(() => rows.slice(0, visible), [rows, visible]);
+
   const stop = async (m: Machine) => {
     setPending((p) => ({ ...p, [m.id]: { type: "stop", at: Date.now() } }));
     try {
@@ -228,7 +232,7 @@ export default function MachinesView() {
           <TableColumn width={150}>Created</TableColumn>
           <TableColumn align="end"> </TableColumn>
         </TableHeader>
-        <TableBody items={rows}>
+        <TableBody items={visibleRows}>
           {(m) => {
             const kc = kindColor(m.kind, m.image);
             return (
@@ -350,6 +354,15 @@ export default function MachinesView() {
           }}
         </TableBody>
       </Table>
+
+      {hasMore && (
+        <div
+          ref={sentinelRef}
+          className="flex items-center justify-center py-4 text-xs text-foreground-500"
+        >
+          Loading more… ({visible} of {rows.length})
+        </div>
+      )}
 
       <ConfirmDialog
         open={!!removeTarget}

@@ -16,6 +16,7 @@ import { useImages } from "../lib/queries";
 import { ago, fullDate, humanSize, shortId } from "../lib/format";
 import { EmptyState, ViewShell } from "./ViewShell";
 import { TableSkeleton } from "./Skeletons";
+import { useInfiniteRows } from "../hooks/useInfiniteRows";
 import type { Image } from "../lib/types";
 
 /** Guess a run kind from a fetched-image reference (freebsd-15.1 / netbsd-…). */
@@ -38,6 +39,8 @@ export default function ImagesView() {
       ),
     [images, filter],
   );
+  const { visible, sentinelRef, hasMore } = useInfiniteRows(rows.length);
+  const visibleRows = useMemo(() => rows.slice(0, visible), [rows, visible]);
 
   const runImage = (im: Image) => {
     const kind = refKind(im.reference);
@@ -92,7 +95,7 @@ export default function ImagesView() {
           <TableColumn width={150}>Created</TableColumn>
           <TableColumn align="end"> </TableColumn>
         </TableHeader>
-        <TableBody items={rows}>
+        <TableBody items={visibleRows}>
           {(im) => (
             <TableRow key={im.id}>
               <TableCell>
@@ -136,6 +139,15 @@ export default function ImagesView() {
           )}
         </TableBody>
       </Table>
+
+      {hasMore && (
+        <div
+          ref={sentinelRef}
+          className="flex items-center justify-center py-4 text-xs text-foreground-500"
+        >
+          Loading more… ({visible} of {rows.length})
+        </div>
+      )}
     </ViewShell>
   );
 }

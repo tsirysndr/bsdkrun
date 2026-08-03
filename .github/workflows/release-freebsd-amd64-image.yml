@@ -27,7 +27,7 @@ on:
       agent_url:
         description: "URL of the FreeBSD x86_64 agent to inject"
         required: false
-        default: "https://github.com/tsirysndr/bsdkrun/releases/download/v0.2.0/bsdkrun-agent.freebsd-x86_64"
+        default: "https://github.com/tsirysndr/bsdkrun/releases/download/v0.3.1/bsdkrun-agent.freebsd-x86_64"
         type: string
 
 permissions:

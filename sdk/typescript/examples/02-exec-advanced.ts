@@ -3,7 +3,7 @@
  * and JSON output. Use `exec` (not `sh`) when you need these knobs or want to
  * avoid shell quoting entirely.
  */
-import { Sandbox } from "../src/index.ts";
+import { Sandbox } from "../src/index.js";
 
 const box = await Sandbox.create({ os: "linux", image: "alpine" });
 

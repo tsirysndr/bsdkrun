@@ -2,7 +2,7 @@
  * The `sh` tagged template in depth — quoting, chaining, JSON, `raw`, and
  * `.nothrow()`. Great for quick shell one-liners inside the guest.
  */
-import { raw, Sandbox } from "../src/index.ts";
+import { raw, Sandbox } from "../src/index.js";
 
 const box = await Sandbox.create({ os: "linux", image: "alpine" });
 

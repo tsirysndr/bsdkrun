@@ -25,6 +25,17 @@ const LIBKRUN_VERSION = process.env.BSDKRUN_LIBKRUN_VERSION || "v1.19.4-pvh";
 export type PreflightEnv = Record<string, string>;
 
 let done: Promise<PreflightEnv> | undefined;
+let cached: PreflightEnv = {};
+
+/**
+ * The env overrides from the last resolved {@link ensurePreflight}, read
+ * synchronously. `{}` until preflight has resolved at least once — safe for the
+ * interactive spawn paths, which are only reachable from a `Sandbox` handle
+ * whose construction already awaited preflight.
+ */
+export function cachedPreflightEnv(): PreflightEnv {
+  return cached;
+}
 
 interface Run {
   code: number;
@@ -181,10 +192,12 @@ async function ensureLinux(): Promise<PreflightEnv> {
 export function ensurePreflight(): Promise<PreflightEnv> {
   if (done) return done;
   done = (async () => {
-    if (disabled()) return {};
-    if (process.platform === "darwin") return ensureMacos();
-    if (process.platform === "linux") return ensureLinux();
-    return {};
+    let env: PreflightEnv = {};
+    if (disabled()) env = {};
+    else if (process.platform === "darwin") env = await ensureMacos();
+    else if (process.platform === "linux") env = await ensureLinux();
+    cached = env;
+    return env;
   })();
   return done;
 }
@@ -192,4 +205,5 @@ export function ensurePreflight(): Promise<PreflightEnv> {
 /** Reset preflight state (mainly for tests). */
 export function resetPreflight(): void {
   done = undefined;
+  cached = {};
 }

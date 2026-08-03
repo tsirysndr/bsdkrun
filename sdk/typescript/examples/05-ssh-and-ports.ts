@@ -2,7 +2,7 @@
  * Networking: forward host ports into the guest and set up key-based SSH via
  * the in-guest agent. After `ssh setup` you can really `ssh -p <port> root@…`.
  */
-import { Sandbox } from "../src/index.ts";
+import { Sandbox } from "../src/index.js";
 
 const box = await Sandbox.create({
   os: "linux",
@@ -19,10 +19,10 @@ try {
   await box.exec(["sh", "-c", "sed -i 's/^root:!:/root::/' /etc/shadow"]);
 
   // Install your local ~/.ssh/id_*.pub keys + sshd, enable + start it.
-  const setup = await box.ssh(["setup"]);
+  const setup = await box.ssh.setup();
   console.log(setup.text());
 
-  const status = await box.ssh(["status"]);
+  const status = await box.ssh.status();
   console.log("sshd status:", status.text());
 
   console.log("now: ssh -p 2222 root@127.0.0.1");

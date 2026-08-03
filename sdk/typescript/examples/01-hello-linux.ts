@@ -5,7 +5,7 @@
  *   node examples/01-hello-linux.ts     # (after `bun run build`, import from dist)
  *   deno run -A examples/01-hello-linux.ts
  */
-import { Sandbox } from "../src/index.ts";
+import { Sandbox } from "../src/index.js";
 
 const box = await Sandbox.create({ os: "linux", image: "alpine" });
 console.log("booted sandbox", box.id);

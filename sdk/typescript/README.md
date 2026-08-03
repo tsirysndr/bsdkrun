@@ -31,6 +31,31 @@ npm  install @bsdkrun/sdk
 deno add npm:@bsdkrun/sdk
 ```
 
+### libkrun is provisioned on install
+
+bsdkrun links **libkrun** (Apple's Hypervisor.framework on macOS, KVM on Linux).
+A `postinstall` step provisions it for you when you install this package:
+
+- **macOS** — `brew install libkrun` (if not already installed).
+- **Linux** — downloads our [PVH-enabled libkrun fork](https://github.com/tsirysndr/libkrun/releases)
+  (needed for BSD PVH boots; not packaged elsewhere) into the bsdkrun cache and,
+  at runtime, points the loader at it via `LD_LIBRARY_PATH`. You still need
+  `libkrunfw` (the bundled-kernel lib it links) from your distro / nixpkgs, and
+  `/dev/kvm` access.
+
+If `postinstall` was skipped (`--ignore-scripts`, or Deno, which doesn't run
+install hooks), the SDK provisions libkrun the same way on its first call.
+
+Provisioning knobs:
+
+| Env var                      | Effect                                             |
+| ---------------------------- | -------------------------------------------------- |
+| `BSDKRUN_NO_AUTO_INSTALL=1`  | Skip all provisioning — you manage libkrun.        |
+| `BSDKRUN_LIBKRUN_DIR=/path`  | Use an already-extracted libkrun lib dir (Linux).  |
+| `BSDKRUN_LIBKRUN_VERSION=vX` | Pin a specific PVH-fork release tag.               |
+
+### The `bsdkrun` binary
+
 You also need the `bsdkrun` binary itself. The SDK finds it via, in order:
 
 1. `setBinaryPath("/path/to/bsdkrun")`
@@ -155,23 +180,54 @@ await fetchImage("freebsd", { version: "14.3" });
 await versions("netbsd");
 ```
 
+## Interactive terminal (xterm.js in the browser)
+
+`box.terminal()` opens a PTY session in the guest, streamed over the agent's TCP
+protocol — with **live window-resize**. It's shaped to drop straight into
+[xterm.js](https://xtermjs.org): pipe output in, forward keystrokes out, resize
+on demand.
+
+```ts
+const term = await box.terminal({ command: ["/bin/sh"], cols: 120, rows: 30 });
+
+term.onData((chunk) => xterm.write(chunk));      // guest → xterm
+xterm.onData((input) => term.write(input));      // xterm → guest
+xterm.onResize(({ cols, rows }) => term.resize(cols, rows));
+
+const code = await term.exited;                  // resolves when the shell exits
+```
+
+Server-side, bridge it to a browser over a WebSocket in one call:
+
+```ts
+wss.on("connection", async (ws) => {
+  const term = await box.terminal();
+  term.bindWebSocket(ws);   // wires output, input, and {"resize":[c,r]} frames
+});
+```
+
+See [`examples/08-browser-terminal`](./examples/08-browser-terminal) for a
+complete Bun server + xterm.js page.
+
 ## Networking, SSH & Tailscale
 
 ```ts
 // forward ports at create time
 await Sandbox.create({ os: "linux", image: "alpine", net: { ports: ["2222:22"] } });
 
-// agent-managed key-based SSH
-await box.ssh(["setup"]);                    // install local ~/.ssh/*.pub keys
-await box.ssh(["add-key", "--key", pubkey]);
-await box.ssh(["status"]);
+// agent-managed key-based SSH (typed helpers)
+await box.ssh.setup();                              // install local ~/.ssh/*.pub keys
+await box.ssh.setup({ user: "tsiry", key: "~/.ssh/work.pub" });
+await box.ssh.addKey("ssh-ed25519 AAAA...");
+await box.ssh.status();
 
 // put a guest on your tailnet
-await box.tailscale(["setup"], { authkey: "tskey-auth-..." });
-await box.tailscale(["status"]);
+await box.tailscale.up({ authkey: "tskey-auth-...", hostname: "web" });
+await box.tailscale.status();
 
-// turn a Linux guest into a systemd system
-await box.systemd(["setup"]);
+// turn a Linux guest into a systemd system (debian/ubuntu/fedora only —
+// not Alpine, not the BSD guests)
+await box.systemd.setup();
 ```
 
 ## Errors

@@ -1,7 +1,7 @@
-import { CommandFailedError } from "./errors.ts";
-import { runCli } from "./process.ts";
-import { CommandResult } from "./shell.ts";
-import type { VolumeInfo } from "./types.ts";
+import { CommandFailedError } from "./errors.js";
+import { runCli } from "./process.js";
+import { CommandResult } from "./shell.js";
+import type { VolumeInfo } from "./types.js";
 
 function mapVolume(row: Record<string, unknown>): VolumeInfo {
   return {

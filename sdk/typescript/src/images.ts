@@ -1,7 +1,7 @@
-import { CommandFailedError } from "./errors.ts";
-import { runCli } from "./process.ts";
-import { CommandResult } from "./shell.ts";
-import type { ImageInfo } from "./types.ts";
+import { CommandFailedError } from "./errors.js";
+import { runCli } from "./process.js";
+import { CommandResult } from "./shell.js";
+import type { ImageInfo } from "./types.js";
 
 function mapImage(row: Record<string, unknown>): ImageInfo {
   return {

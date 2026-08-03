@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { buildCreateArgs } from "../src/args.ts";
-import { buildScript, CommandResult, raw } from "../src/shell.ts";
-import { CommandFailedError } from "../src/errors.ts";
+import { buildCreateArgs } from "../src/args.js";
+import { buildScript, CommandResult, raw } from "../src/shell.js";
+import { CommandFailedError } from "../src/errors.js";
+import { libkrunTarballUrl, linuxArchSlug } from "../src/preflight.js";
 
 describe("sh template quoting", () => {
   const build = (s: TemplateStringsArray, ...v: unknown[]) => buildScript(s, v);
@@ -43,7 +44,9 @@ describe("CommandResult", () => {
   });
 
   test("json() parses stdout", () => {
-    expect(new CommandResult('{"a":1}', "", 0, "x").json()).toEqual({ a: 1 });
+    expect(new CommandResult('{"a":1}', "", 0, "x").json<{ a: number }>()).toEqual({
+      a: 1,
+    });
   });
 
   test("lines() drops empty lines", () => {
@@ -60,6 +63,24 @@ describe("CommandResult", () => {
       CommandFailedError,
     );
     expect(new CommandResult("", "", 0, "x").throwIfFailed().exitCode).toBe(0);
+  });
+});
+
+describe("preflight helpers", () => {
+  test("linuxArchSlug maps node arch to release triples", () => {
+    expect(linuxArchSlug("x64")).toBe("x86_64");
+    expect(linuxArchSlug("arm64")).toBe("aarch64");
+    expect(linuxArchSlug("ppc64")).toBeUndefined();
+  });
+
+  test("libkrunTarballUrl builds the fork release URL", () => {
+    expect(libkrunTarballUrl("x86_64", "v1.19.4-pvh")).toBe(
+      "https://github.com/tsirysndr/libkrun/releases/download/" +
+        "v1.19.4-pvh/libkrun-pvh-v1.19.4-pvh-x86_64-unknown-linux-gnu.tar.gz",
+    );
+    expect(libkrunTarballUrl("aarch64", "v1.19.4-pvh")).toContain(
+      "aarch64-unknown-linux-gnu.tar.gz",
+    );
   });
 });
 

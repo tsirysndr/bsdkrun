@@ -2,7 +2,7 @@ import { accessSync, constants, existsSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { BinaryNotFoundError } from "./errors.ts";
+import { BinaryNotFoundError } from "./errors.js";
 
 let override: string | undefined;
 

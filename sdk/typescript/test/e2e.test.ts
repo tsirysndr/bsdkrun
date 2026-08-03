@@ -7,10 +7,10 @@
  * box without the toolchain just runs the unit suite.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { Sandbox } from "../src/sandbox.ts";
-import { images } from "../src/images.ts";
-import { volumes } from "../src/volumes.ts";
-import { probe } from "../src/system.ts";
+import { Sandbox } from "../src/sandbox.js";
+import { images } from "../src/images.js";
+import { volumes } from "../src/volumes.js";
+import { probe } from "../src/system.js";
 
 const ENABLED = process.env.BSDKRUN_E2E === "1";
 const IMAGE = process.env.BSDKRUN_E2E_IMAGE ?? "alpine";
@@ -136,6 +136,26 @@ d("e2e: bsdkrun SDK against a live guest", () => {
   test("volumes.list returns typed rows", async () => {
     const list = await volumes.list();
     expect(Array.isArray(list)).toBe(true);
+  });
+
+  test("terminal streams a PTY and honors dynamic resize", async () => {
+    const term = await box.terminal({ command: ["/bin/sh"], cols: 100, rows: 30 });
+    let out = "";
+    term.onData((c) => {
+      out += c.toString("utf8");
+    });
+    term.write("stty size; echo READY\n");
+    await new Promise((r) => setTimeout(r, 800));
+    term.resize(120, 40);
+    term.write("stty size; echo RESIZED\n");
+    await new Promise((r) => setTimeout(r, 800));
+    term.write("exit\n");
+    const code = await term.exited;
+
+    expect(out).toContain("READY");
+    expect(out).toContain("30 100"); // initial rows cols
+    expect(out).toContain("40 120"); // after resize
+    expect(code).toBe(0);
   });
 
   test("stop terminates the machine", async () => {

@@ -3,8 +3,8 @@
   "compilerOptions": {
     "noEmit": false,
     "declaration": true,
-    "emitDeclarationOnly": false,
-    "allowImportingTsExtensions": false,
+    "declarationMap": true,
+    "sourceMap": true,
     "outDir": "dist",
     "rootDir": "src"
   },

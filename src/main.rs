@@ -1366,8 +1366,19 @@ fn run_machine(
     // (but doesn't announce the id and powers the VM off when the command ends).
     if detach || !exec_after.is_empty() {
         return run_detached(
-            machine_id, vdir, kind, image, command, cpus, mem, volume, exec_after, detach,
-            interactive, verbose, build,
+            machine_id,
+            vdir,
+            kind,
+            image,
+            command,
+            cpus,
+            mem,
+            volume,
+            exec_after,
+            detach,
+            interactive,
+            verbose,
+            build,
         );
     }
     db::record_machine(

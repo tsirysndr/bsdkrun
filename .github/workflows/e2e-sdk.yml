@@ -31,6 +31,10 @@ jobs:
     name: sdk e2e (x86_64)
     runs-on: ubuntu-latest # x86_64; has /dev/kvm
     timeout-minutes: 40
+    env:
+      # CI builds + installs libkrun from source below (ldconfig'd), so skip the
+      # SDK's install-time / runtime libkrun auto-provisioning and use that one.
+      BSDKRUN_NO_AUTO_INSTALL: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -126,9 +130,9 @@ jobs:
         working-directory: sdk/typescript
         run: bun run typecheck
 
-      - name: SDK unit tests
+      - name: SDK unit + protocol tests
         working-directory: sdk/typescript
-        run: bun test test/unit.test.ts
+        run: bun test test/unit.test.ts test/protocol.test.ts
 
       - name: SDK e2e tests (boots a real microVM)
         working-directory: sdk/typescript

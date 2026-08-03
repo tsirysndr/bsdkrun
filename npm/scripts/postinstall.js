@@ -10,7 +10,6 @@
 //   BSDKRUN_DOWNLOAD_BASE=url  override the release download base URL
 
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
@@ -58,22 +57,22 @@ async function main() {
   // missing (older releases), warn but continue; if present and mismatched, fail.
   await verifyChecksum(archive, `${url}.sha256`, asset);
 
-  // Unpack the single `bsdkrun` entry into a temp dir, then move it into place.
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "bsdkrun-"));
+  // Unpack the whole archive into the binaries dir. On macOS that's just
+  // `bsdkrun`; on Linux it also carries the bundled libkrun/libkrunfw shared
+  // objects, which must land next to the binary (its rpath is $ORIGIN).
+  const destDir = path.dirname(dest);
+  const tgz = path.join(destDir, asset);
+  fs.writeFileSync(tgz, archive);
   try {
-    const tgz = path.join(tmp, asset);
-    fs.writeFileSync(tgz, archive);
     // tar + gzip are present on every supported platform (macOS, Linux).
-    execFileSync("tar", ["-xzf", tgz, "-C", tmp], { stdio: "inherit" });
-    const extracted = path.join(tmp, "bsdkrun");
-    if (!fs.existsSync(extracted)) {
-      throw new Error(`archive ${asset} did not contain a 'bsdkrun' binary`);
-    }
-    fs.copyFileSync(extracted, dest);
-    fs.chmodSync(dest, 0o755);
+    execFileSync("tar", ["-xzf", tgz, "-C", destDir], { stdio: "inherit" });
   } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(tgz, { force: true });
   }
+  if (!fs.existsSync(dest)) {
+    throw new Error(`archive ${asset} did not contain a 'bsdkrun' binary`);
+  }
+  fs.chmodSync(dest, 0o755);
 
   console.log(`[bsdkrun] installed bsdkrun ${VERSION} -> ${dest}`);
 }

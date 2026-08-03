@@ -106,9 +106,11 @@ npm install -g @bsdkrun/cli   # or: npx @bsdkrun/cli linux alpine -- echo hi
 ```
 
 A postinstall step downloads the matching `bsdkrun` from the GitHub release and verifies its
-SHA-256. It's just the host binary — **libkrun** is still a runtime prerequisite (`brew install
-libkrun` on macOS; see [Prerequisites](#prerequisites) on Linux). Unsupported platforms (Windows,
-Intel macOS, 32-bit) fail the install with a clear message. See [`npm/`](npm/) for details.
+SHA-256. On **Linux** the archive **bundles libkrun** (`libkrun.so`/`libkrunfw.so`, rpath'd to
+`$ORIGIN`), so it works with no separate libkrun install — only `gvproxy` is needed for guest
+networking. On **macOS** it's just the binary and links Homebrew's libkrun (`brew install libkrun`).
+Unsupported platforms (Windows, Intel macOS, 32-bit) fail the install with a clear message. See
+[`npm/`](npm/) for details.
 
 **Nix flake** — builds bsdkrun with all its dependencies. On **Linux (amd64/arm64)** it links
 nixpkgs' libkrun; on **macOS** it links your Homebrew libkrun, so those need `--impure`

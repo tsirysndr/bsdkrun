@@ -191,13 +191,43 @@ jobs:
       - name: Build bsdkrun (release)
         run: cargo build --release
 
-      - name: Package artifacts
+      # Bundle libkrun so the npm package is self-contained: ship bsdkrun next to
+      # the libkrun/libkrunfw shared objects it links, and rewrite every object's
+      # rpath to $ORIGIN so the loader finds its siblings in the same dir. The
+      # user then needs no separate libkrun install (gvproxy is still needed for
+      # guest networking — see the README).
+      - name: Package artifacts (bsdkrun + bundled libkrun)
         run: |
           set -eux
-          mkdir -p dist
-          # A single `bsdkrun` entry — matches what @bsdkrun/cli's postinstall
-          # extracts. Nothing to codesign on Linux.
-          tar -C target/release -czf "dist/bsdkrun-${{ matrix.triple }}.tar.gz" bsdkrun
+          rm -rf dist pkg && mkdir -p dist pkg
+          cp target/release/bsdkrun pkg/bsdkrun
+
+          # Copy every non-system shared lib bsdkrun (transitively) needs — the
+          # ones we built into /usr/local — into pkg/ under their SONAME. ldd
+          # resolves each object's deps; we follow only /usr/local ones (skipping
+          # libc and friends) and recurse so libkrun's own dep on libkrunfw is
+          # picked up too.
+          copy_local_deps() {
+            ldd "$1" 2>/dev/null | awk '{print $3}' | grep -E '^/usr/local/' | while read -r p; do
+              name=$(basename "$p")
+              if [ ! -e "pkg/$name" ]; then
+                cp -L "$p" "pkg/$name"
+                copy_local_deps "pkg/$name"
+              fi
+            done
+          }
+          copy_local_deps pkg/bsdkrun
+
+          # Point bsdkrun and each bundled lib at their siblings ($ORIGIN = the
+          # dir the object is loaded from). Single quotes: the linker, not the
+          # shell, must see the literal $ORIGIN.
+          for f in pkg/*; do patchelf --set-rpath '$ORIGIN' "$f"; done
+
+          echo "----- bundle contents -----"; ls -l pkg
+          echo "----- bsdkrun deps after rpath rewrite -----"; ldd pkg/bsdkrun || true
+
+          # Pack the whole bundle (bsdkrun + *.so.*). Postinstall extracts it all.
+          tar -C pkg -czf "dist/bsdkrun-${{ matrix.triple }}.tar.gz" .
           ( cd dist && shasum -a 256 "bsdkrun-${{ matrix.triple }}.tar.gz" \
               > "bsdkrun-${{ matrix.triple }}.tar.gz.sha256" )
           cat "dist/bsdkrun-${{ matrix.triple }}.tar.gz.sha256"

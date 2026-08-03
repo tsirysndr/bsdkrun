@@ -1691,6 +1691,150 @@ const GUEST_AGENT_BOOT_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// so CI (and the curious) see the full boot, and e2e can assert on it.
 /// Otherwise show a terse "still booting" counter on a terminal so the wait
 /// doesn't look like a hang.
+/// Boot milestones timestamped from the guest console by [`wait_for_agent`], each
+/// measured from launch. `None` means the anchor line never appeared: NetBSD
+/// direct-boots with no firmware/loader, so its `kernel_entry` ≈ `first_output`;
+/// a very fast boot may reach the agent before a milestone is scanned.
+#[derive(Default)]
+struct BootMarks {
+    /// First byte on the console — end of the hypervisor/firmware dead time.
+    first_output: Option<std::time::Duration>,
+    /// Kernel takes over (`---<<BOOT>>---` / NetBSD `booting ...`) — past firmware+loader.
+    kernel_entry: Option<std::time::Duration>,
+    /// Root filesystem mount / fsck — the kernel→userland handoff, start of rc.
+    root_mount: Option<std::time::Duration>,
+}
+
+/// Background console watcher that timestamps [`BootMarks`] off the main
+/// agent-poll loop (which blocks on `agent::ping` each iteration). Milestone
+/// times are milliseconds-from-launch in atomics (0 = not seen yet); dropping the
+/// scanner signals its thread to stop.
+struct BootScanner {
+    first: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    kernel: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    root: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl BootScanner {
+    fn spawn(log: std::path::PathBuf, start: std::time::Instant) -> Self {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::sync::Arc;
+        let s = BootScanner {
+            first: Arc::new(AtomicU64::new(0)),
+            kernel: Arc::new(AtomicU64::new(0)),
+            root: Arc::new(AtomicU64::new(0)),
+            stop: Arc::new(AtomicBool::new(false)),
+        };
+        let (first, kernel, root, stop) = (
+            s.first.clone(),
+            s.kernel.clone(),
+            s.root.clone(),
+            s.stop.clone(),
+        );
+        std::thread::spawn(move || {
+            // `.max(1)` so a milestone at t≈0 never reads back as "not seen".
+            let now = || (start.elapsed().as_millis() as u64).max(1);
+            while !stop.load(Ordering::Relaxed) {
+                if let Ok(bytes) = std::fs::read(&log) {
+                    if first.load(Ordering::Relaxed) == 0 && !bytes.is_empty() {
+                        first.store(now(), Ordering::Relaxed);
+                    }
+                    let text = String::from_utf8_lossy(&bytes);
+                    // Kernel takes over: FreeBSD `---<<BOOT>>---`, NetBSD `booting ...`.
+                    if kernel.load(Ordering::Relaxed) == 0
+                        && ["---<<BOOT>>---", "booting ..."]
+                            .iter()
+                            .any(|p| text.contains(p))
+                    {
+                        kernel.store(now(), Ordering::Relaxed);
+                    }
+                    // Root mount / fsck — the kernel→userland (rc) handoff, and the
+                    // last milestone, so the thread can stop once it appears.
+                    if root.load(Ordering::Relaxed) == 0
+                        && ["Trying to mount root", "Starting root file system check"]
+                            .iter()
+                            .any(|p| text.contains(p))
+                    {
+                        root.store(now(), Ordering::Relaxed);
+                        break;
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        });
+        s
+    }
+
+    fn marks(&self) -> BootMarks {
+        use std::sync::atomic::Ordering;
+        let d = |a: &std::sync::atomic::AtomicU64| {
+            let v = a.load(Ordering::Relaxed);
+            (v != 0).then(|| std::time::Duration::from_millis(v))
+        };
+        BootMarks {
+            first_output: d(&self.first),
+            kernel_entry: d(&self.kernel),
+            root_mount: d(&self.root),
+        }
+    }
+}
+
+impl Drop for BootScanner {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Report the boot timing gathered by [`wait_for_agent`]: one structured `info!`
+/// line (shown by default) plus, when `BSDKRUN_BOOT_TIMING` is set, a per-phase
+/// breakdown to stderr (firmware/loader → kernel probe → userland rc), computed
+/// as deltas between whichever milestones were reached.
+fn log_boot_timing(
+    id: &str,
+    kind: &str,
+    total: std::time::Duration,
+    marks: &BootMarks,
+    show: bool,
+) {
+    let ms = |d: Option<std::time::Duration>| d.map(|x| x.as_millis() as u64);
+    tracing::info!(
+        total_ms = total.as_millis() as u64,
+        to_first_output_ms = ms(marks.first_output),
+        to_kernel_entry_ms = ms(marks.kernel_entry),
+        to_root_mount_ms = ms(marks.root_mount),
+        "boot timing (launch → agent-ready)"
+    );
+    if !show {
+        return;
+    }
+    // Ordered checkpoints actually reached, ending at agent-ready; print the gap
+    // between each consecutive pair (launch is the implicit zero).
+    let mut pts: Vec<(&str, std::time::Duration)> = Vec::new();
+    if let Some(t) = marks.first_output {
+        pts.push(("first console output", t));
+    }
+    if let Some(t) = marks.kernel_entry {
+        pts.push(("kernel entry", t));
+    }
+    if let Some(t) = marks.root_mount {
+        pts.push(("root mount (rc start)", t));
+    }
+    pts.push(("agent ready", total));
+
+    let s = |d: std::time::Duration| format!("{:>6.2}s", d.as_secs_f64());
+    eprintln!("\x1b[36m[boot timing]\x1b[0m {kind} {id}");
+    let mut prev_label = "launch";
+    let mut prev = std::time::Duration::ZERO;
+    for (label, at) in pts {
+        let seg = format!("{prev_label} → {label}");
+        eprintln!("  {:<45} {}", seg, s(at.saturating_sub(prev)));
+        prev_label = label;
+        prev = at;
+    }
+    eprintln!("  {:<45} {}", "total (launch → agent ready)", s(total));
+}
+
 fn wait_for_agent(id: &str, kind: &str, console: Option<&std::path::Path>) -> Result<u16> {
     use std::io::{IsTerminal, Read, Seek, SeekFrom, Write};
     let counter = console.is_none() && std::io::stderr().is_terminal();
@@ -1699,6 +1843,24 @@ fn wait_for_agent(id: &str, kind: &str, console: Option<&std::path::Path>) -> Re
     let mut frame = 0usize;
     let start = std::time::Instant::now();
     let deadline = start + GUEST_AGENT_BOOT_TIMEOUT;
+    // Boot timing: timestamp boot milestones from the guest console to split the
+    // wait into firmware/loader, kernel device probe, and userland rc. `start` is
+    // captured just after the fork, so it tracks the real launch → usable-agent
+    // wall clock; the console log is resolved independently of `--verbose` so the
+    // milestones are caught even on a quiet boot. Report at `info!` (shown by
+    // default) plus a phase breakdown to stderr when BSDKRUN_BOOT_TIMING is set.
+    let boot_timing = std::env::var_os("BSDKRUN_BOOT_TIMING").is_some();
+    let timing_log = db::Db::open()
+        .ok()
+        .and_then(|db| db.find_machine(id).ok())
+        .map(|vm| std::path::PathBuf::from(vm.state_dir).join("console.log"));
+    // Scan the console on a background thread, not in this loop: `agent::ping`
+    // below blocks up to its read timeout each iteration, which would starve the
+    // scan and collapse every milestone onto one late sample. The scanner drops
+    // (and stops) when `wait_for_agent` returns on any path.
+    let scanner = timing_log
+        .as_ref()
+        .map(|p| BootScanner::spawn(p.clone(), start));
     // Verbose: tail the console log, remembering how far we've streamed.
     let mut tail: Option<std::fs::File> = None;
     let mut off: u64 = 0;
@@ -1739,6 +1901,8 @@ fn wait_for_agent(id: &str, kind: &str, console: Option<&std::path::Path>) -> Re
                         eprint!("\r\x1b[K"); // clear the progress line
                         let _ = std::io::stderr().flush();
                     }
+                    let marks = scanner.as_ref().map(|s| s.marks()).unwrap_or_default();
+                    log_boot_timing(id, kind, start.elapsed(), &marks, boot_timing);
                     return Ok(port);
                 }
             }

@@ -21,6 +21,7 @@ mod krun;
 mod linux;
 mod names;
 mod net;
+mod network;
 mod oci;
 mod tty;
 mod watchdog;
@@ -152,6 +153,51 @@ enum Command {
 
     /// Run / remove flavors (`flavor run <name>`, `flavor rm <name>`).
     Flavor(FlavorArgs),
+
+    /// Manage global networks (a shared subnet + internal DNS) that machines join
+    /// with `--network` to reach each other by IP and by name.
+    Network(NetworkArgs),
+}
+
+#[derive(Parser)]
+struct NetworkArgs {
+    #[command(subcommand)]
+    cmd: NetworkCmd,
+}
+
+#[derive(Subcommand)]
+enum NetworkCmd {
+    /// Create a network (starts its shared gvproxy switch).
+    Create(NetworkCreateArgs),
+    /// List networks and their members.
+    Ls(NetworkLsArgs),
+    /// Remove one or more networks (refuses running members unless `-f`).
+    Rm(NetworkRmArgs),
+}
+
+#[derive(Parser)]
+struct NetworkCreateArgs {
+    /// Network name.
+    #[arg(value_name = "NAME")]
+    name: String,
+}
+
+#[derive(Parser)]
+struct NetworkLsArgs {
+    /// Emit JSON (for scripting / the desktop).
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct NetworkRmArgs {
+    /// Remove even with running members (they lose the network on next start).
+    #[arg(short, long)]
+    force: bool,
+
+    /// Network name(s) to remove.
+    #[arg(value_name = "NAME", required = true)]
+    names: Vec<String>,
 }
 
 #[derive(Parser)]
@@ -783,6 +829,16 @@ struct NetConfig {
     /// MAC address for the guest NIC (default: a fixed locally-administered one).
     #[arg(long, value_name = "AA:BB:CC:DD:EE:FF")]
     mac: Option<String>,
+
+    /// Join a global network so the machine shares a subnet with, and can reach
+    /// (by IP + name), other members (`bsdkrun network create <name>` first).
+    #[arg(long, value_name = "NAME")]
+    network: Option<String>,
+
+    /// Name for this machine (used as its DNS name on a `--network`, and shown in
+    /// `ps`). Defaults to a generated Docker-style name.
+    #[arg(long, value_name = "NAME")]
+    name: Option<String>,
 }
 
 /// A disk to attach as virtio-blk, parsed from `PATH[:ro]`.
@@ -896,6 +952,11 @@ fn main() -> Result<()> {
             FlavorCmd::Build(a) => cmd_flavor_prebuild(&a.name, a.vm.cpus, a.vm.mem, a.force),
             FlavorCmd::BuildInternal(a) => cmd_flavor_build(&a.name, &a.key, a.vm.cpus, a.vm.mem),
         },
+        Command::Network(args) => match args.cmd {
+            NetworkCmd::Create(a) => network::cmd_create(&a.name),
+            NetworkCmd::Ls(a) => network::cmd_ls(a.json),
+            NetworkCmd::Rm(a) => network::cmd_rm(&a.names, a.force),
+        },
     }
 }
 
@@ -961,37 +1022,66 @@ fn setup_networking_with_agent(
         None => net::DEFAULT_MAC,
     };
 
-    // Shared network (spike): if `BSDKRUN_NET_VFKIT`/`_CONTROL` point at an
-    // already-running gvproxy, join THAT switch instead of spawning our own — the
-    // basis for a global network where members share a subnet and can reach each
-    // other. Each member targets its own IP (`BSDKRUN_NET_IP`) for forwards.
-    if let (Ok(vfkit), Ok(control)) = (
-        std::env::var("BSDKRUN_NET_VFKIT"),
-        std::env::var("BSDKRUN_NET_CONTROL"),
-    ) {
-        if !vfkit.is_empty() && !control.is_empty() {
-            let ip = std::env::var("BSDKRUN_NET_IP")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| net::GUEST_IP.to_string());
-            let control = std::path::PathBuf::from(control);
+    // Shared/global network: if `BSDKRUN_NET_CONTROL` points at a running network
+    // gvproxy, join THAT switch (via a per-member /connect bridge) instead of
+    // spawning an isolated gvproxy — so members share a subnet and reach each
+    // other by IP/name. Each member gets its own IP (`BSDKRUN_NET_IP`).
+    if let Some(control) = std::env::var("BSDKRUN_NET_CONTROL")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        let control = std::path::PathBuf::from(control);
+        // A static (Linux) member knows its IP now; a DHCP (BSD) member gets it
+        // after boot — its agent/port forwards + DNS are wired then.
+        let ip = std::env::var("BSDKRUN_NET_IP")
+            .ok()
+            .filter(|s| !s.is_empty());
+        // A per-member vfkit socket for the bridge (libkrun connects to it).
+        let vfkit = match agent_dir {
+            Some(dir) => dir.join("net-bridge.sock"),
+            None => {
+                std::env::temp_dir().join(format!("bsdkrun-netbr-{}.sock", std::process::id()))
+            }
+        };
+        if let Some(ip) = &ip {
             if let Some(dir) = agent_dir {
                 let host =
                     net::free_local_port().context("reserving a host port for the exec agent")?;
-                net::expose_on_control(&control, host, &ip, agent::GUEST_PORT)
+                net::expose_on_control(&control, host, ip, agent::GUEST_PORT)
                     .context("forwarding the agent port on the shared network")?;
                 let _ = std::fs::write(agent::port_file(dir), host.to_string());
                 info!(agent_port = host, %ip, "exec agent reachable via the shared network");
             }
             for pf in &cfg.ports {
-                net::expose_on_control(&control, pf.host, &ip, pf.guest)
+                net::expose_on_control(&control, pf.host, ip, pf.guest)
                     .with_context(|| format!("forwarding host port {}", pf.host))?;
             }
-            ctx.add_net_gvproxy(std::path::Path::new(&vfkit), mac)
-                .context("attaching to the shared network gvproxy")?;
-            info!(%ip, "joined shared network");
-            return Ok(None); // the gvproxy is external/shared — we don't own it
         }
+        // CRITICAL: every member on the shared switch needs a DISTINCT MAC (a
+        // shared MAC makes gvproxy's CAM table route both members' traffic to one
+        // port, breaking connectivity). `network::join` sets `BSDKRUN_NET_MAC`;
+        // fall back to deriving it from the IP's last octet.
+        let member_mac = if let Some(s) = std::env::var("BSDKRUN_NET_MAC")
+            .ok()
+            .filter(|s| !s.is_empty())
+        {
+            net::parse_mac(&s).unwrap_or(mac)
+        } else if let Some(ip) = &ip {
+            let last = ip
+                .rsplit('.')
+                .next()
+                .and_then(|o| o.parse::<u8>().ok())
+                .unwrap_or(2);
+            [0x5a, 0x94, 0xef, 0xe4, 0x0c, last]
+        } else {
+            mac
+        };
+        net::start_network_bridge(&vfkit, &control)
+            .context("bridging into the shared network")?;
+        ctx.add_net_gvproxy(&vfkit, member_mac)
+            .context("attaching virtio-net to the shared network")?;
+        info!("joined shared network");
+        return Ok(None); // the network gvproxy is shared — we don't own it
     }
 
     // Forward a unique host port to the guest agent (for `exec`/`shell`) and
@@ -1121,6 +1211,8 @@ fn firmware_machine(
     disk_size: Option<&str>,
 ) -> Result<()> {
     ensure_net_for_exec(net, exec_after)?;
+    // BSD guests DHCP their IP (dhcp = true), so join before the ctx build.
+    let joined = prepare_network(net, true)?;
     let machine_id = id::next_machine_id();
     let vdir = machine_dir_or_tmp(&machine_id);
     let image = basename(disk);
@@ -1146,7 +1238,7 @@ fn firmware_machine(
     if let (Some(name), Some(dir)) = (run.volume.as_deref(), &volume) {
         db::record_volume(name, "firmware", &image, &dir.to_string_lossy());
     }
-    run_machine(
+    let result = run_machine(
         &machine_id,
         &vdir,
         "firmware",
@@ -1161,7 +1253,9 @@ fn firmware_machine(
         interactive,
         verbose,
         build,
-    )
+    );
+    finalize_network(&machine_id, Some(&vdir), &net.ports, &joined);
+    result
 }
 
 /// A trailing command runs in the guest via its agent, which rides the guest
@@ -1328,6 +1422,7 @@ fn boot_freebsd_pvh(args: BsdArgs, disk_override: Option<PathBuf>) -> Result<()>
     // hides duplicate keys past the first.
     let (exec_after, interactive) = bsd_exec_after(&args.command, args.run.detach, args.net.no_net);
     ensure_net_for_exec(&args.net, &exec_after)?;
+    let joined = prepare_network(&args.net, true)?; // FreeBSD DHCPs its IP
     std::env::set_var("KRUN_PVH", "1");
     std::env::set_var("KRUN_VIRTIO_MMIO_HINTS", "freebsd");
 
@@ -1367,7 +1462,7 @@ fn boot_freebsd_pvh(args: BsdArgs, disk_override: Option<PathBuf>) -> Result<()>
     if let (Some(name), Some(dir)) = (args.run.volume.as_deref(), &volume) {
         db::record_volume(name, "freebsd", &image, &dir.to_string_lossy());
     }
-    run_machine(
+    let result = run_machine(
         &machine_id,
         &vdir,
         "freebsd",
@@ -1382,7 +1477,9 @@ fn boot_freebsd_pvh(args: BsdArgs, disk_override: Option<PathBuf>) -> Result<()>
         interactive,
         args.verbose,
         build,
-    )
+    );
+    finalize_network(&machine_id, Some(&vdir), &args.net.ports, &joined);
+    result
 }
 
 /// NetBSD kernel command line (override with `$BSDKRUN_NETBSD_CMDLINE`). The root
@@ -1428,6 +1525,7 @@ fn boot_netbsd_disk(mut args: BsdArgs, disk_override: Option<PathBuf>) -> Result
     bsd_inject_repo(&mut args);
     let (exec_after, interactive) = bsd_exec_after(&args.command, args.run.detach, args.net.no_net);
     ensure_net_for_exec(&args.net, &exec_after)?;
+    let joined = prepare_network(&args.net, true)?; // NetBSD DHCPs its IP
     let arch = host::Arch::current()?;
 
     // amd64 NetBSD is a PVH kernel (MICROVM). Tell libkrun to enter via the
@@ -1480,7 +1578,7 @@ fn boot_netbsd_disk(mut args: BsdArgs, disk_override: Option<PathBuf>) -> Result
     if let (Some(name), Some(dir)) = (args.run.volume.as_deref(), &volume) {
         db::record_volume(name, "netbsd", &image, &dir.to_string_lossy());
     }
-    run_machine(
+    let result = run_machine(
         &machine_id,
         &vdir,
         "netbsd",
@@ -1495,7 +1593,9 @@ fn boot_netbsd_disk(mut args: BsdArgs, disk_override: Option<PathBuf>) -> Result
         interactive,
         args.verbose,
         build,
-    )
+    );
+    finalize_network(&machine_id, Some(&vdir), &args.net.ports, &joined);
+    result
 }
 
 /// Locate libkrun's EDK2 firmware (`KRUN_EFI`), keeping a copy in bsdkrun's own
@@ -1841,6 +1941,55 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
 /// `exec_after` hook) — used to install a flavor's packages/tools. A non-empty
 /// `provision` implies the machine boots in the background so the parent can
 /// wait for the agent and run it (see [`run_machine`]).
+/// If a machine is joining a `--network` (or was given a `--name`), resolve its
+/// name (recorded via the name override so `ps`/DNS agree) and join the network —
+/// which sets `BSDKRUN_NET_*` for [`setup_networking_with_agent`]. Returns the
+/// (network, member) to record as membership once the machine row exists.
+/// `dhcp` = true for BSD guests (they DHCP their IP); false for Linux (static
+/// kernel IP). Returns `(network, member, dhcp)` to finalize once booted.
+fn prepare_network(net: &NetConfig, dhcp: bool) -> Result<Option<(String, String, bool)>> {
+    if net.network.is_none() && net.name.is_none() {
+        return Ok(None);
+    }
+    let member = match &net.name {
+        Some(n) => n.clone(),
+        None => db::Db::open()
+            .map(|d| d.generate_name())
+            .unwrap_or_else(|_| names::random_name()),
+    };
+    names::set_override(&member);
+    if let Some(network) = &net.network {
+        network::join(network, &member, dhcp)?;
+        return Ok(Some((network.clone(), member, dhcp)));
+    }
+    Ok(None)
+}
+
+/// Finalize network membership after boot: a Linux (static) member just records
+/// its allocated IP; a BSD (dhcp) member discovers its leased IP and wires up its
+/// agent forward + DNS. No-op when not on a network.
+fn finalize_network(
+    machine_id: &str,
+    agent_dir: Option<&std::path::Path>,
+    ports: &[PortForward],
+    joined: &Option<(String, String, bool)>,
+) {
+    if let Some((network, member, dhcp)) = joined {
+        if *dhcp {
+            if let Some(dir) = agent_dir {
+                if let Err(e) =
+                    network::finalize_dhcp(network, member, machine_id, dir, ports)
+                {
+                    tracing::warn!("network finalize failed: {e:#}");
+                }
+            }
+        } else if let Ok(db) = db::Db::open() {
+            let ip = std::env::var("BSDKRUN_NET_IP").unwrap_or_default();
+            let _ = db.set_machine_network(machine_id, network, &ip);
+        }
+    }
+}
+
 fn boot_linux_from(
     args: LinuxArgs,
     rootfs_override: Option<PathBuf>,
@@ -1868,6 +2017,11 @@ fn boot_linux_from(
         image.size,
         &image.rootfs.to_string_lossy(),
     );
+
+    // Join a global network (allocate IP + register DNS + set BSDKRUN_NET_*)
+    // before we build the ctx, so `setup_networking_with_agent` bridges in.
+    // Linux uses a static kernel IP (dhcp = false).
+    let joined = prepare_network(&args.net, false)?;
 
     let machine_id = id::next_machine_id();
     let vdir = machine_dir_or_tmp(&machine_id);
@@ -1932,7 +2086,7 @@ fn boot_linux_from(
     }
     // Linux never uses the SMP-shutdown watchdog: it redirects fd 2, which
     // libkrun's implicit virtio-console (hvc0) claims for the guest.
-    run_machine(
+    let result = run_machine(
         &machine_id,
         &vdir,
         "linux",
@@ -1947,7 +2101,9 @@ fn boot_linux_from(
         false,
         false,
         build,
-    )
+    );
+    finalize_network(&machine_id, Some(&vdir), &args.net.ports, &joined);
+    result
 }
 
 /// How a Linux guest's root filesystem is provided.
@@ -2802,6 +2958,8 @@ fn cmd_start(id: &str) -> Result<()> {
         no_net: false,
         ports: vec![],
         mac: None,
+        network: None,
+        name: None,
     };
     let vmcfg = VmConfig { cpus, mem };
 
@@ -2909,6 +3067,8 @@ fn flavor_linux_args(
             no_net: false,
             ports,
             mac: None,
+            network: None,
+            name: None,
         },
         vm: VmConfig { cpus, mem },
         repo: None,
@@ -3422,6 +3582,8 @@ fn cmd_flavor_build(name: &str, key: &str, cpus: u8, mem: u32) -> Result<()> {
             no_net: false,
             ports: vec![],
             mac: None,
+            network: None,
+            name: None,
         },
         vm: VmConfig { cpus, mem },
         repo: None,
@@ -3511,6 +3673,8 @@ fn cmd_flavor_run(args: FlavorRunArgs) -> Result<()> {
                 no_net: false,
                 ports: args.ports,
                 mac: None,
+                network: None,
+                name: None,
             },
             vm: VmConfig {
                 cpus: args.vm.cpus,
@@ -3579,6 +3743,8 @@ fn cmd_flavor_run(args: FlavorRunArgs) -> Result<()> {
             no_net: false,
             ports,
             mac: None,
+            network: None,
+            name: None,
         },
         vm: VmConfig {
             cpus: args.vm.cpus,

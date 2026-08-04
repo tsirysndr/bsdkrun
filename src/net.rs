@@ -12,7 +12,7 @@
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener};
-use std::os::unix::net::UnixStream;
+use std::os::unix::net::{UnixDatagram, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -243,6 +243,196 @@ pub fn expose_on_control(
         bail!("gvproxy rejected the port forward: {status}");
     }
     Ok(())
+}
+
+/// gvproxy's multi-tenant switch endpoint. A `POST /connect` on the control
+/// socket is hijacked into a raw ethernet tap on the shared network switch, so
+/// multiple VMs join the same L2 network. Frames use the "hyperkit" framing: a
+/// **2-byte little-endian length** prefix, then the frame (no handshake).
+const CONNECT_PATH: &str = "/connect";
+
+/// Bridge a libkrun **vfkit** unixgram socket into a **shared** gvproxy's
+/// `/connect` switch, so many machines share one L2 subnet (a global network).
+///
+/// libkrun speaks the vfkit protocol — one raw ethernet frame per datagram — and
+/// replies go to the datagram's source address (mirroring gvproxy's own vfkit
+/// handler). gvproxy's `/connect` tap speaks length-prefixed frames. This binds
+/// the vfkit socket libkrun connects to, opens a `/connect` tap, and pumps frames
+/// between them (translating framing) for the VM's lifetime.
+///
+/// Binds synchronously (so the socket exists before libkrun connects at boot);
+/// the blocking pump runs on background threads that die with the process.
+pub fn start_network_bridge(vfkit_path: &Path, control_socket: &Path) -> Result<()> {
+    let _ = std::fs::remove_file(vfkit_path);
+    let dgram = UnixDatagram::bind(vfkit_path)
+        .with_context(|| format!("binding vfkit bridge socket {}", vfkit_path.display()))?;
+    let control_socket = control_socket.to_path_buf();
+    let vfkit_path = vfkit_path.to_path_buf();
+
+    std::thread::spawn(move || {
+        if let Err(e) = run_bridge(dgram, &control_socket) {
+            warn!(socket = %vfkit_path.display(), "network bridge ended: {e:#}");
+        }
+    });
+    Ok(())
+}
+
+fn run_bridge(dgram: UnixDatagram, control_socket: &Path) -> Result<()> {
+    use std::os::unix::io::AsRawFd;
+
+    // Open the /connect tap on the shared gvproxy (it hijacks the HTTP conn and
+    // starts reading frames — no response is sent).
+    let mut up = UnixStream::connect(control_socket)
+        .with_context(|| format!("connecting to shared network {}", control_socket.display()))?;
+    up.write_all(
+        format!("POST {CONNECT_PATH} HTTP/1.1\r\nHost: gvproxy\r\nContent-Length: 0\r\n\r\n")
+            .as_bytes(),
+    )
+    .context("opening /connect tap")?;
+    up.flush().ok();
+
+    let fd = dgram.as_raw_fd();
+
+    // Learn libkrun's datagram source address from its first packet using a raw
+    // recvfrom — libkrun binds an autobind/abstract name that has no filesystem
+    // path, so we must reply with the exact sockaddr the kernel gives us (this is
+    // what gvproxy's own vfkit handler does), not a std path-based send.
+    let mut buf = vec![0u8; 65536];
+    let mut peer: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let mut peer_len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+    let n = unsafe {
+        libc::recvfrom(
+            fd,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            buf.len(),
+            0,
+            &mut peer as *mut _ as *mut libc::sockaddr,
+            &mut peer_len,
+        )
+    };
+    if n < 0 {
+        return Err(std::io::Error::last_os_error()).context("first frame from libkrun");
+    }
+    let n = n as usize;
+    // Diagnostic: what address did libkrun bind (so we can reply to it)?
+    let path_bytes: Vec<u8> = peer
+        .sun_path
+        .iter()
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as u8)
+        .collect();
+    debug!(
+        peer_len,
+        family = peer.sun_family as i32,
+        path = %String::from_utf8_lossy(&path_bytes),
+        "libkrun vfkit peer address"
+    );
+    let first: Vec<u8> = buf[..n].to_vec();
+
+    // gvproxy → libkrun: read [u16 LE len][frame], deliver as one datagram to the
+    // learned peer sockaddr via raw sendto.
+    let mut down = up.try_clone().context("cloning /connect stream")?;
+    let tx_fd = fd;
+    std::thread::spawn(move || {
+        let mut hdr = [0u8; 2];
+        let mut frame = vec![0u8; 65536];
+        loop {
+            if down.read_exact(&mut hdr).is_err() {
+                break;
+            }
+            let len = u16::from_le_bytes(hdr) as usize;
+            if len == 0 || len > frame.len() || down.read_exact(&mut frame[..len]).is_err() {
+                break;
+            }
+            let sent = unsafe {
+                libc::sendto(
+                    tx_fd,
+                    frame.as_ptr() as *const libc::c_void,
+                    len,
+                    0,
+                    &peer as *const _ as *const libc::sockaddr,
+                    peer_len,
+                )
+            };
+            if sent < 0 {
+                break;
+            }
+        }
+    });
+
+    // libkrun → gvproxy: each datagram is one frame; prefix with [u16 LE len].
+    // A legacy "VFKT" handshake magic (if libkrun sends it first) isn't a frame.
+    if !(first.len() == 4 && first == b"VFKT") {
+        write_hyperkit_frame(&mut up, &first)?;
+    }
+    let mut b = vec![0u8; 65536];
+    loop {
+        let n = dgram.recv(&mut b).context("reading frame from libkrun")?;
+        if n == 0 {
+            break;
+        }
+        write_hyperkit_frame(&mut up, &b[..n])?;
+    }
+    Ok(())
+}
+
+/// Write one ethernet frame to a gvproxy `/connect` (hyperkit-framed) stream.
+fn write_hyperkit_frame(w: &mut UnixStream, frame: &[u8]) -> Result<()> {
+    let len = (frame.len() as u16).to_le_bytes();
+    w.write_all(&len).context("writing frame length")?;
+    w.write_all(frame).context("writing frame")?;
+    Ok(())
+}
+
+/// Register a name → IP record in a network gvproxy's built-in DNS (guests use
+/// the gateway `.1` as their resolver, so this needs no guest changes). Records
+/// live under a zone named for the network; with a `search <network>` domain in
+/// the guest, bare names (`db`) resolve to peers.
+pub fn dns_add(control_socket: &Path, zone: &str, name: &str, ip: &str) -> Result<()> {
+    // gvproxy matches a FQDN query (`db.devnet.`) against `.<zone>`, so the zone
+    // must be a FQDN with a trailing dot (like the built-in `docker.internal.`).
+    let zone = if zone.ends_with('.') {
+        zone.to_string()
+    } else {
+        format!("{zone}.")
+    };
+    let body = format!(r#"{{"Name":"{zone}","Records":[{{"Name":"{name}","IP":"{ip}"}}]}}"#);
+    let resp = control_post_to(control_socket, "/services/dns/add", &body)?;
+    if !resp.starts_with("HTTP/1.1 200") && !resp.starts_with("HTTP/1.0 200") {
+        bail!(
+            "gvproxy DNS add failed: {}",
+            resp.lines().next().unwrap_or("<no status>")
+        );
+    }
+    Ok(())
+}
+
+/// Look up the DHCP-leased IP for a MAC on a network gvproxy (BSD guests DHCP
+/// rather than take a static kernel IP, so we discover their IP after boot). The
+/// `/leases` endpoint returns a JSON `{ "<ip>": "<mac>" }` map.
+pub fn lease_ip_for_mac(control_socket: &Path, mac: &str) -> Result<Option<String>> {
+    let resp = control_get(control_socket, "/leases")?;
+    // Body is after the blank line; find the JSON object.
+    let body = resp.split("\r\n\r\n").nth(1).unwrap_or("");
+    let map: std::collections::HashMap<String, String> =
+        serde_json::from_str(body.trim()).unwrap_or_default();
+    let want = mac.to_ascii_lowercase();
+    Ok(map
+        .into_iter()
+        .find(|(_, m)| m.to_ascii_lowercase() == want)
+        .map(|(ip, _)| ip))
+}
+
+/// Minimal HTTP/1.1 GET over a gvproxy unix control socket.
+fn control_get(control_socket: &Path, path: &str) -> Result<String> {
+    let mut stream = UnixStream::connect(control_socket)
+        .with_context(|| format!("connecting to gvproxy control socket {}", control_socket.display()))?;
+    let req = format!("GET {path} HTTP/1.1\r\nHost: gvproxy\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).context("writing gvproxy GET")?;
+    stream.shutdown(Shutdown::Write).ok();
+    let mut resp = String::new();
+    stream.read_to_string(&mut resp).context("reading gvproxy response")?;
+    Ok(resp)
 }
 
 /// Minimal HTTP/1.1 POST over a gvproxy unix control socket.

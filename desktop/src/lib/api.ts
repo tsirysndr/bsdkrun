@@ -4,6 +4,7 @@ import type {
   Flavor,
   Image,
   Machine,
+  Network,
   NewFlavor,
   ProbeResult,
   RunSpec,
@@ -28,6 +29,10 @@ export const api = {
   listVolumes: () => invoke<Volume[]>("list_volumes"),
   listVersions: (os: string) => invoke<VersionEntry[]>("list_versions", { os }),
   listFlavors: () => invoke<Flavor[]>("list_flavors"),
+  listNetworks: () => invoke<Network[]>("list_networks"),
+  createNetwork: (name: string) => invoke<void>("create_network", { name }),
+  removeNetwork: (name: string, force: boolean) =>
+    invoke<void>("remove_network", { name, force }),
   systemStats: () => invoke<SystemStats>("system_stats"),
 
   runFlavor: (name: string, ports: string[], volume: string | null) =>

@@ -527,8 +527,15 @@ fn generate_init(ep: &Entrypoint, net: bool, persistent: bool, mounts: &[BindMou
         ));
     }
     if net {
+        // On a global network, add a `search <network>` domain so bare peer names
+        // (e.g. `ping db`) resolve against the network's gvproxy DNS zone.
+        let search = std::env::var("BSDKRUN_NET_NAME")
+            .ok()
+            .filter(|n| !n.is_empty())
+            .map(|n| format!("search {n}\\n"))
+            .unwrap_or_default();
         s.push_str(&format!(
-            "echo 'nameserver {GATEWAY_IP}' > /etc/resolv.conf 2>/dev/null\n"
+            "printf '{search}nameserver {GATEWAY_IP}\\n' > /etc/resolv.conf 2>/dev/null\n"
         ));
     }
     // systemd handoff: `bsdkrun-agent systemd setup` installs systemd, writes

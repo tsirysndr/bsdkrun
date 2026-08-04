@@ -8,6 +8,7 @@ import MachinesView from "./components/MachinesView";
 import ImagesView from "./components/ImagesView";
 import VolumesView from "./components/VolumesView";
 import FlavorsView from "./components/FlavorsView";
+import NetworksView from "./components/NetworksView";
 import RunDialog from "./components/RunDialog";
 import CommitDialog from "./components/CommitDialog";
 import EditResourcesDialog from "./components/EditResourcesDialog";
@@ -39,6 +40,7 @@ export default function App() {
             {view === "images" && <ImagesView />}
             {view === "volumes" && <VolumesView />}
             {view === "flavors" && <FlavorsView />}
+            {view === "networks" && <NetworksView />}
           </div>
         </div>
         <TerminalPanel />

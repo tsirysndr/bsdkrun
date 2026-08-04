@@ -44,6 +44,16 @@ export interface VersionEntry {
   latest: boolean;
 }
 
+export interface Network {
+  name: string;
+  subnet: string;
+  gateway: string;
+  members: number;
+  running: number;
+  up: boolean;
+  created_at?: string | null;
+}
+
 // Payload for defining a custom flavor (`create_flavor` → `bsdkrun flavor add`).
 export interface NewFlavor {
   name: string;
@@ -108,7 +118,9 @@ export interface RunSpec {
   attach_disks: string[];
   disk_size?: string | null;
   repo?: string | null;
+  network?: string | null;
+  name?: string | null;
   command: string[];
 }
 
-export type ViewKey = "machines" | "images" | "volumes" | "flavors";
+export type ViewKey = "machines" | "images" | "volumes" | "flavors" | "networks";

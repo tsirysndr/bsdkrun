@@ -312,6 +312,23 @@ pub async fn list_flavors(bin: &PathBuf) -> Result<Vec<Flavor>, BkError> {
     serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
 }
 
+/// A global network (mirrors `bsdkrun network ls --json`).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Network {
+    pub name: String,
+    pub subnet: String,
+    pub gateway: String,
+    pub members: i64,
+    pub running: i64,
+    pub up: bool,
+    pub created_at: Option<String>,
+}
+
+pub async fn list_networks(bin: &PathBuf) -> Result<Vec<Network>, BkError> {
+    let out = run(bin, &["network", "ls", "--json"]).await?;
+    serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
+}
+
 pub async fn list_machines(bin: &PathBuf, all: bool) -> Result<Vec<Machine>, BkError> {
     let args: &[&str] = if all {
         &["ps", "-a", "--json"]

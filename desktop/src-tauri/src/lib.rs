@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use bsdkrun::{BkError, Flavor, Image, Machine, VersionEntry, Volume};
+use bsdkrun::{BkError, Flavor, Image, Machine, Network, VersionEntry, Volume};
 use term::{LogStreams, Terminals};
 
 /// Persisted app settings.
@@ -204,6 +204,35 @@ async fn list_versions(state: State<'_, AppState>, os: String) -> Result<Vec<Ver
 async fn list_flavors(state: State<'_, AppState>) -> Result<Vec<Flavor>, BkError> {
     let bin = state.binary()?;
     bsdkrun::list_flavors(&bin).await
+}
+
+// ---- global networks -------------------------------------------------------
+
+#[tauri::command]
+async fn list_networks(state: State<'_, AppState>) -> Result<Vec<Network>, BkError> {
+    let bin = state.binary()?;
+    bsdkrun::list_networks(&bin).await
+}
+
+/// Create a global network — `bsdkrun network create <name>`.
+#[tauri::command]
+async fn create_network(state: State<'_, AppState>, name: String) -> Result<(), BkError> {
+    let bin = state.binary()?;
+    bsdkrun::run(&bin, &["network", "create", &name]).await?;
+    Ok(())
+}
+
+/// Remove a global network — `bsdkrun network rm [-f] <name>`.
+#[tauri::command]
+async fn remove_network(state: State<'_, AppState>, name: String, force: bool) -> Result<(), BkError> {
+    let bin = state.binary()?;
+    let mut args = vec!["network", "rm"];
+    if force {
+        args.push("-f");
+    }
+    args.push(&name);
+    bsdkrun::run(&bin, &args).await?;
+    Ok(())
 }
 
 // ---- flavors ---------------------------------------------------------------
@@ -538,6 +567,12 @@ pub struct RunSpec {
     /// (Linux guests).
     #[serde(default)]
     pub repo: Option<String>,
+    /// Join a global network (shared subnet + internal DNS).
+    #[serde(default)]
+    pub network: Option<String>,
+    /// Friendly name for the machine (its DNS name on a network).
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default)]
     pub command: Vec<String>,
 }
@@ -581,6 +616,15 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
     if let Some(r) = nonempty(&spec.repo) {
         a.push("--repo".into());
         a.push(r.into());
+    }
+    // Global network membership + friendly/DNS name.
+    if let Some(n) = nonempty(&spec.network) {
+        a.push("--network".into());
+        a.push(n.into());
+    }
+    if let Some(n) = nonempty(&spec.name) {
+        a.push("--name".into());
+        a.push(n.into());
     }
     if spec.kind == "linux" {
         if spec.initramfs {
@@ -867,6 +911,9 @@ pub fn run() {
             list_volumes,
             list_versions,
             list_flavors,
+            list_networks,
+            create_network,
+            remove_network,
             run_flavor,
             launch_flavor,
             build_flavor,

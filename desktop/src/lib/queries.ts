@@ -12,6 +12,7 @@ export const qk = {
   images: ["images"] as const,
   volumes: ["volumes"] as const,
   flavors: ["flavors"] as const,
+  networks: ["networks"] as const,
   probe: ["probe"] as const,
   settings: ["settings"] as const,
   versions: (os: string) => ["versions", os] as const,
@@ -62,6 +63,33 @@ export function useFlavors() {
     refetchIntervalInBackground: true,
     staleTime: 5000,
     placeholderData: (prev) => prev,
+  });
+}
+
+export function useNetworks() {
+  return useQuery({
+    queryKey: qk.networks,
+    queryFn: () => api.listNetworks(),
+    refetchInterval: 8000,
+    refetchIntervalInBackground: true,
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useCreateNetwork() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => api.createNetwork(name),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.networks }),
+  });
+}
+
+export function useRemoveNetwork() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, force }: { name: string; force: boolean }) =>
+      api.removeNetwork(name, force),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.networks }),
   });
 }
 

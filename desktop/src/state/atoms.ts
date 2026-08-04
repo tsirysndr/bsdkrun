@@ -68,6 +68,7 @@ export const closeTerminalAtom = atom(null, (get, set, tabId: string) => {
 });
 
 // Global overlays.
+export const newFlavorOpenAtom = atom<boolean>(false);
 export const runOpenAtom = atom<boolean>(false);
 export const settingsOpenAtom = atom<boolean>(false);
 export const paletteOpenAtom = atom<boolean>(false);
@@ -78,3 +79,23 @@ export const cliModalOpenAtom = atom<boolean>(false);
 export const runPrefillAtom = atom<{ kind?: string; image?: string } | null>(
   null,
 );
+
+// The machine being snapshotted into a flavor (`bsdkrun commit`); null ⇒ closed.
+export interface CommitTarget {
+  id: string;
+  label: string; // friendly name/image for the dialog copy
+}
+export const commitTargetAtom = atom<CommitTarget | null>(null);
+
+// Live state of a streaming flavor launch/build (the progress modal). null ⇒ closed.
+export interface LaunchState {
+  launchId: string;
+  name: string;
+  /** "launch" boots a machine; "build" only pre-builds the provisioning cache. */
+  mode: "launch" | "build";
+  lines: string[];
+  status: "running" | "done" | "error";
+  machineId?: string | null;
+  error?: string | null;
+}
+export const launchStateAtom = atom<LaunchState | null>(null);

@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  Flavor,
   Image,
   Machine,
+  NewFlavor,
   ProbeResult,
   RunSpec,
   Settings,
@@ -13,8 +15,9 @@ import type {
 
 export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
-  setSettings: (binaryPath: string) =>
-    invoke<Settings>("set_settings", { binaryPath }),
+  setSettings: (binaryPath: string, cachePath: string) =>
+    invoke<Settings>("set_settings", { binaryPath, cachePath }),
+  defaultCache: () => invoke<string>("default_cache"),
 
   probe: () => invoke<ProbeResult>("probe"),
   setTrayStatus: (ok: boolean, detail: string) =>
@@ -24,9 +27,29 @@ export const api = {
   listImages: () => invoke<Image[]>("list_images"),
   listVolumes: () => invoke<Volume[]>("list_volumes"),
   listVersions: (os: string) => invoke<VersionEntry[]>("list_versions", { os }),
+  listFlavors: () => invoke<Flavor[]>("list_flavors"),
   systemStats: () => invoke<SystemStats>("system_stats"),
 
+  runFlavor: (name: string, ports: string[], volume: string | null) =>
+    invoke<string>("run_flavor", { name, ports, volume }),
+  launchFlavor: (
+    launchId: string,
+    name: string,
+    ports: string[],
+    volume: string | null,
+    repo: string | null,
+  ) => invoke<void>("launch_flavor", { launchId, name, ports, volume, repo }),
+  buildFlavor: (launchId: string, name: string) =>
+    invoke<void>("build_flavor", { launchId, name }),
+  createFlavor: (spec: NewFlavor) => invoke<void>("create_flavor", { ...spec }),
+  commitMachine: (id: string, name: string, description: string) =>
+    invoke<string>("commit_machine", { id, name, description }),
+  removeFlavor: (name: string, force: boolean) =>
+    invoke<void>("remove_flavor", { name, force }),
+
   runMachine: (spec: RunSpec) => invoke<string>("run_machine", { spec }),
+  launchMachine: (launchId: string, spec: RunSpec) =>
+    invoke<void>("launch_machine", { launchId, spec }),
   stopMachine: (id: string) => invoke<void>("stop_machine", { id }),
   restartMachine: (id: string) => invoke<string>("restart_machine", { id }),
   removeMachine: (id: string, force: boolean) =>
@@ -72,6 +95,15 @@ export interface LogLine {
 export interface LogEnd {
   id: string;
 }
+export interface FlavorLog {
+  launch_id: string;
+  line: string;
+}
+export interface FlavorDone {
+  launch_id: string;
+  id: string | null;
+  error: string | null;
+}
 
 export const onTermData = (cb: (p: TermData) => void): Promise<UnlistenFn> =>
   listen<TermData>("term://data", (e) => cb(e.payload));
@@ -81,5 +113,9 @@ export const onLogLine = (cb: (p: LogLine) => void): Promise<UnlistenFn> =>
   listen<LogLine>("log://line", (e) => cb(e.payload));
 export const onLogEnd = (cb: (p: LogEnd) => void): Promise<UnlistenFn> =>
   listen<LogEnd>("log://end", (e) => cb(e.payload));
+export const onFlavorLog = (cb: (p: FlavorLog) => void): Promise<UnlistenFn> =>
+  listen<FlavorLog>("flavor://log", (e) => cb(e.payload));
+export const onFlavorDone = (cb: (p: FlavorDone) => void): Promise<UnlistenFn> =>
+  listen<FlavorDone>("flavor://done", (e) => cb(e.payload));
 export const onMenuAction = (cb: (action: string) => void): Promise<UnlistenFn> =>
   listen<string>("menu://action", (e) => cb(e.payload));

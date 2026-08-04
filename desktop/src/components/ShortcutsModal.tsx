@@ -26,6 +26,7 @@ const GROUPS: { title: string; items: [string[], string][] }[] = [
       [["⌘", "1"], "Machines"],
       [["⌘", "2"], "Images"],
       [["⌘", "3"], "Volumes"],
+      [["⌘", "4"], "Flavors"],
     ],
   },
   {

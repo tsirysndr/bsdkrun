@@ -18,8 +18,8 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { IconRocket, IconChevronDown } from "@tabler/icons-react";
 import { runOpenAtom, runPrefillAtom, viewAtom } from "../state/atoms";
-import { useRunMachine, useVersions } from "../lib/queries";
-import { useToast } from "../state/toast";
+import { useVersions } from "../lib/queries";
+import { useLaunchMachine } from "../hooks/useLaunchFlavor";
 import type { RunSpec } from "../lib/types";
 
 type Kind = "linux" | "freebsd" | "netbsd";
@@ -50,6 +50,7 @@ const schema = z
       .string()
       .regex(/^[a-zA-Z0-9._-]*$/, "Letters, digits, . _ - only"),
     command: z.string(),
+    repo: z.string(),
     noNet: z.boolean(),
     initramfs: z.boolean(),
     entrypoint: z.string(),
@@ -85,6 +86,7 @@ const DEFAULTS: FormValues = {
   mem: 512,
   volume: "",
   command: "",
+  repo: "",
   noNet: false,
   initramfs: false,
   entrypoint: "",
@@ -105,8 +107,7 @@ export default function RunDialog() {
   const [open, setOpen] = useAtom(runOpenAtom);
   const [prefill, setPrefill] = useAtom(runPrefillAtom);
   const setView = useSetAtom(viewAtom);
-  const runMutation = useRunMachine();
-  const toast = useToast();
+  const launchMachine = useLaunchMachine();
   const [advanced, setAdvanced] = useState(false);
 
   const {
@@ -150,24 +151,27 @@ export default function RunDialog() {
     setValue("version", "");
   }, [kind, setValue]);
 
-  // Default the BSD version: FreeBSD → 15.1, NetBSD → 11.0 when available,
-  // otherwise the release the CLI marks as latest.
+  // Default the NetBSD version to `current` (the build that boots under libkrun),
+  // else the release the CLI marks as latest. FreeBSD always uses the bundled
+  // arm64 image (agent injected), so it needs no version.
   useEffect(() => {
-    if (bsd && versions.length && !version) {
-      const preferred = kind === "freebsd" ? "15.1" : "current";
+    if (kind === "netbsd" && versions.length && !version) {
       const chosen =
-        versions.find((v) => v.version === preferred) ||
+        versions.find((v) => v.version === "current") ||
         versions.find((v) => v.latest) ||
         versions[versions.length - 1];
       if (chosen) setValue("version", chosen.version);
     }
-  }, [versions, bsd, version, kind, setValue]);
+  }, [versions, version, kind, setValue]);
 
   const onSubmit = async (data: FormValues) => {
     const spec: RunSpec = {
       kind: data.kind,
       image: data.kind === "linux" ? data.image.trim() : null,
-      version: bsd && data.version ? data.version : null,
+      // Only NetBSD takes a --version (it selects the bundled kernel). A FreeBSD
+      // --version makes the CLI DOWNLOAD the official (agent-less) image, which
+      // the GUI can't exec/terminal into — always use the bundled arm64 image.
+      version: data.kind === "netbsd" && data.version ? data.version : null,
       cpus: data.cpus,
       mem: data.mem,
       volume: data.volume.trim() || null,
@@ -181,18 +185,18 @@ export default function RunDialog() {
       ports: lines(data.ports),
       attach_disks: bsd ? lines(data.attachDisks) : [],
       disk_size: bsd && data.diskSize.trim() ? data.diskSize.trim() : null,
+      repo: data.repo.trim() ? data.repo.trim() : null,
       command: splitArgs(data.command),
     };
-    try {
-      const id = await runMutation.mutateAsync(spec);
-      toast("success", "Machine started", `${KIND_LABEL[data.kind]} · ${id.slice(0, 12)}`);
-      setOpen(false);
-      reset(DEFAULTS);
-      setAdvanced(false);
-      setView("machines");
-    } catch (e) {
-      toast("error", "Failed to start machine", String(e));
-    }
+    // Stream the launch (pull / download / boot) in the progress modal instead
+    // of blocking the dialog on a silent spinner — close the dialog right away.
+    const label =
+      data.kind === "linux" ? data.image.trim() || "machine" : KIND_LABEL[data.kind];
+    launchMachine(label, spec);
+    setOpen(false);
+    reset(DEFAULTS);
+    setAdvanced(false);
+    setView("machines");
   };
 
   return (
@@ -254,7 +258,7 @@ export default function RunDialog() {
                   />
                 )}
               />
-            ) : (
+            ) : kind === "netbsd" ? (
               <Controller
                 control={control}
                 name="version"
@@ -289,6 +293,16 @@ export default function RunDialog() {
                   </div>
                 )}
               />
+            ) : (
+              <div>
+                <label className="mb-1.5 block text-sm">Release</label>
+                <div className="rounded-xl border border-white/10 bg-content2/40 px-3 py-2 text-sm text-foreground-400">
+                  Bundled FreeBSD image{" "}
+                  <span className="text-foreground-500">
+                    (agent injected — exec &amp; terminal work out of the box)
+                  </span>
+                </div>
+              </div>
             )}
 
             {bsd && (
@@ -378,6 +392,22 @@ export default function RunDialog() {
                       ? "override CMD, e.g. sh -c 'echo hi'"
                       : "run once via agent, e.g. uname -a (optional)"
                   }
+                  value={field.value}
+                  onValueChange={field.onChange}
+                  variant="bordered"
+                  classNames={{ input: "font-mono text-xs" }}
+                />
+              )}
+            />
+
+            <Controller
+              control={control}
+              name="repo"
+              render={({ field }) => (
+                <Input
+                  label="Git repository"
+                  labelPlacement="outside"
+                  placeholder="https://github.com/owner/name (cloned & cd'd on shell)"
                   value={field.value}
                   onValueChange={field.onChange}
                   variant="bordered"

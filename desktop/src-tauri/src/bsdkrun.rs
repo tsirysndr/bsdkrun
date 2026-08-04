@@ -282,6 +282,36 @@ pub struct Volume {
     pub tracked: bool,
 }
 
+/// A flavor entry (mirrors `bsdkrun flavors --json`): a catalog environment, a
+/// user-defined `flavors.toml` entry, or a saved snapshot.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Flavor {
+    pub name: String,
+    /// "catalog" | "user" | "snapshot".
+    pub source: String,
+    /// "linux" | "freebsd" | "netbsd".
+    pub kind: String,
+    /// Base image ref, or a BSD slug.
+    pub base: String,
+    pub category: String,
+    /// "docker" | "nix" | "system" | "snapshot".
+    #[serde(default)]
+    pub method: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub ports: Vec<String>,
+    #[serde(default)]
+    pub nix: Vec<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+pub async fn list_flavors(bin: &PathBuf) -> Result<Vec<Flavor>, BkError> {
+    let out = run(bin, &["flavors", "--json"]).await?;
+    serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
+}
+
 pub async fn list_machines(bin: &PathBuf, all: bool) -> Result<Vec<Machine>, BkError> {
     let args: &[&str] = if all {
         &["ps", "-a", "--json"]

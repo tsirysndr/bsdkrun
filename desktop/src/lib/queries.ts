@@ -5,12 +5,13 @@ import {
 } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { api } from "./api";
-import type { RunSpec } from "./types";
+import type { NewFlavor, RunSpec } from "./types";
 
 export const qk = {
   machines: ["machines"] as const,
   images: ["images"] as const,
   volumes: ["volumes"] as const,
+  flavors: ["flavors"] as const,
   probe: ["probe"] as const,
   settings: ["settings"] as const,
   versions: (os: string) => ["versions", os] as const,
@@ -47,6 +48,19 @@ export function useVolumes() {
     queryFn: () => api.listVolumes(),
     refetchInterval: 10000,
     refetchIntervalInBackground: true,
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useFlavors() {
+  return useQuery({
+    queryKey: qk.flavors,
+    queryFn: () => api.listFlavors(),
+    // Catalog is static; snapshots/user flavors change rarely. Poll gently so a
+    // new snapshot appears without a manual refresh.
+    refetchInterval: 15000,
+    refetchIntervalInBackground: true,
+    staleTime: 5000,
     placeholderData: (prev) => prev,
   });
 }
@@ -147,13 +161,83 @@ export function useRemoveVolume() {
   });
 }
 
+export function useRunFlavor() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      name,
+      ports = [],
+      volume = null,
+    }: {
+      name: string;
+      ports?: string[];
+      volume?: string | null;
+    }) => api.runFlavor(name, ports, volume),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.machines });
+      qc.invalidateQueries({ queryKey: qk.images });
+      qc.invalidateQueries({ queryKey: qk.volumes });
+    },
+  });
+}
+
+export function useCommitMachine() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      name,
+      description = "",
+    }: {
+      id: string;
+      name: string;
+      description?: string;
+    }) => api.commitMachine(id, name, description),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.flavors }),
+  });
+}
+
+export function useCreateFlavor() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (spec: NewFlavor) => api.createFlavor(spec),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.flavors }),
+  });
+}
+
+export function useRemoveFlavor() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, force }: { name: string; force: boolean }) =>
+      api.removeFlavor(name, force),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.flavors }),
+  });
+}
+
+export function useDefaultCache() {
+  return useQuery({
+    queryKey: ["default-cache"] as const,
+    queryFn: () => api.defaultCache(),
+    staleTime: Infinity,
+  });
+}
+
 export function useSaveSettings() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (binaryPath: string) => api.setSettings(binaryPath),
+    mutationFn: ({
+      binaryPath,
+      cachePath,
+    }: {
+      binaryPath: string;
+      cachePath: string;
+    }) => api.setSettings(binaryPath, cachePath),
     onSuccess: (s) => {
       qc.setQueryData(qk.settings, s);
       qc.invalidateQueries({ queryKey: qk.probe });
+      // A new cache dir changes what's pulled/cached — refresh the listings.
+      qc.invalidateQueries({ queryKey: qk.images });
+      qc.invalidateQueries({ queryKey: qk.flavors });
     },
   });
 }

@@ -14,6 +14,7 @@ mod console;
 mod db;
 mod elf;
 mod fetch;
+mod flavors;
 mod host;
 mod id;
 mod krun;
@@ -138,6 +139,159 @@ enum Command {
 
     /// Manage persistent volumes (list / remove).
     Volume(VolumeArgs),
+
+    /// Snapshot a machine's current state into a named flavor (like `docker commit`).
+    Commit(CommitArgs),
+
+    /// List flavors: the built-in catalog + your saved snapshots.
+    Flavors(FlavorsListArgs),
+
+    /// Run / remove flavors (`flavor run <name>`, `flavor rm <name>`).
+    Flavor(FlavorArgs),
+}
+
+#[derive(Parser)]
+struct CommitArgs {
+    /// machine id to snapshot (a unique prefix is enough).
+    #[arg(value_name = "ID")]
+    id: String,
+
+    /// Name for the new flavor.
+    #[arg(value_name = "NAME")]
+    name: String,
+
+    /// Optional description.
+    #[arg(short, long, default_value = "")]
+    description: String,
+}
+
+#[derive(Parser)]
+struct FlavorsListArgs {
+    /// Emit the flavor list as a JSON array (for scripting / the SDK).
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct FlavorArgs {
+    #[command(subcommand)]
+    cmd: FlavorCmd,
+}
+
+#[derive(Subcommand)]
+enum FlavorCmd {
+    /// Boot a new machine from a flavor (a catalog entry or a snapshot).
+    Run(FlavorRunArgs),
+    /// Define (or update) a custom flavor in your `flavors.toml`.
+    Add(FlavorAddArgs),
+    /// Remove a saved snapshot or user flavor (catalog flavors can't be removed).
+    Rm(FlavorRmArgs),
+    /// Pre-build a flavor's provisioned rootfs into the cache (so a later `run` is
+    /// instant). Streams the provisioning output; a no-op if already cached.
+    Build(FlavorPrebuildArgs),
+    /// (internal) Provision a flavor into its build cache. Used by `run`/`build`.
+    #[command(name = "__build", hide = true)]
+    BuildInternal(FlavorBuildArgs),
+}
+
+#[derive(Parser)]
+struct FlavorPrebuildArgs {
+    /// Flavor name to build (a catalog or user flavor with provisioning).
+    #[arg(value_name = "NAME")]
+    name: String,
+
+    #[command(flatten)]
+    vm: VmConfig,
+
+    /// Rebuild even if a cached build already exists.
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Parser)]
+struct FlavorAddArgs {
+    /// Flavor name (letters, digits, '-', '_', '.').
+    #[arg(value_name = "NAME")]
+    name: String,
+
+    /// Base image: an OCI ref (e.g. `node:22`), or `freebsd` / `netbsd`.
+    #[arg(long)]
+    base: String,
+
+    /// Grouping for the UI (language / service / web / ai / …).
+    #[arg(long, default_value = "custom")]
+    category: String,
+
+    /// A short description.
+    #[arg(long, default_value = "")]
+    description: String,
+
+    /// Default host↔guest port forward `HOST:GUEST` (repeatable).
+    #[arg(long = "port", value_name = "HOST:GUEST")]
+    ports: Vec<String>,
+
+    /// Default environment `K=V` (repeatable).
+    #[arg(long = "env", value_name = "K=V")]
+    env: Vec<String>,
+
+    /// Nix package to install on an OCI base (repeatable).
+    #[arg(long = "nix", value_name = "PKG")]
+    nix: Vec<String>,
+
+    /// Provisioning command run in the guest after boot (repeatable, in order).
+    #[arg(long = "provision", value_name = "CMD")]
+    provision: Vec<String>,
+}
+
+#[derive(Parser)]
+struct FlavorBuildArgs {
+    /// Flavor name to build.
+    #[arg(value_name = "NAME")]
+    name: String,
+
+    /// Cache key (the build volume to provision into).
+    #[arg(long)]
+    key: String,
+
+    #[command(flatten)]
+    vm: VmConfig,
+}
+
+#[derive(Parser)]
+struct FlavorRunArgs {
+    /// Flavor name (see `bsdkrun flavors`).
+    #[arg(value_name = "NAME")]
+    name: String,
+
+    /// Run detached in the background (like `docker run -d`).
+    #[arg(short = 'd', long)]
+    detach: bool,
+
+    #[command(flatten)]
+    vm: VmConfig,
+
+    /// Extra host↔guest port forward (repeatable), on top of the flavor's defaults.
+    #[arg(long = "port", value_name = "HOST:GUEST")]
+    ports: Vec<PortForward>,
+
+    /// Persist to a named volume (Linux flavors).
+    #[arg(short = 'v', long, value_name = "NAME")]
+    volume: Option<String>,
+
+    /// Clone a git repo into the guest after boot and `cd` into it on shell open.
+    #[arg(long, value_name = "URL")]
+    repo: Option<String>,
+}
+
+#[derive(Parser)]
+struct FlavorRmArgs {
+    /// Remove even if not tracked (best-effort delete of its data).
+    #[arg(short, long)]
+    force: bool,
+
+    /// Flavor name(s) to remove.
+    #[arg(value_name = "NAME", required = true)]
+    names: Vec<String>,
 }
 
 #[derive(Parser)]
@@ -355,6 +509,10 @@ struct LinuxArgs {
     #[arg(long)]
     entrypoint: Option<String>,
 
+    /// Set an environment variable in the guest (repeatable), e.g. `-e K=V`.
+    #[arg(short = 'e', long = "env", value_name = "K=V")]
+    env: Vec<String>,
+
     /// Guest console device the kernel should log to. libkrun's native console
     /// is the virtio-console `hvc0`; use `ttyS0` only with a kernel/setup that
     /// expects libkrun's explicit 8250 serial instead.
@@ -366,6 +524,11 @@ struct LinuxArgs {
 
     #[command(flatten)]
     vm: VmConfig,
+
+    /// Clone a git repo into the guest after boot and `cd` into it when you open
+    /// a shell (e.g. `--repo https://github.com/owner/name`).
+    #[arg(long, value_name = "URL")]
+    repo: Option<String>,
 
     /// Command (and args) to run instead of the image's default Cmd.
     /// Everything after `--` is passed through.
@@ -556,6 +719,11 @@ struct BsdArgs {
     #[arg(long)]
     verbose: bool,
 
+    /// Clone a git repo into the guest after boot and `cd` into it on shell open
+    /// (installs git via pkg/pkgin/pkg_add if needed).
+    #[arg(long, value_name = "URL")]
+    repo: Option<String>,
+
     /// Command (and args) to run inside the guest via its agent once it's
     /// booted, like `bsdkrun linux`. Everything after `--` is passed through.
     /// Without `-d` this is one-shot: the guest boots, runs the command
@@ -698,6 +866,15 @@ fn main() -> Result<()> {
         Command::Volume(args) => match args.cmd {
             VolumeCmd::Ls(a) => cmd_volume_ls(a.json),
             VolumeCmd::Rm(a) => cmd_volume_rm(&a.names, a.force),
+        },
+        Command::Commit(args) => cmd_commit(&args.id, &args.name, &args.description),
+        Command::Flavors(args) => cmd_flavors(args.json),
+        Command::Flavor(args) => match args.cmd {
+            FlavorCmd::Run(a) => cmd_flavor_run(a),
+            FlavorCmd::Add(a) => cmd_flavor_add(a),
+            FlavorCmd::Rm(a) => cmd_flavor_rm(&a.names, a.force),
+            FlavorCmd::Build(a) => cmd_flavor_prebuild(&a.name, a.vm.cpus, a.vm.mem, a.force),
+            FlavorCmd::BuildInternal(a) => cmd_flavor_build(&a.name, &a.key, a.vm.cpus, a.vm.mem),
         },
     }
 }
@@ -975,37 +1152,57 @@ fn bsd_exec_after(command: &[String], detach: bool, no_net: bool) -> (Vec<String
 ///   firmware (the `libkrun-efi` flavor, macOS-only) — see [`boot_freebsd_efi`].
 /// - **Linux/amd64** direct-boots the GENERIC kernel via **PVH** (no firmware),
 ///   like `netbsd` — see [`boot_freebsd_pvh`]. Needs the PVH libkrun fork.
+/// If `--repo` was given and there's no explicit command, make the post-boot
+/// command the repo clone (installs git + records the cwd marker).
+fn bsd_inject_repo(args: &mut BsdArgs) {
+    if args.command.is_empty() {
+        if let Some(argv) = args.repo.as_deref().and_then(repo_clone_argv) {
+            args.command = argv;
+        }
+    }
+}
+
 fn boot_freebsd(args: BsdArgs) -> Result<()> {
+    boot_freebsd_disk(args, None)
+}
+
+/// Boot FreeBSD, optionally from a specific root disk (`disk_override`, used to
+/// boot a committed snapshot) instead of the fetched/bundled base image.
+fn boot_freebsd_disk(mut args: BsdArgs, disk_override: Option<PathBuf>) -> Result<()> {
+    bsd_inject_repo(&mut args);
     #[cfg(target_os = "macos")]
     {
-        boot_freebsd_efi(args)
+        boot_freebsd_efi(args, disk_override)
     }
     #[cfg(target_os = "linux")]
     {
-        boot_freebsd_pvh(args)
+        boot_freebsd_pvh(args, disk_override)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        let _ = args;
+        let _ = (args, disk_override);
         anyhow::bail!("bsdkrun freebsd is only supported on macOS and Linux");
     }
 }
 
 /// macOS EFI-firmware boot: FreeBSD's `loader.efi` takes over from the ESP.
 #[cfg(target_os = "macos")]
-fn boot_freebsd_efi(args: BsdArgs) -> Result<()> {
+fn boot_freebsd_efi(args: BsdArgs, disk_override: Option<PathBuf>) -> Result<()> {
     // No explicit command on a foreground boot → drop into an interactive shell.
     let (exec_after, interactive) = bsd_exec_after(&args.command, args.run.detach, args.net.no_net);
     ensure_net_for_exec(&args.net, &exec_after)?;
-    // Default (no --version) to bsdkrun's bundled arm64 image, which has the guest
-    // agent injected so `exec` works out of the box. An explicit --version (or a
-    // non-arm64 host) fetches the official FreeBSD VM image from download.freebsd.org.
-    let disk = match (host::Arch::current()?, &args.version) {
-        (host::Arch::Aarch64, None) => fetch::fetch_freebsd_arm64_image(args.force)?,
-        _ => {
-            let cache = fetch::cache_dir()?;
-            fetch::fetch(fetch::Os::Freebsd, args.version.clone(), &cache, args.force)?
-        }
+    // A snapshot boots from its saved disk; otherwise, default (no --version) to
+    // bsdkrun's bundled arm64 image (agent injected so `exec` works), or fetch the
+    // official FreeBSD VM image for an explicit --version / non-arm64 host.
+    let disk = match disk_override {
+        Some(d) => d,
+        None => match (host::Arch::current()?, &args.version) {
+            (host::Arch::Aarch64, None) => fetch::fetch_freebsd_arm64_image(args.force)?,
+            _ => {
+                let cache = fetch::cache_dir()?;
+                fetch::fetch(fetch::Os::Freebsd, args.version.clone(), &cache, args.force)?
+            }
+        },
     };
     let firmware = match args.firmware {
         Some(f) => f,
@@ -1061,7 +1258,7 @@ fn freebsd_cmdline() -> String {
 /// tsirysndr/libkrun `feat/pvh-boot` fork) — stock libkrun boots x86_64 kernels
 /// with the Linux protocol and would triple-fault immediately.
 #[cfg(target_os = "linux")]
-fn boot_freebsd_pvh(args: BsdArgs) -> Result<()> {
+fn boot_freebsd_pvh(args: BsdArgs, disk_override: Option<PathBuf>) -> Result<()> {
     let arch = host::Arch::current()?;
     if !matches!(arch, host::Arch::X86_64) {
         anyhow::bail!(
@@ -1081,7 +1278,10 @@ fn boot_freebsd_pvh(args: BsdArgs) -> Result<()> {
     std::env::set_var("KRUN_PVH", "1");
     std::env::set_var("KRUN_VIRTIO_MMIO_HINTS", "freebsd");
 
-    let disk = fetch::fetch_freebsd_amd64_image(args.force)?;
+    let disk = match disk_override {
+        Some(d) => d,
+        None => fetch::fetch_freebsd_amd64_image(args.force)?,
+    };
     let kernel = fetch::fetch_freebsd_amd64_kernel(args.force)?;
 
     let machine_id = id::next_machine_id();
@@ -1166,6 +1366,13 @@ fn netbsd_cmdline() -> String {
 /// `--version` applies only to the arm64 kernel; the images themselves are pinned
 /// bundled assets.
 fn boot_netbsd(args: BsdArgs) -> Result<()> {
+    boot_netbsd_disk(args, None)
+}
+
+/// Boot NetBSD, optionally from a specific root disk (`disk_override`, used to
+/// boot a committed snapshot) instead of the fetched bundled image.
+fn boot_netbsd_disk(mut args: BsdArgs, disk_override: Option<PathBuf>) -> Result<()> {
+    bsd_inject_repo(&mut args);
     let (exec_after, interactive) = bsd_exec_after(&args.command, args.run.detach, args.net.no_net);
     ensure_net_for_exec(&args.net, &exec_after)?;
     let arch = host::Arch::current()?;
@@ -1177,15 +1384,17 @@ fn boot_netbsd(args: BsdArgs) -> Result<()> {
         std::env::set_var("KRUN_PVH", "1");
     }
 
-    let (disk, kernel) = match arch {
-        host::Arch::X86_64 => (
-            fetch::fetch_netbsd_amd64_image(args.force)?,
-            fetch::fetch_netbsd_amd64_kernel(args.force)?,
-        ),
-        host::Arch::Aarch64 => (
-            fetch::fetch_netbsd_arm64_image(args.force)?,
-            fetch::fetch_netbsd_kernel(args.version.clone(), args.force)?,
-        ),
+    // The kernel is always the bundled asset; a snapshot overrides the disk only.
+    let kernel = match arch {
+        host::Arch::X86_64 => fetch::fetch_netbsd_amd64_kernel(args.force)?,
+        host::Arch::Aarch64 => fetch::fetch_netbsd_kernel(args.version.clone(), args.force)?,
+    };
+    let disk = match disk_override {
+        Some(d) => d,
+        None => match arch {
+            host::Arch::X86_64 => fetch::fetch_netbsd_amd64_image(args.force)?,
+            host::Arch::Aarch64 => fetch::fetch_netbsd_arm64_image(args.force)?,
+        },
     };
 
     let machine_id = id::next_machine_id();
@@ -1493,12 +1702,111 @@ fn run_machine(
     finish_recording(ctx, gvproxy, machine_id.to_string())
 }
 
+/// Single-quote a string for safe interpolation into a `/bin/sh` command.
+fn shell_squote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// A destination directory name for a cloned repo: the URL's basename without a
+/// `.git` suffix, restricted to filesystem-safe characters.
+fn repo_dir_name(url: &str) -> String {
+    let base = url
+        .trim_end_matches('/')
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or("repo");
+    let base = base.strip_suffix(".git").unwrap_or(base);
+    let cleaned: String = base
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .collect();
+    if cleaned.is_empty() {
+        "repo".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// The guest command that clones `repo` into `$HOME` after boot and records its
+/// path in `/etc/bsdkrun-cwd`, so opening a shell drops you inside it. Best-effort
+/// `git` install if the base image lacks it. `None` for an empty URL.
+fn repo_clone_argv(repo: &str) -> Option<Vec<String>> {
+    let repo = repo.trim();
+    if repo.is_empty() {
+        return None;
+    }
+    let dest = repo_dir_name(repo);
+    let q = shell_squote(repo);
+    let script = format!(
+        "set -e; export PATH=\"/usr/local/bin:/usr/local/sbin:/usr/pkg/bin:$PATH\"; \
+         H=\"${{HOME:-/root}}\"; case \"$H\" in \"\"|/) H=/root;; esac; \
+         mkdir -p \"$H\" 2>/dev/null || true; \
+         has() {{ command -v \"$1\" >/dev/null 2>&1; }}; \
+         if ! has git; then \
+           echo '==> installing git'; \
+           (has apt-get && apt-get update && apt-get install -y git) || \
+           (has apk && apk add --no-cache git) || \
+           (has dnf && dnf install -y git) || \
+           (has microdnf && microdnf install -y git) || \
+           (has yum && yum install -y git) || \
+           (has pacman && pacman -Sy --noconfirm git) || \
+           (has zypper && zypper --non-interactive install git) || \
+           (has pkg && ASSUME_ALWAYS_YES=yes pkg install -y git) || \
+           (has pkgin && pkgin -y install git) || \
+           (has pkg_add && {{ A=$(uname -p 2>/dev/null); [ \"$A\" = x86_64 ] && A=amd64; \
+            R=$(uname -r 2>/dev/null | cut -d. -f1).0; \
+            PKG_PATH=\"https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/$A/$R/All/\" \
+              pkg_add git; }}) || \
+           (has nix-env && nix-env -iA nixpkgs.git) || \
+           (has nix && nix profile install nixpkgs#git) || true; \
+         fi; \
+         has git || {{ echo 'error: could not install git in the guest'; exit 1; }}; \
+         echo '==> cloning {dest}'; \
+         git clone --depth=1 {q} \"$H/{dest}\"; \
+         printf '%s\\n' \"$H/{dest}\" > /etc/bsdkrun-cwd 2>/dev/null || true; \
+         echo '==> cloned into '\"$H/{dest}\"",
+    );
+    Some(vec!["sh".to_string(), "-lc".to_string(), script])
+}
+
 fn boot_linux(args: LinuxArgs) -> Result<()> {
+    let repo = args
+        .repo
+        .as_deref()
+        .and_then(repo_clone_argv)
+        .unwrap_or_default();
+    boot_linux_from(args, None, &repo)
+}
+
+/// Boot a Linux/OCI machine.
+///
+/// `rootfs_override` clones the rootfs from that path instead of the pulled
+/// image's cache — used to boot a *snapshot*/built flavor (its saved rootfs)
+/// while still reading the base image's config for the entrypoint.
+///
+/// `provision` is a command run in the guest *after* boot, via its agent (the
+/// `exec_after` hook) — used to install a flavor's packages/tools. A non-empty
+/// `provision` implies the machine boots in the background so the parent can
+/// wait for the agent and run it (see [`run_machine`]).
+fn boot_linux_from(
+    args: LinuxArgs,
+    rootfs_override: Option<PathBuf>,
+    provision: &[String],
+) -> Result<()> {
     // Prepare everything that can fail before we fork / touch the hypervisor.
     let kernel = linux::ensure_kernel(args.kernel.clone(), &args.kernel_version)?;
     let image = oci::pull(&args.image)?;
-    let ep = linux::resolve_entrypoint(&image.config, args.entrypoint.as_deref(), &args.command);
+    let mut ep =
+        linux::resolve_entrypoint(&image.config, args.entrypoint.as_deref(), &args.command);
+    // `-e K=V` (and flavor defaults) override the image's env in the guest.
+    for kv in &args.env {
+        let key = kv.split('=').next().unwrap_or("");
+        ep.env.retain(|e| e.split('=').next() != Some(key));
+        ep.env.push(kv.clone());
+    }
     info!(argv = ?ep.argv, "resolved entrypoint");
+    // Clone source: a snapshot's saved rootfs, else the pulled image's rootfs.
+    let rootfs_src = rootfs_override.as_deref().unwrap_or(&image.rootfs);
 
     // Persist the image (best-effort; DB problems never block booting).
     db::record_image(
@@ -1540,29 +1848,15 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
     // otherwise it's a per-machine virtio-fs clone, or an initramfs (--initramfs).
     let root_mode = match (&volume, args.virtiofs()) {
         (Some(voldir), _) => LinuxRoot::Virtiofs(linux::prepare_volume_root(
-            &image.rootfs,
-            &ep,
-            net_up,
-            persistent,
-            voldir,
-            &mounts,
+            rootfs_src, &ep, net_up, persistent, voldir, &mounts,
         )?),
         (None, true) => LinuxRoot::Virtiofs(linux::prepare_virtiofs_root(
-            &image.rootfs,
-            &ep,
-            net_up,
-            persistent,
-            &vdir,
-            &mounts,
+            rootfs_src, &ep, net_up, persistent, &vdir, &mounts,
         )?),
         (None, false) => {
-            linux::warn_initramfs_memory(&image.rootfs, args.vm.mem);
+            linux::warn_initramfs_memory(rootfs_src, args.vm.mem);
             LinuxRoot::Initramfs(linux::build_initramfs(
-                &image.rootfs,
-                &ep,
-                net_up,
-                persistent,
-                &mounts,
+                rootfs_src, &ep, net_up, persistent, &mounts,
             )?)
         }
     };
@@ -1596,7 +1890,7 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
         args.detach,
         false,
         args.volume.as_deref(),
-        &[],
+        provision,
         false,
         false,
         build,
@@ -2231,7 +2525,12 @@ fn cmd_images(json: bool) -> Result<()> {
 
 fn cmd_volume_ls(json: bool) -> Result<()> {
     let db = db::Db::open()?;
-    let rows = db.list_volumes()?;
+    // Hide reserved flavor-build volumes (the provisioning cache layers).
+    let rows: Vec<_> = db
+        .list_volumes()?
+        .into_iter()
+        .filter(|v| !v.name.starts_with(FLAVOR_BUILD_PREFIX))
+        .collect();
     let tracked: std::collections::HashSet<String> = rows.iter().map(|v| v.name.clone()).collect();
     if json {
         let mut out = Vec::new();
@@ -2249,7 +2548,10 @@ fn cmd_volume_ls(json: bool) -> Result<()> {
         if let Ok(entries) = std::fs::read_dir(db::volumes_dir()?) {
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
-                if e.path().is_dir() && !tracked.contains(&name) {
+                if e.path().is_dir()
+                    && !tracked.contains(&name)
+                    && !name.starts_with(FLAVOR_BUILD_PREFIX)
+                {
                     out.push(serde_json::json!({
                         "name": name,
                         "guest": serde_json::Value::Null,
@@ -2284,7 +2586,10 @@ fn cmd_volume_ls(json: bool) -> Result<()> {
     if let Ok(entries) = std::fs::read_dir(db::volumes_dir()?) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            if e.path().is_dir() && !tracked.contains(&name) {
+            if e.path().is_dir()
+                && !tracked.contains(&name)
+                && !name.starts_with(FLAVOR_BUILD_PREFIX)
+            {
                 println!(
                     "{:<20}  {:<9}  {:<28}  {:<10}  {}",
                     truncate(&name, 20),
@@ -2436,9 +2741,11 @@ fn cmd_start(id: &str) -> Result<()> {
             volume,
             mounts: vec![],
             entrypoint: None,
+            env: vec![],
             console: "hvc0".to_string(),
             net,
             vm: vmcfg,
+            repo: None,
             command: vec![], // persistent restart — keep a console shell alive
         })
     } else if is_freebsd || is_netbsd {
@@ -2456,6 +2763,7 @@ fn cmd_start(id: &str) -> Result<()> {
             net,
             vm: vmcfg,
             verbose: false,
+            repo: None,
             command: vec![],
         };
         if is_freebsd {
@@ -2493,6 +2801,616 @@ fn cmd_rm(ids: &[String], force: bool) -> Result<()> {
         println!("{}", vm.id);
     }
     Ok(())
+}
+
+/// A default `LinuxArgs` for launching a flavor: image + resources + ports/env,
+/// detached-with-no-command (persistent console) so the environment stays up.
+#[allow(clippy::too_many_arguments)]
+fn flavor_linux_args(
+    image: String,
+    detach: bool,
+    cpus: u8,
+    mem: u32,
+    volume: Option<String>,
+    ports: Vec<PortForward>,
+    env: Vec<String>,
+) -> LinuxArgs {
+    LinuxArgs {
+        image,
+        kernel: None,
+        kernel_version: linux::DEFAULT_KERNEL_VERSION.to_string(),
+        detach,
+        initramfs: false,
+        volume,
+        mounts: vec![],
+        entrypoint: None,
+        env,
+        console: "hvc0".to_string(),
+        net: NetConfig {
+            no_net: false,
+            ports,
+            mac: None,
+        },
+        vm: VmConfig { cpus, mem },
+        repo: None,
+        command: vec![],
+    }
+}
+
+/// Validate a flavor/snapshot name (used as a directory + DB key).
+fn valid_flavor_name(name: &str) -> Result<()> {
+    let ok = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    if !ok {
+        anyhow::bail!("invalid flavor name {name:?} — use letters, digits, '-', '_' or '.'");
+    }
+    if flavors::find(name).is_some() {
+        anyhow::bail!("{name:?} is a built-in catalog flavor name — pick another");
+    }
+    Ok(())
+}
+
+/// `bsdkrun commit <id> <name>` — snapshot a machine's current rootfs/disk into a
+/// named flavor (a CoW clone), like `docker commit`. Boot it with `flavor run`.
+fn cmd_commit(id: &str, name: &str, description: &str) -> Result<()> {
+    valid_flavor_name(name)?;
+    let db = db::Db::open()?;
+    let vm = db.find_machine(id)?;
+    let dir = db::flavors_dir()?.join(name);
+    if dir.exists() || db.find_flavor(name)?.is_some() {
+        anyhow::bail!("flavor {name:?} already exists (remove it first)");
+    }
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("creating flavor dir {}", dir.display()))?;
+
+    let mdir = std::path::PathBuf::from(&vm.state_dir);
+    if vm.kind == "linux" {
+        // The machine's writable rootfs (per-machine clone, or its volume).
+        let src = match &vm.volume {
+            Some(v) => volume_dir(v)?.join("rootfs"),
+            None => mdir.join("rootfs"),
+        };
+        if !src.exists() {
+            let _ = std::fs::remove_dir_all(&dir);
+            anyhow::bail!("machine {} has no rootfs to snapshot", vm.id);
+        }
+        host::cow_copy(&src, &dir.join("rootfs"), true)?;
+    } else {
+        // BSD: snapshot the raw disk (`root.<ext>`), from the volume or state dir.
+        let base = match &vm.volume {
+            Some(v) => volume_dir(v)?,
+            None => mdir.clone(),
+        };
+        let disk = ["root.raw", "root.img"]
+            .iter()
+            .map(|f| base.join(f))
+            .find(|p| p.exists())
+            .ok_or_else(|| {
+                let _ = std::fs::remove_dir_all(&dir);
+                anyhow::anyhow!("machine {} has no disk to snapshot", vm.id)
+            })?;
+        let ext = disk.extension().and_then(|e| e.to_str()).unwrap_or("img");
+        host::cow_copy(&disk, &dir.join(format!("disk.{ext}")), false)?;
+    }
+
+    db.upsert_flavor(
+        name,
+        // Store the guest-OS label (freebsd/netbsd/linux), not the internal boot
+        // mode (firmware/kernel), so the UI labels it right and `run` knows how
+        // to boot it.
+        guest_os_kind(&vm.kind, &vm.image),
+        &vm.image,
+        &dir.to_string_lossy(),
+        description,
+    )?;
+    println!("{name}");
+    Ok(())
+}
+
+/// `bsdkrun flavors` — list saved snapshots + the built-in catalog.
+#[allow(clippy::print_literal)]
+fn cmd_flavors(json: bool) -> Result<()> {
+    let db = db::Db::open()?;
+    let snapshots = db.list_flavors().unwrap_or_default();
+    let user = flavors::user_flavors();
+    if json {
+        let mut out = Vec::new();
+        for f in &snapshots {
+            out.push(serde_json::json!({
+                // Normalize legacy boot-mode kinds (firmware/kernel) for display.
+                "name": f.name, "source": "snapshot", "kind": guest_os_kind(&f.kind, &f.base),
+                "base": f.base, "category": "snapshot", "method": "snapshot",
+                "description": f.description, "created_at": f.created_at,
+            }));
+        }
+        for c in flavors::catalog() {
+            out.push(serde_json::json!({
+                "name": c.name, "source": "catalog", "kind": c.kind(),
+                "base": c.image(), "category": c.category, "method": c.method(),
+                "description": c.description, "ports": c.ports, "nix": c.nix,
+            }));
+        }
+        for u in &user {
+            out.push(serde_json::json!({
+                "name": u.name, "source": "user", "kind": u.kind(),
+                "base": u.base, "category": u.category, "method": u.method(),
+                "description": u.description, "ports": u.ports, "nix": u.nix,
+            }));
+        }
+        println!("{}", serde_json::to_string(&out)?);
+        return Ok(());
+    }
+    if !snapshots.is_empty() {
+        println!("Your snapshots:");
+        for f in &snapshots {
+            println!("  {:<18}  {:<9}  {}", f.name, f.kind, f.description);
+        }
+        println!();
+    }
+    if !user.is_empty() {
+        println!("Your flavors (flavors.toml):");
+        println!(
+            "  {:<14}  {:<9}  {:<8}  {}",
+            "NAME", "CATEGORY", "METHOD", "DESCRIPTION"
+        );
+        for u in &user {
+            println!(
+                "  {:<14}  {:<9}  {:<8}  {}",
+                u.name,
+                u.category,
+                u.method(),
+                u.description
+            );
+        }
+        println!();
+    }
+    println!("Catalog:");
+    println!(
+        "  {:<14}  {:<9}  {:<8}  {}",
+        "NAME", "CATEGORY", "METHOD", "DESCRIPTION"
+    );
+    for c in flavors::catalog() {
+        println!(
+            "  {:<14}  {:<9}  {:<8}  {}",
+            c.name,
+            c.category,
+            c.method(),
+            c.description
+        );
+    }
+    Ok(())
+}
+
+/// `bsdkrun flavor rm <name>...` — remove saved snapshot flavors.
+fn cmd_flavor_rm(names: &[String], _force: bool) -> Result<()> {
+    let db = db::Db::open()?;
+    let mut failed = false;
+    for name in names {
+        if flavors::find(name).is_some() {
+            eprintln!("Error: {name:?} is a built-in catalog flavor (can't remove)");
+            failed = true;
+            continue;
+        }
+        match db.find_flavor(name)? {
+            Some(f) => {
+                host::force_remove_dir_all(&std::path::PathBuf::from(&f.path));
+                db.remove_flavor(name).ok();
+                println!("{name}");
+            }
+            None => {
+                // Not a snapshot — try a user (flavors.toml) flavor.
+                match flavors::remove_user_flavor(name) {
+                    Ok(true) => println!("{name}"),
+                    Ok(false) => {
+                        eprintln!("Error: no such flavor: {name}");
+                        failed = true;
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        failed = true;
+                    }
+                }
+            }
+        }
+    }
+    if failed {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// `bsdkrun flavor add <name> --base <ref> …` — define a custom flavor in the
+/// writable `flavors.toml`.
+fn cmd_flavor_add(a: FlavorAddArgs) -> Result<()> {
+    let ok = !a.name.is_empty()
+        && a.name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    if !ok {
+        anyhow::bail!(
+            "invalid flavor name {:?} — use letters, digits, '-', '_' or '.'",
+            a.name
+        );
+    }
+    if a.base.trim().is_empty() {
+        anyhow::bail!("--base is required (an OCI image ref, or `freebsd`/`netbsd`)");
+    }
+    let flavor = flavors::UserFlavor {
+        name: a.name.clone(),
+        category: if a.category.is_empty() {
+            "custom".into()
+        } else {
+            a.category
+        },
+        description: a.description,
+        base: a.base,
+        ports: a.ports,
+        env: a.env,
+        nix: a.nix,
+        provision: a.provision,
+    };
+    let path = flavors::upsert_user_flavor(flavor)?;
+    info!(flavor = %a.name, file = %path.display(), "saved flavor");
+    println!("{}", a.name);
+    Ok(())
+}
+
+/// A resolved Linux flavor: the base image plus its defaults and provisioning
+/// steps, from either the built-in catalog or a user `flavors.toml`.
+struct LinuxFlavorSpec {
+    image: String,
+    env: Vec<String>,
+    ports: Vec<String>,
+    nix: Vec<String>,
+    provision: Vec<String>,
+}
+
+/// Resolve a Linux flavor (catalog or user) by name. Returns `None` for a BSD
+/// flavor or an unknown name.
+fn resolve_linux_flavor(name: &str) -> Option<LinuxFlavorSpec> {
+    if let Some(c) = flavors::find(name) {
+        if c.kind() != "linux" {
+            return None;
+        }
+        return Some(LinuxFlavorSpec {
+            image: c.image().to_string(),
+            env: c.env.iter().map(|s| s.to_string()).collect(),
+            ports: c.ports.iter().map(|s| s.to_string()).collect(),
+            nix: c.nix.iter().map(|s| s.to_string()).collect(),
+            provision: c.provision.iter().map(|s| s.to_string()).collect(),
+        });
+    }
+    let u = flavors::find_user(name)?;
+    if u.kind() != "linux" {
+        return None;
+    }
+    Some(LinuxFlavorSpec {
+        image: u.base.clone(),
+        env: u.env,
+        ports: u.ports,
+        nix: u.nix,
+        provision: u.provision,
+    })
+}
+
+/// A stable short cache key for a flavor build, derived from the base image ref
+/// and the exact provisioning steps — like a Docker build cache keyed by its
+/// instructions. Any change to the base or a step yields a new key (cache miss).
+fn flavor_build_key(image: &str, nix: &[String], provision: &[String]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    image.hash(&mut h);
+    0xFFu8.hash(&mut h);
+    for n in nix {
+        n.hash(&mut h);
+        0x01u8.hash(&mut h);
+    }
+    0xFEu8.hash(&mut h);
+    for p in provision {
+        p.hash(&mut h);
+        0x02u8.hash(&mut h);
+    }
+    format!("{:016x}", h.finish())
+}
+
+/// The reserved volume that holds a built flavor's provisioned rootfs (the
+/// "cache layer"). Hidden from `volume ls`.
+pub const FLAVOR_BUILD_PREFIX: &str = "bsdkrun-build-";
+fn flavor_build_volume(key: &str) -> String {
+    format!("{FLAVOR_BUILD_PREFIX}{key}")
+}
+
+/// A short filesystem-safe label for a flavor name (for guest `echo`s).
+fn safe_label(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .collect()
+}
+
+/// Build the single guest command that provisions a flavor: Nix package installs
+/// (via the Determinate Systems installer on the OCI base) then the flavor's
+/// shell steps, in order, under a login shell. `None` ⇒ nothing to provision.
+fn flavor_provision_argv(name: &str, nix: &[String], provision: &[String]) -> Option<Vec<String>> {
+    if nix.is_empty() && provision.is_empty() {
+        return None;
+    }
+    let label = safe_label(name);
+    let mut lines: Vec<String> = vec![format!("echo '==> provisioning {label}'")];
+    if !nix.is_empty() {
+        lines.push("echo '==> installing Nix (Determinate Systems)'".into());
+        lines.push(
+            "command -v nix >/dev/null 2>&1 || curl --proto '=https' --tlsv1.2 -sSf -L \
+             https://install.determinate.systems/nix | sh -s -- install linux \
+             --no-confirm --init none"
+                .into(),
+        );
+        lines.push(
+            ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh 2>/dev/null || \
+             export PATH=/nix/var/nix/profiles/default/bin:$PATH"
+                .into(),
+        );
+        let pkgs = nix
+            .iter()
+            .map(|p| format!("nixpkgs#{p}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        lines.push(format!("nix profile install {pkgs}"));
+    }
+    for step in provision {
+        lines.push(step.clone());
+    }
+    lines.push(format!("echo '==> {label} ready'"));
+    Some(vec!["sh".into(), "-lc".into(), lines.join("\n")])
+}
+
+/// Ensure a flavor's provisioned rootfs is built and cached, returning its path.
+/// Cache hit → returns immediately (instant, no re-provisioning). Miss → runs
+/// the provisioning build in a child `bsdkrun` process (streaming its progress)
+/// and records the result so every later launch just clones it.
+fn ensure_flavor_built(spec: &LinuxFlavorSpec, name: &str, cpus: u8, mem: u32) -> Result<PathBuf> {
+    let key = flavor_build_key(&spec.image, &spec.nix, &spec.provision);
+    let vol = flavor_build_volume(&key);
+    let voldir = volume_dir(&vol)?;
+    let rootfs = voldir.join("rootfs");
+    let marker = voldir.join(".provisioned");
+    if marker.exists() && rootfs.exists() {
+        info!(flavor = name, key = %key, "using cached flavor build");
+        return Ok(rootfs);
+    }
+    // Cache miss: build in a CHILD process. Provisioning ends in `process::exit`
+    // (see `run_guest_command`), so it must not run in this process — we need to
+    // survive it to clone + boot the real machine afterwards.
+    info!(flavor = name, key = %key, "building flavor (first launch)…");
+    host::force_remove_dir_all(&voldir); // clear any half-built remnant
+    let exe = std::env::current_exe().context("locating bsdkrun for the flavor build")?;
+    let status = std::process::Command::new(exe)
+        .args([
+            "flavor",
+            "__build",
+            name,
+            "--key",
+            &key,
+            "--cpus",
+            &cpus.to_string(),
+            "--mem",
+            &mem.to_string(),
+        ])
+        .status()
+        .context("spawning the flavor build")?;
+    if !status.success() {
+        host::force_remove_dir_all(&voldir);
+        anyhow::bail!("provisioning {name} failed (see the output above)");
+    }
+    if !rootfs.exists() {
+        host::force_remove_dir_all(&voldir);
+        anyhow::bail!("the flavor build produced no rootfs for {name}");
+    }
+    std::fs::write(&marker, key.as_bytes()).ok();
+    Ok(rootfs)
+}
+
+/// Hidden `bsdkrun flavor __build` — the child that provisions a flavor into its
+/// build volume, then powers the builder off. Not for direct use.
+fn cmd_flavor_build(name: &str, key: &str, cpus: u8, mem: u32) -> Result<()> {
+    let spec = resolve_linux_flavor(name)
+        .ok_or_else(|| anyhow::anyhow!("no such Linux flavor to build: {name}"))?;
+    let argv = flavor_provision_argv(name, &spec.nix, &spec.provision)
+        .ok_or_else(|| anyhow::anyhow!("{name} has nothing to provision"))?;
+    let vol = flavor_build_volume(key);
+
+    // Boot a builder whose root is the persistent build volume. A trivial
+    // keep-alive is the main process so the VM (and its agent) stay up on any
+    // base image while provisioning runs; `run_machine` powers it off when the
+    // provisioning command finishes (detach=false ⇒ keep_running=false).
+    let largs = LinuxArgs {
+        image: spec.image.clone(),
+        kernel: None,
+        kernel_version: linux::DEFAULT_KERNEL_VERSION.to_string(),
+        detach: false,
+        initramfs: false,
+        volume: Some(vol),
+        mounts: vec![],
+        entrypoint: None,
+        env: spec.env.clone(),
+        console: "hvc0".to_string(),
+        net: NetConfig {
+            no_net: false,
+            ports: vec![],
+            mac: None,
+        },
+        vm: VmConfig { cpus, mem },
+        repo: None,
+        command: vec![
+            "sh".into(),
+            "-c".into(),
+            "while :; do sleep 86400; done".into(),
+        ],
+    };
+    boot_linux_from(largs, None, &argv)
+}
+
+/// `bsdkrun flavor build <name>` — pre-build a flavor's provisioned rootfs into
+/// the cache so a later `run` is instant. Streams provisioning output.
+fn cmd_flavor_prebuild(name: &str, cpus: u8, mem: u32, force: bool) -> Result<()> {
+    let Some(spec) = resolve_linux_flavor(name) else {
+        anyhow::bail!("no such Linux flavor to build: {name} (see `bsdkrun flavors`)");
+    };
+    if spec.nix.is_empty() && spec.provision.is_empty() {
+        println!("{name}: nothing to build (no provisioning steps)");
+        return Ok(());
+    }
+    if force {
+        // Drop the cached build so it's rebuilt from scratch.
+        let key = flavor_build_key(&spec.image, &spec.nix, &spec.provision);
+        if let Ok(dir) = volume_dir(&flavor_build_volume(&key)) {
+            host::force_remove_dir_all(&dir);
+        }
+    }
+    let built = ensure_flavor_built(&spec, name, cpus, mem)?;
+    info!(flavor = name, rootfs = %built.display(), "flavor built");
+    println!("{name}");
+    Ok(())
+}
+
+/// `bsdkrun flavor run <name>` — boot a machine from a catalog/user flavor or a
+/// saved snapshot. Provisioned flavors are built once (cached) then cloned.
+fn cmd_flavor_run(args: FlavorRunArgs) -> Result<()> {
+    let db = db::Db::open()?;
+
+    // Optional `--repo` clones a repo into the machine after boot (cd on shell).
+    let repo_argv = args
+        .repo
+        .as_deref()
+        .and_then(repo_clone_argv)
+        .unwrap_or_default();
+
+    // A saved snapshot (from `commit`) wins over any catalog/user name.
+    if let Some(f) = db.find_flavor(&args.name)? {
+        // Normalize (old snapshots stored the boot mode: firmware/kernel).
+        let osk = guest_os_kind(&f.kind, &f.base);
+        if osk == "linux" {
+            let rootfs = std::path::PathBuf::from(&f.path).join("rootfs");
+            if !rootfs.exists() {
+                anyhow::bail!("snapshot {:?} is missing its rootfs data", f.name);
+            }
+            let largs = flavor_linux_args(
+                f.base.clone(),
+                args.detach,
+                args.vm.cpus,
+                args.vm.mem,
+                args.volume,
+                args.ports,
+                vec![],
+            );
+            return boot_linux_from(largs, Some(rootfs), &repo_argv);
+        }
+
+        // BSD snapshot: boot from its saved root disk (`disk.raw` / `disk.img`).
+        let disk = ["disk.raw", "disk.img"]
+            .iter()
+            .map(|n| std::path::PathBuf::from(&f.path).join(n))
+            .find(|p| p.exists())
+            .ok_or_else(|| anyhow::anyhow!("snapshot {:?} is missing its disk data", f.name))?;
+        let bargs = BsdArgs {
+            version: None,
+            firmware: None,
+            force: false,
+            attach_disk: vec![],
+            disk_size: None,
+            run: RunConfig {
+                detach: args.detach,
+                persist: false,
+                volume: args.volume,
+            },
+            net: NetConfig {
+                no_net: false,
+                ports: args.ports,
+                mac: None,
+            },
+            vm: VmConfig {
+                cpus: args.vm.cpus,
+                mem: args.vm.mem,
+            },
+            verbose: false,
+            repo: None,
+            command: repo_argv,
+        };
+        return if osk == "netbsd" {
+            boot_netbsd_disk(bargs, Some(disk))
+        } else {
+            boot_freebsd_disk(bargs, Some(disk))
+        };
+    }
+
+    // A Linux flavor (catalog or user): build-once-then-clone.
+    if let Some(spec) = resolve_linux_flavor(&args.name) {
+        let mut ports: Vec<PortForward> = args.ports;
+        for p in &spec.ports {
+            if let Ok(pf) = p.parse::<PortForward>() {
+                ports.push(pf);
+            }
+        }
+        let largs = flavor_linux_args(
+            spec.image.clone(),
+            args.detach,
+            args.vm.cpus,
+            args.vm.mem,
+            args.volume,
+            ports,
+            spec.env.clone(),
+        );
+        // Provisioned flavors boot from a cached, pre-provisioned rootfs; plain
+        // ones boot the base image directly.
+        let has_provisioning = !spec.nix.is_empty() || !spec.provision.is_empty();
+        if has_provisioning {
+            let built = ensure_flavor_built(&spec, &args.name, args.vm.cpus, args.vm.mem)?;
+            return boot_linux_from(largs, Some(built), &repo_argv);
+        }
+        return boot_linux_from(largs, None, &repo_argv);
+    }
+
+    // A BSD catalog flavor (no provisioning/cache — boots the bundled image).
+    let Some(c) = flavors::find(&args.name) else {
+        anyhow::bail!("no such flavor: {} (see `bsdkrun flavors`)", args.name);
+    };
+    let mut ports: Vec<PortForward> = args.ports;
+    for p in c.ports {
+        if let Ok(pf) = p.parse::<PortForward>() {
+            ports.push(pf);
+        }
+    }
+    let bargs = BsdArgs {
+        version: None,
+        firmware: None,
+        force: false,
+        attach_disk: vec![],
+        disk_size: None,
+        run: RunConfig {
+            detach: args.detach,
+            persist: false,
+            volume: args.volume,
+        },
+        net: NetConfig {
+            no_net: false,
+            ports,
+            mac: None,
+        },
+        vm: VmConfig {
+            cpus: args.vm.cpus,
+            mem: args.vm.mem,
+        },
+        verbose: false,
+        repo: None,
+        // On BSD the post-boot command IS the repo clone (if any).
+        command: repo_argv,
+    };
+    match c.base {
+        flavors::Base::Freebsd => boot_freebsd(bargs),
+        flavors::Base::Netbsd => boot_netbsd(bargs),
+        flavors::Base::Oci(_) => unreachable!("OCI flavors handled above"),
+    }
 }
 
 fn cmd_logs(id: &str, follow: bool, boot: bool) -> Result<()> {
@@ -2575,11 +3493,29 @@ fn cmd_shell(id: &str) -> Result<()> {
 /// is made in the guest (only it knows its PATH) via a `/bin/sh -c` wrapper that
 /// `exec`s the winner so it inherits the agent's PTY. `/bin/sh` exists on
 /// Alpine/busybox Linux images and on FreeBSD/NetBSD.
+/// Shell snippet: on NetBSD, set `PKG_PATH` to the pkgsrc binary-package CDN for
+/// this release so `pkg_add` (and thus `pkg_add pkgin`) works — an unset
+/// `PKG_PATH` is exactly why `pkg_add pkgin` fails on a fresh guest. A `-current`
+/// release (e.g. `11.99.7`) has no packages of its own, so use the matching
+/// `<major>.0` stable branch (`11.0`), which pkg_add installs with a harmless
+/// "different platform" warning. `x86_64` maps to the pkgsrc port `amd64`.
+const NETBSD_PKG_PATH_SETUP: &str = "if [ -z \"$PKG_PATH\" ] && [ \"$(uname 2>/dev/null)\" = NetBSD ]; then __a=$(uname -p 2>/dev/null); [ \"$__a\" = x86_64 ] && __a=amd64; export PKG_PATH=\"https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/$__a/$(uname -r 2>/dev/null | cut -d. -f1).0/All/\"; fi;";
+
 fn interactive_shell_argv() -> Vec<String> {
     vec![
         "/bin/sh".to_string(),
         "-c".to_string(),
-        "if command -v bash >/dev/null 2>&1; then exec bash; else exec /bin/sh; fi".to_string(),
+        // Add /usr/local/bin (FreeBSD `pkg`) and /usr/pkg/bin (NetBSD pkgsrc) to
+        // PATH; on NetBSD, point `pkg_add` at the pkgsrc CDN for this release
+        // (`-current` like 11.99.x uses the matching `<major>.0` branch) so
+        // `pkg_add pkgin` works; `cd` into a cloned repo; then hand off to a shell.
+        format!(
+            "export PATH=\"/usr/local/bin:/usr/local/sbin:/usr/pkg/bin:/usr/pkg/sbin:$PATH\"; \
+             [ \"$(uname 2>/dev/null)\" = Linux ] || export TERM=xterm; \
+             {NETBSD_PKG_PATH_SETUP} \
+             cd \"$(cat /etc/bsdkrun-cwd 2>/dev/null)\" 2>/dev/null; \
+             if command -v bash >/dev/null 2>&1; then exec bash; else exec /bin/sh; fi"
+        ),
     ]
 }
 
@@ -2600,6 +3536,20 @@ fn interactive_shell_env(kind: &str) -> Vec<String> {
 /// — the user installs and starts `bsdkrun-agent` in the guest themselves).
 fn is_bsd(kind: &str) -> bool {
     kind != "linux"
+}
+
+/// Normalize a machine's internal boot-mode kind (`firmware`/`kernel`/`linux`) to
+/// a guest-OS label (`freebsd`/`netbsd`/`linux`) — for display and for deciding
+/// how to boot a committed snapshot.
+fn guest_os_kind(kind: &str, image: &str) -> &'static str {
+    let img = image.to_ascii_lowercase();
+    if kind == "freebsd" || kind == "firmware" || img.starts_with("freebsd") {
+        "freebsd"
+    } else if kind == "netbsd" || kind == "kernel" || img.starts_with("netbsd") {
+        "netbsd"
+    } else {
+        "linux"
+    }
 }
 
 /// Add a guest-specific hint to an agent connection/exec failure.

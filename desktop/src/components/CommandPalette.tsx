@@ -6,16 +6,20 @@ import {
   IconServer2,
   IconStack2,
   IconDatabase,
+  IconApps,
+  IconRocket,
   IconPlus,
   IconRefresh,
   IconSettings,
   IconKeyboard,
   IconPlayerStopFilled,
   IconPlayerPlayFilled,
+  IconCamera,
   IconTerminal2,
   IconCornerDownLeft,
 } from "@tabler/icons-react";
 import {
+  commitTargetAtom,
   openTerminalAtom,
   paletteOpenAtom,
   runOpenAtom,
@@ -25,11 +29,13 @@ import {
   viewAtom,
 } from "../state/atoms";
 import {
+  useFlavors,
   useMachines,
   useRefreshAll,
   useRestartMachine,
   useStopMachine,
 } from "../lib/queries";
+import { useLaunchFlavor } from "../hooks/useLaunchFlavor";
 import { useToast } from "../state/toast";
 import { kindColor, shortId } from "../lib/format";
 import type { ViewKey } from "../lib/types";
@@ -51,15 +57,18 @@ interface Command {
 export default function CommandPalette() {
   const [open, setOpen] = useAtom(paletteOpenAtom);
   const { data: machines = [] } = useMachines();
+  const { data: flavors = [] } = useFlavors();
   const setView = useSetAtom(viewAtom);
   const setRunOpen = useSetAtom(runOpenAtom);
   const setSettingsOpen = useSetAtom(settingsOpenAtom);
   const setShortcutsOpen = useSetAtom(shortcutsOpenAtom);
   const setSelected = useSetAtom(selectedMachineAtom);
+  const setCommitTarget = useSetAtom(commitTargetAtom);
   const openTerm = useSetAtom(openTerminalAtom);
   const refreshAll = useRefreshAll();
   const stopMutation = useStopMachine();
   const restartMutation = useRestartMachine();
+  const launchFlavor = useLaunchFlavor();
   const toast = useToast();
 
   const openTerminal = (id: string) => {
@@ -125,6 +134,14 @@ export default function CommandPalette() {
         run: nav("volumes"),
       },
       {
+        id: "nav-flavors",
+        title: "Go to Flavors",
+        section: "Navigate",
+        icon: IconApps,
+        keywords: "environments stacks catalog snapshots presets",
+        run: nav("flavors"),
+      },
+      {
         id: "settings",
         title: "Open Settings",
         section: "Navigate",
@@ -168,6 +185,18 @@ export default function CommandPalette() {
           },
         },
       ];
+      cmds.push({
+        id: `snapshot-${m.id}`,
+        title: `Snapshot ${label}`,
+        subtitle: shortId(m.id),
+        section: "Machines",
+        icon: IconCamera,
+        keywords: `${m.id} commit flavor save capture`,
+        run: () => {
+          setOpen(false);
+          setCommitTarget({ id: m.id, label });
+        },
+      });
       if (m.running) {
         cmds.push({
           id: `stop-${m.id}`,
@@ -208,8 +237,22 @@ export default function CommandPalette() {
       return cmds;
     });
 
-    return [...base, ...machineCmds];
-  }, [machines]);
+    const flavorCmds: Command[] = flavors.map((f) => ({
+      id: `flavor-${f.source}-${f.name}`,
+      title: `Launch ${f.name}`,
+      subtitle: f.description || f.base,
+      section: "Flavors",
+      icon: IconRocket,
+      keywords: `${f.category} ${f.base} ${f.kind} ${f.source} ${f.method} launch boot flavor environment`,
+      run: () => {
+        setOpen(false);
+        // Streams pull/build/boot progress in the launch modal.
+        launchFlavor(f.name);
+      },
+    }));
+
+    return [...base, ...machineCmds, ...flavorCmds];
+  }, [machines, flavors]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

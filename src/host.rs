@@ -13,6 +13,38 @@ use std::process::Command;
 
 use anyhow::{bail, Result};
 
+/// Remove a directory tree even when it contains read-only entries. A nix-based
+/// rootfs holds a `/nix/store` whose directories are mode `0555`, so you can't
+/// unlink their contents without write permission on the dir — plain
+/// `remove_dir_all` fails partway and leaves the tree behind (which then makes a
+/// re-clone nest as `rootfs/rootfs`). chmod the tree writable first, then remove.
+pub fn force_remove_dir_all(path: &Path) {
+    if path.symlink_metadata().is_err() {
+        return;
+    }
+    // chmod the tree writable so `rm` can unlink entries inside 0555 nix dirs,
+    // then shell out to `rm -rf` (Rust's remove_dir_all fails partway on those).
+    let _ = Command::new("chmod").args(["-R", "u+w"]).arg(path).status();
+    let _ = Command::new("rm").args(["-rf"]).arg(path).status();
+}
+
+/// Like [`force_remove_dir_all`] but fire-and-forget: spawns the chmod+rm in the
+/// background and returns immediately. `rm -rf` of a big read-only nix store is
+/// slow; a restart shouldn't block on GC'ing the old clone it already renamed
+/// aside. Detached (setsid) so it survives this process exiting.
+pub fn force_remove_dir_all_async(path: &Path) {
+    if path.symlink_metadata().is_err() {
+        return;
+    }
+    let p = path.to_string_lossy().replace('\'', r"'\''");
+    let _ = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!(
+            "setsid sh -c 'chmod -R u+w '\\''{p}'\\'' 2>/dev/null; rm -rf '\\''{p}'\\''' </dev/null >/dev/null 2>&1 &"
+        ))
+        .spawn();
+}
+
 /// Supported CPU architectures (host == guest for a hardware-virtualized VM).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Arch {

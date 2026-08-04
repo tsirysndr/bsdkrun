@@ -2403,10 +2403,11 @@ fn cmd_start(id: &str) -> Result<()> {
     // clone. The DB row is left in place (the boot re-records it via INSERT OR
     // REPLACE), so it flips exited→running rather than vanishing from `ps`. A
     // named volume lives elsewhere and is reused, so its changes persist.
-    let state = std::path::PathBuf::from(&vm.state_dir);
-    if state.exists() {
-        std::fs::remove_dir_all(&state).ok();
-    }
+    // NB: don't wipe the whole state dir here — that means an `rm -rf` of the old
+    // read-only nix rootfs, which is slow enough to make Play "spin forever". The
+    // boot path (prepare_linux_root) renames the stale rootfs aside and GC's it in
+    // the background, so the restart returns promptly. Old sockets/logs/port files
+    // are simply overwritten on the new boot.
 
     // The next boot picks up this id + name instead of generating fresh ones.
     id::set_override(&vm.id);
@@ -2486,8 +2487,8 @@ fn cmd_rm(ids: &[String], force: bool) -> Result<()> {
             }
         }
         // Remove the per-machine state dir (console log, sockets, CoW disk clone),
-        // then drop the DB row.
-        std::fs::remove_dir_all(std::path::PathBuf::from(&vm.state_dir)).ok();
+        // then drop the DB row. force_remove handles a read-only nix rootfs.
+        host::force_remove_dir_all(&std::path::PathBuf::from(&vm.state_dir));
         db.delete_machine(&vm.id)?;
         println!("{}", vm.id);
     }

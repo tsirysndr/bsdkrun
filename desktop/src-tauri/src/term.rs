@@ -52,7 +52,10 @@ fn env_setup(cmd: &mut CommandBuilder) {
     cmd.env("TERM", "xterm-256color");
 }
 
-/// Open a PTY running `bsdkrun exec -t <id> <cmd...>` (defaults to `/bin/sh`).
+/// Open an interactive PTY into the guest via `bsdkrun exec -t <id> <cmd...>`.
+/// `command` should already be a shell that exists in the guest (resolved by the
+/// caller, e.g. `bsdkrun::resolve_guest_shell`) so nix images without `/bin/sh`
+/// don't 127.
 pub fn open(
     app: &AppHandle,
     sessions: &Terminals,

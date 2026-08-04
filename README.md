@@ -437,8 +437,8 @@ bsdkrun logs $id           # print the machine's console log
 bsdkrun logs -f $id        # follow it live
 bsdkrun exec $id uname -a  # run a command inside the guest (-t for a PTY, -e K=V for env)
 bsdkrun shell $id          # open an interactive shell in the guest
-bsdkrun stop $id           # stop a running machine
-bsdkrun start $id          # re-boot a stopped machine in place (same id/image/volume)
+bsdkrun stop $id           # stop a running machine (BSD guests clean-poweroff first)
+bsdkrun start $id          # re-boot a stopped machine in place — resumes its own disk/rootfs
 bsdkrun update $id --cpus 4 --mem 2048   # change recorded vCPU / RAM (applies on next start)
 bsdkrun rm $id             # remove a machine and its state (-f stops it first)
 ```
@@ -446,6 +446,13 @@ bsdkrun rm $id             # remove a machine and its state (-f stops it first)
 Any unique **id prefix** works (`bsdkrun stop 8e1c`). `shell` attaches to the guest console: for a
 Linux machine that's an interactive shell (with `exit`/re-attach); for BSD it's the guest's own
 console (e.g. the `login:` prompt).
+
+**`stop`/`start` persist your data.** A `start` resumes the machine's **own** disk/rootfs — the
+committed snapshot it was booted from *plus* any runtime changes — not a fresh copy of the base
+image, so stopping and starting keeps your data (like `docker start`). For BSD guests, `stop`
+cleanly powers the guest off (`shutdown -p now`) so its UFS is unmounted and consistent before the
+next boot — this takes a few seconds; without it a killed live UFS would be torn and `fsck` would
+discard recent writes. (A brand-new `run` without `-v`/`--persist` is still ephemeral — see below.)
 
 **Clone a repo on boot (`--repo`)** — pass a git URL to any run and bsdkrun clones it into the
 guest after boot (installing `git` first if the base lacks it — apt/apk/dnf/pacman/pkg/pkgin/…) and
@@ -727,6 +734,34 @@ you asked for `--port`, which then hard-errors). Disable networking explicitly w
 Each VM gets its **own** gvproxy instance and its own isolated network, so you can run several
 guests at once. gvproxy is torn down automatically when the VM exits — including when you interrupt
 it (Ctrl-C / `kill`), via a signal handler that also restores your terminal.
+
+### Global networks — reach machines by name
+
+By default each machine is isolated. Opt in to a **shared network** so machines share one subnet
+and reach each other **by IP and by name** (docker-compose style), with internal DNS:
+
+```sh
+bsdkrun network create devnet                     # one shared gvproxy switch
+bsdkrun linux -d --network devnet --name db  postgres
+bsdkrun linux -d --network devnet --name api myapi
+bsdkrun exec api -- ping db                        # resolves db → 192.168.127.x
+```
+
+Members get distinct IPs on `192.168.127.0/24` and a DNS name of their `--name` (defaults to a
+generated one). Manage networks and membership:
+
+```sh
+bsdkrun network ls                      # networks + running/total members
+bsdkrun network connect <machine> devnet   # join/switch an existing machine (applies on next start)
+bsdkrun network disconnect <machine>       # back to isolated (applies on next start)
+bsdkrun network sync devnet                # refresh members' /etc/hosts (fixes name lookup)
+bsdkrun network rm [-f] devnet
+```
+
+Membership is editable after creation and re-applied on `start`. Names resolve on Linux and FreeBSD
+via the network's DNS; **NetBSD** resolves via a synced `/etc/hosts` block (its resolver rejects the
+DNS's AAAA `NXDOMAIN` for A-only names) — joins auto-sync, and `network sync` refreshes an existing
+network without restarting members.
 
 ### SSH into the guest
 
@@ -1099,7 +1134,13 @@ forwarding — is fixed by bsdkrun's serial-console wiring (see
 [Console](#console-how-output-reaches-your-terminal)). Guest-side virtio-mmio device discovery
 under libkrun is confirmed working for FreeBSD and NetBSD on both platforms.
 
-Next: interactive login + networking shakedown, and upstreaming the PVH work to libkrun.
+**Recent:** global networks with internal DNS ([reach machines by name](#global-networks--reach-machines-by-name),
+editable membership, cross-OS incl. NetBSD via synced `/etc/hosts`); data-preserving
+[`stop`/`start`](#managing-machines) (resumes the machine's own disk/rootfs, BSD clean-poweroff);
+preconfigured [flavors & snapshots](#flavors--preconfigured-environments--snapshots); and a desktop
+app (Machines / Images / Volumes / Flavors / Networks).
+
+Next: upstreaming the PVH work to libkrun.
 
 ## License
 

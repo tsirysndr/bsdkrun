@@ -1,0 +1,11 @@
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "notGrouped": "bottom",
+  "groupings": [
+    {
+      "title": "bsdkrun",
+      "description": "Skills for running and managing bsdkrun microVMs — FreeBSD, NetBSD, and Linux (OCI) guests on macOS and Linux, built on libkrun.",
+      "skills": ["bsdkrun-cli"]
+    }
+  ]
+}

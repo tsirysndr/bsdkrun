@@ -7,6 +7,7 @@
 [![nix](https://github.com/tsirysndr/bsdkrun/actions/workflows/nix.yml/badge.svg)](https://github.com/tsirysndr/bsdkrun/actions/workflows/nix.yml)
 [![e2e (Linux / KVM)](https://github.com/tsirysndr/bsdkrun/actions/workflows/e2e-linux.yml/badge.svg)](https://github.com/tsirysndr/bsdkrun/actions/workflows/e2e-linux.yml)
 [![FlakeHub](https://img.shields.io/endpoint?url=https://flakehub.com/f/tsirysndr/bsdkrun/badge)](https://flakehub.com/flake/tsirysndr/bsdkrun)
+[![skills.sh](https://skills.sh/b/tsirysndr/bsdkrun)](https://skills.sh/tsirysndr/bsdkrun)
 
 
 A Firecracker-style **microVM launcher for BSD and Linux guests on macOS and Linux**, built on
@@ -1041,6 +1042,21 @@ hdiutil detach "${DEV%s*}"
 | `Makefile`             | Build **and codesign** (re-signs after every build — mandatory on macOS). |
 | `bsdkrun.entitlements` | `com.apple.security.hypervisor` + library-validation opt-out. |
 | `images/`              | Guest disk images and a symlink to libkrun's EDK2 firmware (git-ignored blobs). |
+| `skills/`              | Agent skills published to [skills.sh](https://skills.sh/tsirysndr/bsdkrun) — `skills/bsdkrun-cli/` documents every subcommand and flag for coding agents. |
+
+---
+
+## Agent skill
+
+The full CLI reference is packaged as an [agent skill](https://skills.sh/tsirysndr/bsdkrun) so
+coding agents (Claude Code, Cursor, Codex, …) can drive `bsdkrun` correctly. Install it with:
+
+```sh
+npx skills add tsirysndr/bsdkrun
+```
+
+It lives in [`skills/bsdkrun-cli/`](skills/bsdkrun-cli/): `SKILL.md` is the command map, and
+`references/cli-reference.md` has the exhaustive flag list.
 
 ---
 

@@ -1,6 +1,11 @@
 ---
 name: bsdkrun-cli
 description: Reference for the bsdkrun CLI — a Firecracker-style microVM launcher for FreeBSD, NetBSD, and Linux (OCI) guests on macOS/Linux, built on libkrun. Use when running, managing, networking, snapshotting, or troubleshooting bsdkrun machines, or when writing commands/scripts against the CLI. Covers every subcommand and its flags.
+license: MIT
+metadata:
+  author: tsirysndr
+  version: "1.0.0"
+  homepage: https://github.com/tsirysndr/bsdkrun
 ---
 
 # bsdkrun CLI

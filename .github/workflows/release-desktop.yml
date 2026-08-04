@@ -1,0 +1,76 @@
+name: release-desktop
+
+# Build the Tauri desktop app (bsdkrun Desktop) on macOS and attach the .dmg
+# (plus a zipped .app) to the GitHub release for the pushed v* tag.
+#
+# The app is a thin GUI that shells out to the `bsdkrun` CLI (it does not link
+# libkrun), so a plain native build is enough. release.yml creates the release
+# for the tag; this job uploads to it.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to attach the desktop app to (e.g. v0.5.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest # Apple Silicon (arm64), matching the bsdkrun CLI
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        working-directory: desktop
+        run: bun install --frozen-lockfile
+
+      - name: Build the Tauri app (.app + .dmg)
+        working-directory: desktop
+        # `tauri build` runs the frontend build (beforeBuildCommand: `bun run
+        # build`) then bundles. No signing identity is configured, so the app is
+        # ad-hoc signed — users may need to right-click → Open on first launch.
+        run: bun run tauri build
+
+      - name: Collect bundles
+        id: bundles
+        run: |
+          set -euo pipefail
+          out=desktop/src-tauri/target/release/bundle
+          mkdir -p dist-desktop
+          # DMG(s)
+          find "$out/dmg" -name '*.dmg' -exec cp {} dist-desktop/ \; || true
+          # Also zip the .app for a direct download.
+          app="$(find "$out/macos" -maxdepth 1 -name '*.app' | head -1 || true)"
+          if [ -n "$app" ]; then
+            ( cd "$(dirname "$app")" && zip -qyr - "$(basename "$app")" ) \
+              > "dist-desktop/bsdkrun-Desktop-macos-aarch64.app.zip"
+          fi
+          echo "Artifacts:"; ls -la dist-desktop
+
+      - name: Resolve release tag
+        id: tag
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          files: dist-desktop/*
+          fail_on_unmatched_files: true

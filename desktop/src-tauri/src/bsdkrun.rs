@@ -118,6 +118,30 @@ pub async fn run(bin: &PathBuf, args: &[&str]) -> Result<String, BkError> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Run a subcommand and return its combined stdout+stderr **regardless of exit
+/// code**. Used for diagnostic/agent actions (`ssh`/`tailscale` status/setup)
+/// where a non-zero exit is a legitimate state ("not installed", "not running")
+/// the user should see, not a hard error. Only spawn/timeout failures error.
+pub async fn run_output(bin: &PathBuf, args: &[&str]) -> Result<String, BkError> {
+    let fut = command(bin).args(args).output();
+    let out = tokio::time::timeout(Duration::from_secs(120), fut)
+        .await
+        .map_err(|_| BkError::Io(format!("`bsdkrun {}` timed out", args.join(" "))))??;
+    let mut s = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
+    let err = String::from_utf8_lossy(&out.stderr);
+    let err = err.trim();
+    if !err.is_empty() {
+        if !s.is_empty() {
+            s.push('\n');
+        }
+        s.push_str(err);
+    }
+    if s.trim().is_empty() {
+        s = format!("(no output — exit {})", out.status.code().unwrap_or(-1));
+    }
+    Ok(s)
+}
+
 /// Launch a detached (`-d`) machine and return its id.
 ///
 /// CRITICAL: we must NOT use `.output()` here. `bsdkrun -d` forks a long-lived
@@ -182,6 +206,8 @@ pub async fn run_detached(bin: &PathBuf, args: &[&str]) -> Result<String, BkErro
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Machine {
     pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
     pub image: String,
     pub kind: String,
     pub command: String,
@@ -245,14 +271,19 @@ pub async fn list_versions(bin: &PathBuf, os: &str) -> Result<Vec<VersionEntry>,
     let mut v = Vec::new();
     for line in out.lines() {
         let t = line.trim();
-        if t.is_empty() || !t.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        let first = t.split_whitespace().next().unwrap_or("");
+        // Accept version rows (`  15.1  (latest)`) and NetBSD's `current` row
+        // (the recommended build that boots to root under libkrun).
+        let is_version = first.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false);
+        let is_current = first == "current";
+        if !is_version && !is_current {
             continue;
         }
-        let latest = t.contains("(latest)");
-        let ver = t.split_whitespace().next().unwrap_or("").to_string();
-        if !ver.is_empty() {
-            v.push(VersionEntry { version: ver, latest });
-        }
+        let latest = t.contains("(latest)") || is_current;
+        v.push(VersionEntry {
+            version: first.to_string(),
+            latest,
+        });
     }
     Ok(v)
 }

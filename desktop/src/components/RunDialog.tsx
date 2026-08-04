@@ -65,6 +65,10 @@ const schema = z
             .every((l) => /^\d+:\d+$/.test(l)),
         "Each line must be HOST:GUEST (numbers)",
       ),
+    attachDisks: z.string(),
+    diskSize: z
+      .string()
+      .regex(/^$|^\d+(\.\d+)?\s*[KMGT]?B?$/i, "e.g. 8G, 4096M"),
   })
   .refine((d) => d.kind !== "linux" || d.image.trim().length > 0, {
     message: "An image reference is required",
@@ -86,6 +90,8 @@ const DEFAULTS: FormValues = {
   entrypoint: "",
   mounts: "",
   ports: "",
+  attachDisks: "",
+  diskSize: "",
 };
 
 const splitArgs = (s: string) => (s.trim() ? s.trim().split(/\s+/) : []);
@@ -120,7 +126,14 @@ export default function RunDialog() {
   const bsd = kind !== "linux";
   const version = watch("version");
 
-  const { data: versions = [] } = useVersions(kind, open && bsd);
+  const { data: allVersions = [] } = useVersions(kind, open && bsd);
+  // Only NetBSD `current` (HEAD, ≈ NetBSD 11) has modern virtio-mmio that boots
+  // to root under libkrun; the numbered 8–10 releases use legacy virtio and
+  // can't mount their root disk, so don't offer them.
+  const versions =
+    kind === "netbsd"
+      ? allVersions.filter((v) => v.version === "current")
+      : allVersions;
 
   // Apply prefill when the dialog opens.
   useEffect(() => {
@@ -141,7 +154,7 @@ export default function RunDialog() {
   // otherwise the release the CLI marks as latest.
   useEffect(() => {
     if (bsd && versions.length && !version) {
-      const preferred = kind === "freebsd" ? "15.1" : "11.0";
+      const preferred = kind === "freebsd" ? "15.1" : "current";
       const chosen =
         versions.find((v) => v.version === preferred) ||
         versions.find((v) => v.latest) ||
@@ -166,6 +179,8 @@ export default function RunDialog() {
           : null,
       mounts: data.kind === "linux" ? lines(data.mounts) : [],
       ports: lines(data.ports),
+      attach_disks: bsd ? lines(data.attachDisks) : [],
+      disk_size: bsd && data.diskSize.trim() ? data.diskSize.trim() : null,
       command: splitArgs(data.command),
     };
     try {
@@ -260,8 +275,9 @@ export default function RunDialog() {
                         </option>
                         {versions.map((v) => (
                           <option key={v.version} value={v.version}>
-                            {v.version}
-                            {v.latest ? "  (latest)" : ""}
+                            {kind === "netbsd" && v.version === "current"
+                              ? "current  (NetBSD 11 · virtio)"
+                              : `${v.version}${v.latest ? "  (latest)" : ""}`}
                           </option>
                         ))}
                       </select>
@@ -271,6 +287,27 @@ export default function RunDialog() {
                       />
                     </div>
                   </div>
+                )}
+              />
+            )}
+
+            {bsd && (
+              <Controller
+                control={control}
+                name="diskSize"
+                render={({ field }) => (
+                  <Input
+                    label="Disk size"
+                    labelPlacement="outside"
+                    placeholder="default (image size) — e.g. 8G, 4096M"
+                    value={field.value}
+                    onValueChange={field.onChange}
+                    variant="bordered"
+                    isInvalid={!!errors.diskSize}
+                    errorMessage={errors.diskSize?.message}
+                    description="Grows the root disk (only enlarges); the guest expands its filesystem on boot."
+                    classNames={{ input: "font-mono text-xs" }}
+                  />
                 )}
               />
             )}
@@ -458,6 +495,25 @@ export default function RunDialog() {
                     />
                   )}
                 />
+
+                {bsd && (
+                  <Controller
+                    control={control}
+                    name="attachDisks"
+                    render={({ field }) => (
+                      <Textarea
+                        label="Attach disks (one per line, PATH[:ro])"
+                        labelPlacement="outside"
+                        placeholder={"/path/to/data.raw\n/path/to/ref.img:ro"}
+                        value={field.value}
+                        onValueChange={field.onChange}
+                        minRows={2}
+                        variant="bordered"
+                        classNames={{ input: "font-mono text-xs" }}
+                      />
+                    )}
+                  />
+                )}
               </div>
             )}
           </ModalBody>

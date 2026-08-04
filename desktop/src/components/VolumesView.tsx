@@ -19,6 +19,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState, ViewShell } from "./ViewShell";
 import { TableSkeleton } from "./Skeletons";
 import { useInfiniteRows } from "../hooks/useInfiniteRows";
+import { useListNavigation } from "../hooks/useListNavigation";
 import type { Volume } from "../lib/types";
 
 export default function VolumesView() {
@@ -34,6 +35,12 @@ export default function VolumesView() {
   );
   const { visible, sentinelRef, hasMore } = useInfiniteRows(rows.length);
   const visibleRows = useMemo(() => rows.slice(0, visible), [rows, visible]);
+
+  // ↑/↓ highlight a volume; Enter or Delete opens the remove confirmation.
+  const { focusedId } = useListNavigation(visibleRows, (v) => v.name, {
+    onEnter: (v) => setTarget(v),
+    keys: { d: (v) => setTarget(v) },
+  });
 
   const remove = async () => {
     if (!target) return;
@@ -90,11 +97,19 @@ export default function VolumesView() {
           <TableColumn width={150}>Created</TableColumn>
           <TableColumn align="end"> </TableColumn>
         </TableHeader>
-        <TableBody items={visibleRows}>
-          {(v) => {
+        <TableBody>
+          {visibleRows.map((v) => {
             const kc = v.guest ? kindColor(v.guest, v.base) : null;
             return (
-              <TableRow key={v.name}>
+              <TableRow
+                key={v.name}
+                data-list-row={v.name}
+                className={
+                  v.name === focusedId
+                    ? "bg-primary/10 shadow-[inset_2px_0_0] shadow-primary"
+                    : undefined
+                }
+              >
                 <TableCell>
                   <span className="text-sm font-medium text-foreground">
                     {v.name}
@@ -150,7 +165,7 @@ export default function VolumesView() {
                 </TableCell>
               </TableRow>
             );
-          }}
+          })}
         </TableBody>
       </Table>
 

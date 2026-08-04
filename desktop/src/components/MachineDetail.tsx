@@ -19,19 +19,20 @@ import {
   IconInfoCircle,
   IconCopy,
   IconTrash,
+  IconSettingsBolt,
 } from "@tabler/icons-react";
 import { selectedMachineAtom } from "../state/atoms";
 import {
   useMachines,
   useRemoveMachine,
-  useRunMachine,
+  useRestartMachine,
   useStopMachine,
 } from "../lib/queries";
-import { specFromMachine } from "../lib/machine";
-import { ago, kindColor, shortId } from "../lib/format";
+import { ago, exitLabel, kindColor, shortId } from "../lib/format";
 import { useToast } from "../state/toast";
 import TerminalPane from "./TerminalPane";
 import LogsPane from "./LogsPane";
+import SetupPane from "./SetupPane";
 import type { Machine } from "../lib/types";
 
 const EMPTY: string[] = [];
@@ -62,11 +63,12 @@ function Row({ label, value, mono }: { label: string; value: string; mono?: bool
 function Inspect({ m }: { m: Machine }) {
   return (
     <div className="px-1">
+      <Row label="Name" value={m.name || "—"} />
       <Row label="ID" value={m.id} mono />
       <Row label="Image" value={m.image || "—"} />
       <Row label="Guest" value={kindColor(m.kind, m.image).label} />
       <Row label="Command" value={m.command || "—"} mono />
-      <Row label="Status" value={m.running ? "running" : `exited${m.exit_code != null ? ` (${m.exit_code})` : ""}`} />
+      <Row label="Status" value={m.running ? "Running" : exitLabel(m.exit_code)} />
       <Row label="PID" value={m.pid != null ? String(m.pid) : "—"} />
       <Row label="vCPUs" value={m.cpus != null ? String(m.cpus) : "—"} />
       <Row label="Memory" value={m.mem != null ? `${m.mem} MiB` : "—"} />
@@ -82,7 +84,7 @@ export default function MachineDetail() {
   const [selected, setSelected] = useAtom(selectedMachineAtom);
   const { data: machines = [] } = useMachines();
   const stopMutation = useStopMachine();
-  const runMutation = useRunMachine();
+  const restartMutation = useRestartMachine();
   const removeMutation = useRemoveMachine();
   const toast = useToast();
   const m = machines.find((x) => x.id === selected) || null;
@@ -107,8 +109,8 @@ export default function MachineDetail() {
   const start = async () => {
     if (!m) return;
     try {
-      const id = await runMutation.mutateAsync(specFromMachine(m));
-      toast("success", "Machine started", shortId(id));
+      await restartMutation.mutateAsync(m.id);
+      toast("success", `Started ${shortId(m.id)}`);
     } catch (e) {
       toast("error", "Failed to start", String(e));
     }
@@ -150,10 +152,12 @@ export default function MachineDetail() {
                 <span className={`h-2.5 w-2.5 rounded-full ${kc.dot}`} />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-base font-semibold">
-                    {m.image || "(disk)"}
+                    {m.name || m.image || "(disk)"}
                   </div>
                   <div className="truncate font-mono text-[11px] font-normal text-foreground-500">
-                    {shortId(m.id)} · {kc.label} · {m.running ? "running" : "exited"} ·{" "}
+                    {m.image ? `${m.image} · ` : ""}
+                    {shortId(m.id)} · {kc.label} ·{" "}
+                    {m.running ? "running" : exitLabel(m.exit_code).toLowerCase()} ·{" "}
                     {ago(m.created_at)}
                   </div>
                 </div>
@@ -176,9 +180,9 @@ export default function MachineDetail() {
                         size="sm"
                         color="success"
                         variant="flat"
-                        isLoading={runMutation.isPending}
+                        isLoading={restartMutation.isPending}
                         startContent={
-                          !runMutation.isPending && (
+                          !restartMutation.isPending && (
                             <IconPlayerPlayFilled size={14} />
                           )
                         }
@@ -227,6 +231,14 @@ export default function MachineDetail() {
                   }
                 />
                 <Tab
+                  key="setup"
+                  title={
+                    <span className="flex items-center gap-1.5">
+                      <IconSettingsBolt size={15} /> Setup
+                    </span>
+                  }
+                />
+                <Tab
                   key="inspect"
                   title={
                     <span className="flex items-center gap-1.5">
@@ -248,6 +260,17 @@ export default function MachineDetail() {
                     <LogsPane machineId={m.id} />
                   </div>
                 )}
+                {tab === "setup" &&
+                  (m.running ? (
+                    <div className="h-full overflow-auto">
+                      <SetupPane machineId={m.id} />
+                    </div>
+                  ) : (
+                    <div className="grid h-full place-items-center px-6 text-center text-sm text-foreground-500">
+                      Start the machine to set up SSH or Tailscale — these run
+                      inside the guest via its agent.
+                    </div>
+                  ))}
                 {tab === "inspect" && (
                   <div className="h-full overflow-auto p-5">
                     <Inspect m={m} />

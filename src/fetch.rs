@@ -171,6 +171,18 @@ impl Os {
         Ok(versions.into_iter().map(|(_, _, v)| v).collect())
     }
 
+    /// Known releases used when the live CDN listing can't be fetched, so
+    /// `versions` still returns a usable set (kept roughly current).
+    fn fallback_versions(self) -> Vec<String> {
+        let list: &[&str] = match self {
+            Os::Freebsd => &["13.3", "13.4", "13.5", "14.0", "14.1", "14.2", "14.3", "15.0", "15.1"],
+            Os::Netbsd => &[
+                "8.0", "8.1", "8.2", "8.3", "9.0", "9.1", "9.2", "9.3", "9.4", "10.0", "10.1",
+            ],
+        };
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
     /// Write a console hint onto the image where the OS's bootloader needs one.
     fn prepare_console(self, raw: &Path) -> Result<()> {
         match self {
@@ -541,7 +553,10 @@ fn parse_size(s: &str) -> Result<u64> {
 
 /// Print the available builds for `os`.
 pub fn list_versions(os: Os) -> Result<()> {
-    let versions = os.all_versions()?;
+    // Live listing when the CDN is reachable; a static list of known releases
+    // otherwise, so the command (and the desktop's version picker) never fails
+    // just because cdn.netbsd.org / the FreeBSD mirror is slow or down.
+    let versions = os.all_versions().unwrap_or_else(|_| os.fallback_versions());
     match os {
         Os::Freebsd => {
             let latest = versions.last().cloned().unwrap_or_default();
@@ -564,7 +579,9 @@ pub fn list_versions(os: Os) -> Result<()> {
 
 fn curl_text(url: &str) -> Result<String> {
     let out = Command::new("curl")
-        .args(["-sL", "--fail", "--max-time", "30", url])
+        .args([
+            "-sL", "--fail", "--connect-timeout", "6", "--max-time", "15", url,
+        ])
         .output()
         .context("running curl")?;
     if !out.status.success() {

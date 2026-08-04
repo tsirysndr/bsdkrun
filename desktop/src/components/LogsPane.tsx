@@ -28,12 +28,27 @@ export default function LogsPane({ machineId }: { machineId: string }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [boot, setBoot] = useState(false);
   const [follow, setFollow] = useState(true);
   const [query, setQuery] = useState("");
   const [hasSelection, setHasSelection] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const toast = useToast();
+
+  // Cmd/Ctrl+F focuses the log search box (like a browser find-in-page).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f") {
+        if (!hostRef.current) return;
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -144,6 +159,17 @@ export default function LogsPane({ machineId }: { machineId: string }) {
     else s.findPrevious(query, opts);
   };
 
+  // Search-as-you-type: match incrementally on every keystroke (no Enter).
+  useEffect(() => {
+    const s = searchRef.current;
+    if (!s) return;
+    if (!query) {
+      s.clearDecorations?.();
+      return;
+    }
+    s.findNext(query, { caseSensitive: false, incremental: true });
+  }, [query]);
+
   const copySelection = () => {
     const t = termRef.current;
     if (t?.hasSelection()) {
@@ -156,6 +182,7 @@ export default function LogsPane({ machineId }: { machineId: string }) {
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b border-white/10 px-3 py-1.5">
         <Input
+          ref={searchInputRef}
           size="sm"
           radius="lg"
           value={query}
@@ -163,7 +190,7 @@ export default function LogsPane({ machineId }: { machineId: string }) {
           onKeyDown={(e) => {
             if (e.key === "Enter") find(e.shiftKey ? "prev" : "next");
           }}
-          placeholder="Search logs…"
+          placeholder="Search logs…  (⌘F)"
           startContent={<IconSearch size={14} className="text-foreground-400" />}
           endContent={
             query ? (

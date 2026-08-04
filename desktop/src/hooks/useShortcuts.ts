@@ -3,11 +3,15 @@ import { useSetAtom } from "jotai";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { onMenuAction } from "../lib/api";
 import { api } from "../lib/api";
+import { useAtomValue } from "jotai";
 import {
+  openHostTerminalAtom,
   paletteOpenAtom,
   runOpenAtom,
   settingsOpenAtom,
   shortcutsOpenAtom,
+  terminalCollapsedAtom,
+  terminalTabsAtom,
   viewAtom,
 } from "../state/atoms";
 import { useMachines, useRefreshAll } from "../lib/queries";
@@ -27,6 +31,9 @@ export function useShortcuts() {
   const setSettings = useSetAtom(settingsOpenAtom);
   const setShortcuts = useSetAtom(shortcutsOpenAtom);
   const setView = useSetAtom(viewAtom);
+  const openHostTerminal = useSetAtom(openHostTerminalAtom);
+  const setTermCollapsed = useSetAtom(terminalCollapsedAtom);
+  const termTabs = useAtomValue(terminalTabsAtom);
   const refreshAll = useRefreshAll();
   const { data: machines = [] } = useMachines();
   const toast = useToast();
@@ -35,6 +42,13 @@ export function useShortcuts() {
   machinesRef.current = machines;
   const refreshRef = useRef(refreshAll);
   refreshRef.current = refreshAll;
+
+  // Toggle the bottom terminal panel (open a host terminal if none exist).
+  const toggleTerminalRef = useRef(() => {});
+  toggleTerminalRef.current = () => {
+    if (termTabs.length === 0) openHostTerminal();
+    else setTermCollapsed((c) => !c);
+  };
 
   // Shared action dispatcher for both keyboard + menu.
   const dispatchRef = useRef((action: string) => {
@@ -98,6 +112,12 @@ export function useShortcuts() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPalette(true);
+        return;
+      }
+      // Ctrl+` toggles the bottom terminal panel (VS Code-style), everywhere.
+      if ((e.ctrlKey || e.metaKey) && e.key === "`") {
+        e.preventDefault();
+        toggleTerminalRef.current();
         return;
       }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;

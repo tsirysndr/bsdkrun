@@ -17,6 +17,7 @@ import { ago, fullDate, humanSize, shortId } from "../lib/format";
 import { EmptyState, ViewShell } from "./ViewShell";
 import { TableSkeleton } from "./Skeletons";
 import { useInfiniteRows } from "../hooks/useInfiniteRows";
+import { useListNavigation } from "../hooks/useListNavigation";
 import type { Image } from "../lib/types";
 
 /** Guess a run kind from a fetched-image reference (freebsd-15.1 / netbsd-…). */
@@ -47,6 +48,12 @@ export default function ImagesView() {
     setPrefill({ kind, image: kind === "linux" ? im.reference : undefined });
     setRunOpen(true);
   };
+
+  // ↑/↓ highlight an image; Enter or R opens the Run dialog prefilled from it.
+  const { focusedId } = useListNavigation(visibleRows, (im) => im.id, {
+    onEnter: runImage,
+    keys: { r: runImage },
+  });
 
   if (isLoading && images.length === 0) {
     return (
@@ -95,9 +102,17 @@ export default function ImagesView() {
           <TableColumn width={150}>Created</TableColumn>
           <TableColumn align="end"> </TableColumn>
         </TableHeader>
-        <TableBody items={visibleRows}>
-          {(im) => (
-            <TableRow key={im.id}>
+        <TableBody>
+          {visibleRows.map((im) => (
+            <TableRow
+              key={im.id}
+              data-list-row={im.id}
+              className={
+                im.id === focusedId
+                  ? "bg-primary/10 shadow-[inset_2px_0_0] shadow-primary"
+                  : undefined
+              }
+            >
               <TableCell>
                 <span className="text-sm font-medium text-foreground">
                   {im.reference}
@@ -136,7 +151,7 @@ export default function ImagesView() {
                 </div>
               </TableCell>
             </TableRow>
-          )}
+          ))}
         </TableBody>
       </Table>
 

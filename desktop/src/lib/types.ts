@@ -3,6 +3,7 @@
 
 export interface Machine {
   id: string;
+  name: string | null;
   image: string;
   kind: string; // "linux" | "freebsd" | "netbsd" | "firmware" | "kernel"
   command: string;
@@ -75,6 +76,8 @@ export interface RunSpec {
   entrypoint?: string | null;
   mounts: string[];
   ports: string[];
+  attach_disks: string[];
+  disk_size?: string | null;
   command: string[];
 }
 

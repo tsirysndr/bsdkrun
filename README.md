@@ -1030,13 +1030,16 @@ Drive `bsdkrun` from your own code. Each SDK is a thin, stateless wrapper around
 binary — it builds argv, shells out, and parses the JSON output. There is no daemon and no
 long-lived state, so the SDKs are safe to use from short-lived processes and scripts.
 
-| Language       | Package           | Source                                | Notes                                                              |
-| -------------- | ----------------- | ------------------------------------- | ------------------------------------------------------------------ |
-| **TypeScript** | `@bsdkrun/sdk`    | [`sdk/typescript`](sdk/typescript)    | Node / Deno / Bun. Adds a `sh` template tag, `Terminal`, and direct agent-protocol access. |
-| **Python**     | `bsdkrun`         | [`sdk/python`](sdk/python)            | No runtime dependencies. Developed with [uv](https://docs.astral.sh/uv/); type-checked under strict mypy. |
-| **Ruby**       | `bsdkrun`         | [`sdk/ruby`](sdk/ruby)                | No runtime dependencies.                                            |
-| **Elixir**     | `bsdkrun`         | [`sdk/elixir`](sdk/elixir)            | One dependency (`:jason`). `{:ok, _}` / `{:error, _}` with bang variants. |
-| **Gleam**      | `bsdkrun`         | [`sdk/gleam`](sdk/gleam)              | Erlang target. Fully typed `Result`s; no exceptions.                |
+| Language       | Package        | Source                             | Notes                                                                                                    |
+| -------------- | -------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| **TypeScript** | `@bsdkrun/sdk` | [`sdk/typescript`](sdk/typescript) | Node / Deno / Bun. Adds a `sh` template tag, `Terminal`, and direct agent-protocol access.                  |
+| **Python**     | `bsdkrun`      | [`sdk/python`](sdk/python)         | No runtime dependencies. Developed with [uv](https://docs.astral.sh/uv/); type-checked under strict mypy.   |
+| **Ruby**       | `bsdkrun`      | [`sdk/ruby`](sdk/ruby)             | No runtime dependencies.                                                                                   |
+| **Elixir**     | `bsdkrun_ex`   | [`sdk/elixir`](sdk/elixir)         | One dependency (`:jason`). `{:ok, _}` / `{:error, _}` with bang variants. Modules are plain `Bsdkrun.*`.    |
+| **Gleam**      | `bsdkrun`      | [`sdk/gleam`](sdk/gleam)           | Erlang target. Fully typed `Result`s; no exceptions.                                                       |
+
+Elixir publishes as **`bsdkrun_ex`** because Hex is a single namespace and the Gleam SDK
+already takes `bsdkrun` there; its modules are unaffected.
 
 All of them find the binary the same way — an explicit override, then `$BSDKRUN_BIN`, then
 `bsdkrun` on `$PATH`, then an in-repo dev build — and expose the same surface: create /

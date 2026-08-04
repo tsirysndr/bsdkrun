@@ -1,4 +1,4 @@
-# bsdkrun
+# bsdkrun_ex (Elixir SDK)
 
 An Elixir SDK for [**bsdkrun**](https://github.com/tsirysndr/bsdkrun) — a
 Firecracker-style microVM launcher for **BSD and Linux** guests on macOS and
@@ -21,17 +21,21 @@ IO.puts(Bsdkrun.Types.Result.text(res))
 
 ## Install
 
-Add `:bsdkrun` to your `mix.exs` deps:
+Add `:bsdkrun_ex` to your `mix.exs` deps:
 
 ```elixir
 def deps do
   [
-    {:bsdkrun, "~> 0.1.0"}
+    {:bsdkrun_ex, "~> 0.1.0"}
   ]
 end
 ```
 
 Then `mix deps.get`.
+
+> The Hex package is **`bsdkrun_ex`** — the Gleam SDK already publishes as
+> `bsdkrun`, and Hex is one namespace shared by both. The modules are plain
+> `Bsdkrun.*`, so nothing in the code below carries the suffix.
 
 ### The `bsdkrun` binary
 

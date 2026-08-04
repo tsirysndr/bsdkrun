@@ -6,7 +6,7 @@ defmodule Bsdkrun.MixProject do
 
   def project do
     [
-      app: :bsdkrun,
+      app: :bsdkrun_ex,
       version: @version,
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
@@ -14,7 +14,7 @@ defmodule Bsdkrun.MixProject do
       description:
         "Elixir SDK for bsdkrun — a Firecracker-style microVM launcher for BSD and Linux guests.",
       package: package(),
-      name: "bsdkrun",
+      name: "bsdkrun_ex",
       source_url: @source_url,
       docs: docs()
     ]
@@ -32,8 +32,12 @@ defmodule Bsdkrun.MixProject do
     ]
   end
 
+  # Published to Hex as `bsdkrun_ex`: the Gleam SDK already claims `bsdkrun`
+  # there, and Hex is a single namespace shared by both. The modules stay
+  # `Bsdkrun.*`.
   defp package do
     [
+      name: "bsdkrun_ex",
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
       files: ~w(lib mix.exs README.md)

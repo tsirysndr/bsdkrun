@@ -242,10 +242,15 @@ export default function MachineDetail() {
                       size="sm"
                       color="danger"
                       variant="flat"
-                      startContent={<IconPlayerStopFilled size={14} />}
+                      isLoading={stopMutation.isPending}
+                      startContent={
+                        !stopMutation.isPending && (
+                          <IconPlayerStopFilled size={14} />
+                        )
+                      }
                       onPress={stop}
                     >
-                      Stop
+                      {stopMutation.isPending ? "Stopping…" : "Stop"}
                     </Button>
                   </Tooltip>
                 ) : (

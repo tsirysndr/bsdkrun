@@ -19,11 +19,16 @@ import {
   IconInfoCircle,
   IconCopy,
   IconCamera,
+  IconCpu,
   IconTrash,
   IconSettingsBolt,
 } from "@tabler/icons-react";
 import { useSetAtom } from "jotai";
-import { commitTargetAtom, selectedMachineAtom } from "../state/atoms";
+import {
+  commitTargetAtom,
+  editResourcesAtom,
+  selectedMachineAtom,
+} from "../state/atoms";
 import {
   useMachines,
   useRemoveMachine,
@@ -89,6 +94,7 @@ export default function MachineDetail() {
   const restartMutation = useRestartMachine();
   const removeMutation = useRemoveMachine();
   const setCommitTarget = useSetAtom(commitTargetAtom);
+  const setEditResources = useSetAtom(editResourcesAtom);
   const toast = useToast();
   const m = machines.find((x) => x.id === selected) || null;
   const [tab, setTab] = useState<string>("logs");
@@ -164,6 +170,24 @@ export default function MachineDetail() {
                     {ago(m.created_at)}
                   </div>
                 </div>
+                <Tooltip content="Edit CPU / RAM" placement="bottom">
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="flat"
+                    onPress={() =>
+                      setEditResources({
+                        id: m.id,
+                        label: m.name || m.image || shortId(m.id),
+                        cpus: m.cpus ?? 1,
+                        mem: m.mem ?? 512,
+                        running: m.running,
+                      })
+                    }
+                  >
+                    <IconCpu size={16} />
+                  </Button>
+                </Tooltip>
                 <Tooltip content="Snapshot into a flavor" placement="bottom">
                   <Button
                     isIconOnly

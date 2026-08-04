@@ -15,11 +15,13 @@ import {
   IconPlayerStopFilled,
   IconPlayerPlayFilled,
   IconCamera,
+  IconCpu,
   IconTerminal2,
   IconCornerDownLeft,
 } from "@tabler/icons-react";
 import {
   commitTargetAtom,
+  editResourcesAtom,
   openTerminalAtom,
   paletteOpenAtom,
   runOpenAtom,
@@ -64,6 +66,7 @@ export default function CommandPalette() {
   const setShortcutsOpen = useSetAtom(shortcutsOpenAtom);
   const setSelected = useSetAtom(selectedMachineAtom);
   const setCommitTarget = useSetAtom(commitTargetAtom);
+  const setEditResources = useSetAtom(editResourcesAtom);
   const openTerm = useSetAtom(openTerminalAtom);
   const refreshAll = useRefreshAll();
   const stopMutation = useStopMachine();
@@ -195,6 +198,24 @@ export default function CommandPalette() {
         run: () => {
           setOpen(false);
           setCommitTarget({ id: m.id, label });
+        },
+      });
+      cmds.push({
+        id: `resources-${m.id}`,
+        title: `Edit resources · ${label}`,
+        subtitle: `${m.cpus ?? "?"} vCPU · ${m.mem ?? "?"} MiB`,
+        section: "Machines",
+        icon: IconCpu,
+        keywords: `${m.id} cpu ram memory resources edit vcpu`,
+        run: () => {
+          setOpen(false);
+          setEditResources({
+            id: m.id,
+            label,
+            cpus: m.cpus ?? 1,
+            mem: m.mem ?? 512,
+            running: m.running,
+          });
         },
       });
       if (m.running) {

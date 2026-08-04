@@ -10,6 +10,7 @@ import VolumesView from "./components/VolumesView";
 import FlavorsView from "./components/FlavorsView";
 import RunDialog from "./components/RunDialog";
 import CommitDialog from "./components/CommitDialog";
+import EditResourcesDialog from "./components/EditResourcesDialog";
 import NewFlavorModal from "./components/NewFlavorModal";
 import LaunchProgressModal from "./components/LaunchProgressModal";
 import MachineDetail from "./components/MachineDetail";
@@ -47,6 +48,7 @@ export default function App() {
       {/* Overlays */}
       <RunDialog />
       <CommitDialog />
+      <EditResourcesDialog />
       <NewFlavorModal />
       <LaunchProgressModal />
       <MachineDetail />

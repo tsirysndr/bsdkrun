@@ -87,6 +87,16 @@ export interface CommitTarget {
 }
 export const commitTargetAtom = atom<CommitTarget | null>(null);
 
+// The machine whose CPU/RAM is being edited; null ⇒ closed.
+export interface EditResourcesTarget {
+  id: string;
+  label: string;
+  cpus: number;
+  mem: number;
+  running: boolean;
+}
+export const editResourcesAtom = atom<EditResourcesTarget | null>(null);
+
 // Live state of a streaming flavor launch/build (the progress modal). null ⇒ closed.
 export interface LaunchState {
   launchId: string;

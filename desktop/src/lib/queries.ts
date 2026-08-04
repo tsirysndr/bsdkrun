@@ -127,6 +127,15 @@ export function useRunMachine() {
   });
 }
 
+export function useUpdateMachine() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, cpus, mem }: { id: string; cpus: number; mem: number }) =>
+      api.updateMachine(id, cpus, mem),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.machines }),
+  });
+}
+
 export function useStopMachine() {
   const qc = useQueryClient();
   return useMutation({

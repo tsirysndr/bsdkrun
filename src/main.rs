@@ -111,6 +111,10 @@ enum Command {
     /// image/resources/volume. Re-boots detached, like `docker start`.
     Start(IdArgs),
 
+    /// Update a machine's recorded vCPU / memory. Takes effect on the next
+    /// `start` (libkrun fixes VM resources at boot).
+    Update(UpdateArgs),
+
     /// Remove one or more machines (and their state). Refuses a running
     /// machine unless `-f`, which stops it first.
     Rm(RmArgs),
@@ -447,6 +451,21 @@ struct RmArgs {
     /// machine id(s) to remove (a unique prefix is enough).
     #[arg(value_name = "ID", required = true)]
     ids: Vec<String>,
+}
+
+#[derive(Parser)]
+struct UpdateArgs {
+    /// machine id to update (a unique prefix is enough).
+    #[arg(value_name = "ID")]
+    id: String,
+
+    /// New number of vCPUs.
+    #[arg(long)]
+    cpus: Option<u8>,
+
+    /// New guest RAM in MiB.
+    #[arg(long)]
+    mem: Option<u32>,
 }
 
 #[derive(Parser)]
@@ -853,6 +872,7 @@ fn main() -> Result<()> {
         Command::Images(args) => cmd_images(args.json),
         Command::Stop(args) => cmd_stop(&args.id),
         Command::Start(args) => cmd_start(&args.id),
+        Command::Update(args) => cmd_update(&args.id, args.cpus, args.mem),
         Command::Rm(args) => cmd_rm(&args.ids, args.force),
         Command::Agent(args) => match args.cmd {
             AgentCmd::Update(a) => cmd_agent_update(&a.id),
@@ -2685,6 +2705,31 @@ fn cmd_stop(id: &str) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// `bsdkrun update <id> [--cpus N] [--mem M]` — change a machine's recorded
+/// vCPU / memory. libkrun fixes VM resources at boot, so the new values apply on
+/// the next `start` (an in-place restart), not to a currently-running guest.
+fn cmd_update(id: &str, cpus: Option<u8>, mem: Option<u32>) -> Result<()> {
+    if cpus.is_none() && mem.is_none() {
+        anyhow::bail!("nothing to update — pass --cpus and/or --mem");
+    }
+    let db = db::Db::open()?;
+    let vm = db.find_machine(id)?;
+    let new_cpus = cpus.map(i64::from).unwrap_or(vm.cpus).clamp(1, 255);
+    let new_mem = mem.map(i64::from).unwrap_or(vm.mem).max(64);
+    db.set_machine_resources(&vm.id, new_cpus, new_mem)?;
+    let running = vm.pid.map(db::pid_alive).unwrap_or(false) && vm.status == "running";
+    if running {
+        info!(
+            id = %vm.id,
+            "resources updated ({new_cpus} vCPU / {new_mem} MiB) — restart the machine to apply"
+        );
+    } else {
+        info!(id = %vm.id, "resources updated ({new_cpus} vCPU / {new_mem} MiB)");
+    }
+    println!("{}", vm.id);
+    Ok(())
 }
 
 /// Restart a stopped machine *in place*: re-boot the recorded image / resources

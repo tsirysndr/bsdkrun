@@ -46,6 +46,7 @@ image** (`bsdkrun linux alpine` pulls it from any registry, extracts the rootfs,
   - [`kernel`](#kernel--boot-a-kernel-directly-no-bootloader)
   - [`linux`](#linux--run-an-oci-image-as-a-microvm)
 - [Managing machines](#managing-machines)
+- [Flavors — preconfigured environments & snapshots](#flavors--preconfigured-environments--snapshots)
 - [Networking](#networking)
 - [Disks](#disks)
 - [Console](#console-how-output-reaches-your-terminal)
@@ -437,11 +438,23 @@ bsdkrun logs -f $id        # follow it live
 bsdkrun exec $id uname -a  # run a command inside the guest (-t for a PTY, -e K=V for env)
 bsdkrun shell $id          # open an interactive shell in the guest
 bsdkrun stop $id           # stop a running machine
+bsdkrun start $id          # re-boot a stopped machine in place (same id/image/volume)
+bsdkrun update $id --cpus 4 --mem 2048   # change recorded vCPU / RAM (applies on next start)
+bsdkrun rm $id             # remove a machine and its state (-f stops it first)
 ```
 
 Any unique **id prefix** works (`bsdkrun stop 8e1c`). `shell` attaches to the guest console: for a
 Linux machine that's an interactive shell (with `exit`/re-attach); for BSD it's the guest's own
 console (e.g. the `login:` prompt).
+
+**Clone a repo on boot (`--repo`)** — pass a git URL to any run and bsdkrun clones it into the
+guest after boot (installing `git` first if the base lacks it — apt/apk/dnf/pacman/pkg/pkgin/…) and
+drops you into it when you open a shell:
+
+```sh
+bsdkrun linux  -d --repo https://github.com/owner/app node:22   # clone into ~/app, cd on shell
+bsdkrun freebsd -d --repo https://github.com/owner/app
+```
 
 **Copy-on-write disks** — a BSD machine's root disk is cloned per machine with an APFS `clonefile`
 (`cp -c` — instant, and costs no extra disk until the guest writes), so you can boot **many
@@ -636,6 +649,61 @@ If `exec` times out, check inside the guest that networking is up (`ifconfig` sh
 
 > The FreeBSD binary is dynamically linked for FreeBSD 14+; the NetBSD binary is built natively on
 > NetBSD 10.
+
+---
+
+## Flavors — preconfigured environments & snapshots
+
+A **flavor** is a named, ready-to-boot environment. Launch one with a single command; the first run
+provisions and caches it, and every later launch clones that cache — so it's instant after the first
+build, like `docker build` + `docker run`:
+
+```sh
+bsdkrun flavors                     # list the catalog + your snapshots + your flavors.toml entries
+bsdkrun flavor run -d node          # boot Node.js 22
+bsdkrun flavor run -d claude-code   # boot an AI coding agent (Claude Code) — provisioned once
+bsdkrun flavor build laravel        # pre-build a flavor's cache (streams the provisioning)
+```
+
+Flavors come from three places:
+
+- **Catalog** — curated, built-in environments across several categories:
+  - **languages / runtimes:** `node`, `python` (uv), `php` (composer), `laravel`, `symfony`,
+    `elixir`, `phoenix`, `gleam` (nix), `clojure`, `nix`, `docker`
+  - **AI coding agents:** `claude-code`, `codex`, `opencode`, `crush`, `copilot`
+  - **services:** `postgres`, `mysql`, `redis` · **web:** `nginx`, `apache`, `caddy`
+  - **operating systems:** `freebsd`, `netbsd`
+- **User** — your own stacks, declared in a `flavors.toml` (`$BSDKRUN_FLAVORS_FILE`, else
+  `./bsdkrun.flavors.toml`, else `~/.config/bsdkrun/flavors.toml`):
+
+  ```toml
+  [[flavor]]
+  name = "my-api"
+  base = "node:22"          # an OCI ref, or `freebsd` / `netbsd`
+  category = "language"
+  ports = ["3000:3000"]
+  env = ["NODE_ENV=development"]
+  provision = ["apt-get update && apt-get install -y git", "npm install -g pnpm"]
+  ```
+
+  Manage them from the CLI too: `bsdkrun flavor add my-api --base node:22 --provision "npm i -g pnpm"`
+  and `bsdkrun flavor rm my-api`.
+- **Snapshots** — freeze a running (or stopped) machine's current state into a reusable flavor, like
+  `docker commit`. Boot FreeBSD, install your tools, then capture it:
+
+  ```sh
+  id=$(bsdkrun freebsd -d)
+  bsdkrun exec $id pkg install -y git tmux vim
+  bsdkrun commit $id my-freebsd-dev --description "FreeBSD with my toolchain"
+  bsdkrun flavor run -d my-freebsd-dev            # clone that exact state into a fresh machine
+  ```
+
+  Snapshots are CoW clones (rootfs for Linux, the raw disk for BSD), so they're cheap to store and
+  boot.
+
+**Build methods** are shown per flavor so you know how it's provisioned: **docker** (a plain OCI
+image), **nix** (packages via the Determinate Systems installer), or **system** (packages/shell
+provisioning in the guest). Provisioning steps compose with `-v` volumes, `--port`, and `--repo`.
 
 ---
 

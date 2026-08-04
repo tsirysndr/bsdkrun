@@ -126,7 +126,14 @@ export default function RunDialog() {
   const bsd = kind !== "linux";
   const version = watch("version");
 
-  const { data: versions = [] } = useVersions(kind, open && bsd);
+  const { data: allVersions = [] } = useVersions(kind, open && bsd);
+  // Only NetBSD `current` (HEAD, ≈ NetBSD 11) has modern virtio-mmio that boots
+  // to root under libkrun; the numbered 8–10 releases use legacy virtio and
+  // can't mount their root disk, so don't offer them.
+  const versions =
+    kind === "netbsd"
+      ? allVersions.filter((v) => v.version === "current")
+      : allVersions;
 
   // Apply prefill when the dialog opens.
   useEffect(() => {
@@ -268,8 +275,9 @@ export default function RunDialog() {
                         </option>
                         {versions.map((v) => (
                           <option key={v.version} value={v.version}>
-                            {v.version}
-                            {v.latest ? "  (latest)" : ""}
+                            {kind === "netbsd" && v.version === "current"
+                              ? "current  (NetBSD 11 · virtio)"
+                              : `${v.version}${v.latest ? "  (latest)" : ""}`}
                           </option>
                         ))}
                       </select>

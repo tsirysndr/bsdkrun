@@ -645,6 +645,21 @@ async fn launch_machine(
     Ok(())
 }
 
+/// Update a machine's recorded vCPU / memory — `bsdkrun update <id> --cpus --mem`.
+/// Applies on the next start (libkrun fixes VM resources at boot).
+#[tauri::command]
+async fn update_machine(
+    state: State<'_, AppState>,
+    id: String,
+    cpus: u32,
+    mem: u32,
+) -> Result<(), BkError> {
+    let bin = state.binary()?;
+    let (c, m) = (cpus.to_string(), mem.to_string());
+    bsdkrun::run(&bin, &["update", &id, "--cpus", &c, "--mem", &m]).await?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn stop_machine(state: State<'_, AppState>, id: String) -> Result<(), BkError> {
     let bin = state.binary()?;
@@ -861,6 +876,7 @@ pub fn run() {
             system_stats,
             run_machine,
             launch_machine,
+            update_machine,
             stop_machine,
             restart_machine,
             remove_machine,

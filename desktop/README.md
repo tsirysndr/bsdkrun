@@ -14,16 +14,27 @@ all the real work (libkrun / Hypervisor.framework / KVM).
 
 ## Features
 
-- **Machines** — list running/stopped microVMs, launch, stop, and inspect them.
+- **Machines** — list running/stopped microVMs, launch, stop, restart, and
+  inspect them; **edit CPU / RAM** (applied on next start); **snapshot** a
+  machine into a reusable flavor.
 - **Run dialog** — Linux (any OCI image), FreeBSD, or NetBSD with vCPUs, memory,
-  named volumes, port forwards, bind mounts, and command overrides.
+  named volumes, port forwards, bind mounts, a **git repo to clone on boot**, and
+  command overrides. Launches **stream progress live** — image pulls, downloads,
+  and provisioning show in a progress modal instead of a silent spinner.
+- **Flavors** — a gallery of preconfigured environments: languages & runtimes,
+  **AI coding agents** (Claude Code, Codex, OpenCode, Crush, Copilot), services,
+  web servers, and BSD/OS bases. One-click launch (built once, then cloned), plus
+  your own **snapshots** and custom flavors (**New Flavor** builds & streams).
 - **Interactive terminal** — a real PTY into the guest (`bsdkrun exec -t`),
-  rendered with **xterm.js** in a beautiful **JetBrains Mono**.
+  rendered with **xterm.js** in a beautiful **Agave** monospace. On BSD it sets
+  `TERM=xterm` and a sensible `PATH`/`PKG_PATH` so tools and `pkg_add` just work.
 - **Live logs** — the guest console streamed live (`logs -f`), with a toggle to
   bsdkrun's own boot diagnostics.
 - **Images & Volumes** — browse the image cache and manage persistent volumes.
-- **Raycast-style command palette** (`/` or `⌘K`) and a full keyboard-shortcut
-  map (`?`).
+- **Raycast-style command palette** (`/` or `⌘K`) — navigate, run, launch flavors,
+  snapshot, and edit resources — plus a full keyboard-shortcut map (`?`).
+- **Settings** — point at a specific `bsdkrun` binary and set a custom cache
+  directory (`$BSDKRUN_CACHE`).
 - **Native application menu** (macOS top bar / window menu) for the important
   actions, plus a native, draggable overlay title bar.
 
@@ -39,7 +50,7 @@ all the real work (libkrun / Hypervisor.framework / KVM).
 | Data caching | [TanStack Query](https://tanstack.com/query)                  |
 | UI state     | [Jotai](https://jotai.org)                                    |
 | Forms        | React Hook Form + Zod                                         |
-| Terminal     | xterm.js + JetBrains Mono                                     |
+| Terminal     | xterm.js + Agave (monospace)                                  |
 
 ## Prerequisites
 
@@ -77,8 +88,9 @@ bun run tauri build   # produces a signed .app / installer under src-tauri/targe
 | `?`            | Shortcuts help         |
 | `R`            | Refresh                |
 | `N` · `⌘N`     | Run new machine        |
-| `⌘1/2/3`       | Machines / Images / Volumes |
+| `⌘1/2/3/4`     | Machines / Images / Volumes / Flavors |
 | `⌘⇧S`          | Stop all running       |
+| `` ⌃` ``       | Toggle terminal panel  |
 | `Esc`          | Close dialog / palette |
 
 ## How it maps to the CLI
@@ -88,8 +100,13 @@ bun run tauri build   # produces a signed .app / installer under src-tauri/targe
 | Machines list       | `bsdkrun ps -a --json`           |
 | Images list         | `bsdkrun images --json`          |
 | Volumes list        | `bsdkrun volume ls --json`       |
+| Flavors list        | `bsdkrun flavors --json`         |
 | Run                 | `bsdkrun <kind> -d …`            |
-| Stop                | `bsdkrun stop <id>`              |
+| Launch a flavor     | `bsdkrun flavor run -d <name>`   |
+| New / build flavor  | `bsdkrun flavor add …` · `flavor build <name>` |
+| Snapshot a machine  | `bsdkrun commit <id> <name>`     |
+| Edit CPU / RAM      | `bsdkrun update <id> --cpus --mem` |
+| Stop / start        | `bsdkrun stop <id>` · `start <id>` |
 | Terminal            | `bsdkrun exec -t <id> /bin/sh`   |
 | Logs (live)         | `bsdkrun logs -f <id>`           |
 | Remove volume       | `bsdkrun volume rm -f <name>`    |

@@ -392,6 +392,22 @@ impl Db {
             .map_err(Into::into)
     }
 
+    /// Update a machine's recorded vCPU / memory. libkrun fixes VM resources at
+    /// boot, so this takes effect on the next `start` (an in-place restart).
+    pub fn set_machine_resources(&self, id: &str, cpus: i64, mem: i64) -> Result<()> {
+        self.rt
+            .block_on(async {
+                sqlx::query("UPDATE machines SET cpus = ?, mem = ? WHERE id = ?")
+                    .bind(cpus)
+                    .bind(mem)
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .map_err(Into::into)
+    }
+
     pub fn list_machines(&self) -> Result<Vec<MachineRow>> {
         self.rt
             .block_on(async {

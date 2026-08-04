@@ -27,10 +27,9 @@ import {
 import {
   useMachines,
   useRefreshAll,
-  useRunMachine,
+  useRestartMachine,
   useStopMachine,
 } from "../lib/queries";
-import { specFromMachine } from "../lib/machine";
 import { useToast } from "../state/toast";
 import { kindColor, shortId } from "../lib/format";
 import type { ViewKey } from "../lib/types";
@@ -60,7 +59,7 @@ export default function CommandPalette() {
   const openTerm = useSetAtom(openTerminalAtom);
   const refreshAll = useRefreshAll();
   const stopMutation = useStopMachine();
-  const runMutation = useRunMachine();
+  const restartMutation = useRestartMachine();
   const toast = useToast();
 
   const openTerminal = (id: string) => {
@@ -148,7 +147,7 @@ export default function CommandPalette() {
     ];
 
     const machineCmds: Command[] = machines.flatMap((m) => {
-      const label = m.image || shortId(m.id);
+      const label = m.name || m.image || shortId(m.id);
       const guest = kindColor(m.kind, m.image).label;
       const resources = `${guest} · ${m.cpus ?? "?"} vCPU · ${m.mem ?? "?"} MiB${
         m.volume ? ` · vol:${m.volume}` : ""
@@ -198,8 +197,8 @@ export default function CommandPalette() {
           run: async () => {
             setOpen(false);
             try {
-              const id = await runMutation.mutateAsync(specFromMachine(m));
-              toast("success", "Machine started", shortId(id));
+              await restartMutation.mutateAsync(m.id);
+              toast("success", `Started ${shortId(m.id)}`);
             } catch (e) {
               toast("error", "Failed to start", String(e));
             }

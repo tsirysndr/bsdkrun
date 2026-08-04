@@ -26,14 +26,13 @@ import {
   runOpenAtom,
   selectedMachineAtom,
 } from "../state/atoms";
-import { ago, fullDate, kindColor, shortId } from "../lib/format";
+import { ago, exitLabel, fullDate, kindColor, shortId } from "../lib/format";
 import {
   useMachines,
   useRemoveMachine,
-  useRunMachine,
+  useRestartMachine,
   useStopMachine,
 } from "../lib/queries";
-import { specFromMachine } from "../lib/machine";
 import { useToast } from "../state/toast";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState, ViewShell } from "./ViewShell";
@@ -56,9 +55,7 @@ function StatusPill({ m }: { m: Machine }) {
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-foreground-500">
       <span className="h-2 w-2 shrink-0 rounded-full bg-foreground-600" />
-      <span className="whitespace-nowrap">
-        Exited{m.exit_code != null ? ` (${m.exit_code})` : ""}
-      </span>
+      <span className="whitespace-nowrap">{exitLabel(m.exit_code)}</span>
     </span>
   );
 }
@@ -70,66 +67,41 @@ export default function MachinesView() {
   const openTerminal = useSetAtom(openTerminalAtom);
   const setRunOpen = useSetAtom(runOpenAtom);
   const stopMutation = useStopMachine();
-  const runMutation = useRunMachine();
+  const restartMutation = useRestartMachine();
   const removeMutation = useRemoveMachine();
   const [removeTarget, setRemoveTarget] = useState<Machine | null>(null);
   const toast = useToast();
 
-  // In-flight start/stop ops keyed by the clicked machine id. The spinner stays
-  // up until the machine's state is *actually* confirmed by polling — not just
-  // when the CLI command returns (stop signals async; start's id prints before
-  // the guest has finished booting).
-  type Pending = { type: "start" | "stop"; newId?: string; at: number };
-  const [pending, setPending] = useState<Record<string, Pending>>({});
-  const clearPending = (id: string) =>
-    setPending((p) => {
-      if (!p[id]) return p;
-      const n = { ...p };
-      delete n[id];
+  // Per-row in-flight ops so we can spin only the clicked machine. Set on click,
+  // always cleared in the handler's `finally` — never left waiting on polling.
+  const [pending, setPending] = useState<Set<string>>(new Set());
+  const setRowBusy = (id: string, on: boolean) =>
+    setPending((s) => {
+      const n = new Set(s);
+      on ? n.add(id) : n.delete(id);
       return n;
     });
 
-  // Clear a pending op once its target state is observed; toast on confirmation.
+  // Belt-and-suspenders: clear a start/restart spinner as soon as the machine
+  // is observed running, even if the mutation promise is slow to settle (a cold
+  // boot can take a while). Runs off the background poll, so it no longer needs
+  // a focus/re-render to fire.
   useEffect(() => {
-    const done: { id: string; type: "start" | "stop" }[] = [];
-    for (const [id, op] of Object.entries(pending)) {
-      const timedOut = Date.now() - op.at > 45000;
-      if (op.type === "stop") {
-        const mm = machines.find((x) => x.id === id);
-        if (!mm || !mm.running || timedOut) done.push({ id, type: "stop" });
-      } else if (op.newId) {
-        const nm = machines.find((x) => x.id === op.newId);
-        if ((nm && nm.running) || timedOut) done.push({ id, type: "start" });
-      } else if (timedOut) {
-        done.push({ id, type: "start" });
-      }
-    }
-    if (done.length) {
-      setPending((p) => {
-        const n = { ...p };
-        done.forEach((d) => delete n[d.id]);
-        return n;
-      });
-      done.forEach((d) =>
-        toast(
-          "success",
-          d.type === "stop" ? "Machine stopped" : "Machine started",
-        ),
-      );
-    }
-  }, [machines, pending, toast]);
-
-  // While something is transitioning, poll faster so the spinner clears quickly.
-  useEffect(() => {
-    if (Object.keys(pending).length === 0) return;
-    const t = setInterval(() => refetch(), 1200);
-    return () => clearInterval(t);
-  }, [pending, refetch]);
+    if (pending.size === 0) return;
+    const runningIds = new Set(
+      machines.filter((m) => m.running).map((m) => m.id),
+    );
+    setPending((s) => {
+      const next = new Set([...s].filter((id) => !runningIds.has(id)));
+      return next.size === s.size ? s : next;
+    });
+  }, [machines, pending.size]);
 
   const rows = useMemo(() => {
     const r = machines.filter(
       (m) =>
         !filter ||
+        (m.name || "").toLowerCase().includes(filter) ||
         m.id.toLowerCase().includes(filter) ||
         m.image.toLowerCase().includes(filter) ||
         m.command.toLowerCase().includes(filter) ||
@@ -147,28 +119,29 @@ export default function MachinesView() {
   const visibleRows = useMemo(() => rows.slice(0, visible), [rows, visible]);
 
   const stop = async (m: Machine) => {
-    setPending((p) => ({ ...p, [m.id]: { type: "stop", at: Date.now() } }));
+    setRowBusy(m.id, true);
     try {
       await stopMutation.mutateAsync(m.id);
-      refetch();
+      await refetch();
+      toast("success", `Stopped ${shortId(m.id)}`);
     } catch (e) {
       toast("error", "Failed to stop machine", String(e));
-      clearPending(m.id);
+    } finally {
+      setRowBusy(m.id, false);
     }
   };
 
+  // In-place restart: re-boots the SAME machine id (bsdkrun start <id>).
   const start = async (m: Machine) => {
-    setPending((p) => ({ ...p, [m.id]: { type: "start", at: Date.now() } }));
+    setRowBusy(m.id, true);
     try {
-      const id = await runMutation.mutateAsync(specFromMachine(m));
-      // Record the new machine id; the effect clears the spinner once it runs.
-      setPending((p) =>
-        p[m.id] ? { ...p, [m.id]: { ...p[m.id], newId: id } } : p,
-      );
-      refetch();
+      await restartMutation.mutateAsync(m.id);
+      await refetch();
+      toast("success", `Started ${shortId(m.id)}`);
     } catch (e) {
       toast("error", "Failed to start machine", String(e));
-      clearPending(m.id);
+    } finally {
+      setRowBusy(m.id, false);
     }
   };
 
@@ -232,8 +205,12 @@ export default function MachinesView() {
           <TableColumn width={150}>Created</TableColumn>
           <TableColumn align="end"> </TableColumn>
         </TableHeader>
-        <TableBody items={visibleRows}>
-          {(m) => {
+        {/* Static children (not the `items` render-prop): HeroUI memoizes the
+            items collection, so external state like `pending` referenced in a
+            render-prop wouldn't update the row until the data changed. Mapping
+            rows directly re-renders them on every state change → instant spinner. */}
+        <TableBody>
+          {visibleRows.map((m) => {
             const kc = kindColor(m.kind, m.image);
             return (
               <TableRow key={m.id}>
@@ -245,11 +222,11 @@ export default function MachinesView() {
                     <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${kc.dot}`} />
                     <span className="min-w-0">
                       <span className="block truncate text-sm font-medium text-foreground group-hover/tr:text-primary-300">
-                        {m.image || "(disk)"}
+                        {m.name || m.image || "(disk)"}
                       </span>
                       <span className="block truncate font-mono text-[11px] text-foreground-500">
+                        {m.image ? `${m.image} · ` : ""}
                         {shortId(m.id)}
-                        {m.command ? ` · ${m.command}` : ""}
                       </span>
                     </span>
                   </button>
@@ -301,7 +278,7 @@ export default function MachinesView() {
                             isIconOnly
                             size="sm"
                             variant="light"
-                            isLoading={!!pending[m.id]}
+                            isLoading={pending.has(m.id)}
                             onPress={() => stop(m)}
                           >
                             <IconPlayerStopFilled size={15} />
@@ -314,7 +291,7 @@ export default function MachinesView() {
                           isIconOnly
                           size="sm"
                           variant="light"
-                          isLoading={!!pending[m.id]}
+                          isLoading={pending.has(m.id)}
                           onPress={() => start(m)}
                         >
                           <IconPlayerPlayFilled size={15} />
@@ -351,7 +328,7 @@ export default function MachinesView() {
                 </TableCell>
               </TableRow>
             );
-          }}
+          })}
         </TableBody>
       </Table>
 

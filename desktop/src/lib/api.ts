@@ -28,6 +28,7 @@ export const api = {
 
   runMachine: (spec: RunSpec) => invoke<string>("run_machine", { spec }),
   stopMachine: (id: string) => invoke<void>("stop_machine", { id }),
+  restartMachine: (id: string) => invoke<string>("restart_machine", { id }),
   removeMachine: (id: string, force: boolean) =>
     invoke<void>("remove_machine", { id, force }),
   removeVolume: (name: string, force: boolean) =>
@@ -35,6 +36,11 @@ export const api = {
 
   machineLogs: (id: string, boot: boolean) =>
     invoke<string>("machine_logs", { id, boot }),
+  sshAction: (id: string, args: string[]) =>
+    invoke<string>("ssh_action", { id, args }),
+  tailscaleAction: (id: string, args: string[]) =>
+    invoke<string>("tailscale_action", { id, args }),
+  updateAgent: (id: string) => invoke<string>("update_agent", { id }),
   startLogStream: (id: string) => invoke<void>("start_log_stream", { id }),
   stopLogStream: (id: string) => invoke<void>("stop_log_stream", { id }),
 

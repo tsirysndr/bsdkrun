@@ -6,7 +6,7 @@ import {
   ModalFooter,
   ModalHeader,
 } from "@heroui/react";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 export function ConfirmDialog({
   open,
@@ -22,13 +22,27 @@ export function ConfirmDialog({
   body: ReactNode;
   confirmLabel?: string;
   danger?: boolean;
-  onConfirm: () => void;
+  onConfirm: () => void | Promise<void>;
   onClose: () => void;
 }) {
+  // Show a spinner the instant Confirm is clicked, until the action settles
+  // (or the dialog closes). onConfirm may be sync or async.
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!open) setBusy(false);
+  }, [open]);
+
+  const confirm = () => {
+    setBusy(true);
+    Promise.resolve(onConfirm()).finally(() => setBusy(false));
+  };
+
   return (
     <Modal
       isOpen={open}
-      onClose={onClose}
+      onClose={() => {
+        if (!busy) onClose();
+      }}
       size="sm"
       backdrop="opaque"
       shouldBlockScroll={false}
@@ -38,15 +52,14 @@ export function ConfirmDialog({
         <ModalHeader className="text-base">{title}</ModalHeader>
         <ModalBody className="text-sm text-foreground-400">{body}</ModalBody>
         <ModalFooter>
-          <Button variant="light" size="sm" onPress={onClose}>
+          <Button variant="light" size="sm" isDisabled={busy} onPress={onClose}>
             Cancel
           </Button>
           <Button
             size="sm"
             color={danger ? "danger" : "primary"}
-            onPress={() => {
-              onConfirm();
-            }}
+            isLoading={busy}
+            onPress={confirm}
           >
             {confirmLabel}
           </Button>

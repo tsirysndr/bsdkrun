@@ -48,7 +48,9 @@ const GROUPS: { title: string; items: [string[], string][] }[] = [
   {
     title: "Terminal & logs",
     items: [
+      [["⌃", "`"], "Toggle bottom terminal panel"],
       [["⌘", "C"], "Copy selection (terminal / logs)"],
+      [["⌘", "F"], "Search in logs"],
       [["↵"], "Find next in logs (⇧↵ previous)"],
     ],
   },

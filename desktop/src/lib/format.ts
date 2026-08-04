@@ -44,6 +44,18 @@ export function shortId(id: string): string {
   return id.length > 12 ? id.slice(0, 12) : id;
 }
 
+/**
+ * Human status for an exited machine. A clean stop lands on 143 (SIGTERM) or
+ * 137 (SIGKILL) — show "Stopped", not a scary code. 0 is a normal exit; any
+ * other non-zero is a real failure worth surfacing with its code.
+ */
+export function exitLabel(code: number | null | undefined): string {
+  if (code == null) return "Exited";
+  if (code === 143 || code === 137) return "Stopped";
+  if (code === 0) return "Exited";
+  return `Exited (${code})`;
+}
+
 /** Full, human-readable timestamp for tooltips (e.g. "August 3, 2026 6:39:12 PM"). */
 export function fullDate(ts: string | null | undefined): string {
   const d = parse(ts);

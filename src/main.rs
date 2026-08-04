@@ -18,6 +18,7 @@ mod host;
 mod id;
 mod krun;
 mod linux;
+mod names;
 mod net;
 mod oci;
 mod tty;
@@ -105,9 +106,17 @@ enum Command {
     /// Stop a running machine.
     Stop(IdArgs),
 
+    /// Start (restart) an existing stopped machine in place — same id, same
+    /// image/resources/volume. Re-boots detached, like `docker start`.
+    Start(IdArgs),
+
     /// Remove one or more machines (and their state). Refuses a running
     /// machine unless `-f`, which stops it first.
     Rm(RmArgs),
+
+    /// Manage the in-guest agent (e.g. `agent update <id>` to refresh a stale
+    /// baked-in agent so ssh/tailscale setup works).
+    Agent(AgentArgs),
 
     /// Show a machine's console log.
     Logs(LogsArgs),
@@ -259,6 +268,20 @@ struct IdArgs {
     /// machine id (a unique prefix is enough).
     #[arg(value_name = "ID")]
     id: String,
+}
+
+#[derive(Parser)]
+struct AgentArgs {
+    #[command(subcommand)]
+    cmd: AgentCmd,
+}
+
+#[derive(Subcommand)]
+enum AgentCmd {
+    /// Download + install the current agent inside a running guest, over its
+    /// existing (possibly outdated) agent. The next exec/ssh/tailscale spawns
+    /// the fresh binary.
+    Update(IdArgs),
 }
 
 #[derive(Parser)]
@@ -522,6 +545,11 @@ struct BsdArgs {
     #[command(flatten)]
     vm: VmConfig,
 
+    /// Grow the guest's root disk to this size before boot (only enlarges),
+    /// e.g. `8G`, `4096M`. The guest expands its root FS on first boot.
+    #[arg(long, value_name = "SIZE")]
+    disk_size: Option<String>,
+
     /// Stream the guest's boot console live while waiting for its agent (instead
     /// of the terse "waiting…" line), so you see the full BSD boot. The command
     /// output / shell follows once the agent is up.
@@ -656,7 +684,11 @@ fn main() -> Result<()> {
         Command::Ps(args) => cmd_ps(args.all, args.json),
         Command::Images(args) => cmd_images(args.json),
         Command::Stop(args) => cmd_stop(&args.id),
+        Command::Start(args) => cmd_start(&args.id),
         Command::Rm(args) => cmd_rm(&args.ids, args.force),
+        Command::Agent(args) => match args.cmd {
+            AgentCmd::Update(a) => cmd_agent_update(&a.id),
+        },
         Command::Logs(args) => cmd_logs(&args.id, args.follow, args.boot),
         Command::Shell(args) => cmd_shell(&args.id),
         Command::Exec(args) => cmd_exec(&args.id, &args.command, &args.env, args.tty),
@@ -759,7 +791,7 @@ fn setup_networking_with_agent(
 }
 
 fn boot_kernel(args: KernelArgs) -> Result<()> {
-    let machine_id = id::short_id();
+    let machine_id = id::next_machine_id();
     let vdir = machine_dir_or_tmp(&machine_id);
     // CoW-clone the root disk per machine (unless --persist / --volume) so many
     // machines can boot the same base image concurrently without touching it.
@@ -770,6 +802,7 @@ fn boot_kernel(args: KernelArgs) -> Result<()> {
             &vdir,
             args.run.persist,
             volume.as_deref(),
+            None,
         )?),
         None => None,
     };
@@ -837,11 +870,13 @@ fn boot_firmware(args: FirmwareArgs) -> Result<()> {
         &[],
         false,
         false,
+        None,
     )
 }
 
 /// Boot a machine via UEFI firmware + a root disk (shared by `firmware` and the
 /// `freebsd`/`netbsd` shortcuts). The root disk is CoW-cloned per machine.
+#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn firmware_machine(
     firmware: &std::path::Path,
@@ -853,13 +888,14 @@ fn firmware_machine(
     exec_after: &[String],
     interactive: bool,
     verbose: bool,
+    disk_size: Option<&str>,
 ) -> Result<()> {
     ensure_net_for_exec(net, exec_after)?;
-    let machine_id = id::short_id();
+    let machine_id = id::next_machine_id();
     let vdir = machine_dir_or_tmp(&machine_id);
     let image = basename(disk);
     let volume = run.volume.as_deref().map(volume_dir).transpose()?;
-    let root_disk = prepare_bsd_disk(disk, &vdir, run.persist, volume.as_deref())?;
+    let root_disk = prepare_bsd_disk(disk, &vdir, run.persist, volume.as_deref(), disk_size)?;
 
     let build = || -> Result<(Ctx, Option<Gvproxy>)> {
         let ctx = Ctx::new()?;
@@ -985,6 +1021,7 @@ fn boot_freebsd_efi(args: BsdArgs) -> Result<()> {
         &exec_after,
         interactive,
         args.verbose,
+        args.disk_size.as_deref(),
     )
 }
 
@@ -1047,11 +1084,12 @@ fn boot_freebsd_pvh(args: BsdArgs) -> Result<()> {
     let disk = fetch::fetch_freebsd_amd64_image(args.force)?;
     let kernel = fetch::fetch_freebsd_amd64_kernel(args.force)?;
 
-    let machine_id = id::short_id();
+    let machine_id = id::next_machine_id();
     let vdir = machine_dir_or_tmp(&machine_id);
     let image = basename(&disk);
     let volume = args.run.volume.as_deref().map(volume_dir).transpose()?;
-    let root_disk = prepare_bsd_disk(&disk, &vdir, args.run.persist, volume.as_deref())?;
+    let root_disk =
+        prepare_bsd_disk(&disk, &vdir, args.run.persist, volume.as_deref(), args.disk_size.as_deref())?;
 
     let build = || -> Result<(Ctx, Option<Gvproxy>)> {
         let ctx = Ctx::new()?;
@@ -1145,11 +1183,12 @@ fn boot_netbsd(args: BsdArgs) -> Result<()> {
         ),
     };
 
-    let machine_id = id::short_id();
+    let machine_id = id::next_machine_id();
     let vdir = machine_dir_or_tmp(&machine_id);
     let image = basename(&disk);
     let volume = args.run.volume.as_deref().map(volume_dir).transpose()?;
-    let root_disk = prepare_bsd_disk(&disk, &vdir, args.run.persist, volume.as_deref())?;
+    let root_disk =
+        prepare_bsd_disk(&disk, &vdir, args.run.persist, volume.as_deref(), args.disk_size.as_deref())?;
 
     let build = || -> Result<(Ctx, Option<Gvproxy>)> {
         let ctx = Ctx::new()?;
@@ -1284,7 +1323,18 @@ fn prepare_bsd_disk(
     vdir: &std::path::Path,
     persist: bool,
     volume: Option<&std::path::Path>,
+    disk_size: Option<&str>,
 ) -> Result<PathBuf> {
+    // Grow a freshly-cloned disk to `disk_size` (only enlarges); the guest
+    // expands its root FS on boot. Never applied to a `persist` base (in place)
+    // so the pristine base image is left untouched.
+    let grow = |dst: &std::path::Path| -> Result<()> {
+        if let Some(size) = disk_size {
+            fetch::grow(dst, size)
+                .with_context(|| format!("growing disk {} to {size}", dst.display()))?;
+        }
+        Ok(())
+    };
     let ext = disk.extension().and_then(|e| e.to_str()).unwrap_or("img");
     if let Some(voldir) = volume {
         std::fs::create_dir_all(voldir)
@@ -1296,6 +1346,7 @@ fn prepare_bsd_disk(
         }
         info!(path = %dst.display(), "creating persistent volume (CoW clone of base)");
         clone_cow_file(disk, &dst)?;
+        grow(&dst)?;
         return Ok(dst);
     }
     if persist {
@@ -1304,6 +1355,7 @@ fn prepare_bsd_disk(
     let dst = vdir.join(format!("root.{ext}"));
     let _ = std::fs::remove_file(&dst);
     clone_cow_file(disk, &dst)?;
+    grow(&dst)?;
     Ok(dst)
 }
 
@@ -1357,6 +1409,17 @@ fn clone_cow_file(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
     host::cow_copy(src, dst, false)
 }
 
+/// A friendly machine name: a pending restart override if set, else a fresh
+/// unique `adjective_scientist` (falling back to a non-checked random name only
+/// if the DB can't be opened).
+fn machine_name() -> String {
+    names::take_override().unwrap_or_else(|| {
+        db::Db::open()
+            .map(|d| d.generate_name())
+            .unwrap_or_else(|_| names::random_name())
+    })
+}
+
 /// Run a machine either in the foreground (records + attaches to this terminal)
 /// or detached (`detach`). `watchdog` installs the BSD SMP-shutdown watchdog on
 /// the foreground path. `build` creates + configures the libkrun context.
@@ -1399,6 +1462,7 @@ fn run_machine(
     }
     db::record_machine(
         machine_id,
+        &machine_name(),
         image,
         kind,
         command,
@@ -1434,7 +1498,7 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
         &image.rootfs.to_string_lossy(),
     );
 
-    let machine_id = id::short_id();
+    let machine_id = id::next_machine_id();
     let vdir = machine_dir_or_tmp(&machine_id);
     let command = ep.argv.join(" ");
 
@@ -1620,6 +1684,7 @@ fn run_detached(
         // Parent: record the running machine and print its id, like `docker -d`.
         db::record_machine(
             machine_id,
+            &machine_name(),
             image,
             kind,
             command,
@@ -2026,6 +2091,7 @@ fn cmd_ps(all: bool, json: bool) -> Result<()> {
             }
             out.push(serde_json::json!({
                 "id": m.id,
+                "name": m.name,
                 "image": m.image,
                 "kind": m.kind,
                 "command": m.command,
@@ -2046,8 +2112,8 @@ fn cmd_ps(all: bool, json: bool) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{:<14}  {:<22}  {:<26}  {:<16}  {}",
-        "ID", "IMAGE", "STATUS", "CREATED", "COMMAND"
+        "{:<14}  {:<20}  {:<22}  {:<24}  {:<15}  {}",
+        "ID", "NAME", "IMAGE", "STATUS", "CREATED", "COMMAND"
     );
     for m in machines {
         // Reconcile: a "running" row whose process is gone is really exited.
@@ -2071,8 +2137,9 @@ fn cmd_ps(all: bool, json: bool) -> Result<()> {
             }
         };
         println!(
-            "{:<14}  {:<22}  {:<26}  {:<16}  {}",
+            "{:<14}  {:<20}  {:<22}  {:<24}  {:<15}  {}",
             m.id,
+            truncate(m.name.as_deref().unwrap_or("-"), 20),
             truncate(&m.image, 22),
             status,
             format!("{} ago", db::human_duration_since(&m.created_at)),
@@ -2305,6 +2372,88 @@ fn cmd_stop(id: &str) -> Result<()> {
     }
 }
 
+/// Restart a stopped machine *in place*: re-boot the recorded image / resources
+/// / volume under the SAME id (like `docker start`), rather than minting a new
+/// machine. Detached. The guest OS is inferred from the recorded image ref.
+fn cmd_start(id: &str) -> Result<()> {
+    let db = db::Db::open()?;
+    let vm = db.find_machine(id)?;
+
+    // Already up? Nothing to do.
+    if vm.status == "running" && vm.pid.map(db::pid_alive).unwrap_or(false) {
+        println!("{}", vm.id);
+        return Ok(());
+    }
+
+    let cpus = vm.cpus.clamp(1, 255) as u8;
+    let mem = vm.mem.max(64) as u32;
+    let volume = vm.volume.clone();
+
+    // Clear the stale per-machine state so the re-boot starts from a fresh
+    // clone. The DB row is left in place (the boot re-records it via INSERT OR
+    // REPLACE), so it flips exited→running rather than vanishing from `ps`. A
+    // named volume lives elsewhere and is reused, so its changes persist.
+    let state = std::path::PathBuf::from(&vm.state_dir);
+    if state.exists() {
+        std::fs::remove_dir_all(&state).ok();
+    }
+
+    // The next boot picks up this id + name instead of generating fresh ones.
+    id::set_override(&vm.id);
+    if let Some(name) = &vm.name {
+        names::set_override(name);
+    }
+
+    let net = NetConfig { no_net: false, ports: vec![], mac: None };
+    let vmcfg = VmConfig { cpus, mem };
+
+    let reference = vm.image.to_lowercase();
+    let is_freebsd = vm.kind == "firmware" || reference.starts_with("freebsd");
+    let is_netbsd = vm.kind == "kernel" || reference.starts_with("netbsd");
+
+    if vm.kind == "linux" {
+        boot_linux(LinuxArgs {
+            image: vm.image.clone(),
+            kernel: None,
+            kernel_version: linux::DEFAULT_KERNEL_VERSION.to_string(),
+            detach: true,
+            initramfs: false,
+            volume,
+            mounts: vec![],
+            entrypoint: None,
+            console: "hvc0".to_string(),
+            net,
+            vm: vmcfg,
+            command: vec![], // persistent restart — keep a console shell alive
+        })
+    } else if is_freebsd || is_netbsd {
+        let args = BsdArgs {
+            version: None, // bundled image (as originally booted)
+            firmware: None,
+            force: false,
+            attach_disk: vec![],
+            disk_size: None,
+            run: RunConfig { detach: true, persist: false, volume },
+            net,
+            vm: vmcfg,
+            verbose: false,
+            command: vec![],
+        };
+        if is_freebsd {
+            boot_freebsd(args)
+        } else {
+            boot_netbsd(args)
+        }
+    } else {
+        // Put the id back for any future attempt and report clearly.
+        anyhow::bail!(
+            "don't know how to restart a {:?} machine ({}); start it with `run` instead",
+            vm.kind,
+            vm.image
+        );
+    }
+}
+
 fn cmd_rm(ids: &[String], force: bool) -> Result<()> {
     let db = db::Db::open()?;
     for id in ids {
@@ -2477,6 +2626,39 @@ fn agent_target(id: &str) -> Result<(db::MachineRow, u16)> {
 fn cmd_exec(id: &str, command: &[String], env: &[String], tty: bool) -> Result<()> {
     let (vm, port) = agent_target(id)?;
     let code = agent::exec(port, command, env, tty).map_err(|e| agent_error(&vm.kind, e))?;
+    std::process::exit(code);
+}
+
+/// Refresh the in-guest agent binary to the current release. Some bundled BSD
+/// images bake in an agent that predates the `ssh`/`tailscale` subcommands, so
+/// invoking those makes the old agent try to `listen` again (Address already in
+/// use). The running daemon can still `exec`, so we have it download the current
+/// binary (via the guest's own fetch tool) and replace the file in place — the
+/// next ssh/tailscale/exec then spawns the fresh binary. No restart needed.
+fn cmd_agent_update(id: &str) -> Result<()> {
+    let (vm, port) = agent_target(id)?;
+    let arch = host::Arch::current()?;
+    let reference = vm.image.to_lowercase();
+
+    // (guest OS, install path, download command incl. its output flag).
+    let (os, dest, fetch_cmd) = if vm.kind == "linux" {
+        (host::GuestOs::Linux, "/sbin/bsdkrun-agent", "curl -fL -o")
+    } else if vm.kind == "kernel" || reference.starts_with("netbsd") {
+        (host::GuestOs::Netbsd, "/usr/local/sbin/bsdkrun-agent", "ftp -o")
+    } else {
+        (host::GuestOs::Freebsd, "/usr/local/sbin/bsdkrun-agent", "fetch -o")
+    };
+    let url = agent::asset_url(os, arch);
+
+    // Download to a temp file, chmod, then atomically move over the old binary.
+    let script = format!(
+        "set -e; tmp=/tmp/bsdkrun-agent.new; {fetch_cmd} \"$tmp\" '{url}'; \
+         chmod +x \"$tmp\"; mv \"$tmp\" '{dest}'; \
+         echo \"updated {dest}\"; echo \"from {url}\"",
+    );
+    eprintln!("updating agent in {} from {url}", vm.id);
+    let argv = vec!["/bin/sh".to_string(), "-c".to_string(), script];
+    let code = agent::exec(port, &argv, &[], false).map_err(|e| agent_error(&vm.kind, e))?;
     std::process::exit(code);
 }
 

@@ -23,6 +23,10 @@ export function useMachines() {
     queryKey: qk.machines,
     queryFn: () => api.listMachines(true),
     refetchInterval: 4000,
+    // Keep polling even when the window isn't focused — the desktop's global
+    // refetchOnWindowFocus is off, so without this the list goes stale after
+    // the window loses/regains focus.
+    refetchIntervalInBackground: true,
     placeholderData: (prev) => prev,
   });
 }
@@ -32,6 +36,7 @@ export function useImages() {
     queryKey: qk.images,
     queryFn: () => api.listImages(),
     refetchInterval: 10000,
+    refetchIntervalInBackground: true,
     placeholderData: (prev) => prev,
   });
 }
@@ -41,6 +46,7 @@ export function useVolumes() {
     queryKey: qk.volumes,
     queryFn: () => api.listVolumes(),
     refetchInterval: 10000,
+    refetchIntervalInBackground: true,
     placeholderData: (prev) => prev,
   });
 }
@@ -50,6 +56,7 @@ export function useProbe() {
     queryKey: qk.probe,
     queryFn: () => api.probe(),
     refetchInterval: 15000,
+    refetchIntervalInBackground: true,
     staleTime: 5000,
   });
 }
@@ -67,6 +74,7 @@ export function useSystemStats() {
     queryKey: ["system-stats"] as const,
     queryFn: () => api.systemStats(),
     refetchInterval: 2000,
+    refetchIntervalInBackground: true,
     placeholderData: (prev) => prev,
   });
 }
@@ -109,6 +117,14 @@ export function useStopMachine() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.stopMachine(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.machines }),
+  });
+}
+
+export function useRestartMachine() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.restartMachine(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.machines }),
   });
 }

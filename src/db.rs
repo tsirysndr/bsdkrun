@@ -57,6 +57,7 @@ pub struct ImageRow {
 #[allow(dead_code)] // some columns are stored for future use / debugging
 pub struct MachineRow {
     pub id: String,
+    pub name: Option<String>,
     pub image: String,
     pub kind: String,
     pub command: String,
@@ -162,6 +163,9 @@ impl Db {
             let _ = sqlx::query("ALTER TABLE machines ADD COLUMN volume TEXT")
                 .execute(&self.pool)
                 .await;
+            let _ = sqlx::query("ALTER TABLE machines ADD COLUMN name TEXT")
+                .execute(&self.pool)
+                .await;
             sqlx::query(
                 "CREATE TABLE IF NOT EXISTS disks (
                     id TEXT PRIMARY KEY,
@@ -265,6 +269,7 @@ impl Db {
     pub fn insert_machine(
         &self,
         id: &str,
+        name: &str,
         image: &str,
         kind: &str,
         command: &str,
@@ -278,12 +283,16 @@ impl Db {
     ) -> Result<()> {
         self.rt
             .block_on(async {
+                // REPLACE so an in-place restart (`start <id>`) re-records the
+                // same id without a delete step — the row updates from exited to
+                // running rather than briefly vanishing from `ps`.
                 sqlx::query(
-                    "INSERT INTO machines
-                     (id, image, kind, command, status, pid, detached, cpus, mem, state_dir, created_at, volume)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT OR REPLACE INTO machines
+                     (id, name, image, kind, command, status, pid, detached, cpus, mem, state_dir, created_at, volume)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(id)
+                .bind(name)
                 .bind(image)
                 .bind(kind)
                 .bind(command)
@@ -300,6 +309,24 @@ impl Db {
                 Ok::<_, sqlx::Error>(())
             })
             .map_err(Into::into)
+    }
+
+    /// Is a machine name already taken? Used to keep generated names unique.
+    pub fn name_exists(&self, name: &str) -> bool {
+        self.rt
+            .block_on(async {
+                sqlx::query("SELECT 1 FROM machines WHERE name = ? LIMIT 1")
+                    .bind(name)
+                    .fetch_optional(&self.pool)
+                    .await
+            })
+            .map(|r| r.is_some())
+            .unwrap_or(false)
+    }
+
+    /// A unique friendly name (`adjective_scientist`), checked against the DB.
+    pub fn generate_name(&self) -> String {
+        crate::names::unique_name(|n| self.name_exists(n))
     }
 
     pub fn set_machine_status(&self, id: &str, status: &str, exit_code: Option<i64>) -> Result<()> {
@@ -328,7 +355,7 @@ impl Db {
         self.rt
             .block_on(async {
                 let rows = sqlx::query(
-                    "SELECT id, image, kind, command, status, exit_code, pid, detached,
+                    "SELECT id, name, image, kind, command, status, exit_code, pid, detached,
                             cpus, mem, state_dir, created_at, finished_at, volume
                      FROM machines ORDER BY created_at DESC",
                 )
@@ -341,9 +368,23 @@ impl Db {
 
     /// Resolve an id prefix to exactly one VM (Docker-style short-id matching).
     pub fn find_machine(&self, prefix: &str) -> Result<MachineRow> {
+        // An exact name match wins (unambiguous), like `docker <name>`.
+        if let Some(row) = self.rt.block_on(async {
+            sqlx::query(
+                "SELECT id, name, image, kind, command, status, exit_code, pid, detached,
+                        cpus, mem, state_dir, created_at, finished_at, volume
+                 FROM machines WHERE name = ? LIMIT 1",
+            )
+            .bind(prefix)
+            .fetch_optional(&self.pool)
+            .await
+        })? {
+            return Ok(row_to_machine(row));
+        }
+        // Otherwise resolve as an id prefix (Docker-style short ids).
         let matches: Vec<MachineRow> = self.rt.block_on(async {
             let rows = sqlx::query(
-                "SELECT id, image, kind, command, status, exit_code, pid, detached,
+                "SELECT id, name, image, kind, command, status, exit_code, pid, detached,
                         cpus, mem, state_dir, created_at, finished_at, volume
                  FROM machines WHERE id LIKE ? ORDER BY created_at DESC",
             )
@@ -500,6 +541,7 @@ fn row_to_volume(r: sqlx::sqlite::SqliteRow) -> VolumeRow {
 fn row_to_machine(r: sqlx::sqlite::SqliteRow) -> MachineRow {
     MachineRow {
         id: r.get("id"),
+        name: r.get("name"),
         image: r.get("image"),
         kind: r.get("kind"),
         command: r.get("command"),
@@ -609,6 +651,7 @@ pub fn record_image(reference: &str, digest: &str, size: i64, rootfs: &str) {
 #[allow(clippy::too_many_arguments)]
 pub fn record_machine(
     id: &str,
+    name: &str,
     image: &str,
     kind: &str,
     command: &str,
@@ -622,7 +665,7 @@ pub fn record_machine(
 ) {
     if let Err(e) = Db::open().and_then(|db| {
         db.insert_machine(
-            id, image, kind, command, status, pid, detached, cpus, mem, state_dir, volume,
+            id, name, image, kind, command, status, pid, detached, cpus, mem, state_dir, volume,
         )
     }) {
         tracing::warn!("recording machine in state db: {e:#}");

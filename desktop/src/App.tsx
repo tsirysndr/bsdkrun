@@ -1,6 +1,7 @@
 import { useAtomValue } from "jotai";
 import { sidebarVisibleAtom, viewAtom } from "./state/atoms";
 import { useShortcuts } from "./hooks/useShortcuts";
+import { useNoAutofill } from "./hooks/useNoAutofill";
 import TopBar from "./components/TopBar";
 import Sidebar from "./components/Sidebar";
 import MachinesView from "./components/MachinesView";
@@ -20,6 +21,7 @@ export default function App() {
   const view = useAtomValue(viewAtom);
   const sidebarVisible = useAtomValue(sidebarVisibleAtom);
   useShortcuts();
+  useNoAutofill();
 
   return (
     <div className="flex h-[100dvh] w-screen flex-col overflow-hidden bg-background">

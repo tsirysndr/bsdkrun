@@ -208,6 +208,12 @@ pub struct RunSpec {
     pub mounts: Vec<String>,
     #[serde(default)]
     pub ports: Vec<String>,
+    /// Extra virtio-blk disks to attach (BSD only), `PATH[:ro]`.
+    #[serde(default)]
+    pub attach_disks: Vec<String>,
+    /// Grow the guest root disk to this size before boot (BSD only), e.g. `8G`.
+    #[serde(default)]
+    pub disk_size: Option<String>,
     #[serde(default)]
     pub command: Vec<String>,
 }
@@ -264,6 +270,18 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
         let image = nonempty(&spec.image)
             .ok_or_else(|| BkError::Parse("an image reference is required for linux".into()))?;
         a.push(image.into());
+    } else {
+        // BSD: grow the root disk + attach extra virtio-blk disks.
+        if let Some(sz) = nonempty(&spec.disk_size) {
+            a.push("--disk-size".into());
+            a.push(sz.into());
+        }
+        for d in &spec.attach_disks {
+            if !d.is_empty() {
+                a.push("--attach-disk".into());
+                a.push(d.clone());
+            }
+        }
     }
     if !spec.command.is_empty() {
         a.push("--".into());
@@ -286,6 +304,13 @@ async fn stop_machine(state: State<'_, AppState>, id: String) -> Result<(), BkEr
     let bin = state.binary()?;
     bsdkrun::run(&bin, &["stop", &id]).await?;
     Ok(())
+}
+
+/// Restart a stopped machine in place (same id) — `bsdkrun start <id>`.
+#[tauri::command]
+async fn restart_machine(state: State<'_, AppState>, id: String) -> Result<String, BkError> {
+    let bin = state.binary()?;
+    bsdkrun::run_detached(&bin, &["start", &id]).await
 }
 
 #[tauri::command]
@@ -314,6 +339,44 @@ async fn remove_volume(state: State<'_, AppState>, name: String, force: bool) ->
     args.push(&name);
     bsdkrun::run(&bin, &args).await?;
     Ok(())
+}
+
+/// Run an SSH management action inside a guest: `bsdkrun ssh <id> <args…>`
+/// (e.g. `setup`, `status`, `add-key --key …`). Returns the command output.
+#[tauri::command]
+async fn ssh_action(
+    state: State<'_, AppState>,
+    id: String,
+    args: Vec<String>,
+) -> Result<String, BkError> {
+    let bin = state.binary()?;
+    let mut a = vec!["ssh".to_string(), id];
+    a.extend(args);
+    let refs: Vec<&str> = a.iter().map(|s| s.as_str()).collect();
+    bsdkrun::run_output(&bin, &refs).await
+}
+
+/// Update the in-guest agent to the current release: `bsdkrun agent update <id>`.
+/// Fixes BSD images whose baked-in agent predates ssh/tailscale.
+#[tauri::command]
+async fn update_agent(state: State<'_, AppState>, id: String) -> Result<String, BkError> {
+    let bin = state.binary()?;
+    bsdkrun::run_output(&bin, &["agent", "update", &id]).await
+}
+
+/// Run a Tailscale action inside a guest: `bsdkrun tailscale <id> <args…>`
+/// (e.g. `setup --authkey …`, `status`, `install`, `start`).
+#[tauri::command]
+async fn tailscale_action(
+    state: State<'_, AppState>,
+    id: String,
+    args: Vec<String>,
+) -> Result<String, BkError> {
+    let bin = state.binary()?;
+    let mut a = vec!["tailscale".to_string(), id];
+    a.extend(args);
+    let refs: Vec<&str> = a.iter().map(|s| s.as_str()).collect();
+    bsdkrun::run_output(&bin, &refs).await
 }
 
 /// One-shot console log (not `-f`). `boot` shows bsdkrun's own boot log instead.
@@ -436,9 +499,13 @@ pub fn run() {
             system_stats,
             run_machine,
             stop_machine,
+            restart_machine,
             remove_machine,
             remove_volume,
             machine_logs,
+            ssh_action,
+            tailscale_action,
+            update_agent,
             start_log_stream,
             stop_log_stream,
             term_open,

@@ -44,6 +44,34 @@ export interface VersionEntry {
   latest: boolean;
 }
 
+// Payload for defining a custom flavor (`create_flavor` → `bsdkrun flavor add`).
+export interface NewFlavor {
+  name: string;
+  base: string;
+  category: string;
+  description: string;
+  ports: string[];
+  env: string[];
+  nix: string[];
+  provision: string[];
+}
+
+export type FlavorSource = "catalog" | "user" | "snapshot";
+export type FlavorMethod = "docker" | "nix" | "system" | "snapshot";
+
+export interface Flavor {
+  name: string;
+  source: FlavorSource;
+  kind: string; // "linux" | "freebsd" | "netbsd"
+  base: string;
+  category: string; // "language" | "runtime" | "service" | "web" | "ai" | "os" | "snapshot" | "custom"
+  method: FlavorMethod;
+  description: string;
+  ports: string[];
+  nix: string[];
+  created_at?: string | null;
+}
+
 export interface ProbeResult {
   ok: boolean;
   message: string;
@@ -60,6 +88,7 @@ export interface SystemStats {
 
 export interface Settings {
   binary_path: string;
+  cache_path: string;
 }
 
 // The Run dialog payload. Field names are snake_case to match the Rust
@@ -78,7 +107,8 @@ export interface RunSpec {
   ports: string[];
   attach_disks: string[];
   disk_size?: string | null;
+  repo?: string | null;
   command: string[];
 }
 
-export type ViewKey = "machines" | "images" | "volumes";
+export type ViewKey = "machines" | "images" | "volumes" | "flavors";

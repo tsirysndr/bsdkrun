@@ -14,17 +14,46 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
-use bsdkrun::{BkError, Image, Machine, VersionEntry, Volume};
+use bsdkrun::{BkError, Flavor, Image, Machine, VersionEntry, Volume};
 use term::{LogStreams, Terminals};
 
-/// Persisted app settings (currently just an optional binary override).
+/// Persisted app settings.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Settings {
     /// Explicit path to the `bsdkrun` binary; empty ⇒ auto-resolve.
     #[serde(default)]
     pub binary_path: String,
+    /// Override for bsdkrun's cache directory (images/kernels/agent/flavor
+    /// builds), applied via `$BSDKRUN_CACHE`; empty ⇒ the CLI default.
+    #[serde(default)]
+    pub cache_path: String,
+}
+
+/// The default cache directory the CLI uses when `$BSDKRUN_CACHE` is unset:
+/// `$XDG_CACHE_HOME/bsdkrun`, else `$HOME/.cache/bsdkrun`.
+fn default_cache_path() -> String {
+    if let Ok(x) = std::env::var("XDG_CACHE_HOME") {
+        if !x.is_empty() {
+            return format!("{x}/bsdkrun");
+        }
+    }
+    match std::env::var("HOME") {
+        Ok(h) if !h.is_empty() => format!("{h}/.cache/bsdkrun"),
+        _ => "~/.cache/bsdkrun".to_string(),
+    }
+}
+
+/// Apply settings that affect child `bsdkrun` processes to this process's env,
+/// so every spawned CLI invocation inherits them. Currently the cache dir.
+fn apply_env(s: &Settings) {
+    if s.cache_path.is_empty() {
+        std::env::remove_var("BSDKRUN_CACHE");
+    } else {
+        std::env::set_var("BSDKRUN_CACHE", &s.cache_path);
+    }
 }
 
 struct AppState {
@@ -90,11 +119,25 @@ fn get_settings(state: State<AppState>) -> Settings {
 }
 
 #[tauri::command]
-fn set_settings(app: tauri::AppHandle, state: State<AppState>, binary_path: String) -> Settings {
+fn set_settings(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    binary_path: String,
+    cache_path: String,
+) -> Settings {
     let mut s = state.settings.lock().unwrap();
     s.binary_path = binary_path;
+    s.cache_path = cache_path;
+    apply_env(&s);
     save_settings(&app, &s);
     s.clone()
+}
+
+/// The cache directory bsdkrun uses right now: the configured override, else the
+/// CLI default. Shown as the placeholder/current value in Settings.
+#[tauri::command]
+fn default_cache() -> String {
+    default_cache_path()
 }
 
 /// Update the menu-bar tray status line (called by the frontend on probe).
@@ -157,6 +200,283 @@ async fn list_versions(state: State<'_, AppState>, os: String) -> Result<Vec<Ver
     bsdkrun::list_versions(&bin, &os).await
 }
 
+#[tauri::command]
+async fn list_flavors(state: State<'_, AppState>) -> Result<Vec<Flavor>, BkError> {
+    let bin = state.binary()?;
+    bsdkrun::list_flavors(&bin).await
+}
+
+// ---- flavors ---------------------------------------------------------------
+
+/// Boot a new machine from a flavor (catalog / user / snapshot), detached.
+/// Returns the new machine id. Extra `ports`/`volume` layer on the flavor's
+/// defaults, mirroring `bsdkrun flavor run -d <name> [--port …] [-v …]`.
+#[tauri::command]
+async fn run_flavor(
+    state: State<'_, AppState>,
+    name: String,
+    ports: Vec<String>,
+    volume: Option<String>,
+) -> Result<String, BkError> {
+    let bin = state.binary()?;
+    let mut args: Vec<String> = vec!["flavor".into(), "run".into(), "-d".into(), name];
+    for p in &ports {
+        if !p.is_empty() {
+            args.push("--port".into());
+            args.push(p.clone());
+        }
+    }
+    if let Some(v) = volume.as_deref().filter(|v| !v.is_empty()) {
+        args.push("-v".into());
+        args.push(v.into());
+    }
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    bsdkrun::run_detached(&bin, &refs).await
+}
+
+/// Snapshot a machine's current state into a named flavor — `bsdkrun commit`.
+#[tauri::command]
+async fn commit_machine(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+    description: String,
+) -> Result<String, BkError> {
+    let bin = state.binary()?;
+    let out = bsdkrun::run(&bin, &["commit", &id, &name, "--description", &description]).await?;
+    Ok(out.trim().to_string())
+}
+
+/// Define (or update) a custom user flavor — `bsdkrun flavor add …`. Writes it
+/// to the user's `flavors.toml` so it shows up alongside the catalog.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn create_flavor(
+    state: State<'_, AppState>,
+    name: String,
+    base: String,
+    category: String,
+    description: String,
+    ports: Vec<String>,
+    env: Vec<String>,
+    nix: Vec<String>,
+    provision: Vec<String>,
+) -> Result<(), BkError> {
+    let bin = state.binary()?;
+    let mut args: Vec<String> = vec!["flavor".into(), "add".into(), name, "--base".into(), base];
+    if !category.is_empty() {
+        args.push("--category".into());
+        args.push(category);
+    }
+    if !description.is_empty() {
+        args.push("--description".into());
+        args.push(description);
+    }
+    for (flag, list) in [("--port", ports), ("--env", env), ("--nix", nix), ("--provision", provision)] {
+        for v in list {
+            if !v.trim().is_empty() {
+                args.push(flag.into());
+                args.push(v);
+            }
+        }
+    }
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    bsdkrun::run(&bin, &refs).await?;
+    Ok(())
+}
+
+/// Remove a saved snapshot or user flavor — `bsdkrun flavor rm [-f] <name>`.
+#[tauri::command]
+async fn remove_flavor(state: State<'_, AppState>, name: String, force: bool) -> Result<(), BkError> {
+    let bin = state.binary()?;
+    let mut args = vec!["flavor", "rm"];
+    if force {
+        args.push("-f");
+    }
+    args.push(&name);
+    bsdkrun::run(&bin, &args).await?;
+    Ok(())
+}
+
+#[derive(Clone, Serialize)]
+struct FlavorLog {
+    launch_id: String,
+    line: String,
+}
+
+#[derive(Clone, Serialize)]
+struct FlavorDone {
+    launch_id: String,
+    id: Option<String>,
+    error: Option<String>,
+}
+
+/// Strip ANSI escape sequences and trim a trailing curl progress meter so a
+/// streamed launch/build line reads cleanly in the UI.
+fn sanitize_log(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // CSI sequence: ESC '[' … final-letter — drop it entirely.
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&n) = chars.peek() {
+                    chars.next();
+                    if n.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    // curl's progress meter (…#=#=#… / carriage returns) — cut it off.
+    if let Some(pos) = out.find(['#', '\r']) {
+        out.truncate(pos);
+    }
+    out.trim_end().to_string()
+}
+
+/// Spawn a `bsdkrun` invocation and STREAM its combined output to the webview as
+/// `flavor://log` { launch_id, line } lines, ending with `flavor://done`
+/// { launch_id, id, error }. `capture_id` true treats a lone 12-hex-char stdout
+/// token as the resulting machine id (for `run`); false streams everything (for
+/// `build`). Returns immediately; the work runs on a background task.
+fn stream_bsdkrun(
+    app: tauri::AppHandle,
+    bin: PathBuf,
+    args: Vec<String>,
+    launch_id: String,
+    capture_id: bool,
+    timeout_msg: &'static str,
+) {
+    tokio::spawn(async move {
+        use std::process::Stdio;
+        let mut cmd = tokio::process::Command::new(&bin);
+        cmd.env("PATH", bsdkrun::augmented_path());
+        cmd.args(&args);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        // No kill_on_drop: a detached VM grandchild must never be signalled.
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = app.emit(
+                    "flavor://done",
+                    FlavorDone { launch_id, id: None, error: Some(e.to_string()) },
+                );
+                return;
+            }
+        };
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+
+        // stderr → progress lines (pull %, provisioning, boot logs).
+        let app_err = app.clone();
+        let lid_err = launch_id.clone();
+        let err_task = tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(l)) = lines.next_line().await {
+                let s = sanitize_log(&l);
+                if !s.is_empty() {
+                    let _ = app_err
+                        .emit("flavor://log", FlavorLog { launch_id: lid_err.clone(), line: s });
+                }
+            }
+        });
+
+        // stdout → the machine id (for `run`) + any stdout progress.
+        let app_out = app.clone();
+        let lid_out = launch_id.clone();
+        let id_slot = std::sync::Arc::new(std::sync::Mutex::new(Option::<String>::None));
+        let id_slot2 = id_slot.clone();
+        let out_task = tokio::spawn(async move {
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(l)) = lines.next_line().await {
+                let t = l.trim().to_string();
+                if t.is_empty() {
+                    continue;
+                }
+                if capture_id && t.len() == 12 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+                    *id_slot2.lock().unwrap() = Some(t);
+                } else {
+                    let _ = app_out
+                        .emit("flavor://log", FlavorLog { launch_id: lid_out.clone(), line: t });
+                }
+            }
+        });
+
+        let status =
+            tokio::time::timeout(std::time::Duration::from_secs(1800), child.wait()).await;
+        // A VM grandchild holds the pipes open, so the drain tasks never EOF.
+        err_task.abort();
+        out_task.abort();
+
+        let id = id_slot.lock().unwrap().clone();
+        let done = match status {
+            Ok(Ok(st)) if st.success() => FlavorDone { launch_id, id, error: None },
+            Ok(Ok(st)) => FlavorDone {
+                launch_id,
+                id,
+                error: Some(format!("exited with status {}", st.code().unwrap_or(-1))),
+            },
+            Ok(Err(e)) => FlavorDone { launch_id, id, error: Some(e.to_string()) },
+            Err(_) => FlavorDone { launch_id, id, error: Some(timeout_msg.into()) },
+        };
+        let _ = app.emit("flavor://done", done);
+    });
+}
+
+/// Launch a flavor and STREAM its progress (pull → provisioning build → boot),
+/// ending with the new machine id. See [`stream_bsdkrun`].
+#[tauri::command]
+async fn launch_flavor(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    launch_id: String,
+    name: String,
+    ports: Vec<String>,
+    volume: Option<String>,
+    repo: Option<String>,
+) -> Result<(), String> {
+    let bin = state.binary().map_err(|e| e.to_string())?;
+    let mut args: Vec<String> = vec!["flavor".into(), "run".into(), "-d".into(), name];
+    for p in ports {
+        if !p.is_empty() {
+            args.push("--port".into());
+            args.push(p);
+        }
+    }
+    if let Some(v) = volume.filter(|v| !v.is_empty()) {
+        args.push("-v".into());
+        args.push(v);
+    }
+    if let Some(r) = repo.filter(|r| !r.trim().is_empty()) {
+        args.push("--repo".into());
+        args.push(r);
+    }
+    stream_bsdkrun(app, bin, args, launch_id, true, "timed out launching flavor");
+    Ok(())
+}
+
+/// Pre-build a flavor's provisioned rootfs into the cache and STREAM the build
+/// logs — used right after saving a custom flavor. See [`stream_bsdkrun`].
+#[tauri::command]
+async fn build_flavor(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    launch_id: String,
+    name: String,
+) -> Result<(), String> {
+    let bin = state.binary().map_err(|e| e.to_string())?;
+    let args: Vec<String> = vec!["flavor".into(), "build".into(), name];
+    stream_bsdkrun(app, bin, args, launch_id, false, "timed out building flavor");
+    Ok(())
+}
+
 /// Host CPU% + RAM and the real on-disk size of all microVMs (status bar).
 #[tauri::command]
 async fn system_stats(state: State<'_, AppState>) -> Result<system::SystemStats, String> {
@@ -214,6 +534,10 @@ pub struct RunSpec {
     /// Grow the guest root disk to this size before boot (BSD only), e.g. `8G`.
     #[serde(default)]
     pub disk_size: Option<String>,
+    /// Clone a git repo into the guest after boot and `cd` into it on shell open
+    /// (Linux guests).
+    #[serde(default)]
+    pub repo: Option<String>,
     #[serde(default)]
     pub command: Vec<String>,
 }
@@ -252,6 +576,11 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
             a.push("--port".into());
             a.push(p.clone());
         }
+    }
+    // `--repo` clones a git repo after boot (both Linux and BSD support it).
+    if let Some(r) = nonempty(&spec.repo) {
+        a.push("--repo".into());
+        a.push(r.into());
     }
     if spec.kind == "linux" {
         if spec.initramfs {
@@ -297,6 +626,23 @@ async fn run_machine(state: State<'_, AppState>, spec: RunSpec) -> Result<String
     let args = build_run_args(&spec)?;
     let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     bsdkrun::run_detached(&bin, &refs).await
+}
+
+/// Launch a machine and STREAM its progress (OCI pull / BSD image + kernel
+/// download / boot), ending with the new machine id. Same event channel as
+/// `launch_flavor`, so the launch-progress modal shows live download logs
+/// instead of a silent spinner. See [`stream_bsdkrun`].
+#[tauri::command]
+async fn launch_machine(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    launch_id: String,
+    spec: RunSpec,
+) -> Result<(), String> {
+    let bin = state.binary().map_err(|e| e.to_string())?;
+    let args = build_run_args(&spec).map_err(|e| e.to_string())?;
+    stream_bsdkrun(app, bin, args, launch_id, true, "timed out launching machine");
+    Ok(())
 }
 
 #[tauri::command]
@@ -474,8 +820,9 @@ pub fn run() {
         .manage(LogStreams::default())
         .manage(tray::TrayStatus::default())
         .setup(|app| {
-            // Load persisted settings into managed state.
+            // Load persisted settings into managed state + apply env (cache dir).
             let loaded = load_settings(app.handle());
+            apply_env(&loaded);
             *app.state::<AppState>().settings.lock().unwrap() = loaded;
             // Native application menu (macOS top bar + Windows/Linux window menu).
             menu::install(app.handle())?;
@@ -497,14 +844,23 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_settings,
             set_settings,
+            default_cache,
             set_tray_status,
             probe,
             list_machines,
             list_images,
             list_volumes,
             list_versions,
+            list_flavors,
+            run_flavor,
+            launch_flavor,
+            build_flavor,
+            create_flavor,
+            commit_machine,
+            remove_flavor,
             system_stats,
             run_machine,
+            launch_machine,
             stop_machine,
             restart_machine,
             remove_machine,

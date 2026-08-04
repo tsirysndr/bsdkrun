@@ -71,6 +71,28 @@ pub fn open(
     cmd.arg(machine_id);
     if command.is_empty() {
         cmd.arg("/bin/sh");
+    } else if command.len() == 1 {
+        // A bare resolved shell (e.g. `bash`): wrap it so the session starts in a
+        // cloned repo when `--repo` recorded one in /etc/bsdkrun-cwd, then hands
+        // off to an interactive shell. `cd` to an empty/missing marker is a no-op.
+        // Use the resolved shell itself as the wrapper (nix images lack /bin/sh).
+        let sh = &command[0];
+        cmd.arg(sh);
+        cmd.arg("-c");
+        // Add the BSD package prefixes to PATH (FreeBSD `pkg` → /usr/local/bin,
+        // NetBSD pkgsrc → /usr/pkg/bin); on NetBSD, point `pkg_add` at the pkgsrc
+        // CDN for this release so `pkg_add pkgin` works (an unset PKG_PATH is why
+        // it fails; a `-current` release uses the matching `<major>.0` branch);
+        // then `cd` into a cloned repo and hand off to the shell.
+        cmd.arg(format!(
+            "export PATH=\"/usr/local/bin:/usr/local/sbin:/usr/pkg/bin:/usr/pkg/sbin:$PATH\"; \
+             [ \"$(uname 2>/dev/null)\" = Linux ] || export TERM=xterm; \
+             if [ -z \"$PKG_PATH\" ] && [ \"$(uname 2>/dev/null)\" = NetBSD ]; then \
+               __a=$(uname -p 2>/dev/null); [ \"$__a\" = x86_64 ] && __a=amd64; \
+               export PKG_PATH=\"https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/$__a/$(uname -r 2>/dev/null | cut -d. -f1).0/All/\"; \
+             fi; \
+             cd \"$(cat /etc/bsdkrun-cwd 2>/dev/null)\" 2>/dev/null; exec {sh}"
+        ));
     } else {
         for a in &command {
             cmd.arg(a);

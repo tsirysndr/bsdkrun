@@ -6,9 +6,12 @@
 //! runtime and `block_on` each query — the DB is local SQLite, so this is cheap.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
+};
 use sqlx::Row;
 use tokio::runtime::Runtime;
 
@@ -38,6 +41,11 @@ pub fn machine_dir(id: &str) -> Result<PathBuf> {
 
 /// Directory holding named persistent volumes (`<state>/volumes`). Unlike a
 /// machine's runtime dir, these survive across runs so guest changes persist.
+/// Directory holding saved snapshot flavors (`<state>/flavors`).
+pub fn flavors_dir() -> Result<PathBuf> {
+    Ok(state_dir()?.join("flavors"))
+}
+
 pub fn volumes_dir() -> Result<PathBuf> {
     Ok(state_dir()?.join("volumes"))
 }
@@ -91,6 +99,17 @@ pub struct VolumeRow {
     pub created_at: String,
 }
 
+/// A saved snapshot flavor (a CoW clone of a machine's rootfs/disk).
+#[derive(Debug, Clone)]
+pub struct FlavorRow {
+    pub name: String,
+    pub kind: String, // linux / freebsd / netbsd
+    pub base: String, // the base image/ref the snapshot came from
+    pub path: String, // <state>/flavors/<name>
+    pub description: String,
+    pub created_at: String,
+}
+
 pub struct Db {
     rt: Runtime,
     pool: SqlitePool,
@@ -107,13 +126,23 @@ impl Db {
             .enable_time()
             .build()
             .context("creating tokio runtime for sqlite")?;
+        // The desktop app spawns MANY concurrent `bsdkrun` processes (ps/images/
+        // volumes/flavors/probe pollers + a boot). With the default rollback
+        // journal a single writer exclusively locks the whole DB, so those
+        // processes' connections time out ("pool timed out") and the UI hangs.
+        // WAL lets readers run concurrently with one writer, and busy_timeout
+        // makes a contended op wait-and-retry instead of failing immediately.
         let opts = SqliteConnectOptions::new()
             .filename(&path)
-            .create_if_missing(true);
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .busy_timeout(Duration::from_secs(15));
         let pool = rt
             .block_on(
                 SqlitePoolOptions::new()
-                    .max_connections(1)
+                    .max_connections(4)
+                    .acquire_timeout(Duration::from_secs(20))
                     .connect_with(opts),
             )
             .with_context(|| format!("opening database {}", path.display()))?;
@@ -182,6 +211,18 @@ impl Db {
                     kind TEXT NOT NULL,
                     base TEXT NOT NULL,
                     path TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )",
+            )
+            .execute(&self.pool)
+            .await?;
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS flavors (
+                    name TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    base TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL
                 )",
             )
@@ -525,6 +566,88 @@ impl Db {
                 Ok::<_, sqlx::Error>(r.rows_affected() > 0)
             })
             .map_err(Into::into)
+    }
+
+    // ---- flavors (snapshots) --------------------------------------------
+
+    /// Record (or replace) a snapshot flavor.
+    pub fn upsert_flavor(
+        &self,
+        name: &str,
+        kind: &str,
+        base: &str,
+        path: &str,
+        description: &str,
+    ) -> Result<()> {
+        self.rt
+            .block_on(async {
+                sqlx::query(
+                    "INSERT OR REPLACE INTO flavors (name, kind, base, path, description, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                )
+                .bind(name)
+                .bind(kind)
+                .bind(base)
+                .bind(path)
+                .bind(description)
+                .bind(now())
+                .execute(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn list_flavors(&self) -> Result<Vec<FlavorRow>> {
+        self.rt
+            .block_on(async {
+                let rows = sqlx::query(
+                    "SELECT name, kind, base, path, description, created_at
+                     FROM flavors ORDER BY created_at DESC",
+                )
+                .fetch_all(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(rows.into_iter().map(row_to_flavor).collect())
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn find_flavor(&self, name: &str) -> Result<Option<FlavorRow>> {
+        self.rt
+            .block_on(async {
+                let row = sqlx::query(
+                    "SELECT name, kind, base, path, description, created_at
+                     FROM flavors WHERE name = ?",
+                )
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(row.map(row_to_flavor))
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn remove_flavor(&self, name: &str) -> Result<bool> {
+        self.rt
+            .block_on(async {
+                let r = sqlx::query("DELETE FROM flavors WHERE name = ?")
+                    .bind(name)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(r.rows_affected() > 0)
+            })
+            .map_err(Into::into)
+    }
+}
+
+fn row_to_flavor(r: sqlx::sqlite::SqliteRow) -> FlavorRow {
+    FlavorRow {
+        name: r.get("name"),
+        kind: r.get("kind"),
+        base: r.get("base"),
+        path: r.get("path"),
+        description: r.get("description"),
+        created_at: r.get("created_at"),
     }
 }
 

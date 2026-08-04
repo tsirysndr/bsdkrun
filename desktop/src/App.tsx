@@ -7,7 +7,11 @@ import Sidebar from "./components/Sidebar";
 import MachinesView from "./components/MachinesView";
 import ImagesView from "./components/ImagesView";
 import VolumesView from "./components/VolumesView";
+import FlavorsView from "./components/FlavorsView";
 import RunDialog from "./components/RunDialog";
+import CommitDialog from "./components/CommitDialog";
+import NewFlavorModal from "./components/NewFlavorModal";
+import LaunchProgressModal from "./components/LaunchProgressModal";
 import MachineDetail from "./components/MachineDetail";
 import CommandPalette from "./components/CommandPalette";
 import ShortcutsModal from "./components/ShortcutsModal";
@@ -33,6 +37,7 @@ export default function App() {
             {view === "machines" && <MachinesView />}
             {view === "images" && <ImagesView />}
             {view === "volumes" && <VolumesView />}
+            {view === "flavors" && <FlavorsView />}
           </div>
         </div>
         <TerminalPanel />
@@ -41,6 +46,9 @@ export default function App() {
 
       {/* Overlays */}
       <RunDialog />
+      <CommitDialog />
+      <NewFlavorModal />
+      <LaunchProgressModal />
       <MachineDetail />
       <CommandPalette />
       <ShortcutsModal />

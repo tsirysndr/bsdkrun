@@ -20,38 +20,57 @@ import {
   IconAlertTriangle,
 } from "@tabler/icons-react";
 import { settingsOpenAtom } from "../state/atoms";
-import { useProbe, useSaveSettings, useSettings } from "../lib/queries";
+import {
+  useDefaultCache,
+  useProbe,
+  useSaveSettings,
+  useSettings,
+} from "../lib/queries";
 import { useToast } from "../state/toast";
 
 const schema = z.object({
   binaryPath: z.string(),
+  cachePath: z.string(),
 });
 type FormValues = z.infer<typeof schema>;
 
 export default function SettingsModal() {
   const [open, setOpen] = useAtom(settingsOpenAtom);
   const { data: settings } = useSettings();
+  const { data: defaultCachePath } = useDefaultCache();
   const { data: probe, refetch: refetchProbe, isFetching: checking } = useProbe();
   const saveMutation = useSaveSettings();
   const toast = useToast();
 
   const { control, handleSubmit, reset, setValue } = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { binaryPath: "" },
+    defaultValues: { binaryPath: "", cachePath: "" },
   });
 
   useEffect(() => {
-    if (open) reset({ binaryPath: settings?.binary_path || "" });
-  }, [open, settings?.binary_path, reset]);
+    if (open)
+      reset({
+        binaryPath: settings?.binary_path || "",
+        cachePath: settings?.cache_path || "",
+      });
+  }, [open, settings?.binary_path, settings?.cache_path, reset]);
 
   const browse = async () => {
     const picked = await openDialog({ multiple: false, directory: false });
     if (typeof picked === "string") setValue("binaryPath", picked);
   };
 
+  const browseCache = async () => {
+    const picked = await openDialog({ multiple: false, directory: true });
+    if (typeof picked === "string") setValue("cachePath", picked);
+  };
+
   const onSubmit = async (data: FormValues) => {
     try {
-      await saveMutation.mutateAsync(data.binaryPath.trim());
+      await saveMutation.mutateAsync({
+        binaryPath: data.binaryPath.trim(),
+        cachePath: data.cachePath.trim(),
+      });
       toast("success", "Settings saved");
       await refetchProbe();
     } catch (e) {
@@ -141,6 +160,50 @@ export default function SettingsModal() {
               <p className="mt-1.5 text-xs text-foreground-500">
                 Leave empty to auto-resolve. bsdkrun runs the microVMs; this GUI
                 just drives it.
+              </p>
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-sm font-medium">
+                Cache directory
+              </label>
+              <div className="flex gap-2">
+                <Controller
+                  control={control}
+                  name="cachePath"
+                  render={({ field }) => (
+                    <Input
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      placeholder={defaultCachePath || "~/.cache/bsdkrun"}
+                      variant="bordered"
+                      classNames={{ input: "font-mono text-xs" }}
+                    />
+                  )}
+                />
+                <Button
+                  type="button"
+                  variant="flat"
+                  isIconOnly
+                  onPress={browseCache}
+                  aria-label="Browse for a cache folder"
+                >
+                  <IconFolderOpen size={18} />
+                </Button>
+              </div>
+              <p className="mt-1.5 text-xs text-foreground-500">
+                Where bsdkrun stores pulled images, kernels, the agent and flavor
+                builds (<code className="font-mono">$BSDKRUN_CACHE</code>). Leave
+                empty for the default
+                {defaultCachePath ? (
+                  <>
+                    {" "}
+                    <span className="font-mono text-foreground-400">
+                      {defaultCachePath}
+                    </span>
+                  </>
+                ) : null}
+                .
               </p>
             </div>
           </ModalBody>

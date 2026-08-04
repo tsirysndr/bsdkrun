@@ -18,10 +18,12 @@ import {
   IconFileText,
   IconInfoCircle,
   IconCopy,
+  IconCamera,
   IconTrash,
   IconSettingsBolt,
 } from "@tabler/icons-react";
-import { selectedMachineAtom } from "../state/atoms";
+import { useSetAtom } from "jotai";
+import { commitTargetAtom, selectedMachineAtom } from "../state/atoms";
 import {
   useMachines,
   useRemoveMachine,
@@ -86,6 +88,7 @@ export default function MachineDetail() {
   const stopMutation = useStopMachine();
   const restartMutation = useRestartMachine();
   const removeMutation = useRemoveMachine();
+  const setCommitTarget = useSetAtom(commitTargetAtom);
   const toast = useToast();
   const m = machines.find((x) => x.id === selected) || null;
   const [tab, setTab] = useState<string>("logs");
@@ -161,6 +164,22 @@ export default function MachineDetail() {
                     {ago(m.created_at)}
                   </div>
                 </div>
+                <Tooltip content="Snapshot into a flavor" placement="bottom">
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="flat"
+                    className="text-rose-300"
+                    onPress={() =>
+                      setCommitTarget({
+                        id: m.id,
+                        label: m.name || m.image || shortId(m.id),
+                      })
+                    }
+                  >
+                    <IconCamera size={16} />
+                  </Button>
+                </Tooltip>
                 {m.running ? (
                   <Tooltip content="Stop machine" placement="bottom">
                     <Button

@@ -177,6 +177,8 @@ enum NetworkCmd {
     Connect(NetworkConnectArgs),
     /// Disconnect a machine from its network — applies on next start.
     Disconnect(NetworkDisconnectArgs),
+    /// Refresh members' /etc/hosts with current membership (fixes name lookup).
+    Sync(NetworkSyncArgs),
 }
 
 #[derive(Parser)]
@@ -219,6 +221,13 @@ struct NetworkDisconnectArgs {
     /// Machine id or name.
     #[arg(value_name = "MACHINE")]
     machine: String,
+}
+
+#[derive(Parser)]
+struct NetworkSyncArgs {
+    /// Network whose members' /etc/hosts to refresh.
+    #[arg(value_name = "NETWORK")]
+    network: String,
 }
 
 #[derive(Parser)]
@@ -979,6 +988,7 @@ fn main() -> Result<()> {
             NetworkCmd::Rm(a) => network::cmd_rm(&a.names, a.force),
             NetworkCmd::Connect(a) => network::cmd_connect(&a.machine, &a.network),
             NetworkCmd::Disconnect(a) => network::cmd_disconnect(&a.machine),
+            NetworkCmd::Sync(a) => network::cmd_sync(&a.network),
         },
     }
 }
@@ -2005,6 +2015,10 @@ fn finalize_network(
             let ip = std::env::var("BSDKRUN_NET_IP").unwrap_or_default();
             let _ = db.set_machine_network(machine_id, network, &ip);
         }
+        // Refresh every BSD member's /etc/hosts with the new membership so peers
+        // resolve by name even where the gvproxy DNS trips a strict resolver
+        // (NetBSD). Best-effort; the newly-joined member is now in the DB.
+        let _ = network::sync_hosts(network);
     }
 }
 

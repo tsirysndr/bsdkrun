@@ -847,6 +847,38 @@ impl Db {
             })
             .map_err(Into::into)
     }
+
+    /// Members of a network with the extra bits needed to push `/etc/hosts` to
+    /// each: (display name, ip, state_dir, kind, pid).
+    pub fn network_member_hosts(
+        &self,
+        network: &str,
+    ) -> Result<Vec<(String, String, String, String, Option<i64>)>> {
+        self.rt
+            .block_on(async {
+                let rows = sqlx::query(
+                    "SELECT id, name, net_ip, state_dir, kind, pid FROM machines
+                     WHERE network = ? AND net_ip IS NOT NULL",
+                )
+                .bind(network)
+                .fetch_all(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(
+                    rows.into_iter()
+                        .map(|r| {
+                            let id: String = r.get("id");
+                            let name: Option<String> = r.get("name");
+                            let ip: String = r.get("net_ip");
+                            let dir: String = r.get("state_dir");
+                            let kind: String = r.get("kind");
+                            let pid: Option<i64> = r.get("pid");
+                            (name.unwrap_or(id), ip, dir, kind, pid)
+                        })
+                        .collect(),
+                )
+            })
+            .map_err(Into::into)
+    }
 }
 
 /// A global network: a shared gvproxy switch machines can join to reach each

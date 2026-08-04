@@ -177,6 +177,77 @@ pub fn cmd_connect(machine: &str, network: &str) -> Result<()> {
     Ok(())
 }
 
+/// Push a managed `/etc/hosts` block (every member's name → IP) to each running
+/// **BSD** member of `network`, so peers resolve by name regardless of the DNS.
+///
+/// Why: `ping`/`getaddrinfo` do an A *and* AAAA lookup. gvproxy's DNS answers
+/// the A but returns NXDOMAIN for the AAAA of an A-only name (should be NODATA);
+/// NetBSD's resolver treats that as authoritative and fails the whole lookup, so
+/// bare-name ping fails on NetBSD (Linux/FreeBSD are lenient). `/etc/hosts`
+/// (nsswitch `files` before `dns`) sidesteps it. Best-effort per member.
+pub fn sync_hosts(network: &str) -> Result<()> {
+    let db = db::Db::open()?;
+    let members = db.network_member_hosts(network)?;
+    if members.is_empty() {
+        return Ok(());
+    }
+    // Tag every managed line so the block can be replaced idempotently with just
+    // grep/printf/cp (portable — no sed/awk needed on minimal guests).
+    let tag = format!("# bsdkrun-net-{network}");
+    let mut appends = String::new();
+    for (name, ip, _, _, _) in &members {
+        // name/ip/network are constrained to safe chars, so plain shell words.
+        appends.push_str(&format!(
+            "printf '%s %s %s.%s {tag}\\n' {ip} {name} {name} {network} >> /etc/hosts\n"
+        ));
+    }
+    let script = format!(
+        "tmp=/etc/hosts.bsdkrun.$$\n\
+         grep -v '{tag}$' /etc/hosts > \"$tmp\" 2>/dev/null\n\
+         [ -s \"$tmp\" ] && cat \"$tmp\" > /etc/hosts\n\
+         rm -f \"$tmp\"\n\
+         {appends}"
+    );
+    let argv = vec!["/bin/sh".to_string(), "-c".to_string(), script];
+
+    let mut pushed = 0;
+    for (name, _ip, state_dir, kind, pid) in &members {
+        // Only BSD guests need this; Linux resolves fine via DNS (and a minimal
+        // guest may lack the tools). Push to all BSD members so existing ones
+        // also learn newly-joined peers.
+        let is_bsd = matches!(kind.as_str(), "netbsd" | "kernel" | "freebsd" | "firmware");
+        if !is_bsd || !pid.map(db::pid_alive).unwrap_or(false) {
+            continue;
+        }
+        let Some(port) = agent::read_port(Path::new(state_dir)) else {
+            continue;
+        };
+        match agent::exec_quiet(port, &argv) {
+            Ok(_) => pushed += 1,
+            Err(e) => warn!("hosts sync to {name} failed: {e:#}"),
+        }
+    }
+    info!(
+        network,
+        members = members.len(),
+        pushed,
+        "synced /etc/hosts on BSD members"
+    );
+    Ok(())
+}
+
+/// `bsdkrun network sync <network>` — refresh every running member's `/etc/hosts`
+/// with the current membership (fixes name resolution without restarting them).
+pub fn cmd_sync(network: &str) -> Result<()> {
+    let db = db::Db::open()?;
+    if db.find_network(network)?.is_none() {
+        anyhow::bail!("no such network: {network}");
+    }
+    sync_hosts(network)?;
+    println!("{network}");
+    Ok(())
+}
+
 /// `bsdkrun network disconnect <machine>` — detach a machine back to the default
 /// isolated stack. Takes effect on the next `start`.
 pub fn cmd_disconnect(machine: &str) -> Result<()> {

@@ -3016,9 +3016,15 @@ fn cmd_start(id: &str) -> Result<()> {
     };
     let vmcfg = VmConfig { cpus, mem };
 
+    // Detect the guest from the recorded kind first (the image ref is unreliable
+    // for a snapshot machine — its image is `disk.img`/`disk.raw`, not a
+    // `netbsd-*`/`freebsd-*` name). FreeBSD records `firmware` (macOS EFI) or
+    // `freebsd` (Linux PVH); NetBSD records `netbsd` (or legacy `kernel`).
     let reference = vm.image.to_lowercase();
-    let is_freebsd = vm.kind == "firmware" || reference.starts_with("freebsd");
-    let is_netbsd = vm.kind == "kernel" || reference.starts_with("netbsd");
+    let is_freebsd =
+        matches!(vm.kind.as_str(), "firmware" | "freebsd") || reference.starts_with("freebsd");
+    let is_netbsd =
+        matches!(vm.kind.as_str(), "kernel" | "netbsd") || reference.starts_with("netbsd");
 
     if vm.kind == "linux" {
         let largs = LinuxArgs {

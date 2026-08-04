@@ -307,7 +307,57 @@ pub fn finalize_dhcp(
     if let Err(e) = net::dns_add(&control, network, member, &ip) {
         warn!("couldn't register {member} in {network} DNS: {e:#}");
     }
+
+    // Add a `search <network>` domain to the guest's resolv.conf so bare peer
+    // names (e.g. `ping db`) resolve against the network's DNS zone — the BSD
+    // side of the symmetry Linux members already get (see `linux::init_script`).
+    // The lease appears (DHCP) before the guest's agent is serving, so wait for
+    // agent readiness first — otherwise the exec lands on gvproxy's accepted-but-
+    // unanswered socket and silently no-ops. Best-effort: FQDNs work regardless.
+    for _ in 0..60 {
+        if agent::ping(host) {
+            inject_search_domain(host, network);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
     let _ = db.set_machine_network(machine_id, network, &ip);
     info!(network, %ip, member, "BSD member joined the network");
     Ok(())
+}
+
+/// Ensure `search <network>` is in the guest's `/etc/resolv.conf`, over the
+/// forwarded agent port. Idempotent and best-effort — logs on failure rather
+/// than failing the boot (FQDN resolution works without it).
+fn inject_search_domain(agent_port: u16, network: &str) {
+    // `network` is validated to `[A-Za-z0-9._-]` (see `valid_name`), so it's
+    // safe to interpolate into this shell snippet.
+    //
+    // FreeBSD (and NetBSD/dhcpcd) manage /etc/resolv.conf through resolvconf(8),
+    // which regenerates the file on every DHCP/tailscale event — a plain append
+    // gets clobbered. So when resolvconf is present, register the domain in
+    // /etc/resolvconf.conf (prepending to any existing `search_domains`, which
+    // wins as the last assignment when the file is sourced) and regenerate.
+    // Otherwise fall back to appending directly. resolvconf lives in /sbin, which
+    // isn't on the agent's early-boot PATH, so probe absolute paths + call by path.
+    let script = format!(
+        "set -e\n\
+         net={network}\n\
+         rc=\n\
+         for p in /sbin/resolvconf /usr/sbin/resolvconf; do [ -x \"$p\" ] && rc=$p && break; done\n\
+         if [ -n \"$rc\" ]; then\n\
+         \tgrep -q \"$net\" /etc/resolvconf.conf 2>/dev/null || \
+         printf 'search_domains=\"%s ${{search_domains}}\"\\n' \"$net\" >> /etc/resolvconf.conf\n\
+         \t\"$rc\" -u 2>/dev/null || true\n\
+         else\n\
+         \tgrep -q \"^search $net\\$\" /etc/resolv.conf 2>/dev/null || \
+         printf 'search %s\\n' \"$net\" >> /etc/resolv.conf\n\
+         fi"
+    );
+    let argv = vec!["/bin/sh".to_string(), "-c".to_string(), script];
+    match agent::exec_quiet(agent_port, &argv) {
+        Ok(0) => info!(network, "added search domain to guest resolv.conf"),
+        Ok(code) => warn!("resolv.conf search-domain command exited {code}"),
+        Err(e) => warn!("couldn't set search domain in {network}: {e:#}"),
+    }
 }

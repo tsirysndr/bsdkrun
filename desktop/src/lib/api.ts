@@ -33,6 +33,7 @@ export const api = {
   createNetwork: (name: string) => invoke<void>("create_network", { name }),
   removeNetwork: (name: string, force: boolean) =>
     invoke<void>("remove_network", { name, force }),
+  syncNetwork: (name: string) => invoke<void>("sync_network", { name }),
   systemStats: () => invoke<SystemStats>("system_stats"),
 
   runFlavor: (name: string, ports: string[], volume: string | null) =>

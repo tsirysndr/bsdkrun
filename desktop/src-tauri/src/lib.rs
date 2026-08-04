@@ -242,6 +242,15 @@ async fn remove_network(
     Ok(())
 }
 
+/// Refresh members' /etc/hosts so peers resolve by name (esp. NetBSD) —
+/// `bsdkrun network sync <name>`.
+#[tauri::command]
+async fn sync_network(state: State<'_, AppState>, name: String) -> Result<(), BkError> {
+    let bin = state.binary()?;
+    bsdkrun::run(&bin, &["network", "sync", &name]).await?;
+    Ok(())
+}
+
 // ---- flavors ---------------------------------------------------------------
 
 /// Boot a new machine from a flavor (catalog / user / snapshot), detached.
@@ -1018,6 +1027,7 @@ pub fn run() {
             list_networks,
             create_network,
             remove_network,
+            sync_network,
             run_flavor,
             launch_flavor,
             build_flavor,

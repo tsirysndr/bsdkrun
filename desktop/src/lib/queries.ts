@@ -93,6 +93,12 @@ export function useRemoveNetwork() {
   });
 }
 
+export function useSyncNetwork() {
+  return useMutation({
+    mutationFn: (name: string) => api.syncNetwork(name),
+  });
+}
+
 export function useProbe() {
   return useQuery({
     queryKey: qk.probe,

@@ -19,6 +19,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useSetAtom } from "jotai";
 import {
+  IconAddressBook,
   IconNetwork,
   IconPlus,
   IconSearch,
@@ -34,6 +35,7 @@ import {
   useMachines,
   useNetworks,
   useRemoveNetwork,
+  useSyncNetwork,
 } from "../lib/queries";
 import { selectedMachineAtom } from "../state/atoms";
 import { useToast } from "../state/toast";
@@ -165,7 +167,23 @@ function NetworkMembersDrawer({
 }) {
   const { data: machines = [] } = useMachines();
   const setSelected = useSetAtom(selectedMachineAtom);
+  const sync = useSyncNetwork();
+  const toast = useToast();
   const [q, setQ] = useState("");
+
+  const onSync = async () => {
+    if (!network) return;
+    try {
+      await sync.mutateAsync(network.name);
+      toast(
+        "success",
+        "Name resolution refreshed",
+        `Members of ${network.name} can now resolve each other by name.`,
+      );
+    } catch (e) {
+      toast("error", "Couldn't refresh name resolution", String(e));
+    }
+  };
 
   const members = useMemo(
     () =>
@@ -217,6 +235,23 @@ function NetworkMembersDrawer({
                     {members.length} member{members.length === 1 ? "" : "s"}
                   </p>
                 </div>
+                <Tooltip
+                  content="Refresh name resolution (rewrites members' /etc/hosts)"
+                  placement="bottom"
+                >
+                  <Button
+                    size="sm"
+                    variant="flat"
+                    className="ml-auto shrink-0"
+                    isLoading={sync.isPending}
+                    startContent={
+                      !sync.isPending && <IconAddressBook size={15} />
+                    }
+                    onPress={onSync}
+                  >
+                    Fix names
+                  </Button>
+                </Tooltip>
               </div>
               <Input
                 size="sm"

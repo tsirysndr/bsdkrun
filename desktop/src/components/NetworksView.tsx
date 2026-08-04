@@ -1,7 +1,11 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Button,
   Chip,
+  Drawer,
+  DrawerBody,
+  DrawerContent,
+  DrawerHeader,
   Input,
   Modal,
   ModalBody,
@@ -13,18 +17,27 @@ import {
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { IconNetwork, IconPlus, IconTrash } from "@tabler/icons-react";
-import { ago, fullDate } from "../lib/format";
+import { useSetAtom } from "jotai";
+import {
+  IconNetwork,
+  IconPlus,
+  IconSearch,
+  IconServer,
+  IconTrash,
+} from "@tabler/icons-react";
+import { ago, fullDate, kindColor, shortId } from "../lib/format";
 import { EmptyState, ViewShell } from "./ViewShell";
 import { CardGridSkeleton } from "./Skeletons";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
   useCreateNetwork,
+  useMachines,
   useNetworks,
   useRemoveNetwork,
 } from "../lib/queries";
+import { selectedMachineAtom } from "../state/atoms";
 import { useToast } from "../state/toast";
-import type { Network } from "../lib/types";
+import type { Machine, Network } from "../lib/types";
 
 const schema = z.object({
   name: z
@@ -110,12 +123,148 @@ function NewNetworkDialog({
   );
 }
 
+/** A single member row in the network drawer — opens the machine detail. */
+function MemberRow({ m, onOpen }: { m: Machine; onOpen: () => void }) {
+  const kc = kindColor(m.kind, m.image);
+  return (
+    <button
+      onClick={onOpen}
+      className="flex w-full items-center gap-3 rounded-lg border border-white/5 bg-content2/40 px-3 py-2.5 text-left transition hover:border-white/15 hover:bg-content2/80"
+    >
+      <span
+        className={`h-2 w-2 shrink-0 rounded-full ${m.running ? "bg-emerald-400" : "bg-foreground-600"}`}
+        title={m.running ? "running" : "stopped"}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="truncate text-sm font-medium text-foreground">
+            {m.name || shortId(m.id)}
+          </span>
+          <span
+            className={`shrink-0 rounded border px-1.5 py-px text-[9px] font-medium uppercase ${kc.className}`}
+          >
+            {kc.label}
+          </span>
+        </div>
+        <div className="truncate font-mono text-[11px] text-foreground-500">{m.image}</div>
+      </div>
+      <span className="shrink-0 font-mono text-xs text-cyan-300/90">
+        {m.net_ip || "—"}
+      </span>
+    </button>
+  );
+}
+
+/** Drawer listing a network's members, with a quick filter search. */
+function NetworkMembersDrawer({
+  network,
+  onClose,
+}: {
+  network: Network | null;
+  onClose: () => void;
+}) {
+  const { data: machines = [] } = useMachines();
+  const setSelected = useSetAtom(selectedMachineAtom);
+  const [q, setQ] = useState("");
+
+  const members = useMemo(
+    () =>
+      machines
+        .filter((m) => network && m.network === network.name)
+        .sort((a, b) => (a.net_ip || "").localeCompare(b.net_ip || "", undefined, { numeric: true })),
+    [machines, network],
+  );
+
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return members;
+    return members.filter((m) =>
+      [m.name, m.id, m.net_ip, m.image].some((f) => f?.toLowerCase().includes(needle)),
+    );
+  }, [members, q]);
+
+  const openMachine = (id: string) => {
+    setSelected(id);
+    onClose();
+  };
+
+  return (
+    <Drawer
+      isOpen={network !== null}
+      onClose={onClose}
+      size="md"
+      backdrop="opaque"
+      shouldBlockScroll={false}
+      classNames={{
+        base: "h-[100dvh] max-h-full border-l border-white/10 bg-content1",
+        wrapper: "h-[100dvh]",
+      }}
+    >
+      <DrawerContent>
+        {network && (
+          <>
+            <DrawerHeader className="flex flex-col gap-3 border-b border-white/10">
+              <div className="flex items-center gap-3 pr-8">
+                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-cyan-500/15 text-cyan-300">
+                  <IconNetwork size={20} />
+                </div>
+                <div className="min-w-0">
+                  <h2 className="truncate text-base font-semibold text-foreground">
+                    {network.name}
+                  </h2>
+                  <p className="font-mono text-[11px] text-foreground-500">
+                    {network.subnet} · gw {network.gateway} ·{" "}
+                    {members.length} member{members.length === 1 ? "" : "s"}
+                  </p>
+                </div>
+              </div>
+              <Input
+                size="sm"
+                autoFocus
+                value={q}
+                onValueChange={setQ}
+                placeholder="Filter members by name, IP, image…"
+                variant="bordered"
+                startContent={<IconSearch size={15} className="text-foreground-500" />}
+                isClearable
+                onClear={() => setQ("")}
+                classNames={{ inputWrapper: "border-white/10" }}
+              />
+            </DrawerHeader>
+            <DrawerBody className="gap-2 py-4">
+              {members.length === 0 ? (
+                <div className="mt-10 flex flex-col items-center gap-2 text-center text-foreground-500">
+                  <IconServer size={26} />
+                  <p className="text-sm">No machines on this network yet.</p>
+                  <p className="text-xs">
+                    Start a machine with this network, or attach one from its detail
+                    panel.
+                  </p>
+                </div>
+              ) : filtered.length === 0 ? (
+                <p className="mt-8 text-center text-sm text-foreground-500">
+                  No members match “{q}”.
+                </p>
+              ) : (
+                filtered.map((m) => (
+                  <MemberRow key={m.id} m={m} onOpen={() => openMachine(m.id)} />
+                ))
+              )}
+            </DrawerBody>
+          </>
+        )}
+      </DrawerContent>
+    </Drawer>
+  );
+}
+
 export default function NetworksView() {
   const { data: networks = [], isLoading } = useNetworks();
   const remove = useRemoveNetwork();
   const toast = useToast();
   const [createOpen, setCreateOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Network | null>(null);
+  const [openNetwork, setOpenNetwork] = useState<Network | null>(null);
 
   const newBtn = (
     <Button
@@ -172,7 +321,16 @@ export default function NetworksView() {
         {networks.map((n) => (
           <div
             key={n.name}
-            className="group/card flex flex-col rounded-xl border border-white/10 bg-content1/50 p-4 transition hover:border-white/20 hover:bg-content1/80"
+            role="button"
+            tabIndex={0}
+            onClick={() => setOpenNetwork(n)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setOpenNetwork(n);
+              }
+            }}
+            className="group/card flex cursor-pointer flex-col rounded-xl border border-white/10 bg-content1/50 p-4 outline-none transition hover:border-white/20 hover:bg-content1/80 focus-visible:border-white/30"
           >
             <div className="flex items-start gap-3">
               <div className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-cyan-500/15 text-cyan-300">
@@ -209,26 +367,32 @@ export default function NetworksView() {
                   </Tooltip>
                 ) : null}
               </span>
-              <Tooltip
-                content={n.running > 0 ? "Has running members" : "Delete network"}
-                placement="top"
-              >
-                <Button
-                  isIconOnly
-                  size="sm"
-                  variant="light"
-                  className="h-7 w-7 min-w-7 text-foreground-500 opacity-0 transition group-hover/card:opacity-100 hover:text-danger"
-                  onPress={() => setPendingDelete(n)}
+              <span onClick={(e) => e.stopPropagation()}>
+                <Tooltip
+                  content={n.running > 0 ? "Has running members" : "Delete network"}
+                  placement="top"
                 >
-                  <IconTrash size={14} />
-                </Button>
-              </Tooltip>
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="light"
+                    className="h-7 w-7 min-w-7 text-foreground-500 opacity-0 transition group-hover/card:opacity-100 hover:text-danger"
+                    onPress={() => setPendingDelete(n)}
+                  >
+                    <IconTrash size={14} />
+                  </Button>
+                </Tooltip>
+              </span>
             </div>
           </div>
         ))}
       </div>
 
       <NewNetworkDialog open={createOpen} onClose={() => setCreateOpen(false)} />
+      <NetworkMembersDrawer
+        network={openNetwork}
+        onClose={() => setOpenNetwork(null)}
+      />
       <ConfirmDialog
         open={pendingDelete !== null}
         title="Delete network"

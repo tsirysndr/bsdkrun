@@ -198,6 +198,8 @@ export default function MachineDetail() {
                       setCommitTarget({
                         id: m.id,
                         label: m.name || m.image || shortId(m.id),
+                        kind: m.kind,
+                        running: m.running,
                       })
                     }
                   >

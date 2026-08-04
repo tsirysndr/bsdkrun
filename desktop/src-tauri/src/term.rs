@@ -91,7 +91,8 @@ pub fn open(
                __a=$(uname -p 2>/dev/null); [ \"$__a\" = x86_64 ] && __a=amd64; \
                export PKG_PATH=\"https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/$__a/$(uname -r 2>/dev/null | cut -d. -f1).0/All/\"; \
              fi; \
-             cd \"$(cat /etc/bsdkrun-cwd 2>/dev/null)\" 2>/dev/null; exec {sh}"
+             cd \"$(cat /etc/bsdkrun-cwd 2>/dev/null)\" 2>/dev/null; \
+             if command -v bash >/dev/null 2>&1; then exec bash; else exec {sh}; fi"
         ));
     } else {
         for a in &command {

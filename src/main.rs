@@ -2899,6 +2899,96 @@ fn valid_flavor_name(name: &str) -> Result<()> {
 
 /// `bsdkrun commit <id> <name>` — snapshot a machine's current rootfs/disk into a
 /// named flavor (a CoW clone), like `docker commit`. Boot it with `flavor run`.
+/// Prepare a running guest for a consistent snapshot, via its agent.
+///
+/// - **Linux** (virtio-fs rootfs backed by host files): a `sync` flushes the
+///   guest's page cache through to those host files — enough, since there's no
+///   in-guest block filesystem to tear.
+/// - **BSD** (a raw UFS disk): a mounted UFS is always flagged *dirty*, and a
+///   running guest keeps writing, so cloning it yields a *torn* image that boots
+///   into an `fsck` which discards recent changes — even a `sync` first isn't
+///   enough (verified). The only reliable way to a clean, bootable image is a
+///   **clean shutdown**, which unmounts UFS. So we power the guest off, wait for
+///   it to exit, and snapshot the quiescent disk. The machine is left **stopped**
+///   (start it again to resume).
+///
+/// Best-effort: a machine that's already stopped, or one without an agent, is
+/// snapshotted as-is.
+fn quiesce_guest_for_snapshot(vm: &db::MachineRow) {
+    if !vm.pid.map(db::pid_alive).unwrap_or(false) {
+        return;
+    }
+    let vdir = std::path::PathBuf::from(&vm.state_dir);
+    let Some(port) = agent::read_port(&vdir) else {
+        tracing::warn!(
+            id = %vm.id,
+            "no guest agent to quiesce before snapshot — it may miss recent writes"
+        );
+        return;
+    };
+
+    if vm.kind == "linux" {
+        let argv = ["sh".to_string(), "-c".to_string(), "sync; sync".to_string()];
+        let _ = agent::exec(port, &argv, &[], false);
+        info!(id = %vm.id, "flushed guest to disk before snapshot");
+        return;
+    }
+
+    // BSD: clean poweroff so UFS is unmounted and the image is consistent.
+    info!(id = %vm.id, "powering off guest for a consistent BSD snapshot…");
+    let argv = [
+        "sh".to_string(),
+        "-c".to_string(),
+        "sync; nohup shutdown -p now >/dev/null 2>&1 & sleep 1".to_string(),
+    ];
+    let _ = agent::exec(port, &argv, &[], false);
+
+    // Wait for the VM process to exit (its clean unmount is then done).
+    if let Some(pid) = vm.pid {
+        for _ in 0..80 {
+            if !db::pid_alive(pid) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+    if let Ok(db) = db::Db::open() {
+        let _ = db.set_machine_status(&vm.id, "exited", Some(0));
+    }
+    info!(
+        id = %vm.id,
+        "guest powered off — snapshotting its clean disk (machine left stopped; `start` to resume)"
+    );
+}
+
+/// Force a file's dirty pages all the way to permanent storage, so a subsequent
+/// APFS `clonefile` (which shares on-disk *extents*) captures the latest writes.
+/// libkrun's virtio-blk writes land in the host page cache; a plain `sync(2)`
+/// only *schedules* the flush, so we use `F_FULLFSYNC`, which macOS guarantees
+/// hits the disk. Opening a second read fd is enough — fsync flushes the whole
+/// inode's dirty pages, including the ones libkrun wrote through its own fd.
+#[cfg(target_os = "macos")]
+fn fullsync_file(path: &std::path::Path) {
+    use std::os::unix::io::AsRawFd;
+    if let Ok(f) = std::fs::File::open(path) {
+        // SAFETY: fcntl(F_FULLFSYNC) on a valid fd is always safe.
+        unsafe {
+            libc::fcntl(f.as_raw_fd(), libc::F_FULLFSYNC);
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn fullsync_file(path: &std::path::Path) {
+    use std::os::unix::io::AsRawFd;
+    if let Ok(f) = std::fs::File::open(path) {
+        // SAFETY: fsync on a valid fd is always safe.
+        unsafe {
+            libc::fsync(f.as_raw_fd());
+        }
+    }
+}
+
 fn cmd_commit(id: &str, name: &str, description: &str) -> Result<()> {
     valid_flavor_name(name)?;
     let db = db::Db::open()?;
@@ -2909,6 +2999,11 @@ fn cmd_commit(id: &str, name: &str, description: &str) -> Result<()> {
     }
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("creating flavor dir {}", dir.display()))?;
+
+    // Make the guest's disk/rootfs consistent before cloning: flush a Linux
+    // guest, or cleanly power off a BSD guest (a live UFS can't be cloned
+    // consistently). See [`quiesce_guest_for_snapshot`].
+    quiesce_guest_for_snapshot(&vm);
 
     let mdir = std::path::PathBuf::from(&vm.state_dir);
     if vm.kind == "linux" {
@@ -2921,6 +3016,9 @@ fn cmd_commit(id: &str, name: &str, description: &str) -> Result<()> {
             let _ = std::fs::remove_dir_all(&dir);
             anyhow::bail!("machine {} has no rootfs to snapshot", vm.id);
         }
+        // Flush the guest's just-synced writes (virtio-fs passes them through to
+        // these host files) to disk before the extent-level clone.
+        let _ = std::process::Command::new("sync").status();
         host::cow_copy(&src, &dir.join("rootfs"), true)?;
     } else {
         // BSD: snapshot the raw disk (`root.<ext>`), from the volume or state dir.
@@ -2936,6 +3034,10 @@ fn cmd_commit(id: &str, name: &str, description: &str) -> Result<()> {
                 let _ = std::fs::remove_dir_all(&dir);
                 anyhow::anyhow!("machine {} has no disk to snapshot", vm.id)
             })?;
+        // Flush the guest's just-synced writes from the host page cache to disk
+        // so `clonefile` (extent-level) captures them — without this the snapshot
+        // silently misses recent changes even though the file *reads* current.
+        fullsync_file(&disk);
         let ext = disk.extension().and_then(|e| e.to_str()).unwrap_or("img");
         host::cow_copy(&disk, &dir.join(format!("disk.{ext}")), false)?;
     }

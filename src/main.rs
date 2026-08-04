@@ -1088,8 +1088,13 @@ fn boot_freebsd_pvh(args: BsdArgs) -> Result<()> {
     let vdir = machine_dir_or_tmp(&machine_id);
     let image = basename(&disk);
     let volume = args.run.volume.as_deref().map(volume_dir).transpose()?;
-    let root_disk =
-        prepare_bsd_disk(&disk, &vdir, args.run.persist, volume.as_deref(), args.disk_size.as_deref())?;
+    let root_disk = prepare_bsd_disk(
+        &disk,
+        &vdir,
+        args.run.persist,
+        volume.as_deref(),
+        args.disk_size.as_deref(),
+    )?;
 
     let build = || -> Result<(Ctx, Option<Gvproxy>)> {
         let ctx = Ctx::new()?;
@@ -1187,8 +1192,13 @@ fn boot_netbsd(args: BsdArgs) -> Result<()> {
     let vdir = machine_dir_or_tmp(&machine_id);
     let image = basename(&disk);
     let volume = args.run.volume.as_deref().map(volume_dir).transpose()?;
-    let root_disk =
-        prepare_bsd_disk(&disk, &vdir, args.run.persist, volume.as_deref(), args.disk_size.as_deref())?;
+    let root_disk = prepare_bsd_disk(
+        &disk,
+        &vdir,
+        args.run.persist,
+        volume.as_deref(),
+        args.disk_size.as_deref(),
+    )?;
 
     let build = || -> Result<(Ctx, Option<Gvproxy>)> {
         let ctx = Ctx::new()?;
@@ -2404,7 +2414,11 @@ fn cmd_start(id: &str) -> Result<()> {
         names::set_override(name);
     }
 
-    let net = NetConfig { no_net: false, ports: vec![], mac: None };
+    let net = NetConfig {
+        no_net: false,
+        ports: vec![],
+        mac: None,
+    };
     let vmcfg = VmConfig { cpus, mem };
 
     let reference = vm.image.to_lowercase();
@@ -2433,7 +2447,11 @@ fn cmd_start(id: &str) -> Result<()> {
             force: false,
             attach_disk: vec![],
             disk_size: None,
-            run: RunConfig { detach: true, persist: false, volume },
+            run: RunConfig {
+                detach: true,
+                persist: false,
+                volume,
+            },
             net,
             vm: vmcfg,
             verbose: false,
@@ -2644,9 +2662,17 @@ fn cmd_agent_update(id: &str) -> Result<()> {
     let (os, dest, fetch_cmd) = if vm.kind == "linux" {
         (host::GuestOs::Linux, "/sbin/bsdkrun-agent", "curl -fL -o")
     } else if vm.kind == "kernel" || reference.starts_with("netbsd") {
-        (host::GuestOs::Netbsd, "/usr/local/sbin/bsdkrun-agent", "ftp -o")
+        (
+            host::GuestOs::Netbsd,
+            "/usr/local/sbin/bsdkrun-agent",
+            "ftp -o",
+        )
     } else {
-        (host::GuestOs::Freebsd, "/usr/local/sbin/bsdkrun-agent", "fetch -o")
+        (
+            host::GuestOs::Freebsd,
+            "/usr/local/sbin/bsdkrun-agent",
+            "fetch -o",
+        )
     };
     let url = agent::asset_url(os, arch);
 

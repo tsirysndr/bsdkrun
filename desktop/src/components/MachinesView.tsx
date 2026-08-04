@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Button,
   Table,
@@ -38,6 +38,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState, ViewShell } from "./ViewShell";
 import { TableSkeleton } from "./Skeletons";
 import { useInfiniteRows } from "../hooks/useInfiniteRows";
+import { useListNavigation } from "../hooks/useListNavigation";
 import type { Machine } from "../lib/types";
 
 function StatusPill({ m }: { m: Machine }) {
@@ -118,65 +119,19 @@ export default function MachinesView() {
   const { visible, sentinelRef, hasMore } = useInfiniteRows(rows.length);
   const visibleRows = useMemo(() => rows.slice(0, visible), [rows, visible]);
 
-  // Keyboard navigation of the machine list: ↑/↓ move a highlighted row, Enter
-  // or L opens it (Logs by default), T opens a terminal on it. Kept in a ref so
-  // the window listener stays stable; ignored while typing or when a dialog is
-  // open (the palette/drawer have their own key handling).
-  const [focusedId, setFocusedId] = useState<string | null>(null);
-  const navRef = useRef({ rows: visibleRows, focusedId });
-  navRef.current = { rows: visibleRows, focusedId };
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (
-        t &&
-        (t.tagName === "INPUT" ||
-          t.tagName === "TEXTAREA" ||
-          t.isContentEditable)
-      )
-        return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      // A modal/drawer is open (palette, run dialog, machine detail…): let it own keys.
-      if (document.querySelector('[role="dialog"]')) return;
-
-      const { rows: list, focusedId: cur } = navRef.current;
-      if (!list.length) return;
-      const idx = list.findIndex((m) => m.id === cur);
-
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        const next = list[idx < 0 ? 0 : Math.min(idx + 1, list.length - 1)];
-        setFocusedId(next.id);
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        const next = list[idx < 0 ? list.length - 1 : Math.max(idx - 1, 0)];
-        setFocusedId(next.id);
-      } else if (e.key === "Enter" || e.key.toLowerCase() === "l") {
-        const m = list.find((x) => x.id === cur);
-        if (m) {
-          e.preventDefault();
-          setSelected(m.id); // detail drawer defaults to the Logs tab
-        }
-      } else if (e.key.toLowerCase() === "t") {
-        const m = list.find((x) => x.id === cur);
-        if (m?.running) {
-          e.preventDefault();
-          openTerminal(m.id);
-        }
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [setSelected, openTerminal]);
-
-  // Keep the highlighted row scrolled into view.
-  useEffect(() => {
-    if (!focusedId) return;
-    document
-      .querySelector(`[data-machine-row="${focusedId}"]`)
-      ?.scrollIntoView({ block: "nearest" });
-  }, [focusedId]);
+  // Keyboard navigation: ↑/↓ highlight a row, Enter/L opens it (Logs by
+  // default), T opens a terminal on the highlighted running machine.
+  const { focusedId } = useListNavigation(
+    visibleRows,
+    (m) => m.id,
+    {
+      onEnter: (m) => setSelected(m.id),
+      keys: {
+        l: (m) => setSelected(m.id),
+        t: (m) => m.running && openTerminal(m.id),
+      },
+    },
+  );
 
   const stop = async (m: Machine) => {
     setRowBusy(m.id, true);
@@ -275,7 +230,7 @@ export default function MachinesView() {
             return (
               <TableRow
                 key={m.id}
-                data-machine-row={m.id}
+                data-list-row={m.id}
                 className={
                   m.id === focusedId
                     ? "bg-primary/10 shadow-[inset_2px_0_0] shadow-primary"

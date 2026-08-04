@@ -19,6 +19,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState, ViewShell } from "./ViewShell";
 import { TableSkeleton } from "./Skeletons";
 import { useInfiniteRows } from "../hooks/useInfiniteRows";
+import { useListNavigation } from "../hooks/useListNavigation";
 import type { Volume } from "../lib/types";
 
 export default function VolumesView() {
@@ -34,6 +35,12 @@ export default function VolumesView() {
   );
   const { visible, sentinelRef, hasMore } = useInfiniteRows(rows.length);
   const visibleRows = useMemo(() => rows.slice(0, visible), [rows, visible]);
+
+  // ↑/↓ highlight a volume; Enter or Delete opens the remove confirmation.
+  const { focusedId } = useListNavigation(visibleRows, (v) => v.name, {
+    onEnter: (v) => setTarget(v),
+    keys: { d: (v) => setTarget(v) },
+  });
 
   const remove = async () => {
     if (!target) return;

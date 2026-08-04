@@ -66,7 +66,7 @@ export default function ShortcutsModal() {
     <Modal
       isOpen={open}
       onClose={() => setOpen(false)}
-      size="2xl"
+      size="4xl"
       backdrop="opaque"
       shouldBlockScroll={false}
       classNames={{ base: "border border-white/10 bg-content1" }}
@@ -76,22 +76,27 @@ export default function ShortcutsModal() {
           <IconKeyboard size={18} className="text-primary" />
           Keyboard Shortcuts
         </ModalHeader>
-        <ModalBody className="grid grid-cols-1 gap-x-8 gap-y-5 pb-6 sm:grid-cols-2">
+        <ModalBody className="grid grid-cols-1 gap-x-8 gap-y-5 pb-6 sm:grid-cols-2 lg:grid-cols-3">
           {GROUPS.map((g) => (
             <div key={g.title} className="break-inside-avoid">
-              <div className="mb-2 text-[11px] font-medium uppercase tracking-wider text-foreground-500">
+              <div className="mb-2.5 border-b border-white/10 pb-1.5 text-[11px] font-medium uppercase tracking-wider text-foreground-500">
                 {g.title}
               </div>
-              <div className="flex flex-col gap-1.5">
+              <div className="flex flex-col">
                 {g.items.map(([keys, label]) => (
                   <div
                     key={label + keys.join()}
-                    className="flex items-center justify-between gap-3 rounded-lg px-1 py-1"
+                    className="flex items-center justify-between gap-4 rounded-md px-1.5 py-1.5 transition-colors hover:bg-white/5"
                   >
-                    <span className="text-sm text-foreground-300">{label}</span>
+                    <span className="text-[13px] font-light leading-snug text-foreground-400">
+                      {label}
+                    </span>
                     <span className="flex shrink-0 items-center gap-1">
                       {keys.map((k) => (
-                        <Kbd key={k} className="bg-content2/70 text-foreground-300">
+                        <Kbd
+                          key={k}
+                          className="min-w-[24px] justify-center border border-white/10 bg-content2 text-center text-xs font-medium text-foreground"
+                        >
                           {k}
                         </Kbd>
                       ))}

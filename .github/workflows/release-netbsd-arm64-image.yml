@@ -25,7 +25,7 @@ on:
       agent_url:
         description: "URL of the NetBSD aarch64 agent to inject"
         required: false
-        default: "https://github.com/tsirysndr/bsdkrun/releases/download/v0.4.0/bsdkrun-agent.netbsd-aarch64"
+        default: "https://github.com/tsirysndr/bsdkrun/releases/download/v0.5.0/bsdkrun-agent.netbsd-aarch64"
         type: string
 
 permissions:

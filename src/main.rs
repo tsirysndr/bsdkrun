@@ -1039,9 +1039,7 @@ fn setup_networking_with_agent(
         // A per-member vfkit socket for the bridge (libkrun connects to it).
         let vfkit = match agent_dir {
             Some(dir) => dir.join("net-bridge.sock"),
-            None => {
-                std::env::temp_dir().join(format!("bsdkrun-netbr-{}.sock", std::process::id()))
-            }
+            None => std::env::temp_dir().join(format!("bsdkrun-netbr-{}.sock", std::process::id())),
         };
         if let Some(ip) = &ip {
             if let Some(dir) = agent_dir {
@@ -1076,8 +1074,7 @@ fn setup_networking_with_agent(
         } else {
             mac
         };
-        net::start_network_bridge(&vfkit, &control)
-            .context("bridging into the shared network")?;
+        net::start_network_bridge(&vfkit, &control).context("bridging into the shared network")?;
         ctx.add_net_gvproxy(&vfkit, member_mac)
             .context("attaching virtio-net to the shared network")?;
         info!("joined shared network");
@@ -1977,9 +1974,7 @@ fn finalize_network(
     if let Some((network, member, dhcp)) = joined {
         if *dhcp {
             if let Some(dir) = agent_dir {
-                if let Err(e) =
-                    network::finalize_dhcp(network, member, machine_id, dir, ports)
-                {
+                if let Err(e) = network::finalize_dhcp(network, member, machine_id, dir, ports) {
                     tracing::warn!("network finalize failed: {e:#}");
                 }
             }

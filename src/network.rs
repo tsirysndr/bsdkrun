@@ -53,7 +53,12 @@ pub fn cmd_create(name: &str) -> Result<()> {
         &dir.to_string_lossy(),
         Some(pid as i64),
     )?;
-    info!(network = name, subnet = SUBNET, gateway = GATEWAY, "created network");
+    info!(
+        network = name,
+        subnet = SUBNET,
+        gateway = GATEWAY,
+        "created network"
+    );
     println!("{name}");
     Ok(())
 }
@@ -81,17 +86,29 @@ pub fn cmd_ls(json: bool) -> Result<()> {
         println!("{}", serde_json::to_string(&out)?);
         return Ok(());
     }
-    println!("{:<18}  {:<20}  {:<9}  {:<7}  MEMBERS", "NAME", "SUBNET", "GATEWAY", "STATUS");
+    println!(
+        "{:<18}  {:<20}  {:<9}  {:<7}  MEMBERS",
+        "NAME", "SUBNET", "GATEWAY", "STATUS"
+    );
     for n in &nets {
         let members = db.network_members(&n.name).unwrap_or_default();
         let running = members
             .iter()
             .filter(|(_, _, pid)| pid.map(db::pid_alive).unwrap_or(false))
             .count();
-        let status = if n.pid.map(db::pid_alive).unwrap_or(false) { "up" } else { "down" };
+        let status = if n.pid.map(db::pid_alive).unwrap_or(false) {
+            "up"
+        } else {
+            "down"
+        };
         println!(
             "{:<18}  {:<20}  {:<9}  {:<7}  {} running / {} total",
-            n.name, n.subnet, n.gateway, status, running, members.len()
+            n.name,
+            n.subnet,
+            n.gateway,
+            status,
+            running,
+            members.len()
         );
     }
     Ok(())
@@ -114,7 +131,9 @@ pub fn cmd_rm(names: &[String], force: bool) -> Result<()> {
             .filter(|(_, _, pid)| pid.map(db::pid_alive).unwrap_or(false))
             .count();
         if running > 0 && !force {
-            eprintln!("Error: network {name:?} has {running} running member(s) — stop them or use -f");
+            eprintln!(
+                "Error: network {name:?} has {running} running member(s) — stop them or use -f"
+            );
             failed = true;
             continue;
         }
@@ -274,9 +293,8 @@ pub fn finalize_dhcp(
         }
         std::thread::sleep(Duration::from_millis(500));
     }
-    let ip = leased.ok_or_else(|| {
-        anyhow::anyhow!("{member} didn't get a DHCP lease on {network} in time")
-    })?;
+    let ip = leased
+        .ok_or_else(|| anyhow::anyhow!("{member} didn't get a DHCP lease on {network} in time"))?;
 
     // Forward the agent (for exec/shell) + any user ports to the leased IP.
     let host = net::free_local_port()?;

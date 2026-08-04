@@ -425,13 +425,21 @@ pub fn lease_ip_for_mac(control_socket: &Path, mac: &str) -> Result<Option<Strin
 
 /// Minimal HTTP/1.1 GET over a gvproxy unix control socket.
 fn control_get(control_socket: &Path, path: &str) -> Result<String> {
-    let mut stream = UnixStream::connect(control_socket)
-        .with_context(|| format!("connecting to gvproxy control socket {}", control_socket.display()))?;
+    let mut stream = UnixStream::connect(control_socket).with_context(|| {
+        format!(
+            "connecting to gvproxy control socket {}",
+            control_socket.display()
+        )
+    })?;
     let req = format!("GET {path} HTTP/1.1\r\nHost: gvproxy\r\nConnection: close\r\n\r\n");
-    stream.write_all(req.as_bytes()).context("writing gvproxy GET")?;
+    stream
+        .write_all(req.as_bytes())
+        .context("writing gvproxy GET")?;
     stream.shutdown(Shutdown::Write).ok();
     let mut resp = String::new();
-    stream.read_to_string(&mut resp).context("reading gvproxy response")?;
+    stream
+        .read_to_string(&mut resp)
+        .context("reading gvproxy response")?;
     Ok(resp)
 }
 

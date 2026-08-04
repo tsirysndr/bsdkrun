@@ -1,0 +1,50 @@
+defmodule Bsdkrun.MixProject do
+  use Mix.Project
+
+  @version "0.1.0"
+  @source_url "https://github.com/tsirysndr/bsdkrun"
+
+  def project do
+    [
+      app: :bsdkrun,
+      version: @version,
+      elixir: "~> 1.15",
+      start_permanent: Mix.env() == :prod,
+      deps: deps(),
+      description:
+        "Elixir SDK for bsdkrun — a Firecracker-style microVM launcher for BSD and Linux guests.",
+      package: package(),
+      name: "bsdkrun",
+      source_url: @source_url,
+      docs: docs()
+    ]
+  end
+
+  # No application runtime — this is a thin, stateless wrapper around the CLI.
+  def application do
+    [extra_applications: [:logger]]
+  end
+
+  defp deps do
+    [
+      {:jason, "~> 1.4"},
+      {:ex_doc, "~> 0.31", only: :dev, runtime: false}
+    ]
+  end
+
+  defp package do
+    [
+      licenses: ["MIT"],
+      links: %{"GitHub" => @source_url},
+      files: ~w(lib mix.exs README.md)
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      extras: ["README.md"],
+      source_ref: "v#{@version}"
+    ]
+  end
+end

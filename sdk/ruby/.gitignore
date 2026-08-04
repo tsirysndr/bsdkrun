@@ -1,0 +1,5 @@
+/pkg/
+/doc/
+*.gem
+.bundle/
+Gemfile.lock

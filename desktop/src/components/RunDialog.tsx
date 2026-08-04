@@ -147,7 +147,7 @@ export default function RunDialog() {
   // otherwise the release the CLI marks as latest.
   useEffect(() => {
     if (bsd && versions.length && !version) {
-      const preferred = kind === "freebsd" ? "15.1" : "11.0";
+      const preferred = kind === "freebsd" ? "15.1" : "current";
       const chosen =
         versions.find((v) => v.version === preferred) ||
         versions.find((v) => v.latest) ||

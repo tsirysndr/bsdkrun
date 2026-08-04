@@ -271,14 +271,19 @@ pub async fn list_versions(bin: &PathBuf, os: &str) -> Result<Vec<VersionEntry>,
     let mut v = Vec::new();
     for line in out.lines() {
         let t = line.trim();
-        if t.is_empty() || !t.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        let first = t.split_whitespace().next().unwrap_or("");
+        // Accept version rows (`  15.1  (latest)`) and NetBSD's `current` row
+        // (the recommended build that boots to root under libkrun).
+        let is_version = first.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false);
+        let is_current = first == "current";
+        if !is_version && !is_current {
             continue;
         }
-        let latest = t.contains("(latest)");
-        let ver = t.split_whitespace().next().unwrap_or("").to_string();
-        if !ver.is_empty() {
-            v.push(VersionEntry { version: ver, latest });
-        }
+        let latest = t.contains("(latest)") || is_current;
+        v.push(VersionEntry {
+            version: first.to_string(),
+            latest,
+        });
     }
     Ok(v)
 }

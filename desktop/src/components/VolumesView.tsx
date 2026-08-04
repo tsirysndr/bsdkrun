@@ -97,11 +97,19 @@ export default function VolumesView() {
           <TableColumn width={150}>Created</TableColumn>
           <TableColumn align="end"> </TableColumn>
         </TableHeader>
-        <TableBody items={visibleRows}>
-          {(v) => {
+        <TableBody>
+          {visibleRows.map((v) => {
             const kc = v.guest ? kindColor(v.guest, v.base) : null;
             return (
-              <TableRow key={v.name}>
+              <TableRow
+                key={v.name}
+                data-list-row={v.name}
+                className={
+                  v.name === focusedId
+                    ? "bg-primary/10 shadow-[inset_2px_0_0] shadow-primary"
+                    : undefined
+                }
+              >
                 <TableCell>
                   <span className="text-sm font-medium text-foreground">
                     {v.name}
@@ -157,7 +165,7 @@ export default function VolumesView() {
                 </TableCell>
               </TableRow>
             );
-          }}
+          })}
         </TableBody>
       </Table>
 

@@ -29,14 +29,22 @@ const GROUPS: { title: string; items: [string[], string][] }[] = [
     ],
   },
   {
+    title: "Lists (↑/↓ to highlight)",
+    items: [
+      [["↑"], "Highlight previous row"],
+      [["↓"], "Highlight next row"],
+      [["↵"], "Open / run highlighted row"],
+      [["L"], "Machines: open logs"],
+      [["T"], "Machines: open terminal"],
+      [["R"], "Images: run highlighted"],
+      [["D"], "Volumes: remove highlighted"],
+    ],
+  },
+  {
     title: "Machines",
     items: [
-      [["↑"], "Highlight previous machine"],
-      [["↓"], "Highlight next machine"],
-      [["↵"], "Open highlighted (Logs)"],
-      [["L"], "Open logs of highlighted"],
-      [["T"], "Open terminal of highlighted"],
       [["N"], "Run new machine"],
+      [["⌘", "N"], "Run new machine"],
       [["⌘", "⇧", "S"], "Stop all running"],
     ],
   },

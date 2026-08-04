@@ -61,7 +61,11 @@ pub fn remove_dir_all_detached(path: &Path) {
     }
     // Rename to a hidden sibling in the same parent (same filesystem → atomic).
     let trash = path.file_name().map(|name| {
-        path.with_file_name(format!(".trash-{}-{}", name.to_string_lossy(), std::process::id()))
+        path.with_file_name(format!(
+            ".trash-{}-{}",
+            name.to_string_lossy(),
+            std::process::id()
+        ))
     });
     let target = match trash {
         Some(t) if t != path && std::fs::rename(path, &t).is_ok() => t,

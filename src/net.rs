@@ -222,10 +222,36 @@ impl Gvproxy {
     /// Minimal HTTP/1.1 POST over the unix control socket. gvproxy's API is tiny
     /// and local, so a hand-rolled request avoids pulling in an HTTP crate.
     fn control_post(&self, path: &str, body: &str) -> Result<String> {
-        let mut stream = UnixStream::connect(&self.control_socket).with_context(|| {
+        control_post_to(&self.control_socket, path, body)
+    }
+}
+
+/// Ask a gvproxy at `control_socket` to forward host `127.0.0.1:host` to
+/// `guest_ip:guest`. Used to add a forward to a **shared network** gvproxy that
+/// this process doesn't own (each member targets its own IP).
+pub fn expose_on_control(
+    control_socket: &Path,
+    host: u16,
+    guest_ip: &str,
+    guest: u16,
+) -> Result<()> {
+    let body =
+        format!(r#"{{"local":"127.0.0.1:{host}","remote":"{guest_ip}:{guest}","protocol":"tcp"}}"#);
+    let resp = control_post_to(control_socket, "/services/forwarder/expose", &body)?;
+    if !resp.starts_with("HTTP/1.1 200") && !resp.starts_with("HTTP/1.0 200") {
+        let status = resp.lines().next().unwrap_or("<no status line>");
+        bail!("gvproxy rejected the port forward: {status}");
+    }
+    Ok(())
+}
+
+/// Minimal HTTP/1.1 POST over a gvproxy unix control socket.
+fn control_post_to(control_socket: &Path, path: &str, body: &str) -> Result<String> {
+    {
+        let mut stream = UnixStream::connect(control_socket).with_context(|| {
             format!(
                 "connecting to gvproxy control socket {}",
-                self.control_socket.display()
+                control_socket.display()
             )
         })?;
         let req = format!(

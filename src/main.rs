@@ -2900,10 +2900,20 @@ fn cmd_stop(id: &str) -> Result<()> {
     let vm = db.find_machine(id)?;
     match vm.pid {
         Some(pid) if db::pid_alive(pid) => {
-            unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
-            // The process exits 128+SIGTERM on our signal handler; record that so
-            // `ps` shows a Docker-style "Exited (143)".
-            let code = vm.exit_code.or(Some(128 + libc::SIGTERM as i64));
+            // A BSD guest must be cleanly powered off (UFS unmounted) so its
+            // in-place disk stays consistent and runtime changes survive the next
+            // `start` — killing the VMM mid-write tears the live UFS, and fsck
+            // then discards recent writes. Fall back to SIGTERM if the clean
+            // poweroff can't run (no agent) or the guest doesn't halt in time.
+            let clean = is_bsd_machine(&vm) && graceful_poweroff_bsd(&vm);
+            let code = if clean {
+                Some(0)
+            } else {
+                unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+                // The process exits 128+SIGTERM on our signal handler; record that
+                // so `ps` shows a Docker-style "Exited (143)".
+                vm.exit_code.or(Some(128 + libc::SIGTERM as i64))
+            };
             db.set_machine_status(&vm.id, "exited", code).ok();
             println!("{}", vm.id);
             Ok(())
@@ -2958,14 +2968,30 @@ fn cmd_start(id: &str) -> Result<()> {
     let mem = vm.mem.max(64) as u32;
     let volume = vm.volume.clone();
 
-    // Clear the stale per-machine state so the re-boot starts from a fresh
-    // clone. The DB row is left in place (the boot re-records it via INSERT OR
-    // REPLACE), so it flips exited→running rather than vanishing from `ps`. A
-    // named volume lives elsewhere and is reused, so its changes persist.
-    // NB: don't wipe the whole state dir here — that means an `rm -rf` of the old
-    // read-only nix rootfs, which is slow enough to make Play "spin forever". The
-    // boot path (prepare_linux_root) renames the stale rootfs aside and GC's it in
-    // the background, so the restart returns promptly. Old sockets/logs/port files
+    // Resume a BSD machine from ITS OWN root disk, not a re-fetched base. The
+    // per-machine working disk (a CoW clone of the original base — a fetched
+    // image OR a committed snapshot) lives in the state dir as `root.<ext>`.
+    // Re-cloning a base here would silently replace the disk: for a snapshot
+    // flavor that means booting the DEFAULT image over the user's snapshot data
+    // (data loss). So when that disk exists, boot it IN PLACE (persist) — which
+    // also preserves runtime changes across stop/start, like `docker start`.
+    // Volume-backed machines already resume their volume disk, so skip those.
+    let existing_disk = if vm.volume.is_none() {
+        let vdir = machine_dir_or_tmp(&vm.id);
+        ["root.raw", "root.img", "root.qcow2"]
+            .iter()
+            .map(|n| vdir.join(n))
+            .find(|p| p.exists())
+    } else {
+        None
+    };
+
+    // The DB row is left in place (the boot re-records it via INSERT OR REPLACE),
+    // so it flips exited→running rather than vanishing from `ps`. NB: don't wipe
+    // the whole state dir here — that means an `rm -rf` of the old read-only nix
+    // rootfs, which is slow enough to make Play "spin forever". The Linux boot
+    // path (prepare_linux_root) renames the stale rootfs aside and GC's it in the
+    // background, so the restart returns promptly. Old sockets/logs/port files
     // are simply overwritten on the new boot.
 
     // The next boot picks up this id + name instead of generating fresh ones.
@@ -2995,13 +3021,13 @@ fn cmd_start(id: &str) -> Result<()> {
     let is_netbsd = vm.kind == "kernel" || reference.starts_with("netbsd");
 
     if vm.kind == "linux" {
-        boot_linux(LinuxArgs {
+        let largs = LinuxArgs {
             image: vm.image.clone(),
             kernel: None,
             kernel_version: linux::DEFAULT_KERNEL_VERSION.to_string(),
             detach: true,
             initramfs: false,
-            volume,
+            volume: volume.clone(),
             mounts: vec![],
             entrypoint: None,
             env: vec![],
@@ -3010,8 +3036,28 @@ fn cmd_start(id: &str) -> Result<()> {
             vm: vmcfg,
             repo: None,
             command: vec![], // persistent restart — keep a console shell alive
-        })
+        };
+        // Resume the machine's OWN rootfs (which holds its snapshot + runtime
+        // changes) by passing it as the boot source, so restart never re-clones
+        // the base OCI image and loses data. Reuse any intact, non-empty rootfs —
+        // NOT gated on /bin|/nix, so images without those top-level dirs still
+        // resume. Volume machines resume their volume rootfs already; a missing or
+        // broken (nested) dir falls back to the base image.
+        let own_rootfs = machine_dir_or_tmp(&vm.id).join("rootfs");
+        let intact = own_rootfs.symlink_metadata().is_ok()
+            && !own_rootfs.join("rootfs").exists()
+            && std::fs::read_dir(&own_rootfs)
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(false);
+        if volume.is_none() && intact {
+            boot_linux_from(largs, Some(own_rootfs), &[])
+        } else {
+            boot_linux(largs)
+        }
     } else if is_freebsd || is_netbsd {
+        // Boot the machine's own disk in place when it exists (see above), so a
+        // snapshot machine keeps its data; otherwise fall back to the base image.
+        let reuse = existing_disk.is_some();
         let args = BsdArgs {
             version: None, // bundled image (as originally booted)
             firmware: None,
@@ -3020,7 +3066,7 @@ fn cmd_start(id: &str) -> Result<()> {
             disk_size: None,
             run: RunConfig {
                 detach: true,
-                persist: false,
+                persist: reuse, // in-place boot of the existing disk (no re-clone)
                 volume,
             },
             net,
@@ -3029,11 +3075,18 @@ fn cmd_start(id: &str) -> Result<()> {
             repo: None,
             command: vec![],
         };
-        if is_freebsd {
-            boot_freebsd(args)
-        } else {
-            boot_netbsd(args)
+        let result = match (is_freebsd, existing_disk) {
+            (true, Some(d)) => boot_freebsd_disk(args, Some(d)),
+            (true, None) => boot_freebsd(args),
+            (false, Some(d)) => boot_netbsd_disk(args, Some(d)),
+            (false, None) => boot_netbsd(args),
+        };
+        // Booting the in-place disk relabels the row's image to `root.<ext>`;
+        // restore the original label so `ps` still shows what it was booted from.
+        if reuse && result.is_ok() {
+            db.set_machine_image(&vm.id, &vm.image).ok();
         }
+        result
     } else {
         // Put the id back for any future attempt and report clearly.
         anyhow::bail!(
@@ -3135,6 +3188,45 @@ fn valid_flavor_name(name: &str) -> Result<()> {
 ///
 /// Best-effort: a machine that's already stopped, or one without an agent, is
 /// snapshotted as-is.
+/// True for a BSD guest (FreeBSD/NetBSD), whose live UFS must be cleanly
+/// unmounted before its disk is reused or cloned.
+fn is_bsd_machine(vm: &db::MachineRow) -> bool {
+    matches!(
+        vm.kind.as_str(),
+        "firmware" | "kernel" | "freebsd" | "netbsd"
+    ) || vm.image.to_lowercase().starts_with("freebsd")
+        || vm.image.to_lowercase().starts_with("netbsd")
+}
+
+/// Cleanly power off a running BSD guest via its agent (`shutdown -p now`) and
+/// wait for the VM process to exit, so its UFS is unmounted and the on-disk
+/// image is left consistent. A live UFS killed mid-write is *torn* — the next
+/// boot's `fsck` discards recent changes — and even a `sync` first isn't enough;
+/// only a clean unmount is. Returns true if the guest powered off on its own.
+/// Best-effort: false if it wasn't running, had no agent, or didn't exit in time.
+fn graceful_poweroff_bsd(vm: &db::MachineRow) -> bool {
+    let Some(pid) = vm.pid.filter(|p| db::pid_alive(*p)) else {
+        return false;
+    };
+    let vdir = std::path::PathBuf::from(&vm.state_dir);
+    let Some(port) = agent::read_port(&vdir) else {
+        return false;
+    };
+    let argv = [
+        "sh".to_string(),
+        "-c".to_string(),
+        "sync; nohup shutdown -p now >/dev/null 2>&1 & sleep 1".to_string(),
+    ];
+    let _ = agent::exec(port, &argv, &[], false);
+    for _ in 0..80 {
+        if !db::pid_alive(pid) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    false
+}
+
 fn quiesce_guest_for_snapshot(vm: &db::MachineRow) {
     if !vm.pid.map(db::pid_alive).unwrap_or(false) {
         return;
@@ -3156,23 +3248,9 @@ fn quiesce_guest_for_snapshot(vm: &db::MachineRow) {
     }
 
     // BSD: clean poweroff so UFS is unmounted and the image is consistent.
+    let _ = port; // readiness already checked; the helper re-reads the port
     info!(id = %vm.id, "powering off guest for a consistent BSD snapshot…");
-    let argv = [
-        "sh".to_string(),
-        "-c".to_string(),
-        "sync; nohup shutdown -p now >/dev/null 2>&1 & sleep 1".to_string(),
-    ];
-    let _ = agent::exec(port, &argv, &[], false);
-
-    // Wait for the VM process to exit (its clean unmount is then done).
-    if let Some(pid) = vm.pid {
-        for _ in 0..80 {
-            if !db::pid_alive(pid) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        }
-    }
+    graceful_poweroff_bsd(vm);
     if let Ok(db) = db::Db::open() {
         let _ = db.set_machine_status(&vm.id, "exited", Some(0));
     }

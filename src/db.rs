@@ -426,6 +426,21 @@ impl Db {
 
     /// Update a machine's recorded vCPU / memory. libkrun fixes VM resources at
     /// boot, so this takes effect on the next `start` (an in-place restart).
+    /// Overwrite a machine's recorded image label (e.g. to keep a snapshot
+    /// machine's original label after a restart that boots its in-place disk).
+    pub fn set_machine_image(&self, id: &str, image: &str) -> Result<()> {
+        self.rt
+            .block_on(async {
+                sqlx::query("UPDATE machines SET image = ? WHERE id = ?")
+                    .bind(image)
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .map_err(Into::into)
+    }
+
     pub fn set_machine_resources(&self, id: &str, cpus: i64, mem: i64) -> Result<()> {
         self.rt
             .block_on(async {

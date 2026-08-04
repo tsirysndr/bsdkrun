@@ -5,6 +5,7 @@ description = "Gleam SDK for bsdkrun — a Firecracker-style microVM launcher fo
 licences = ["MIT"]
 repository = { type = "github", user = "tsirysndr", repo = "bsdkrun", path = "sdk/gleam", tag = "gleam-sdk-v1.0.0" }
 links = [{ title = "Website", href = "https://github.com/tsirysndr/bsdkrun" }]
+tag_prefix = "gleam-"
 
 # The SDK shells out to the `bsdkrun` binary through an Erlang port, so the
 # Erlang target is the only one supported.

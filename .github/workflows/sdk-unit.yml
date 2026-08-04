@@ -1,0 +1,97 @@
+name: sdk unit (Python / Ruby / Elixir / Gleam)
+
+# Unit + argv-builder tests for the non-TypeScript SDKs. These never boot a
+# guest, so they need no /dev/kvm and no libkrun — they exercise argv building,
+# JSON decoding, error rendering, and (for Gleam) real subprocess round-trips
+# through the Erlang FFI. The TypeScript SDK's e2e suite lives in e2e-sdk.yml.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - "main"
+    paths:
+      - "sdk/python/**"
+      - "sdk/ruby/**"
+      - "sdk/elixir/**"
+      - "sdk/gleam/**"
+      - ".github/workflows/sdk-unit.yml"
+  pull_request:
+    paths:
+      - "sdk/python/**"
+      - "sdk/ruby/**"
+      - "sdk/elixir/**"
+      - "sdk/gleam/**"
+      - ".github/workflows/sdk-unit.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: python
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: sdk/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run mypy
+      - run: uv run pytest
+
+  ruby:
+    name: ruby
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: sdk/ruby
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - name: Validate the gemspec
+        run: ruby -e 'Gem::Specification.load("bsdkrun.gemspec").validate'
+      - run: rake test
+
+  elixir:
+    name: elixir
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: sdk/elixir
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          elixir-version: "1.18"
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - run: mix test
+
+  gleam:
+    name: gleam
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: sdk/gleam
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          gleam-version: "1.17.0"
+      - run: gleam deps download
+      - run: gleam format --check src test
+      - run: gleam test

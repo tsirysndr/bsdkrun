@@ -73,27 +73,36 @@ export default function MachinesView() {
   const [removeTarget, setRemoveTarget] = useState<Machine | null>(null);
   const toast = useToast();
 
-  // Per-row in-flight ops so we can spin only the clicked machine. Set on click,
-  // always cleared in the handler's `finally` — never left waiting on polling.
-  const [pending, setPending] = useState<Set<string>>(new Set());
-  const setRowBusy = (id: string, on: boolean) =>
+  // Per-row in-flight op so we can spin only the clicked machine, tracking its
+  // KIND ("start" | "stop") so we clear it on reaching the target state — not
+  // the wrong one. Set on click, always cleared in the handler's `finally` too.
+  const [pending, setPending] = useState<Map<string, "start" | "stop">>(
+    new Map(),
+  );
+  const setRowBusy = (id: string, op: "start" | "stop" | null) =>
     setPending((s) => {
-      const n = new Set(s);
-      on ? n.add(id) : n.delete(id);
+      const n = new Map(s);
+      op ? n.set(id, op) : n.delete(id);
       return n;
     });
 
-  // Belt-and-suspenders: clear a start/restart spinner as soon as the machine
-  // is observed running, even if the mutation promise is slow to settle (a cold
-  // boot can take a while). Runs off the background poll, so it no longer needs
-  // a focus/re-render to fire.
+  // Belt-and-suspenders: clear a spinner as soon as the machine reaches its
+  // target state, even if the mutation promise is slow to settle (a cold boot,
+  // or a BSD clean-poweroff, can take a while). A "start" clears once the
+  // machine is observed running; a "stop" once it's observed NOT running.
+  // Crucially, a "stop" must NOT clear while the machine is still running —
+  // otherwise the stop spinner vanishes the instant it's clicked.
   useEffect(() => {
     if (pending.size === 0) return;
     const runningIds = new Set(
       machines.filter((m) => m.running).map((m) => m.id),
     );
     setPending((s) => {
-      const next = new Set([...s].filter((id) => !runningIds.has(id)));
+      const next = new Map(s);
+      for (const [id, op] of s) {
+        if (op === "start" && runningIds.has(id)) next.delete(id);
+        if (op === "stop" && !runningIds.has(id)) next.delete(id);
+      }
       return next.size === s.size ? s : next;
     });
   }, [machines, pending.size]);
@@ -134,7 +143,7 @@ export default function MachinesView() {
   );
 
   const stop = async (m: Machine) => {
-    setRowBusy(m.id, true);
+    setRowBusy(m.id, "stop");
     try {
       await stopMutation.mutateAsync(m.id);
       await refetch();
@@ -142,13 +151,13 @@ export default function MachinesView() {
     } catch (e) {
       toast("error", "Failed to stop machine", String(e));
     } finally {
-      setRowBusy(m.id, false);
+      setRowBusy(m.id, null);
     }
   };
 
   // In-place restart: re-boots the SAME machine id (bsdkrun start <id>).
   const start = async (m: Machine) => {
-    setRowBusy(m.id, true);
+    setRowBusy(m.id, "start");
     try {
       await restartMutation.mutateAsync(m.id);
       await refetch();
@@ -156,7 +165,7 @@ export default function MachinesView() {
     } catch (e) {
       toast("error", "Failed to start machine", String(e));
     } finally {
-      setRowBusy(m.id, false);
+      setRowBusy(m.id, null);
     }
   };
 

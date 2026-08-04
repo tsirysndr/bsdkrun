@@ -190,6 +190,18 @@ All errors extend `BsdkrunError`:
   methods, and by the agent helpers.
 - `SandboxNotFound` — `Sandbox.get` matched no machine.
 
+## Try it interactively
+
+```sh
+uv run console.py
+```
+
+Starts IPython with the SDK preloaded — `Sandbox`, the `images` / `volumes` /
+`networks` / `system` namespaces, and a `ps()` shorthand for
+`Sandbox.list(all=True)`. Pass `--bin ../../target/release/bsdkrun` to drive a
+locally built binary for the session. Falls back to the stdlib REPL if IPython
+isn't installed.
+
 ## Development
 
 The SDK is developed with [uv](https://docs.astral.sh/uv/). From `sdk/python`:

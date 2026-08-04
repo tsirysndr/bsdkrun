@@ -201,6 +201,18 @@ All errors extend `Bsdkrun::Error`:
   by the lifecycle/namespace helpers, and by the agent helpers.
 - `Bsdkrun::SandboxNotFound` — `Sandbox.get` matched no machine.
 
+## Try it interactively
+
+```sh
+bin/console
+```
+
+Starts IRB with the SDK preloaded — `Bsdkrun::Sandbox`, the `Bsdkrun.images` /
+`.volumes` / `.networks` / `.system` namespaces, plus `ps` (every machine,
+exited ones included) and `last` (the newest one). Pass
+`--bin ../../target/release/bsdkrun` to drive a locally built binary for the
+session.
+
 ## License
 
 MIT

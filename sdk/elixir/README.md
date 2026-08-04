@@ -182,6 +182,20 @@ The `%Bsdkrun.Error{}` exception has a `:kind`:
 The bang variants (`Bsdkrun.create!/1`, `Bsdkrun.Sandbox.get!/1`,
 `Bsdkrun.Sandbox.list!/1`) unwrap the value or `raise` the error.
 
+## Try it interactively
+
+```sh
+iex -S mix
+```
+
+A `.iex.exs` in this directory aliases the SDK's modules and defines `ps/0`
+(every machine, exited ones included) and `last/0` (the newest one), so the API
+is in scope at the prompt. To drive a locally built binary for the session:
+
+```sh
+BSDKRUN_BIN=../../target/release/bsdkrun iex -S mix
+```
+
 ## License
 
 MIT

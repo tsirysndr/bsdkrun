@@ -1072,6 +1072,20 @@ let assert Ok(box) = bsdkrun.create(args.linux("alpine"))
 let assert Ok(res) = bsdkrun.exec(box, ["uname", "-a"])
 ```
 
+### Try it interactively
+
+Each SDK ships a console with the binary resolved and the API already in scope, so you can
+poke at real machines without writing a script:
+
+```sh
+cd sdk/python && uv run console.py    # IPython
+cd sdk/ruby   && bin/console          # IRB
+cd sdk/elixir && iex -S mix           # IEx, via .iex.exs
+```
+
+All three define `ps` (every machine, exited ones included) and accept a
+`--bin path/to/bsdkrun` override (`BSDKRUN_BIN=…` for IEx) to drive a locally built binary.
+
 See each SDK's README for the full API. The TypeScript SDK is covered by an
 [end-to-end CI job](.github/workflows/e2e-sdk.yml) that boots a real microVM under KVM; the
 others run [unit + argv tests](.github/workflows/sdk-unit.yml) on every change.

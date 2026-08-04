@@ -152,6 +152,28 @@ describe("buildCreateArgs", () => {
     ]);
   });
 
+  test("network + name: joins a global network with a DNS name", () => {
+    const args = buildCreateArgs({
+      os: "linux",
+      image: "postgres",
+      name: "db",
+      net: { network: "devnet" },
+    });
+    expect(args).toContain("--network");
+    expect(args).toContain("devnet");
+    expect(args).toContain("--name");
+    expect(args).toContain("db");
+    // order: --network comes from netArgs, --name after it
+    expect(args.indexOf("--name")).toBeGreaterThan(args.indexOf("--network"));
+  });
+
+  test("name works across guest kinds (freebsd)", () => {
+    const args = buildCreateArgs({ os: "freebsd", name: "bsd", net: { network: "n" } });
+    expect(args).toContain("--name");
+    expect(args).toContain("bsd");
+    expect(args).toContain("--network");
+  });
+
   test("kernel: format, cmdline, disk", () => {
     const args = buildCreateArgs({
       os: "kernel",

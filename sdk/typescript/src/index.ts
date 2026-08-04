@@ -40,6 +40,16 @@ export type { Sh, ShellRunOptions, ShellRunner } from "./shell.js";
 
 export { images, listImages } from "./images.js";
 export { volumes, listVolumes, removeVolume } from "./volumes.js";
+export {
+  networks,
+  listNetworks,
+  createNetwork,
+  removeNetwork,
+  connectNetwork,
+  disconnectNetwork,
+  syncNetwork,
+  networkMembers,
+} from "./networks.js";
 export { probe, fetchImage, versions, growDisk } from "./system.js";
 
 export { setBinaryPath, resolveBinary, resetBinaryCache } from "./binary.js";
@@ -80,4 +90,5 @@ export type {
   SandboxInfo,
   ImageInfo,
   VolumeInfo,
+  NetworkInfo,
 } from "./types.js";

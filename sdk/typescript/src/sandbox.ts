@@ -46,6 +46,7 @@ function mapInfo(row: Record<string, unknown>): SandboxInfo {
     v == null ? null : Number(v);
   return {
     id: String(row.id),
+    name: (row.name as string | null) ?? null,
     image: String(row.image),
     kind: String(row.kind),
     command: String(row.command ?? ""),
@@ -58,6 +59,8 @@ function mapInfo(row: Record<string, unknown>): SandboxInfo {
     mem: Number(row.mem),
     volume: (row.volume as string | null) ?? null,
     stateDir: String(row.state_dir),
+    network: (row.network as string | null) ?? null,
+    netIp: (row.net_ip as string | null) ?? null,
     createdAt: Number(row.created_at),
     finishedAt: num(row.finished_at),
   };
@@ -252,12 +255,65 @@ export class Sandbox {
     return (await this.status())?.running ?? false;
   }
 
-  /** Stop the machine (SIGTERM). */
+  /**
+   * Stop the machine. BSD guests are cleanly powered off (so their UFS is
+   * consistent for the next {@link start}); Linux is SIGTERM'd.
+   */
   async stop(): Promise<void> {
-    const res = await runCli(["stop", this.id]);
+    await this.#lifecycle(["stop", this.id], "bsdkrun stop");
+  }
+
+  /**
+   * Restart a stopped machine in place — same id, image/resources/volume, and
+   * its own disk/rootfs, so snapshot + runtime data resume (like `docker
+   * start`). Re-joins its recorded network. Boots detached.
+   */
+  async start(): Promise<void> {
+    await this.#lifecycle(["start", this.id], "bsdkrun start");
+  }
+
+  /** Remove the machine and its state. `force` stops it first if running. */
+  async remove(opts: { force?: boolean } = {}): Promise<void> {
+    const args = ["rm"];
+    if (opts.force) args.push("--force");
+    args.push(this.id);
+    await this.#lifecycle(args, "bsdkrun rm");
+  }
+
+  /** Change the recorded vCPU / RAM. Applies on the next {@link start}. */
+  async update(opts: { cpus?: number; mem?: number }): Promise<void> {
+    const args = ["update", this.id];
+    if (opts.cpus != null) args.push("--cpus", String(opts.cpus));
+    if (opts.mem != null) args.push("--mem", String(opts.mem));
+    await this.#lifecycle(args, "bsdkrun update");
+  }
+
+  /**
+   * Join or switch this machine to a global network. Applies on the next
+   * {@link start} (a VM's NIC is fixed at boot). Create the network first with
+   * {@link networks.create}.
+   */
+  async connectNetwork(network: string): Promise<void> {
+    await this.#lifecycle(
+      ["network", "connect", this.id, network],
+      "bsdkrun network connect",
+    );
+  }
+
+  /** Detach this machine from its network. Applies on the next {@link start}. */
+  async disconnectNetwork(): Promise<void> {
+    await this.#lifecycle(
+      ["network", "disconnect", this.id],
+      "bsdkrun network disconnect",
+    );
+  }
+
+  /** Run a fire-and-forget lifecycle CLI command, throwing on failure. */
+  async #lifecycle(args: string[], label: string): Promise<void> {
+    const res = await runCli(args);
     if (res.exitCode !== 0) {
       throw new CommandFailedError(
-        new CommandResult(res.stdout, res.stderr, res.exitCode, "bsdkrun stop"),
+        new CommandResult(res.stdout, res.stderr, res.exitCode, label),
       );
     }
   }

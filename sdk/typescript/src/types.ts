@@ -15,6 +15,12 @@ export interface NetworkOptions {
   ports?: Array<PortForward | string>;
   /** Override the guest NIC MAC address. */
   mac?: string;
+  /**
+   * Join a global network so the machine shares a subnet with, and can reach
+   * (by IP and by name), other members. Create the network first with
+   * {@link networks.create}. Its DNS name is the machine's `name`.
+   */
+  network?: string;
 }
 
 /** vCPU / RAM sizing, shared by every guest kind. */
@@ -28,6 +34,11 @@ export interface ResourceOptions {
 /** Options common to every `create` call. */
 export interface BaseCreateOptions extends ResourceOptions {
   net?: NetworkOptions;
+  /**
+   * Machine name — used as its DNS name on a `net.network`, and shown in
+   * {@link Sandbox.list}. Defaults to a generated Docker-style name.
+   */
+  name?: string;
   /** bsdkrun `--log-level` for the boot (0=off .. 5=trace). Default 1. */
   logLevel?: number;
 }
@@ -131,6 +142,8 @@ export type GuestKind = "linux" | "freebsd" | "netbsd" | "firmware" | "kernel";
 /** A machine as reported by `bsdkrun ps --json`. */
 export interface SandboxInfo {
   id: string;
+  /** Machine name (its DNS name on a network), or null if unnamed. */
+  name: string | null;
   image: string;
   kind: GuestKind | string;
   command: string;
@@ -143,6 +156,10 @@ export interface SandboxInfo {
   mem: number;
   volume: string | null;
   stateDir: string;
+  /** Global network the machine belongs to, if any. */
+  network: string | null;
+  /** The machine's assigned IP on that network, if any. */
+  netIp: string | null;
   /** Unix epoch seconds. */
   createdAt: number;
   /** Unix epoch seconds, or null while running. */
@@ -168,4 +185,21 @@ export interface VolumeInfo {
   size: string;
   createdAt: number | null;
   tracked: boolean;
+}
+
+/** A global network as reported by `bsdkrun network ls --json`. */
+export interface NetworkInfo {
+  name: string;
+  /** The shared subnet, e.g. `192.168.127.0/24`. */
+  subnet: string;
+  /** Gateway address, e.g. `192.168.127.1`. */
+  gateway: string;
+  /** Total members recorded. */
+  members: number;
+  /** Members currently running. */
+  running: number;
+  /** Whether the network's shared switch (gvproxy) is up. */
+  up: boolean;
+  /** Unix epoch seconds, or null. */
+  createdAt: number | null;
 }

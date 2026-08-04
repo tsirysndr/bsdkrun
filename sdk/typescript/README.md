@@ -164,18 +164,25 @@ await box.isRunning();   // boolean
 await box.logs();        // console log (string)
 box.followLogs();        // live stream (child process)
 box.shell();             // interactive shell (inherits the terminal)
-await box.stop();
+await box.stop();        // BSD guests clean-poweroff; Linux SIGTERM
+await box.start();       // restart in place — resumes its own disk/rootfs (data persists)
+await box.update({ cpus: 4, mem: 2048 }); // applies on next start
+await box.remove({ force: true });
 ```
+
+`stop`/`start` **persist your data**: `start` resumes the machine's own
+disk/rootfs (any committed snapshot + runtime changes), like `docker start`.
 
 Host-level namespaces:
 
 ```ts
-import { images, volumes, probe, fetchImage, versions } from "@bsdkrun/sdk";
+import { images, volumes, networks, probe, fetchImage, versions } from "@bsdkrun/sdk";
 
 await probe();                              // toolchain sanity check
 await images.list();                        // ImageInfo[]
 await volumes.list();                       // VolumeInfo[]
 await volumes.remove("web", { force: true });
+await networks.list();                      // NetworkInfo[]
 await fetchImage("freebsd", { version: "14.3" });
 await versions("netbsd");
 ```
@@ -229,6 +236,40 @@ await box.tailscale.status();
 // not Alpine, not the BSD guests)
 await box.systemd.setup();
 ```
+
+### Global networks — reach machines by name
+
+Opt machines into a **shared network** so they get distinct IPs on one subnet and
+reach each other **by IP and by name** (docker-compose style), with internal DNS:
+
+```ts
+import { Sandbox, networks } from "@bsdkrun/sdk";
+
+await networks.create("devnet");
+
+const db  = await Sandbox.create({ os: "linux", image: "postgres", name: "db",  net: { network: "devnet" } });
+const api = await Sandbox.create({ os: "linux", image: "myapi",    name: "api", net: { network: "devnet" } });
+
+await api.sh`ping -c1 db`;              // resolves db → its IP on devnet
+
+// inspect + manage
+await networks.list();                 // NetworkInfo[]
+await networks.members("devnet");      // SandboxInfo[] on the network
+const info = await db.status();        // info.network === "devnet", info.netIp set
+
+// edit membership (applies on next start — a VM's NIC is fixed at boot)
+await api.connectNetwork("devnet");    // or networks.connect(api.id, "devnet")
+await api.disconnectNetwork();
+await api.start();                     // re-joins with the new membership
+
+await networks.sync("devnet");         // refresh members' /etc/hosts (fixes NetBSD name lookup)
+await networks.remove("devnet", { force: true });
+```
+
+Names resolve on Linux and FreeBSD via the network's DNS; **NetBSD** resolves via
+a synced `/etc/hosts` block (its resolver rejects the DNS's AAAA `NXDOMAIN`) —
+joins auto-sync, and `networks.sync` refreshes an existing network without
+restarting members.
 
 ## Errors
 

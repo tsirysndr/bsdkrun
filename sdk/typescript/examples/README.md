@@ -22,3 +22,4 @@ deno run -A examples/01-hello-linux.ts
 | [`06-bsd-guests.ts`](./06-bsd-guests.ts)                 | FreeBSD / NetBSD guests                        |
 | [`07-images-and-volumes.ts`](./07-images-and-volumes.ts) | `images`, `volumes`, `probe`                   |
 | [`08-browser-terminal/`](./08-browser-terminal)          | Interactive xterm.js terminal (WebSocket)      |
+| [`09-networks.ts`](./09-networks.ts)                     | Global networks — reach machines by name       |

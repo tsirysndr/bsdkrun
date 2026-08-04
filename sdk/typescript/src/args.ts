@@ -13,7 +13,12 @@ function netArgs(net: NetworkOptions | undefined): string[] {
     a.push("--port", typeof p === "string" ? p : `${p.host}:${p.guest}`);
   }
   if (net.mac) a.push("--mac", net.mac);
+  if (net.network) a.push("--network", net.network);
   return a;
+}
+
+function nameArgs(o: { name?: string }): string[] {
+  return o.name ? ["--name", o.name] : [];
 }
 
 function vmArgs(o: ResourceOptions): string[] {
@@ -46,7 +51,7 @@ export function buildCreateArgs(opts: CreateOptions): string[] {
       for (const m of opts.mounts ?? []) a.push("--mount", m);
       if (opts.entrypoint) a.push("--entrypoint", opts.entrypoint);
       if (opts.console) a.push("--console", opts.console);
-      a.push(...netArgs(opts.net), ...vmArgs(opts));
+      a.push(...netArgs(opts.net), ...nameArgs(opts), ...vmArgs(opts));
       if (opts.command?.length) a.push("--", ...opts.command);
       return a;
     }
@@ -55,14 +60,14 @@ export function buildCreateArgs(opts: CreateOptions): string[] {
       if (opts.version) a.push("--version", opts.version);
       if (opts.firmware) a.push("--firmware", opts.firmware);
       if (opts.force) a.push("--force");
-      a.push(...diskArgs(opts), ...netArgs(opts.net), ...vmArgs(opts));
+      a.push(...diskArgs(opts), ...netArgs(opts.net), ...nameArgs(opts), ...vmArgs(opts));
       return a;
     }
     case "netbsd": {
       const a = ["netbsd", "-d"];
       if (opts.version) a.push("--version", opts.version);
       if (opts.force) a.push("--force");
-      a.push(...diskArgs(opts), ...netArgs(opts.net), ...vmArgs(opts));
+      a.push(...diskArgs(opts), ...netArgs(opts.net), ...nameArgs(opts), ...vmArgs(opts));
       return a;
     }
     case "firmware": {
@@ -74,7 +79,7 @@ export function buildCreateArgs(opts: CreateOptions): string[] {
         opts.disk,
         "-d",
       ];
-      a.push(...diskArgs(opts), ...netArgs(opts.net), ...vmArgs(opts));
+      a.push(...diskArgs(opts), ...netArgs(opts.net), ...nameArgs(opts), ...vmArgs(opts));
       return a;
     }
     case "kernel": {
@@ -83,7 +88,7 @@ export function buildCreateArgs(opts: CreateOptions): string[] {
       if (opts.initramfs) a.push("--initramfs", opts.initramfs);
       if (opts.cmdline) a.push("--cmdline", opts.cmdline);
       if (opts.disk) a.push("--disk", opts.disk);
-      a.push(...diskArgs(opts), ...netArgs(opts.net), ...vmArgs(opts));
+      a.push(...diskArgs(opts), ...netArgs(opts.net), ...nameArgs(opts), ...vmArgs(opts));
       return a;
     }
   }

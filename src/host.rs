@@ -13,6 +13,40 @@ use std::process::Command;
 
 use anyhow::{bail, Result};
 
+/// Remove a directory tree even when it contains read-only entries. A nix-based
+/// rootfs holds a `/nix/store` whose directories are mode `0555`, so you can't
+/// unlink their contents without write permission on the dir — plain
+/// `remove_dir_all` fails partway and leaves the tree behind (which then makes a
+/// re-clone nest as `rootfs/rootfs`). chmod the tree writable first, then remove.
+pub fn force_remove_dir_all(path: &Path) {
+    if path.symlink_metadata().is_err() {
+        return;
+    }
+    // chmod the tree writable so `rm` can unlink entries inside 0555 nix dirs,
+    // then shell out to `rm -rf` (Rust's remove_dir_all fails partway on those).
+    let _ = Command::new("chmod").args(["-R", "u+w"]).arg(path).status();
+    let _ = Command::new("rm").args(["-rf"]).arg(path).status();
+}
+
+/// Like [`force_remove_dir_all`] but fire-and-forget: spawns the chmod+rm in the
+/// background and returns immediately. `rm -rf` of a big read-only nix store is
+/// slow; a restart shouldn't block on GC'ing the old clone it already renamed
+/// aside. Detached (setsid) so it survives this process exiting.
+pub fn force_remove_dir_all_async(path: &Path) {
+    if path.symlink_metadata().is_err() {
+        return;
+    }
+    let p = path.to_string_lossy().replace('\'', r"'\''");
+    // `nohup … &` (portable — macOS has no `setsid` command) so the cleanup
+    // outlives this short-lived process. Detached stdio so it can't hold pipes.
+    let _ = Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!(
+            "nohup sh -c 'chmod -R u+w '\\''{p}'\\'' 2>/dev/null; rm -rf '\\''{p}'\\''' </dev/null >/dev/null 2>&1 &"
+        ))
+        .spawn();
+}
+
 /// Supported CPU architectures (host == guest for a hardware-virtualized VM).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Arch {
@@ -116,7 +150,25 @@ fn sudo_available() -> bool {
 /// falling back to a plain copy. `recursive` clones a directory tree.
 #[cfg(target_os = "macos")]
 pub fn cow_copy(src: &Path, dst: &Path, recursive: bool) -> Result<()> {
-    // APFS clonefile(2) via `cp -c` / `cp -Rc`.
+    // A recursive clone (a whole rootfs) goes through clonefile(2) directly: it
+    // CoW-clones an ENTIRE directory tree in one syscall — ~10x faster than
+    // `cp -Rc`, which clonefiles each of the thousands of nix-store files one by
+    // one (~14s → ~1s for a nix image). Blocks are shared, so N machines from one
+    // image cost ~one image on disk. Requires `dst` to not exist (callers ensure
+    // this); falls back to `cp -Rc` / plain copy on any error (e.g. cross-device).
+    if recursive {
+        use std::os::unix::ffi::OsStrExt;
+        if let (Ok(s), Ok(d)) = (
+            std::ffi::CString::new(src.as_os_str().as_bytes()),
+            std::ffi::CString::new(dst.as_os_str().as_bytes()),
+        ) {
+            // clonefile(const char *src, const char *dst, int flags)
+            if unsafe { libc::clonefile(s.as_ptr(), d.as_ptr(), 0) } == 0 {
+                return Ok(());
+            }
+        }
+    }
+    // Fallback: `cp -c`/`-Rc` (per-file clonefile), then a plain copy.
     let flag = if recursive { "-Rc" } else { "-c" };
     if crate::fetch::run(Command::new("cp").arg(flag).arg(src).arg(dst), "cp (clone)").is_ok() {
         return Ok(());

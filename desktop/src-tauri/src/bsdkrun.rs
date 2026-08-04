@@ -142,6 +142,30 @@ pub async fn run_output(bin: &PathBuf, args: &[&str]) -> Result<String, BkError>
     Ok(s)
 }
 
+/// Run a subcommand and return only its exit code (no output capture beyond
+/// what's needed), never erroring on non-zero. Used for cheap probes.
+pub async fn run_code(bin: &PathBuf, args: &[&str]) -> i32 {
+    match tokio::time::timeout(Duration::from_secs(20), command(bin).args(args).output()).await {
+        Ok(Ok(out)) => out.status.code().unwrap_or(-1),
+        _ => -1,
+    }
+}
+
+/// Find an interactive shell that actually exists in the guest, trying common
+/// candidates via the agent (`exec <id> <sh> -c :`, exit 127 ⇒ not present).
+/// Prefers bash, then a PATH `sh`, then absolute paths. Returns the argv to run;
+/// falls back to `/bin/sh` if every probe fails (e.g. no agent — the caller's
+/// error handling then surfaces the real problem).
+pub async fn resolve_guest_shell(bin: &PathBuf, id: &str) -> Vec<String> {
+    for sh in ["bash", "sh", "/bin/bash", "/bin/sh", "/run/current-system/sw/bin/bash"] {
+        // 127 = spawn failed (not found). Anything else means the shell exists.
+        if run_code(bin, &["exec", id, sh, "-c", ":"]).await != 127 {
+            return vec![sh.to_string()];
+        }
+    }
+    vec!["/bin/sh".to_string()]
+}
+
 /// Launch a detached (`-d`) machine and return its id.
 ///
 /// CRITICAL: we must NOT use `.output()` here. `bsdkrun -d` forks a long-lived
@@ -161,6 +185,24 @@ pub async fn run_detached(bin: &PathBuf, args: &[&str]) -> Result<String, BkErro
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
 
+    // CRITICAL: continuously drain stderr into a shared bounded buffer. `bsdkrun`
+    // logs verbosely to stderr; if we don't read it, the ~64 KiB pipe fills, the
+    // CLI *blocks* on its next stderr write, the short-lived parent never exits,
+    // and `child.wait()` hangs forever — the real "Play spins forever" bug. This
+    // task keeps the pipe empty so the parent can always finish.
+    let err_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let err_buf2 = err_buf.clone();
+    let err_handle = tokio::spawn(async move {
+        let mut reader = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            let mut b = err_buf2.lock().unwrap();
+            if b.len() < 8000 {
+                b.push_str(&line);
+                b.push('\n');
+            }
+        }
+    });
+
     // First stdout line = machine id (terminated by '\n' before the parent
     // exits). read_line returns on the newline, so this can't hang on EOF.
     let mut lines = BufReader::new(stdout).lines();
@@ -169,29 +211,24 @@ pub async fn run_detached(bin: &PathBuf, args: &[&str]) -> Result<String, BkErro
         .map_err(|_| BkError::Io("timed out waiting for the machine to start".into()))?
         .map_err(|e| BkError::Io(e.to_string()))?;
 
+    // Keep draining stdout too (the VM grandchild inherits it) so it can't fill.
+    let out_handle = tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+
     // Wait for the (short-lived) parent to exit to learn its status.
     let status = tokio::time::timeout(Duration::from_secs(300), child.wait())
         .await
         .map_err(|_| BkError::Io("timed out launching machine".into()))?
         .map_err(|e| BkError::Io(e.to_string()))?;
 
+    // The grandchild keeps the pipes open, so the drain tasks never EOF — stop them.
+    out_handle.abort();
+    err_handle.abort();
+
     if !status.success() {
-        // Drain stderr briefly (bounded) for the failure reason.
-        let mut errbuf = String::new();
-        let mut errlines = BufReader::new(stderr).lines();
-        let _ = tokio::time::timeout(Duration::from_secs(3), async {
-            while let Ok(Some(l)) = errlines.next_line().await {
-                errbuf.push_str(&l);
-                errbuf.push('\n');
-                if errbuf.len() > 4000 {
-                    break;
-                }
-            }
-        })
-        .await;
+        let stderr = err_buf.lock().unwrap().trim().to_string();
         return Err(BkError::NonZero {
             code: status.code().unwrap_or(-1),
-            stderr: errbuf.trim().to_string(),
+            stderr,
         });
     }
 

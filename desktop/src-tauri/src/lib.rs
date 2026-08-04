@@ -422,6 +422,13 @@ async fn term_open(
     cols: u16,
 ) -> Result<String, String> {
     let bin = state.binary().map_err(|e| e.to_string())?;
+    // No explicit command: probe the guest for a shell that actually exists
+    // (nix images often lack /bin/sh), then open a PTY on it.
+    let command = if command.is_empty() {
+        bsdkrun::resolve_guest_shell(&bin, &id).await
+    } else {
+        command
+    };
     term::open(&app, &terminals, &bin, &id, command, rows.max(1), cols.max(1))
 }
 

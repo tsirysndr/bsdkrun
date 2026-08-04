@@ -293,12 +293,35 @@ pub fn prepare_virtiofs_root(
     std::fs::create_dir_all(machine_dir)
         .with_context(|| format!("creating {}", machine_dir.display()))?;
     let root = machine_dir.join("rootfs");
-    let _ = std::fs::remove_dir_all(&root);
+    // Reuse an intact per-machine rootfs (a restart of the SAME id) instead of
+    // re-cloning the whole image — cloning a large read-only nix rootfs takes
+    // ~20s, which is what made `start`/Play feel like it "spins forever". It's
+    // reusable when it exists, carries the image content (/nix or /bin), and is
+    // NOT a broken rootfs/rootfs nesting from an earlier failure. Fresh runs (new
+    // id → no rootfs) and broken clones fall through and clone.
+    let reusable = root.symlink_metadata().is_ok()
+        && root.join("rootfs").symlink_metadata().is_err()
+        && (root.join("nix").exists() || root.join("bin").exists());
+    if !reusable {
+        // Free the target path RELIABLY before cloning. `cp -Rc SRC DST` copies
+        // INTO DST when DST exists (→ rootfs/rootfs nesting → init not found →
+        // kernel panic), and a nix rootfs's read-only /nix/store can make a
+        // recursive delete flake — so rename any stale clone aside (rename needs
+        // write only on the parent, which we own), GC it best-effort, then clone.
+        if root.symlink_metadata().is_ok() {
+            let trash = machine_dir.join(format!(".rootfs.trash.{}", std::process::id()));
+            if std::fs::rename(&root, &trash).is_ok() {
+                crate::host::force_remove_dir_all_async(&trash);
+            } else {
+                crate::host::force_remove_dir_all(&root);
+            }
+        }
+        // Copy-on-write clone (APFS clonefile / Linux reflink); plain-copy fallback.
+        crate::host::cow_copy(cached_rootfs, &root, true)?;
+    }
 
-    // Copy-on-write clone (APFS clonefile / Linux reflink); plain-copy fallback.
-    crate::host::cow_copy(cached_rootfs, &root, true)?;
-
-    // Our init handles the same setup as the initramfs path (mounts, net, exec).
+    // (Re)write our init + agent every boot (cheap; also picks up bsdkrun
+    // upgrades even on a reused rootfs). The init handles mounts, net, exec.
     oci::write_rootfs_file(
         &root,
         VIRTIOFS_INIT.trim_start_matches('/'),
@@ -519,8 +542,6 @@ fn generate_init(ep: &Entrypoint, net: bool, persistent: bool, mounts: &[BindMou
          \techo '[bsdkrun] /etc/bsdkrun-systemd set but no systemd binary found; continuing'\n\
          fi\n",
     );
-    // Start the exec agent (TCP; for `exec`/`shell`) in the background.
-    s.push_str("[ -x /sbin/bsdkrun-agent ] && /sbin/bsdkrun-agent >/dev/null 2>&1 &\n");
     for e in &ep.env {
         if let Some((k, v)) = e.split_once('=') {
             // PATH is already exported (enriched with FHS + nix fallbacks) at the
@@ -548,6 +569,11 @@ fn generate_init(ep: &Entrypoint, net: bool, persistent: bool, mounts: &[BindMou
         };
         s.push_str(&format!("export HOME={}\n", sh_quote(&home)));
     }
+    // Start the exec agent (TCP; for `exec`/`shell`) in the background — AFTER
+    // the env + HOME exports above, so the agent (and every command it spawns
+    // for `exec`/`shell`) inherits them. Starting it earlier left agent-run
+    // shells with HOME=/ (nix: "$HOME ('/') is not owned by you").
+    s.push_str("[ -x /sbin/bsdkrun-agent ] && /sbin/bsdkrun-agent >/dev/null 2>&1 &\n");
     if !ep.workdir.is_empty() {
         s.push_str(&format!("cd {} 2>/dev/null\n", sh_quote(&ep.workdir)));
     }

@@ -164,6 +164,15 @@ export function useUpdateMachine() {
   });
 }
 
+export function useUpdateMachineNetwork() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, network }: { id: string; network: string | null }) =>
+      api.updateMachineNetwork(id, network),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.machines }),
+  });
+}
+
 export function useStopMachine() {
   const qc = useQueryClient();
   return useMutation({

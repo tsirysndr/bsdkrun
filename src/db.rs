@@ -85,6 +85,11 @@ pub struct MachineRow {
     pub created_at: String,
     pub finished_at: Option<String>,
     pub volume: Option<String>,
+    /// Global network this machine joins on (re)start, if any.
+    pub network: Option<String>,
+    /// Its assigned IP on that network (cleared when membership is edited; a
+    /// fresh IP is allocated / DHCP'd on the next start).
+    pub net_ip: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -440,7 +445,7 @@ impl Db {
             .block_on(async {
                 let rows = sqlx::query(
                     "SELECT id, name, image, kind, command, status, exit_code, pid, detached,
-                            cpus, mem, state_dir, created_at, finished_at, volume
+                            cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip
                      FROM machines ORDER BY created_at DESC",
                 )
                 .fetch_all(&self.pool)
@@ -456,7 +461,7 @@ impl Db {
         if let Some(row) = self.rt.block_on(async {
             sqlx::query(
                 "SELECT id, name, image, kind, command, status, exit_code, pid, detached,
-                        cpus, mem, state_dir, created_at, finished_at, volume
+                        cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip
                  FROM machines WHERE name = ? LIMIT 1",
             )
             .bind(prefix)
@@ -469,7 +474,7 @@ impl Db {
         let matches: Vec<MachineRow> = self.rt.block_on(async {
             let rows = sqlx::query(
                 "SELECT id, name, image, kind, command, status, exit_code, pid, detached,
-                        cpus, mem, state_dir, created_at, finished_at, volume
+                        cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip
                  FROM machines WHERE id LIKE ? ORDER BY created_at DESC",
             )
             .bind(format!("{prefix}%"))
@@ -784,6 +789,23 @@ impl Db {
             .map_err(Into::into)
     }
 
+    /// Edit a machine's network membership (join/switch/leave), clearing its
+    /// assigned IP so the next start allocates/DHCPs a fresh one on the target
+    /// network. `network = None` detaches it back to the default isolated stack.
+    /// Takes effect on the next `start`.
+    pub fn update_machine_network(&self, id: &str, network: Option<&str>) -> Result<()> {
+        self.rt
+            .block_on(async {
+                sqlx::query("UPDATE machines SET network = ?, net_ip = NULL WHERE id = ?")
+                    .bind(network)
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .map_err(Into::into)
+    }
+
     /// Members of a network: (name-or-id, assigned IP, pid) — for IP allocation
     /// and internal DNS. `name` falls back to the id when the machine is unnamed.
     pub fn network_members(&self, network: &str) -> Result<Vec<(String, String, Option<i64>)>> {
@@ -875,6 +897,8 @@ fn row_to_machine(r: sqlx::sqlite::SqliteRow) -> MachineRow {
         created_at: r.get("created_at"),
         finished_at: r.get("finished_at"),
         volume: r.get("volume"),
+        network: r.get("network"),
+        net_ip: r.get("net_ip"),
     }
 }
 

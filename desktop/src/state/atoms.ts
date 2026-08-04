@@ -99,6 +99,15 @@ export interface EditResourcesTarget {
 }
 export const editResourcesAtom = atom<EditResourcesTarget | null>(null);
 
+// The machine whose global-network membership is being edited; null ⇒ closed.
+export interface EditNetworkTarget {
+  id: string;
+  label: string;
+  network: string | null;
+  running: boolean;
+}
+export const editNetworkAtom = atom<EditNetworkTarget | null>(null);
+
 // Live state of a streaming flavor launch/build (the progress modal). null ⇒ closed.
 export interface LaunchState {
   launchId: string;

@@ -57,6 +57,8 @@ export const api = {
     invoke<void>("launch_machine", { launchId, spec }),
   updateMachine: (id: string, cpus: number, mem: number) =>
     invoke<void>("update_machine", { id, cpus, mem }),
+  updateMachineNetwork: (id: string, network: string | null) =>
+    invoke<void>("update_machine_network", { id, network }),
   stopMachine: (id: string) => invoke<void>("stop_machine", { id }),
   restartMachine: (id: string) => invoke<string>("restart_machine", { id }),
   removeMachine: (id: string, force: boolean) =>

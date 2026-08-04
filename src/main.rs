@@ -173,6 +173,10 @@ enum NetworkCmd {
     Ls(NetworkLsArgs),
     /// Remove one or more networks (refuses running members unless `-f`).
     Rm(NetworkRmArgs),
+    /// Connect a machine to a network (join/switch) — applies on next start.
+    Connect(NetworkConnectArgs),
+    /// Disconnect a machine from its network — applies on next start.
+    Disconnect(NetworkDisconnectArgs),
 }
 
 #[derive(Parser)]
@@ -198,6 +202,23 @@ struct NetworkRmArgs {
     /// Network name(s) to remove.
     #[arg(value_name = "NAME", required = true)]
     names: Vec<String>,
+}
+
+#[derive(Parser)]
+struct NetworkConnectArgs {
+    /// Machine id or name.
+    #[arg(value_name = "MACHINE")]
+    machine: String,
+    /// Network to join.
+    #[arg(value_name = "NETWORK")]
+    network: String,
+}
+
+#[derive(Parser)]
+struct NetworkDisconnectArgs {
+    /// Machine id or name.
+    #[arg(value_name = "MACHINE")]
+    machine: String,
 }
 
 #[derive(Parser)]
@@ -956,6 +977,8 @@ fn main() -> Result<()> {
             NetworkCmd::Create(a) => network::cmd_create(&a.name),
             NetworkCmd::Ls(a) => network::cmd_ls(a.json),
             NetworkCmd::Rm(a) => network::cmd_rm(&a.names, a.force),
+            NetworkCmd::Connect(a) => network::cmd_connect(&a.machine, &a.network),
+            NetworkCmd::Disconnect(a) => network::cmd_disconnect(&a.machine),
         },
     }
 }
@@ -2614,6 +2637,8 @@ fn cmd_ps(all: bool, json: bool) -> Result<()> {
                 "state_dir": m.state_dir,
                 "created_at": m.created_at,
                 "finished_at": m.finished_at,
+                "network": m.network,
+                "net_ip": m.net_ip,
             }));
         }
         println!("{}", serde_json::to_string(&out)?);
@@ -2949,12 +2974,19 @@ fn cmd_start(id: &str) -> Result<()> {
         names::set_override(name);
     }
 
+    // Re-join the recorded global network on restart (its membership is stored
+    // in the DB and edited via `network connect/disconnect`). Reuse the member
+    // name so the derived MAC — and thus the BSD DHCP lease — stays stable; hint
+    // the previously-assigned IP so a plain restart keeps its address.
+    if let Some(ip) = vm.net_ip.as_deref().filter(|s| !s.is_empty()) {
+        std::env::set_var("BSDKRUN_NET_PREF_IP", ip);
+    }
     let net = NetConfig {
         no_net: false,
         ports: vec![],
         mac: None,
-        network: None,
-        name: None,
+        network: vm.network.clone(),
+        name: vm.name.clone(),
     };
     let vmcfg = VmConfig { cpus, mem };
 

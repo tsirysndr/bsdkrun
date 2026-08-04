@@ -131,7 +131,12 @@ fn spawn_pty(
 ) -> Result<String, String> {
     let pty = native_pty_system();
     let pair = pty
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| e.to_string())?;
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
@@ -164,7 +169,10 @@ fn spawn_pty(
                 Ok(n) => {
                     let _ = app2.emit(
                         "term://data",
-                        TermData { session: sid.clone(), bytes: buf[..n].to_vec() },
+                        TermData {
+                            session: sid.clone(),
+                            bytes: buf[..n].to_vec(),
+                        },
                     );
                 }
             }
@@ -177,7 +185,13 @@ fn spawn_pty(
                 Some(c as i32)
             })
         };
-        let _ = app2.emit("term://exit", TermExit { session: sid.clone(), code });
+        let _ = app2.emit(
+            "term://exit",
+            TermExit {
+                session: sid.clone(),
+                code,
+            },
+        );
     });
 
     Ok(session_id)
@@ -204,7 +218,12 @@ pub fn resize(sessions: &Terminals, session_id: &str, rows: u16, cols: u16) -> R
     let s = session(sessions, session_id)?;
     let master = s.master.lock().unwrap();
     master
-        .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| e.to_string())
 }
 
@@ -218,7 +237,9 @@ pub fn close(sessions: &Terminals, session: &str) -> Result<(), String> {
 // ---- live log streaming ---------------------------------------------------
 
 #[derive(Default)]
-pub struct LogStreams(pub Mutex<HashMap<String, Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>>>);
+pub struct LogStreams(
+    pub Mutex<HashMap<String, Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>>>,
+);
 
 #[derive(Clone, Serialize)]
 struct LogLine {
@@ -245,7 +266,12 @@ pub fn start_logs(
 
     let pty = native_pty_system();
     let pair = pty
-        .openpty(PtySize { rows: 40, cols: 120, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows: 40,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .map_err(|e| e.to_string())?;
     let mut cmd = CommandBuilder::new(bin);
     cmd.arg("logs");
@@ -281,14 +307,26 @@ pub fn start_logs(
                     if let Some(pos) = acc.iter().rposition(|&b| b == b'\n') {
                         let chunk: Vec<u8> = acc.drain(..=pos).collect();
                         let line = String::from_utf8_lossy(&chunk).into_owned();
-                        let _ = app2.emit("log://line", LogLine { id: id.clone(), line });
+                        let _ = app2.emit(
+                            "log://line",
+                            LogLine {
+                                id: id.clone(),
+                                line,
+                            },
+                        );
                     }
                 }
             }
         }
         if !acc.is_empty() {
             let line = String::from_utf8_lossy(&acc).into_owned();
-            let _ = app2.emit("log://line", LogLine { id: id.clone(), line });
+            let _ = app2.emit(
+                "log://line",
+                LogLine {
+                    id: id.clone(),
+                    line,
+                },
+            );
         }
         let _ = app2.emit("log://end", LogEnd { id: id.clone() });
     });

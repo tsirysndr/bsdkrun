@@ -18,6 +18,8 @@ export interface Machine {
   state_dir: string | null;
   created_at: string | null;
   finished_at: string | null;
+  network: string | null;
+  net_ip: string | null;
 }
 
 export interface Image {

@@ -20,12 +20,14 @@ import {
   IconCopy,
   IconCamera,
   IconCpu,
+  IconNetwork,
   IconTrash,
   IconSettingsBolt,
 } from "@tabler/icons-react";
 import { useSetAtom } from "jotai";
 import {
   commitTargetAtom,
+  editNetworkAtom,
   editResourcesAtom,
   selectedMachineAtom,
 } from "../state/atoms";
@@ -80,6 +82,16 @@ function Inspect({ m }: { m: Machine }) {
       <Row label="vCPUs" value={m.cpus != null ? String(m.cpus) : "—"} />
       <Row label="Memory" value={m.mem != null ? `${m.mem} MiB` : "—"} />
       <Row label="Volume" value={m.volume || "—"} />
+      <Row
+        label="Network"
+        value={
+          m.network
+            ? m.net_ip
+              ? `${m.network} (${m.net_ip})`
+              : m.network
+            : "— (isolated)"
+        }
+      />
       <Row label="Created" value={m.created_at || "—"} />
       {m.finished_at && <Row label="Finished" value={m.finished_at} />}
       <Row label="State dir" value={m.state_dir || "—"} mono />
@@ -95,6 +107,7 @@ export default function MachineDetail() {
   const removeMutation = useRemoveMachine();
   const setCommitTarget = useSetAtom(commitTargetAtom);
   const setEditResources = useSetAtom(editResourcesAtom);
+  const setEditNetwork = useSetAtom(editNetworkAtom);
   const toast = useToast();
   const m = machines.find((x) => x.id === selected) || null;
   const [tab, setTab] = useState<string>("logs");
@@ -186,6 +199,23 @@ export default function MachineDetail() {
                     }
                   >
                     <IconCpu size={16} />
+                  </Button>
+                </Tooltip>
+                <Tooltip content="Edit network" placement="bottom">
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="flat"
+                    onPress={() =>
+                      setEditNetwork({
+                        id: m.id,
+                        label: m.name || m.image || shortId(m.id),
+                        network: m.network,
+                        running: m.running,
+                      })
+                    }
+                  >
+                    <IconNetwork size={16} />
                   </Button>
                 </Tooltip>
                 <Tooltip content="Snapshot into a flavor" placement="bottom">

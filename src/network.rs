@@ -152,6 +152,49 @@ pub fn cmd_rm(names: &[String], force: bool) -> Result<()> {
     Ok(())
 }
 
+/// `bsdkrun network connect <machine> <network>` — join/switch a machine to a
+/// network. Records membership + clears any prior IP; takes effect on the next
+/// `start` (libkrun fixes a VM's devices at boot, so a running machine can't
+/// hot-swap its NIC).
+pub fn cmd_connect(machine: &str, network: &str) -> Result<()> {
+    let db = db::Db::open()?;
+    let vm = db.find_machine(machine)?;
+    if db.find_network(network)?.is_none() {
+        anyhow::bail!(
+            "no such network: {network} — create it with `bsdkrun network create {network}`"
+        );
+    }
+    db.update_machine_network(&vm.id, Some(network))?;
+    let running = vm.status == "running" && vm.pid.map(db::pid_alive).unwrap_or(false);
+    info!(machine = %vm.id, network, "connected machine to network");
+    println!("{}", vm.id);
+    if running {
+        println!(
+            "restart the machine (`bsdkrun start {}`) to join {network}",
+            vm.id
+        );
+    }
+    Ok(())
+}
+
+/// `bsdkrun network disconnect <machine>` — detach a machine back to the default
+/// isolated stack. Takes effect on the next `start`.
+pub fn cmd_disconnect(machine: &str) -> Result<()> {
+    let db = db::Db::open()?;
+    let vm = db.find_machine(machine)?;
+    db.update_machine_network(&vm.id, None)?;
+    let running = vm.status == "running" && vm.pid.map(db::pid_alive).unwrap_or(false);
+    info!(machine = %vm.id, "disconnected machine from its network");
+    println!("{}", vm.id);
+    if running {
+        println!(
+            "restart the machine (`bsdkrun start {}`) to leave the network",
+            vm.id
+        );
+    }
+    Ok(())
+}
+
 /// Spawn a detached, long-lived gvproxy for a network: a control socket that
 /// serves the `/connect` switch (members bridge into it) + the DNS/forwarder API.
 /// No VM listener — members join via `/connect`. Survives this process exiting.
@@ -257,7 +300,15 @@ pub fn join(network: &str, member: &str, dhcp: bool) -> Result<()> {
         std::env::remove_var("BSDKRUN_NET_IP");
         info!(network, member, "joining network (DHCP)");
     } else {
-        let ip = allocate_ip(&db, network)?;
+        // On a plain restart, `cmd_start` hints the previously-assigned IP so the
+        // machine keeps its address; otherwise allocate the next free one.
+        let ip = match std::env::var("BSDKRUN_NET_PREF_IP")
+            .ok()
+            .filter(|s| !s.is_empty())
+        {
+            Some(pref) => pref,
+            None => allocate_ip(&db, network)?,
+        };
         std::env::set_var("BSDKRUN_NET_IP", &ip);
         if let Err(e) = net::dns_add(&control, network, member, &ip) {
             warn!("couldn't register {member} in {network} DNS: {e:#}");

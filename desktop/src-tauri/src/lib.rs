@@ -704,6 +704,26 @@ async fn update_machine(
     Ok(())
 }
 
+/// Edit a machine's global-network membership (join/switch/leave). `network:
+/// None` detaches it back to the isolated default. Applies on next start.
+#[tauri::command]
+async fn update_machine_network(
+    state: State<'_, AppState>,
+    id: String,
+    network: Option<String>,
+) -> Result<(), BkError> {
+    let bin = state.binary()?;
+    match network {
+        Some(net) if !net.is_empty() => {
+            bsdkrun::run(&bin, &["network", "connect", &id, &net]).await?;
+        }
+        _ => {
+            bsdkrun::run(&bin, &["network", "disconnect", &id]).await?;
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn stop_machine(state: State<'_, AppState>, id: String) -> Result<(), BkError> {
     let bin = state.binary()?;
@@ -924,6 +944,7 @@ pub fn run() {
             run_machine,
             launch_machine,
             update_machine,
+            update_machine_network,
             stop_machine,
             restart_machine,
             remove_machine,

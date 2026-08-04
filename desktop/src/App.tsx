@@ -12,6 +12,7 @@ import NetworksView from "./components/NetworksView";
 import RunDialog from "./components/RunDialog";
 import CommitDialog from "./components/CommitDialog";
 import EditResourcesDialog from "./components/EditResourcesDialog";
+import EditNetworkDialog from "./components/EditNetworkDialog";
 import NewFlavorModal from "./components/NewFlavorModal";
 import LaunchProgressModal from "./components/LaunchProgressModal";
 import MachineDetail from "./components/MachineDetail";
@@ -51,6 +52,7 @@ export default function App() {
       <RunDialog />
       <CommitDialog />
       <EditResourcesDialog />
+      <EditNetworkDialog />
       <NewFlavorModal />
       <LaunchProgressModal />
       <MachineDetail />

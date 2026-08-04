@@ -259,6 +259,10 @@ pub struct Machine {
     pub state_dir: Option<String>,
     pub created_at: Option<String>,
     pub finished_at: Option<String>,
+    #[serde(default)]
+    pub network: Option<String>,
+    #[serde(default)]
+    pub net_ip: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

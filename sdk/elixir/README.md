@@ -1,9 +1,7 @@
 # bsdkrun_ex (Elixir SDK)
 
-An Elixir SDK for [**bsdkrun**](https://github.com/tsirysndr/bsdkrun) — a
-Firecracker-style microVM launcher for **BSD and Linux** guests on macOS and
-Linux, built on [libkrun](https://github.com/containers/libkrun). Boot and drive
-microVMs programmatically, inspired by the **Vercel** and **Deno** Sandbox SDKs.
+An Elixir SDK for [**bsdkrun**](https://github.com/tsirysndr/bsdkrun) — a Firecracker-style microVM launcher for **BSD and Linux** guests on macOS and
+Linux, built on [libkrun](https://github.com/containers/libkrun). Boot and drive microVMs programmatically, inspired by the **Vercel** and **Deno** Sandbox SDKs.
 
 The SDK shells out to the `bsdkrun` binary via `System.cmd/3`, so its only
 runtime dependency is [`jason`](https://hex.pm/packages/jason) for JSON parsing.

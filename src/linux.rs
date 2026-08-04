@@ -223,9 +223,15 @@ pub fn virtiofs_cmdline(console: &str, net: bool) -> String {
 /// Append kernel-level IP autoconfig (so the image needs no `ip`/`ifconfig`).
 fn add_ip(cmdline: &mut String, net: bool) {
     if net {
+        // A shared-network member boots with an assigned static IP (`BSDKRUN_NET_IP`);
+        // a solo machine keeps the default .2.
+        let guest = std::env::var("BSDKRUN_NET_IP")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| GUEST_IP.to_string());
         // ip=client::gw:netmask:hostname:device:autoconf:dns
         cmdline.push_str(&format!(
-            " ip={GUEST_IP}::{GATEWAY_IP}:{NETMASK}:bsdkrun:eth0:off:{GATEWAY_IP}"
+            " ip={guest}::{GATEWAY_IP}:{NETMASK}:bsdkrun:eth0:off:{GATEWAY_IP}"
         ));
     }
 }

@@ -961,6 +961,39 @@ fn setup_networking_with_agent(
         None => net::DEFAULT_MAC,
     };
 
+    // Shared network (spike): if `BSDKRUN_NET_VFKIT`/`_CONTROL` point at an
+    // already-running gvproxy, join THAT switch instead of spawning our own — the
+    // basis for a global network where members share a subnet and can reach each
+    // other. Each member targets its own IP (`BSDKRUN_NET_IP`) for forwards.
+    if let (Ok(vfkit), Ok(control)) = (
+        std::env::var("BSDKRUN_NET_VFKIT"),
+        std::env::var("BSDKRUN_NET_CONTROL"),
+    ) {
+        if !vfkit.is_empty() && !control.is_empty() {
+            let ip = std::env::var("BSDKRUN_NET_IP")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| net::GUEST_IP.to_string());
+            let control = std::path::PathBuf::from(control);
+            if let Some(dir) = agent_dir {
+                let host =
+                    net::free_local_port().context("reserving a host port for the exec agent")?;
+                net::expose_on_control(&control, host, &ip, agent::GUEST_PORT)
+                    .context("forwarding the agent port on the shared network")?;
+                let _ = std::fs::write(agent::port_file(dir), host.to_string());
+                info!(agent_port = host, %ip, "exec agent reachable via the shared network");
+            }
+            for pf in &cfg.ports {
+                net::expose_on_control(&control, pf.host, &ip, pf.guest)
+                    .with_context(|| format!("forwarding host port {}", pf.host))?;
+            }
+            ctx.add_net_gvproxy(std::path::Path::new(&vfkit), mac)
+                .context("attaching to the shared network gvproxy")?;
+            info!(%ip, "joined shared network");
+            return Ok(None); // the gvproxy is external/shared — we don't own it
+        }
+    }
+
     // Forward a unique host port to the guest agent (for `exec`/`shell`) and
     // persist it, alongside any user-requested `--port` forwards.
     let mut ports = cfg.ports.clone();

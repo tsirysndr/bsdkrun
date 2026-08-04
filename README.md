@@ -52,6 +52,7 @@ image** (`bsdkrun linux alpine` pulls it from any registry, extracts the rootfs,
 - [Disks](#disks)
 - [Console](#console-how-output-reaches-your-terminal)
 - [Preparing a guest image](#preparing-a-guest-image)
+- [SDKs](#sdks)
 - [Project layout](#project-layout)
 - [Troubleshooting](#troubleshooting)
 - [Status](#status)
@@ -1023,6 +1024,57 @@ hdiutil detach "${DEV%s*}"
 
 ---
 
+## SDKs
+
+Drive `bsdkrun` from your own code. Each SDK is a thin, stateless wrapper around the
+binary — it builds argv, shells out, and parses the JSON output. There is no daemon and no
+long-lived state, so the SDKs are safe to use from short-lived processes and scripts.
+
+| Language       | Package           | Source                                | Notes                                                              |
+| -------------- | ----------------- | ------------------------------------- | ------------------------------------------------------------------ |
+| **TypeScript** | `@bsdkrun/sdk`    | [`sdk/typescript`](sdk/typescript)    | Node / Deno / Bun. Adds a `sh` template tag, `Terminal`, and direct agent-protocol access. |
+| **Python**     | `bsdkrun`         | [`sdk/python`](sdk/python)            | No runtime dependencies. Developed with [uv](https://docs.astral.sh/uv/); type-checked under strict mypy. |
+| **Ruby**       | `bsdkrun`         | [`sdk/ruby`](sdk/ruby)                | No runtime dependencies.                                            |
+| **Elixir**     | `bsdkrun`         | [`sdk/elixir`](sdk/elixir)            | One dependency (`:jason`). `{:ok, _}` / `{:error, _}` with bang variants. |
+| **Gleam**      | `bsdkrun`         | [`sdk/gleam`](sdk/gleam)              | Erlang target. Fully typed `Result`s; no exceptions.                |
+
+All of them find the binary the same way — an explicit override, then `$BSDKRUN_BIN`, then
+`bsdkrun` on `$PATH`, then an in-repo dev build — and expose the same surface: create /
+`exec` / logs / lifecycle on a machine, plus the `images`, `volumes`, `networks`, and
+`system` namespaces.
+
+```ts
+// TypeScript
+const box = await Sandbox.create({ os: "linux", image: "alpine" });
+await box.exec(["uname", "-a"]);
+```
+```python
+# Python
+box = Sandbox.create(os="linux", image="alpine")
+box.exec(["uname", "-a"])
+```
+```ruby
+# Ruby
+box = Bsdkrun::Sandbox.create(os: "linux", image: "alpine")
+box.exec(["uname", "-a"])
+```
+```elixir
+# Elixir
+{:ok, box} = Bsdkrun.create(os: :linux, image: "alpine")
+{:ok, res} = Bsdkrun.exec(box, ["uname", "-a"])
+```
+```gleam
+// Gleam
+let assert Ok(box) = bsdkrun.create(args.linux("alpine"))
+let assert Ok(res) = bsdkrun.exec(box, ["uname", "-a"])
+```
+
+See each SDK's README for the full API. The TypeScript SDK is covered by an
+[end-to-end CI job](.github/workflows/e2e-sdk.yml) that boots a real microVM under KVM; the
+others run [unit + argv tests](.github/workflows/sdk-unit.yml) on every change.
+
+---
+
 ## Project layout
 
 | Path                   | What it is |
@@ -1043,6 +1095,7 @@ hdiutil detach "${DEV%s*}"
 | `bsdkrun.entitlements` | `com.apple.security.hypervisor` + library-validation opt-out. |
 | `images/`              | Guest disk images and a symlink to libkrun's EDK2 firmware (git-ignored blobs). |
 | `skills/`              | Agent skills published to [skills.sh](https://skills.sh/tsirysndr/bsdkrun) — `skills/bsdkrun-cli/` documents every subcommand and flag for coding agents. |
+| `sdk/`                 | Client [SDKs](#sdks) — TypeScript, Python, Ruby, Elixir, and Gleam. Each builds argv, shells out to the binary, and parses its JSON output. |
 
 ---
 

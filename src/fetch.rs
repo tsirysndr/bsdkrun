@@ -175,7 +175,9 @@ impl Os {
     /// `versions` still returns a usable set (kept roughly current).
     fn fallback_versions(self) -> Vec<String> {
         let list: &[&str] = match self {
-            Os::Freebsd => &["13.3", "13.4", "13.5", "14.0", "14.1", "14.2", "14.3", "15.0", "15.1"],
+            Os::Freebsd => &[
+                "13.3", "13.4", "13.5", "14.0", "14.1", "14.2", "14.3", "15.0", "15.1",
+            ],
             Os::Netbsd => &[
                 "8.0", "8.1", "8.2", "8.3", "9.0", "9.1", "9.2", "9.3", "9.4", "10.0", "10.1",
             ],
@@ -580,7 +582,13 @@ pub fn list_versions(os: Os) -> Result<()> {
 fn curl_text(url: &str) -> Result<String> {
     let out = Command::new("curl")
         .args([
-            "-sL", "--fail", "--connect-timeout", "6", "--max-time", "15", url,
+            "-sL",
+            "--fail",
+            "--connect-timeout",
+            "6",
+            "--max-time",
+            "15",
+            url,
         ])
         .output()
         .context("running curl")?;

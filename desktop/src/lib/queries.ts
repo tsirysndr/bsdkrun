@@ -202,7 +202,11 @@ export function useCommitMachine() {
       name: string;
       description?: string;
     }) => api.commitMachine(id, name, description),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.flavors }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.flavors });
+      // A BSD machine is powered off to take a consistent snapshot.
+      qc.invalidateQueries({ queryKey: qk.machines });
+    },
   });
 }
 

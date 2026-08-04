@@ -84,6 +84,8 @@ export const runPrefillAtom = atom<{ kind?: string; image?: string } | null>(
 export interface CommitTarget {
   id: string;
   label: string; // friendly name/image for the dialog copy
+  kind: string; // guest kind — BSD snapshots power the machine off first
+  running: boolean;
 }
 export const commitTargetAtom = atom<CommitTarget | null>(null);
 

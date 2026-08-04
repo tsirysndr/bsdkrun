@@ -197,7 +197,7 @@ export default function CommandPalette() {
         keywords: `${m.id} commit flavor save capture`,
         run: () => {
           setOpen(false);
-          setCommitTarget({ id: m.id, label });
+          setCommitTarget({ id: m.id, label, kind: m.kind, running: m.running });
         },
       });
       cmds.push({

@@ -13,7 +13,7 @@ import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { IconCamera } from "@tabler/icons-react";
+import { IconCamera, IconInfoCircle } from "@tabler/icons-react";
 import { commitTargetAtom, viewAtom } from "../state/atoms";
 import { useCommitMachine } from "../lib/queries";
 import { useToast } from "../state/toast";
@@ -40,6 +40,7 @@ export default function CommitDialog() {
   const setView = useSetAtom(viewAtom);
   const commit = useCommitMachine();
   const toast = useToast();
+  const isBsd = target ? target.kind !== "linux" : false;
 
   const {
     register,
@@ -120,6 +121,16 @@ export default function CommitDialog() {
               classNames={{ inputWrapper: "border-white/10" }}
               {...register("description")}
             />
+            {isBsd && target?.running && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-300">
+                <IconInfoCircle size={15} className="mt-0.5 shrink-0" />
+                <span>
+                  {target.label} will be <b>powered off</b> to capture a clean,
+                  consistent disk image (a live BSD filesystem can't be snapshotted
+                  safely). Start it again afterwards to resume.
+                </span>
+              </div>
+            )}
           </ModalBody>
           <ModalFooter>
             <Button variant="light" size="sm" isDisabled={isSubmitting} onPress={close}>

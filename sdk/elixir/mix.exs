@@ -48,7 +48,10 @@ defmodule Bsdkrun.MixProject do
     [
       main: "readme",
       extras: ["README.md"],
-      source_ref: "v#{@version}"
+      # Monorepo: the package lives at sdk/elixir and is tagged separately from
+      # the CLI's own v-series.
+      source_ref: "elixir-sdk-v#{@version}",
+      source_url_pattern: "#{@source_url}/blob/elixir-sdk-v#{@version}/sdk/elixir/%{path}#L%{line}"
     ]
   end
 end

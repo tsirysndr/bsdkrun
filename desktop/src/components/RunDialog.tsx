@@ -18,7 +18,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { IconRocket, IconChevronDown } from "@tabler/icons-react";
 import { runOpenAtom, runPrefillAtom, viewAtom } from "../state/atoms";
-import { useVersions } from "../lib/queries";
+import { useNetworks, useVersions } from "../lib/queries";
 import { useLaunchMachine } from "../hooks/useLaunchFlavor";
 import type { RunSpec } from "../lib/types";
 
@@ -51,6 +51,10 @@ const schema = z
       .regex(/^[a-zA-Z0-9._-]*$/, "Letters, digits, . _ - only"),
     command: z.string(),
     repo: z.string(),
+    network: z.string(),
+    machineName: z
+      .string()
+      .regex(/^[a-zA-Z0-9._-]*$/, "Letters, digits, . _ - only"),
     noNet: z.boolean(),
     initramfs: z.boolean(),
     entrypoint: z.string(),
@@ -87,6 +91,8 @@ const DEFAULTS: FormValues = {
   volume: "",
   command: "",
   repo: "",
+  network: "",
+  machineName: "",
   noNet: false,
   initramfs: false,
   entrypoint: "",
@@ -128,6 +134,7 @@ export default function RunDialog() {
   const version = watch("version");
 
   const { data: allVersions = [] } = useVersions(kind, open && bsd);
+  const { data: networks = [] } = useNetworks();
   // Only NetBSD `current` (HEAD, ≈ NetBSD 11) has modern virtio-mmio that boots
   // to root under libkrun; the numbered 8–10 releases use legacy virtio and
   // can't mount their root disk, so don't offer them.
@@ -186,6 +193,8 @@ export default function RunDialog() {
       attach_disks: bsd ? lines(data.attachDisks) : [],
       disk_size: bsd && data.diskSize.trim() ? data.diskSize.trim() : null,
       repo: data.repo.trim() ? data.repo.trim() : null,
+      network: data.network.trim() ? data.network.trim() : null,
+      name: data.machineName.trim() ? data.machineName.trim() : null,
       command: splitArgs(data.command),
     };
     // Stream the launch (pull / download / boot) in the progress modal instead
@@ -415,6 +424,56 @@ export default function RunDialog() {
                 />
               )}
             />
+
+            <div className="grid grid-cols-2 gap-3">
+              <Controller
+                control={control}
+                name="network"
+                render={({ field }) => (
+                  <div>
+                    <label className="mb-1.5 block text-sm">Network</label>
+                    <div className="relative">
+                      {/* Native select — HeroUI's Select popover freezes WKWebView. */}
+                      <select
+                        value={field.value}
+                        onChange={(e) => field.onChange(e.target.value)}
+                        className="w-full appearance-none rounded-xl border border-white/10 bg-content2/60 px-3 py-2 pr-9 text-sm text-foreground outline-none transition [color-scheme:dark] hover:border-white/20 focus:border-white/30"
+                      >
+                        <option value="">None (isolated)</option>
+                        {networks.map((n) => (
+                          <option key={n.name} value={n.name}>
+                            {n.name}
+                          </option>
+                        ))}
+                      </select>
+                      <IconChevronDown
+                        size={16}
+                        className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-foreground-400"
+                      />
+                    </div>
+                  </div>
+                )}
+              />
+              <Controller
+                control={control}
+                name="machineName"
+                render={({ field }) => (
+                  <Input
+                    label="Machine name"
+                    labelPlacement="outside"
+                    placeholder="auto (e.g. db, api)"
+                    value={field.value}
+                    onValueChange={field.onChange}
+                    variant="bordered"
+                    isInvalid={!!errors.machineName}
+                    errorMessage={errors.machineName?.message}
+                    description={
+                      watch("network") ? "Its DNS name on the network" : undefined
+                    }
+                  />
+                )}
+              />
+            </div>
 
             <button
               type="button"

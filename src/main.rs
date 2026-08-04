@@ -21,6 +21,7 @@ mod krun;
 mod linux;
 mod names;
 mod net;
+mod network;
 mod oci;
 mod tty;
 mod watchdog;
@@ -152,6 +153,81 @@ enum Command {
 
     /// Run / remove flavors (`flavor run <name>`, `flavor rm <name>`).
     Flavor(FlavorArgs),
+
+    /// Manage global networks (a shared subnet + internal DNS) that machines join
+    /// with `--network` to reach each other by IP and by name.
+    Network(NetworkArgs),
+}
+
+#[derive(Parser)]
+struct NetworkArgs {
+    #[command(subcommand)]
+    cmd: NetworkCmd,
+}
+
+#[derive(Subcommand)]
+enum NetworkCmd {
+    /// Create a network (starts its shared gvproxy switch).
+    Create(NetworkCreateArgs),
+    /// List networks and their members.
+    Ls(NetworkLsArgs),
+    /// Remove one or more networks (refuses running members unless `-f`).
+    Rm(NetworkRmArgs),
+    /// Connect a machine to a network (join/switch) — applies on next start.
+    Connect(NetworkConnectArgs),
+    /// Disconnect a machine from its network — applies on next start.
+    Disconnect(NetworkDisconnectArgs),
+    /// Refresh members' /etc/hosts with current membership (fixes name lookup).
+    Sync(NetworkSyncArgs),
+}
+
+#[derive(Parser)]
+struct NetworkCreateArgs {
+    /// Network name.
+    #[arg(value_name = "NAME")]
+    name: String,
+}
+
+#[derive(Parser)]
+struct NetworkLsArgs {
+    /// Emit JSON (for scripting / the desktop).
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct NetworkRmArgs {
+    /// Remove even with running members (they lose the network on next start).
+    #[arg(short, long)]
+    force: bool,
+
+    /// Network name(s) to remove.
+    #[arg(value_name = "NAME", required = true)]
+    names: Vec<String>,
+}
+
+#[derive(Parser)]
+struct NetworkConnectArgs {
+    /// Machine id or name.
+    #[arg(value_name = "MACHINE")]
+    machine: String,
+    /// Network to join.
+    #[arg(value_name = "NETWORK")]
+    network: String,
+}
+
+#[derive(Parser)]
+struct NetworkDisconnectArgs {
+    /// Machine id or name.
+    #[arg(value_name = "MACHINE")]
+    machine: String,
+}
+
+#[derive(Parser)]
+struct NetworkSyncArgs {
+    /// Network whose members' /etc/hosts to refresh.
+    #[arg(value_name = "NETWORK")]
+    network: String,
 }
 
 #[derive(Parser)]
@@ -783,6 +859,16 @@ struct NetConfig {
     /// MAC address for the guest NIC (default: a fixed locally-administered one).
     #[arg(long, value_name = "AA:BB:CC:DD:EE:FF")]
     mac: Option<String>,
+
+    /// Join a global network so the machine shares a subnet with, and can reach
+    /// (by IP + name), other members (`bsdkrun network create <name>` first).
+    #[arg(long, value_name = "NAME")]
+    network: Option<String>,
+
+    /// Name for this machine (used as its DNS name on a `--network`, and shown in
+    /// `ps`). Defaults to a generated Docker-style name.
+    #[arg(long, value_name = "NAME")]
+    name: Option<String>,
 }
 
 /// A disk to attach as virtio-blk, parsed from `PATH[:ro]`.
@@ -896,6 +982,14 @@ fn main() -> Result<()> {
             FlavorCmd::Build(a) => cmd_flavor_prebuild(&a.name, a.vm.cpus, a.vm.mem, a.force),
             FlavorCmd::BuildInternal(a) => cmd_flavor_build(&a.name, &a.key, a.vm.cpus, a.vm.mem),
         },
+        Command::Network(args) => match args.cmd {
+            NetworkCmd::Create(a) => network::cmd_create(&a.name),
+            NetworkCmd::Ls(a) => network::cmd_ls(a.json),
+            NetworkCmd::Rm(a) => network::cmd_rm(&a.names, a.force),
+            NetworkCmd::Connect(a) => network::cmd_connect(&a.machine, &a.network),
+            NetworkCmd::Disconnect(a) => network::cmd_disconnect(&a.machine),
+            NetworkCmd::Sync(a) => network::cmd_sync(&a.network),
+        },
     }
 }
 
@@ -961,37 +1055,63 @@ fn setup_networking_with_agent(
         None => net::DEFAULT_MAC,
     };
 
-    // Shared network (spike): if `BSDKRUN_NET_VFKIT`/`_CONTROL` point at an
-    // already-running gvproxy, join THAT switch instead of spawning our own — the
-    // basis for a global network where members share a subnet and can reach each
-    // other. Each member targets its own IP (`BSDKRUN_NET_IP`) for forwards.
-    if let (Ok(vfkit), Ok(control)) = (
-        std::env::var("BSDKRUN_NET_VFKIT"),
-        std::env::var("BSDKRUN_NET_CONTROL"),
-    ) {
-        if !vfkit.is_empty() && !control.is_empty() {
-            let ip = std::env::var("BSDKRUN_NET_IP")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| net::GUEST_IP.to_string());
-            let control = std::path::PathBuf::from(control);
+    // Shared/global network: if `BSDKRUN_NET_CONTROL` points at a running network
+    // gvproxy, join THAT switch (via a per-member /connect bridge) instead of
+    // spawning an isolated gvproxy — so members share a subnet and reach each
+    // other by IP/name. Each member gets its own IP (`BSDKRUN_NET_IP`).
+    if let Some(control) = std::env::var("BSDKRUN_NET_CONTROL")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        let control = std::path::PathBuf::from(control);
+        // A static (Linux) member knows its IP now; a DHCP (BSD) member gets it
+        // after boot — its agent/port forwards + DNS are wired then.
+        let ip = std::env::var("BSDKRUN_NET_IP")
+            .ok()
+            .filter(|s| !s.is_empty());
+        // A per-member vfkit socket for the bridge (libkrun connects to it).
+        let vfkit = match agent_dir {
+            Some(dir) => dir.join("net-bridge.sock"),
+            None => std::env::temp_dir().join(format!("bsdkrun-netbr-{}.sock", std::process::id())),
+        };
+        if let Some(ip) = &ip {
             if let Some(dir) = agent_dir {
                 let host =
                     net::free_local_port().context("reserving a host port for the exec agent")?;
-                net::expose_on_control(&control, host, &ip, agent::GUEST_PORT)
+                net::expose_on_control(&control, host, ip, agent::GUEST_PORT)
                     .context("forwarding the agent port on the shared network")?;
                 let _ = std::fs::write(agent::port_file(dir), host.to_string());
                 info!(agent_port = host, %ip, "exec agent reachable via the shared network");
             }
             for pf in &cfg.ports {
-                net::expose_on_control(&control, pf.host, &ip, pf.guest)
+                net::expose_on_control(&control, pf.host, ip, pf.guest)
                     .with_context(|| format!("forwarding host port {}", pf.host))?;
             }
-            ctx.add_net_gvproxy(std::path::Path::new(&vfkit), mac)
-                .context("attaching to the shared network gvproxy")?;
-            info!(%ip, "joined shared network");
-            return Ok(None); // the gvproxy is external/shared — we don't own it
         }
+        // CRITICAL: every member on the shared switch needs a DISTINCT MAC (a
+        // shared MAC makes gvproxy's CAM table route both members' traffic to one
+        // port, breaking connectivity). `network::join` sets `BSDKRUN_NET_MAC`;
+        // fall back to deriving it from the IP's last octet.
+        let member_mac = if let Some(s) = std::env::var("BSDKRUN_NET_MAC")
+            .ok()
+            .filter(|s| !s.is_empty())
+        {
+            net::parse_mac(&s).unwrap_or(mac)
+        } else if let Some(ip) = &ip {
+            let last = ip
+                .rsplit('.')
+                .next()
+                .and_then(|o| o.parse::<u8>().ok())
+                .unwrap_or(2);
+            [0x5a, 0x94, 0xef, 0xe4, 0x0c, last]
+        } else {
+            mac
+        };
+        net::start_network_bridge(&vfkit, &control).context("bridging into the shared network")?;
+        ctx.add_net_gvproxy(&vfkit, member_mac)
+            .context("attaching virtio-net to the shared network")?;
+        info!("joined shared network");
+        return Ok(None); // the network gvproxy is shared — we don't own it
     }
 
     // Forward a unique host port to the guest agent (for `exec`/`shell`) and
@@ -1121,6 +1241,8 @@ fn firmware_machine(
     disk_size: Option<&str>,
 ) -> Result<()> {
     ensure_net_for_exec(net, exec_after)?;
+    // BSD guests DHCP their IP (dhcp = true), so join before the ctx build.
+    let joined = prepare_network(net, true)?;
     let machine_id = id::next_machine_id();
     let vdir = machine_dir_or_tmp(&machine_id);
     let image = basename(disk);
@@ -1146,7 +1268,7 @@ fn firmware_machine(
     if let (Some(name), Some(dir)) = (run.volume.as_deref(), &volume) {
         db::record_volume(name, "firmware", &image, &dir.to_string_lossy());
     }
-    run_machine(
+    let result = run_machine(
         &machine_id,
         &vdir,
         "firmware",
@@ -1161,7 +1283,9 @@ fn firmware_machine(
         interactive,
         verbose,
         build,
-    )
+    );
+    finalize_network(&machine_id, Some(&vdir), &net.ports, &joined);
+    result
 }
 
 /// A trailing command runs in the guest via its agent, which rides the guest
@@ -1328,6 +1452,7 @@ fn boot_freebsd_pvh(args: BsdArgs, disk_override: Option<PathBuf>) -> Result<()>
     // hides duplicate keys past the first.
     let (exec_after, interactive) = bsd_exec_after(&args.command, args.run.detach, args.net.no_net);
     ensure_net_for_exec(&args.net, &exec_after)?;
+    let joined = prepare_network(&args.net, true)?; // FreeBSD DHCPs its IP
     std::env::set_var("KRUN_PVH", "1");
     std::env::set_var("KRUN_VIRTIO_MMIO_HINTS", "freebsd");
 
@@ -1367,7 +1492,7 @@ fn boot_freebsd_pvh(args: BsdArgs, disk_override: Option<PathBuf>) -> Result<()>
     if let (Some(name), Some(dir)) = (args.run.volume.as_deref(), &volume) {
         db::record_volume(name, "freebsd", &image, &dir.to_string_lossy());
     }
-    run_machine(
+    let result = run_machine(
         &machine_id,
         &vdir,
         "freebsd",
@@ -1382,7 +1507,9 @@ fn boot_freebsd_pvh(args: BsdArgs, disk_override: Option<PathBuf>) -> Result<()>
         interactive,
         args.verbose,
         build,
-    )
+    );
+    finalize_network(&machine_id, Some(&vdir), &args.net.ports, &joined);
+    result
 }
 
 /// NetBSD kernel command line (override with `$BSDKRUN_NETBSD_CMDLINE`). The root
@@ -1428,6 +1555,7 @@ fn boot_netbsd_disk(mut args: BsdArgs, disk_override: Option<PathBuf>) -> Result
     bsd_inject_repo(&mut args);
     let (exec_after, interactive) = bsd_exec_after(&args.command, args.run.detach, args.net.no_net);
     ensure_net_for_exec(&args.net, &exec_after)?;
+    let joined = prepare_network(&args.net, true)?; // NetBSD DHCPs its IP
     let arch = host::Arch::current()?;
 
     // amd64 NetBSD is a PVH kernel (MICROVM). Tell libkrun to enter via the
@@ -1480,7 +1608,7 @@ fn boot_netbsd_disk(mut args: BsdArgs, disk_override: Option<PathBuf>) -> Result
     if let (Some(name), Some(dir)) = (args.run.volume.as_deref(), &volume) {
         db::record_volume(name, "netbsd", &image, &dir.to_string_lossy());
     }
-    run_machine(
+    let result = run_machine(
         &machine_id,
         &vdir,
         "netbsd",
@@ -1495,7 +1623,9 @@ fn boot_netbsd_disk(mut args: BsdArgs, disk_override: Option<PathBuf>) -> Result
         interactive,
         args.verbose,
         build,
-    )
+    );
+    finalize_network(&machine_id, Some(&vdir), &args.net.ports, &joined);
+    result
 }
 
 /// Locate libkrun's EDK2 firmware (`KRUN_EFI`), keeping a copy in bsdkrun's own
@@ -1841,6 +1971,57 @@ fn boot_linux(args: LinuxArgs) -> Result<()> {
 /// `exec_after` hook) — used to install a flavor's packages/tools. A non-empty
 /// `provision` implies the machine boots in the background so the parent can
 /// wait for the agent and run it (see [`run_machine`]).
+/// If a machine is joining a `--network` (or was given a `--name`), resolve its
+/// name (recorded via the name override so `ps`/DNS agree) and join the network —
+/// which sets `BSDKRUN_NET_*` for [`setup_networking_with_agent`]. Returns the
+/// (network, member) to record as membership once the machine row exists.
+/// `dhcp` = true for BSD guests (they DHCP their IP); false for Linux (static
+/// kernel IP). Returns `(network, member, dhcp)` to finalize once booted.
+fn prepare_network(net: &NetConfig, dhcp: bool) -> Result<Option<(String, String, bool)>> {
+    if net.network.is_none() && net.name.is_none() {
+        return Ok(None);
+    }
+    let member = match &net.name {
+        Some(n) => n.clone(),
+        None => db::Db::open()
+            .map(|d| d.generate_name())
+            .unwrap_or_else(|_| names::random_name()),
+    };
+    names::set_override(&member);
+    if let Some(network) = &net.network {
+        network::join(network, &member, dhcp)?;
+        return Ok(Some((network.clone(), member, dhcp)));
+    }
+    Ok(None)
+}
+
+/// Finalize network membership after boot: a Linux (static) member just records
+/// its allocated IP; a BSD (dhcp) member discovers its leased IP and wires up its
+/// agent forward + DNS. No-op when not on a network.
+fn finalize_network(
+    machine_id: &str,
+    agent_dir: Option<&std::path::Path>,
+    ports: &[PortForward],
+    joined: &Option<(String, String, bool)>,
+) {
+    if let Some((network, member, dhcp)) = joined {
+        if *dhcp {
+            if let Some(dir) = agent_dir {
+                if let Err(e) = network::finalize_dhcp(network, member, machine_id, dir, ports) {
+                    tracing::warn!("network finalize failed: {e:#}");
+                }
+            }
+        } else if let Ok(db) = db::Db::open() {
+            let ip = std::env::var("BSDKRUN_NET_IP").unwrap_or_default();
+            let _ = db.set_machine_network(machine_id, network, &ip);
+        }
+        // Refresh every BSD member's /etc/hosts with the new membership so peers
+        // resolve by name even where the gvproxy DNS trips a strict resolver
+        // (NetBSD). Best-effort; the newly-joined member is now in the DB.
+        let _ = network::sync_hosts(network);
+    }
+}
+
 fn boot_linux_from(
     args: LinuxArgs,
     rootfs_override: Option<PathBuf>,
@@ -1868,6 +2049,11 @@ fn boot_linux_from(
         image.size,
         &image.rootfs.to_string_lossy(),
     );
+
+    // Join a global network (allocate IP + register DNS + set BSDKRUN_NET_*)
+    // before we build the ctx, so `setup_networking_with_agent` bridges in.
+    // Linux uses a static kernel IP (dhcp = false).
+    let joined = prepare_network(&args.net, false)?;
 
     let machine_id = id::next_machine_id();
     let vdir = machine_dir_or_tmp(&machine_id);
@@ -1932,7 +2118,7 @@ fn boot_linux_from(
     }
     // Linux never uses the SMP-shutdown watchdog: it redirects fd 2, which
     // libkrun's implicit virtio-console (hvc0) claims for the guest.
-    run_machine(
+    let result = run_machine(
         &machine_id,
         &vdir,
         "linux",
@@ -1947,7 +2133,9 @@ fn boot_linux_from(
         false,
         false,
         build,
-    )
+    );
+    finalize_network(&machine_id, Some(&vdir), &args.net.ports, &joined);
+    result
 }
 
 /// How a Linux guest's root filesystem is provided.
@@ -2463,6 +2651,8 @@ fn cmd_ps(all: bool, json: bool) -> Result<()> {
                 "state_dir": m.state_dir,
                 "created_at": m.created_at,
                 "finished_at": m.finished_at,
+                "network": m.network,
+                "net_ip": m.net_ip,
             }));
         }
         println!("{}", serde_json::to_string(&out)?);
@@ -2724,10 +2914,20 @@ fn cmd_stop(id: &str) -> Result<()> {
     let vm = db.find_machine(id)?;
     match vm.pid {
         Some(pid) if db::pid_alive(pid) => {
-            unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
-            // The process exits 128+SIGTERM on our signal handler; record that so
-            // `ps` shows a Docker-style "Exited (143)".
-            let code = vm.exit_code.or(Some(128 + libc::SIGTERM as i64));
+            // A BSD guest must be cleanly powered off (UFS unmounted) so its
+            // in-place disk stays consistent and runtime changes survive the next
+            // `start` — killing the VMM mid-write tears the live UFS, and fsck
+            // then discards recent writes. Fall back to SIGTERM if the clean
+            // poweroff can't run (no agent) or the guest doesn't halt in time.
+            let clean = is_bsd_machine(&vm) && graceful_poweroff_bsd(&vm);
+            let code = if clean {
+                Some(0)
+            } else {
+                unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+                // The process exits 128+SIGTERM on our signal handler; record that
+                // so `ps` shows a Docker-style "Exited (143)".
+                vm.exit_code.or(Some(128 + libc::SIGTERM as i64))
+            };
             db.set_machine_status(&vm.id, "exited", code).ok();
             println!("{}", vm.id);
             Ok(())
@@ -2782,14 +2982,30 @@ fn cmd_start(id: &str) -> Result<()> {
     let mem = vm.mem.max(64) as u32;
     let volume = vm.volume.clone();
 
-    // Clear the stale per-machine state so the re-boot starts from a fresh
-    // clone. The DB row is left in place (the boot re-records it via INSERT OR
-    // REPLACE), so it flips exited→running rather than vanishing from `ps`. A
-    // named volume lives elsewhere and is reused, so its changes persist.
-    // NB: don't wipe the whole state dir here — that means an `rm -rf` of the old
-    // read-only nix rootfs, which is slow enough to make Play "spin forever". The
-    // boot path (prepare_linux_root) renames the stale rootfs aside and GC's it in
-    // the background, so the restart returns promptly. Old sockets/logs/port files
+    // Resume a BSD machine from ITS OWN root disk, not a re-fetched base. The
+    // per-machine working disk (a CoW clone of the original base — a fetched
+    // image OR a committed snapshot) lives in the state dir as `root.<ext>`.
+    // Re-cloning a base here would silently replace the disk: for a snapshot
+    // flavor that means booting the DEFAULT image over the user's snapshot data
+    // (data loss). So when that disk exists, boot it IN PLACE (persist) — which
+    // also preserves runtime changes across stop/start, like `docker start`.
+    // Volume-backed machines already resume their volume disk, so skip those.
+    let existing_disk = if vm.volume.is_none() {
+        let vdir = machine_dir_or_tmp(&vm.id);
+        ["root.raw", "root.img", "root.qcow2"]
+            .iter()
+            .map(|n| vdir.join(n))
+            .find(|p| p.exists())
+    } else {
+        None
+    };
+
+    // The DB row is left in place (the boot re-records it via INSERT OR REPLACE),
+    // so it flips exited→running rather than vanishing from `ps`. NB: don't wipe
+    // the whole state dir here — that means an `rm -rf` of the old read-only nix
+    // rootfs, which is slow enough to make Play "spin forever". The Linux boot
+    // path (prepare_linux_root) renames the stale rootfs aside and GC's it in the
+    // background, so the restart returns promptly. Old sockets/logs/port files
     // are simply overwritten on the new boot.
 
     // The next boot picks up this id + name instead of generating fresh ones.
@@ -2798,25 +3014,40 @@ fn cmd_start(id: &str) -> Result<()> {
         names::set_override(name);
     }
 
+    // Re-join the recorded global network on restart (its membership is stored
+    // in the DB and edited via `network connect/disconnect`). Reuse the member
+    // name so the derived MAC — and thus the BSD DHCP lease — stays stable; hint
+    // the previously-assigned IP so a plain restart keeps its address.
+    if let Some(ip) = vm.net_ip.as_deref().filter(|s| !s.is_empty()) {
+        std::env::set_var("BSDKRUN_NET_PREF_IP", ip);
+    }
     let net = NetConfig {
         no_net: false,
         ports: vec![],
         mac: None,
+        network: vm.network.clone(),
+        name: vm.name.clone(),
     };
     let vmcfg = VmConfig { cpus, mem };
 
+    // Detect the guest from the recorded kind first (the image ref is unreliable
+    // for a snapshot machine — its image is `disk.img`/`disk.raw`, not a
+    // `netbsd-*`/`freebsd-*` name). FreeBSD records `firmware` (macOS EFI) or
+    // `freebsd` (Linux PVH); NetBSD records `netbsd` (or legacy `kernel`).
     let reference = vm.image.to_lowercase();
-    let is_freebsd = vm.kind == "firmware" || reference.starts_with("freebsd");
-    let is_netbsd = vm.kind == "kernel" || reference.starts_with("netbsd");
+    let is_freebsd =
+        matches!(vm.kind.as_str(), "firmware" | "freebsd") || reference.starts_with("freebsd");
+    let is_netbsd =
+        matches!(vm.kind.as_str(), "kernel" | "netbsd") || reference.starts_with("netbsd");
 
     if vm.kind == "linux" {
-        boot_linux(LinuxArgs {
+        let largs = LinuxArgs {
             image: vm.image.clone(),
             kernel: None,
             kernel_version: linux::DEFAULT_KERNEL_VERSION.to_string(),
             detach: true,
             initramfs: false,
-            volume,
+            volume: volume.clone(),
             mounts: vec![],
             entrypoint: None,
             env: vec![],
@@ -2825,8 +3056,28 @@ fn cmd_start(id: &str) -> Result<()> {
             vm: vmcfg,
             repo: None,
             command: vec![], // persistent restart — keep a console shell alive
-        })
+        };
+        // Resume the machine's OWN rootfs (which holds its snapshot + runtime
+        // changes) by passing it as the boot source, so restart never re-clones
+        // the base OCI image and loses data. Reuse any intact, non-empty rootfs —
+        // NOT gated on /bin|/nix, so images without those top-level dirs still
+        // resume. Volume machines resume their volume rootfs already; a missing or
+        // broken (nested) dir falls back to the base image.
+        let own_rootfs = machine_dir_or_tmp(&vm.id).join("rootfs");
+        let intact = own_rootfs.symlink_metadata().is_ok()
+            && !own_rootfs.join("rootfs").exists()
+            && std::fs::read_dir(&own_rootfs)
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(false);
+        if volume.is_none() && intact {
+            boot_linux_from(largs, Some(own_rootfs), &[])
+        } else {
+            boot_linux(largs)
+        }
     } else if is_freebsd || is_netbsd {
+        // Boot the machine's own disk in place when it exists (see above), so a
+        // snapshot machine keeps its data; otherwise fall back to the base image.
+        let reuse = existing_disk.is_some();
         let args = BsdArgs {
             version: None, // bundled image (as originally booted)
             firmware: None,
@@ -2835,7 +3086,7 @@ fn cmd_start(id: &str) -> Result<()> {
             disk_size: None,
             run: RunConfig {
                 detach: true,
-                persist: false,
+                persist: reuse, // in-place boot of the existing disk (no re-clone)
                 volume,
             },
             net,
@@ -2844,11 +3095,18 @@ fn cmd_start(id: &str) -> Result<()> {
             repo: None,
             command: vec![],
         };
-        if is_freebsd {
-            boot_freebsd(args)
-        } else {
-            boot_netbsd(args)
+        let result = match (is_freebsd, existing_disk) {
+            (true, Some(d)) => boot_freebsd_disk(args, Some(d)),
+            (true, None) => boot_freebsd(args),
+            (false, Some(d)) => boot_netbsd_disk(args, Some(d)),
+            (false, None) => boot_netbsd(args),
+        };
+        // Booting the in-place disk relabels the row's image to `root.<ext>`;
+        // restore the original label so `ps` still shows what it was booted from.
+        if reuse && result.is_ok() {
+            db.set_machine_image(&vm.id, &vm.image).ok();
         }
+        result
     } else {
         // Put the id back for any future attempt and report clearly.
         anyhow::bail!(
@@ -2909,6 +3167,8 @@ fn flavor_linux_args(
             no_net: false,
             ports,
             mac: None,
+            network: None,
+            name: None,
         },
         vm: VmConfig { cpus, mem },
         repo: None,
@@ -2948,6 +3208,45 @@ fn valid_flavor_name(name: &str) -> Result<()> {
 ///
 /// Best-effort: a machine that's already stopped, or one without an agent, is
 /// snapshotted as-is.
+/// True for a BSD guest (FreeBSD/NetBSD), whose live UFS must be cleanly
+/// unmounted before its disk is reused or cloned.
+fn is_bsd_machine(vm: &db::MachineRow) -> bool {
+    matches!(
+        vm.kind.as_str(),
+        "firmware" | "kernel" | "freebsd" | "netbsd"
+    ) || vm.image.to_lowercase().starts_with("freebsd")
+        || vm.image.to_lowercase().starts_with("netbsd")
+}
+
+/// Cleanly power off a running BSD guest via its agent (`shutdown -p now`) and
+/// wait for the VM process to exit, so its UFS is unmounted and the on-disk
+/// image is left consistent. A live UFS killed mid-write is *torn* — the next
+/// boot's `fsck` discards recent changes — and even a `sync` first isn't enough;
+/// only a clean unmount is. Returns true if the guest powered off on its own.
+/// Best-effort: false if it wasn't running, had no agent, or didn't exit in time.
+fn graceful_poweroff_bsd(vm: &db::MachineRow) -> bool {
+    let Some(pid) = vm.pid.filter(|p| db::pid_alive(*p)) else {
+        return false;
+    };
+    let vdir = std::path::PathBuf::from(&vm.state_dir);
+    let Some(port) = agent::read_port(&vdir) else {
+        return false;
+    };
+    let argv = [
+        "sh".to_string(),
+        "-c".to_string(),
+        "sync; nohup shutdown -p now >/dev/null 2>&1 & sleep 1".to_string(),
+    ];
+    let _ = agent::exec(port, &argv, &[], false);
+    for _ in 0..80 {
+        if !db::pid_alive(pid) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    false
+}
+
 fn quiesce_guest_for_snapshot(vm: &db::MachineRow) {
     if !vm.pid.map(db::pid_alive).unwrap_or(false) {
         return;
@@ -2969,23 +3268,9 @@ fn quiesce_guest_for_snapshot(vm: &db::MachineRow) {
     }
 
     // BSD: clean poweroff so UFS is unmounted and the image is consistent.
+    let _ = port; // readiness already checked; the helper re-reads the port
     info!(id = %vm.id, "powering off guest for a consistent BSD snapshot…");
-    let argv = [
-        "sh".to_string(),
-        "-c".to_string(),
-        "sync; nohup shutdown -p now >/dev/null 2>&1 & sleep 1".to_string(),
-    ];
-    let _ = agent::exec(port, &argv, &[], false);
-
-    // Wait for the VM process to exit (its clean unmount is then done).
-    if let Some(pid) = vm.pid {
-        for _ in 0..80 {
-            if !db::pid_alive(pid) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        }
-    }
+    graceful_poweroff_bsd(vm);
     if let Ok(db) = db::Db::open() {
         let _ = db.set_machine_status(&vm.id, "exited", Some(0));
     }
@@ -3422,6 +3707,8 @@ fn cmd_flavor_build(name: &str, key: &str, cpus: u8, mem: u32) -> Result<()> {
             no_net: false,
             ports: vec![],
             mac: None,
+            network: None,
+            name: None,
         },
         vm: VmConfig { cpus, mem },
         repo: None,
@@ -3511,6 +3798,8 @@ fn cmd_flavor_run(args: FlavorRunArgs) -> Result<()> {
                 no_net: false,
                 ports: args.ports,
                 mac: None,
+                network: None,
+                name: None,
             },
             vm: VmConfig {
                 cpus: args.vm.cpus,
@@ -3579,6 +3868,8 @@ fn cmd_flavor_run(args: FlavorRunArgs) -> Result<()> {
             no_net: false,
             ports,
             mac: None,
+            network: None,
+            name: None,
         },
         vm: VmConfig {
             cpus: args.vm.cpus,

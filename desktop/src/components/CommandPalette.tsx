@@ -145,6 +145,14 @@ export default function CommandPalette() {
         run: nav("flavors"),
       },
       {
+        id: "nav-networks",
+        title: "Go to Networks",
+        section: "Navigate",
+        icon: IconApps,
+        keywords: "network subnet dns global compose connectivity",
+        run: nav("networks"),
+      },
+      {
         id: "settings",
         title: "Open Settings",
         section: "Navigate",

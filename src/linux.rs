@@ -305,9 +305,17 @@ pub fn prepare_virtiofs_root(
     // reusable when it exists, carries the image content (/nix or /bin), and is
     // NOT a broken rootfs/rootfs nesting from an earlier failure. Fresh runs (new
     // id → no rootfs) and broken clones fall through and clone.
-    let reusable = root.symlink_metadata().is_ok()
-        && root.join("rootfs").symlink_metadata().is_err()
-        && (root.join("nix").exists() || root.join("bin").exists());
+    // A restart boots the machine's OWN rootfs by passing it as the source. Never
+    // rename/clone in that case — the "free the target then clone" path below
+    // would delete the source and lose all data. Detect it (same path) and reuse
+    // unconditionally, independent of the content heuristic, so restart can never
+    // fall back to re-cloning the base image.
+    let booting_own_rootfs = root.symlink_metadata().is_ok()
+        && std::fs::canonicalize(cached_rootfs).ok() == std::fs::canonicalize(&root).ok();
+    let reusable = booting_own_rootfs
+        || (root.symlink_metadata().is_ok()
+            && root.join("rootfs").symlink_metadata().is_err()
+            && (root.join("nix").exists() || root.join("bin").exists()));
     if !reusable {
         // Free the target path RELIABLY before cloning. `cp -Rc SRC DST` copies
         // INTO DST when DST exists (→ rootfs/rootfs nesting → init not found →
@@ -527,8 +535,15 @@ fn generate_init(ep: &Entrypoint, net: bool, persistent: bool, mounts: &[BindMou
         ));
     }
     if net {
+        // On a global network, add a `search <network>` domain so bare peer names
+        // (e.g. `ping db`) resolve against the network's gvproxy DNS zone.
+        let search = std::env::var("BSDKRUN_NET_NAME")
+            .ok()
+            .filter(|n| !n.is_empty())
+            .map(|n| format!("search {n}\\n"))
+            .unwrap_or_default();
         s.push_str(&format!(
-            "echo 'nameserver {GATEWAY_IP}' > /etc/resolv.conf 2>/dev/null\n"
+            "printf '{search}nameserver {GATEWAY_IP}\\n' > /etc/resolv.conf 2>/dev/null\n"
         ));
     }
     // systemd handoff: `bsdkrun-agent systemd setup` installs systemd, writes

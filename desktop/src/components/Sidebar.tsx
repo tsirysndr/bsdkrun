@@ -4,6 +4,7 @@ import {
   IconStack2,
   IconDatabase,
   IconApps,
+  IconNetwork,
   IconSettings,
   IconKeyboard,
 } from "@tabler/icons-react";
@@ -13,7 +14,13 @@ import {
   shortcutsOpenAtom,
   viewAtom,
 } from "../state/atoms";
-import { useFlavors, useImages, useMachines, useVolumes } from "../lib/queries";
+import {
+  useFlavors,
+  useImages,
+  useMachines,
+  useNetworks,
+  useVolumes,
+} from "../lib/queries";
 import type { ViewKey } from "../lib/types";
 
 const ITEMS: {
@@ -26,6 +33,7 @@ const ITEMS: {
   { key: "images", label: "Images", icon: IconStack2, hint: "⌘2" },
   { key: "volumes", label: "Volumes", icon: IconDatabase, hint: "⌘3" },
   { key: "flavors", label: "Flavors", icon: IconApps, hint: "⌘4" },
+  { key: "networks", label: "Networks", icon: IconNetwork, hint: "⌘5" },
 ];
 
 export default function Sidebar() {
@@ -34,6 +42,7 @@ export default function Sidebar() {
   const { data: images = [] } = useImages();
   const { data: volumes = [] } = useVolumes();
   const { data: flavors = [] } = useFlavors();
+  const { data: networks = [] } = useNetworks();
   const [, setSettingsOpen] = useAtom(settingsOpenAtom);
   const [, setShortcutsOpen] = useAtom(shortcutsOpenAtom);
 
@@ -44,6 +53,7 @@ export default function Sidebar() {
     // Only badge user-created flavors (snapshots + flavors.toml), not the
     // static catalog — otherwise it'd always show a large constant.
     flavors: flavors.filter((f) => f.source !== "catalog").length,
+    networks: networks.length,
   };
 
   return (

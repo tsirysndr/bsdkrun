@@ -50,6 +50,12 @@ pub fn volumes_dir() -> Result<PathBuf> {
     Ok(state_dir()?.join("volumes"))
 }
 
+/// Directory holding global-network runtime state (`<state>/networks/<name>`):
+/// the shared gvproxy's control socket + log.
+pub fn networks_dir() -> Result<PathBuf> {
+    Ok(state_dir()?.join("networks"))
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // some columns are stored for future use / debugging
 pub struct ImageRow {
@@ -79,6 +85,11 @@ pub struct MachineRow {
     pub created_at: String,
     pub finished_at: Option<String>,
     pub volume: Option<String>,
+    /// Global network this machine joins on (re)start, if any.
+    pub network: Option<String>,
+    /// Its assigned IP on that network (cleared when membership is edited; a
+    /// fresh IP is allocated / DHCP'd on the next start).
+    pub net_ip: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -195,6 +206,27 @@ impl Db {
             let _ = sqlx::query("ALTER TABLE machines ADD COLUMN name TEXT")
                 .execute(&self.pool)
                 .await;
+            // Global-network membership: which network a machine joined and the
+            // IP it was assigned on that network's shared subnet.
+            let _ = sqlx::query("ALTER TABLE machines ADD COLUMN network TEXT")
+                .execute(&self.pool)
+                .await;
+            let _ = sqlx::query("ALTER TABLE machines ADD COLUMN net_ip TEXT")
+                .execute(&self.pool)
+                .await;
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS networks (
+                    name TEXT PRIMARY KEY,
+                    subnet TEXT NOT NULL,
+                    gateway TEXT NOT NULL,
+                    control_socket TEXT NOT NULL,
+                    dir TEXT NOT NULL,
+                    pid INTEGER,
+                    created_at TEXT NOT NULL
+                )",
+            )
+            .execute(&self.pool)
+            .await?;
             sqlx::query(
                 "CREATE TABLE IF NOT EXISTS disks (
                     id TEXT PRIMARY KEY,
@@ -394,6 +426,21 @@ impl Db {
 
     /// Update a machine's recorded vCPU / memory. libkrun fixes VM resources at
     /// boot, so this takes effect on the next `start` (an in-place restart).
+    /// Overwrite a machine's recorded image label (e.g. to keep a snapshot
+    /// machine's original label after a restart that boots its in-place disk).
+    pub fn set_machine_image(&self, id: &str, image: &str) -> Result<()> {
+        self.rt
+            .block_on(async {
+                sqlx::query("UPDATE machines SET image = ? WHERE id = ?")
+                    .bind(image)
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .map_err(Into::into)
+    }
+
     pub fn set_machine_resources(&self, id: &str, cpus: i64, mem: i64) -> Result<()> {
         self.rt
             .block_on(async {
@@ -413,7 +460,7 @@ impl Db {
             .block_on(async {
                 let rows = sqlx::query(
                     "SELECT id, name, image, kind, command, status, exit_code, pid, detached,
-                            cpus, mem, state_dir, created_at, finished_at, volume
+                            cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip
                      FROM machines ORDER BY created_at DESC",
                 )
                 .fetch_all(&self.pool)
@@ -429,7 +476,7 @@ impl Db {
         if let Some(row) = self.rt.block_on(async {
             sqlx::query(
                 "SELECT id, name, image, kind, command, status, exit_code, pid, detached,
-                        cpus, mem, state_dir, created_at, finished_at, volume
+                        cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip
                  FROM machines WHERE name = ? LIMIT 1",
             )
             .bind(prefix)
@@ -442,7 +489,7 @@ impl Db {
         let matches: Vec<MachineRow> = self.rt.block_on(async {
             let rows = sqlx::query(
                 "SELECT id, name, image, kind, command, status, exit_code, pid, detached,
-                        cpus, mem, state_dir, created_at, finished_at, volume
+                        cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip
                  FROM machines WHERE id LIKE ? ORDER BY created_at DESC",
             )
             .bind(format!("{prefix}%"))
@@ -654,6 +701,209 @@ impl Db {
             })
             .map_err(Into::into)
     }
+
+    // ---- global networks --------------------------------------------------
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_network(
+        &self,
+        name: &str,
+        subnet: &str,
+        gateway: &str,
+        control_socket: &str,
+        dir: &str,
+        pid: Option<i64>,
+    ) -> Result<()> {
+        self.rt
+            .block_on(async {
+                sqlx::query(
+                    "INSERT OR REPLACE INTO networks
+                       (name, subnet, gateway, control_socket, dir, pid, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(name)
+                .bind(subnet)
+                .bind(gateway)
+                .bind(control_socket)
+                .bind(dir)
+                .bind(pid)
+                .bind(now())
+                .execute(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn set_network_pid(&self, name: &str, pid: Option<i64>) -> Result<()> {
+        self.rt
+            .block_on(async {
+                sqlx::query("UPDATE networks SET pid = ? WHERE name = ?")
+                    .bind(pid)
+                    .bind(name)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn list_networks(&self) -> Result<Vec<NetworkRow>> {
+        self.rt
+            .block_on(async {
+                let rows = sqlx::query(
+                    "SELECT name, subnet, gateway, control_socket, dir, pid, created_at
+                     FROM networks ORDER BY created_at DESC",
+                )
+                .fetch_all(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(rows.into_iter().map(row_to_network).collect())
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn find_network(&self, name: &str) -> Result<Option<NetworkRow>> {
+        self.rt
+            .block_on(async {
+                let row = sqlx::query(
+                    "SELECT name, subnet, gateway, control_socket, dir, pid, created_at
+                     FROM networks WHERE name = ?",
+                )
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(row.map(row_to_network))
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn remove_network(&self, name: &str) -> Result<bool> {
+        self.rt
+            .block_on(async {
+                let r = sqlx::query("DELETE FROM networks WHERE name = ?")
+                    .bind(name)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(r.rows_affected() > 0)
+            })
+            .map_err(Into::into)
+    }
+
+    /// Record a machine's network membership + assigned IP.
+    pub fn set_machine_network(&self, id: &str, network: &str, net_ip: &str) -> Result<()> {
+        self.rt
+            .block_on(async {
+                sqlx::query("UPDATE machines SET network = ?, net_ip = ? WHERE id = ?")
+                    .bind(network)
+                    .bind(net_ip)
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .map_err(Into::into)
+    }
+
+    /// Edit a machine's network membership (join/switch/leave), clearing its
+    /// assigned IP so the next start allocates/DHCPs a fresh one on the target
+    /// network. `network = None` detaches it back to the default isolated stack.
+    /// Takes effect on the next `start`.
+    pub fn update_machine_network(&self, id: &str, network: Option<&str>) -> Result<()> {
+        self.rt
+            .block_on(async {
+                sqlx::query("UPDATE machines SET network = ?, net_ip = NULL WHERE id = ?")
+                    .bind(network)
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .map_err(Into::into)
+    }
+
+    /// Members of a network: (name-or-id, assigned IP, pid) — for IP allocation
+    /// and internal DNS. `name` falls back to the id when the machine is unnamed.
+    pub fn network_members(&self, network: &str) -> Result<Vec<(String, String, Option<i64>)>> {
+        self.rt
+            .block_on(async {
+                let rows = sqlx::query(
+                    "SELECT id, name, net_ip, pid FROM machines
+                     WHERE network = ? AND net_ip IS NOT NULL",
+                )
+                .bind(network)
+                .fetch_all(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(
+                    rows.into_iter()
+                        .map(|r| {
+                            let id: String = r.get("id");
+                            let name: Option<String> = r.get("name");
+                            let ip: String = r.get("net_ip");
+                            let pid: Option<i64> = r.get("pid");
+                            (name.unwrap_or(id), ip, pid)
+                        })
+                        .collect(),
+                )
+            })
+            .map_err(Into::into)
+    }
+
+    /// Members of a network with the extra bits needed to push `/etc/hosts` to
+    /// each: (display name, ip, state_dir, kind, pid).
+    pub fn network_member_hosts(
+        &self,
+        network: &str,
+    ) -> Result<Vec<(String, String, String, String, Option<i64>)>> {
+        self.rt
+            .block_on(async {
+                let rows = sqlx::query(
+                    "SELECT id, name, net_ip, state_dir, kind, pid FROM machines
+                     WHERE network = ? AND net_ip IS NOT NULL",
+                )
+                .bind(network)
+                .fetch_all(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(
+                    rows.into_iter()
+                        .map(|r| {
+                            let id: String = r.get("id");
+                            let name: Option<String> = r.get("name");
+                            let ip: String = r.get("net_ip");
+                            let dir: String = r.get("state_dir");
+                            let kind: String = r.get("kind");
+                            let pid: Option<i64> = r.get("pid");
+                            (name.unwrap_or(id), ip, dir, kind, pid)
+                        })
+                        .collect(),
+                )
+            })
+            .map_err(Into::into)
+    }
+}
+
+/// A global network: a shared gvproxy switch machines can join to reach each
+/// other by IP + name on one subnet.
+#[derive(Debug, Clone)]
+pub struct NetworkRow {
+    pub name: String,
+    pub subnet: String,
+    pub gateway: String,
+    pub control_socket: String,
+    pub dir: String,
+    pub pid: Option<i64>,
+    pub created_at: String,
+}
+
+fn row_to_network(r: sqlx::sqlite::SqliteRow) -> NetworkRow {
+    NetworkRow {
+        name: r.get("name"),
+        subnet: r.get("subnet"),
+        gateway: r.get("gateway"),
+        control_socket: r.get("control_socket"),
+        dir: r.get("dir"),
+        pid: r.get("pid"),
+        created_at: r.get("created_at"),
+    }
 }
 
 fn row_to_flavor(r: sqlx::sqlite::SqliteRow) -> FlavorRow {
@@ -694,6 +944,8 @@ fn row_to_machine(r: sqlx::sqlite::SqliteRow) -> MachineRow {
         created_at: r.get("created_at"),
         finished_at: r.get("finished_at"),
         volume: r.get("volume"),
+        network: r.get("network"),
+        net_ip: r.get("net_ip"),
     }
 }
 

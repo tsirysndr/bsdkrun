@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use bsdkrun::{BkError, Flavor, Image, Machine, VersionEntry, Volume};
+use bsdkrun::{BkError, Flavor, Image, Machine, Network, VersionEntry, Volume};
 use term::{LogStreams, Terminals};
 
 /// Persisted app settings.
@@ -195,7 +195,10 @@ async fn list_volumes(state: State<'_, AppState>) -> Result<Vec<Volume>, BkError
 }
 
 #[tauri::command]
-async fn list_versions(state: State<'_, AppState>, os: String) -> Result<Vec<VersionEntry>, BkError> {
+async fn list_versions(
+    state: State<'_, AppState>,
+    os: String,
+) -> Result<Vec<VersionEntry>, BkError> {
     let bin = state.binary()?;
     bsdkrun::list_versions(&bin, &os).await
 }
@@ -204,6 +207,48 @@ async fn list_versions(state: State<'_, AppState>, os: String) -> Result<Vec<Ver
 async fn list_flavors(state: State<'_, AppState>) -> Result<Vec<Flavor>, BkError> {
     let bin = state.binary()?;
     bsdkrun::list_flavors(&bin).await
+}
+
+// ---- global networks -------------------------------------------------------
+
+#[tauri::command]
+async fn list_networks(state: State<'_, AppState>) -> Result<Vec<Network>, BkError> {
+    let bin = state.binary()?;
+    bsdkrun::list_networks(&bin).await
+}
+
+/// Create a global network — `bsdkrun network create <name>`.
+#[tauri::command]
+async fn create_network(state: State<'_, AppState>, name: String) -> Result<(), BkError> {
+    let bin = state.binary()?;
+    bsdkrun::run(&bin, &["network", "create", &name]).await?;
+    Ok(())
+}
+
+/// Remove a global network — `bsdkrun network rm [-f] <name>`.
+#[tauri::command]
+async fn remove_network(
+    state: State<'_, AppState>,
+    name: String,
+    force: bool,
+) -> Result<(), BkError> {
+    let bin = state.binary()?;
+    let mut args = vec!["network", "rm"];
+    if force {
+        args.push("-f");
+    }
+    args.push(&name);
+    bsdkrun::run(&bin, &args).await?;
+    Ok(())
+}
+
+/// Refresh members' /etc/hosts so peers resolve by name (esp. NetBSD) —
+/// `bsdkrun network sync <name>`.
+#[tauri::command]
+async fn sync_network(state: State<'_, AppState>, name: String) -> Result<(), BkError> {
+    let bin = state.binary()?;
+    bsdkrun::run(&bin, &["network", "sync", &name]).await?;
+    Ok(())
 }
 
 // ---- flavors ---------------------------------------------------------------
@@ -272,7 +317,12 @@ async fn create_flavor(
         args.push("--description".into());
         args.push(description);
     }
-    for (flag, list) in [("--port", ports), ("--env", env), ("--nix", nix), ("--provision", provision)] {
+    for (flag, list) in [
+        ("--port", ports),
+        ("--env", env),
+        ("--nix", nix),
+        ("--provision", provision),
+    ] {
         for v in list {
             if !v.trim().is_empty() {
                 args.push(flag.into());
@@ -287,7 +337,11 @@ async fn create_flavor(
 
 /// Remove a saved snapshot or user flavor — `bsdkrun flavor rm [-f] <name>`.
 #[tauri::command]
-async fn remove_flavor(state: State<'_, AppState>, name: String, force: bool) -> Result<(), BkError> {
+async fn remove_flavor(
+    state: State<'_, AppState>,
+    name: String,
+    force: bool,
+) -> Result<(), BkError> {
     let bin = state.binary()?;
     let mut args = vec!["flavor", "rm"];
     if force {
@@ -366,7 +420,11 @@ fn stream_bsdkrun(
             Err(e) => {
                 let _ = app.emit(
                     "flavor://done",
-                    FlavorDone { launch_id, id: None, error: Some(e.to_string()) },
+                    FlavorDone {
+                        launch_id,
+                        id: None,
+                        error: Some(e.to_string()),
+                    },
                 );
                 return;
             }
@@ -382,8 +440,13 @@ fn stream_bsdkrun(
             while let Ok(Some(l)) = lines.next_line().await {
                 let s = sanitize_log(&l);
                 if !s.is_empty() {
-                    let _ = app_err
-                        .emit("flavor://log", FlavorLog { launch_id: lid_err.clone(), line: s });
+                    let _ = app_err.emit(
+                        "flavor://log",
+                        FlavorLog {
+                            launch_id: lid_err.clone(),
+                            line: s,
+                        },
+                    );
                 }
             }
         });
@@ -403,28 +466,44 @@ fn stream_bsdkrun(
                 if capture_id && t.len() == 12 && t.chars().all(|c| c.is_ascii_hexdigit()) {
                     *id_slot2.lock().unwrap() = Some(t);
                 } else {
-                    let _ = app_out
-                        .emit("flavor://log", FlavorLog { launch_id: lid_out.clone(), line: t });
+                    let _ = app_out.emit(
+                        "flavor://log",
+                        FlavorLog {
+                            launch_id: lid_out.clone(),
+                            line: t,
+                        },
+                    );
                 }
             }
         });
 
-        let status =
-            tokio::time::timeout(std::time::Duration::from_secs(1800), child.wait()).await;
+        let status = tokio::time::timeout(std::time::Duration::from_secs(1800), child.wait()).await;
         // A VM grandchild holds the pipes open, so the drain tasks never EOF.
         err_task.abort();
         out_task.abort();
 
         let id = id_slot.lock().unwrap().clone();
         let done = match status {
-            Ok(Ok(st)) if st.success() => FlavorDone { launch_id, id, error: None },
+            Ok(Ok(st)) if st.success() => FlavorDone {
+                launch_id,
+                id,
+                error: None,
+            },
             Ok(Ok(st)) => FlavorDone {
                 launch_id,
                 id,
                 error: Some(format!("exited with status {}", st.code().unwrap_or(-1))),
             },
-            Ok(Err(e)) => FlavorDone { launch_id, id, error: Some(e.to_string()) },
-            Err(_) => FlavorDone { launch_id, id, error: Some(timeout_msg.into()) },
+            Ok(Err(e)) => FlavorDone {
+                launch_id,
+                id,
+                error: Some(e.to_string()),
+            },
+            Err(_) => FlavorDone {
+                launch_id,
+                id,
+                error: Some(timeout_msg.into()),
+            },
         };
         let _ = app.emit("flavor://done", done);
     });
@@ -458,7 +537,14 @@ async fn launch_flavor(
         args.push("--repo".into());
         args.push(r);
     }
-    stream_bsdkrun(app, bin, args, launch_id, true, "timed out launching flavor");
+    stream_bsdkrun(
+        app,
+        bin,
+        args,
+        launch_id,
+        true,
+        "timed out launching flavor",
+    );
     Ok(())
 }
 
@@ -473,7 +559,14 @@ async fn build_flavor(
 ) -> Result<(), String> {
     let bin = state.binary().map_err(|e| e.to_string())?;
     let args: Vec<String> = vec!["flavor".into(), "build".into(), name];
-    stream_bsdkrun(app, bin, args, launch_id, false, "timed out building flavor");
+    stream_bsdkrun(
+        app,
+        bin,
+        args,
+        launch_id,
+        false,
+        "timed out building flavor",
+    );
     Ok(())
 }
 
@@ -484,10 +577,12 @@ async fn system_stats(state: State<'_, AppState>) -> Result<system::SystemStats,
     let (cpu, mem_used, mem_total) = {
         let mut sys = state.sys.lock().unwrap();
         sys.refresh_cpu_usage();
-        sys.refresh_specifics(
-            RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
-        );
-        (sys.global_cpu_usage(), sys.used_memory(), sys.total_memory())
+        sys.refresh_specifics(RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()));
+        (
+            sys.global_cpu_usage(),
+            sys.used_memory(),
+            sys.total_memory(),
+        )
     };
     let (vm_disk, vm_count) = tokio::task::spawn_blocking(system::vm_disk_usage)
         .await
@@ -538,6 +633,12 @@ pub struct RunSpec {
     /// (Linux guests).
     #[serde(default)]
     pub repo: Option<String>,
+    /// Join a global network (shared subnet + internal DNS).
+    #[serde(default)]
+    pub network: Option<String>,
+    /// Friendly name for the machine (its DNS name on a network).
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default)]
     pub command: Vec<String>,
 }
@@ -581,6 +682,15 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
     if let Some(r) = nonempty(&spec.repo) {
         a.push("--repo".into());
         a.push(r.into());
+    }
+    // Global network membership + friendly/DNS name.
+    if let Some(n) = nonempty(&spec.network) {
+        a.push("--network".into());
+        a.push(n.into());
+    }
+    if let Some(n) = nonempty(&spec.name) {
+        a.push("--name".into());
+        a.push(n.into());
     }
     if spec.kind == "linux" {
         if spec.initramfs {
@@ -641,7 +751,14 @@ async fn launch_machine(
 ) -> Result<(), String> {
     let bin = state.binary().map_err(|e| e.to_string())?;
     let args = build_run_args(&spec).map_err(|e| e.to_string())?;
-    stream_bsdkrun(app, bin, args, launch_id, true, "timed out launching machine");
+    stream_bsdkrun(
+        app,
+        bin,
+        args,
+        launch_id,
+        true,
+        "timed out launching machine",
+    );
     Ok(())
 }
 
@@ -657,6 +774,26 @@ async fn update_machine(
     let bin = state.binary()?;
     let (c, m) = (cpus.to_string(), mem.to_string());
     bsdkrun::run(&bin, &["update", &id, "--cpus", &c, "--mem", &m]).await?;
+    Ok(())
+}
+
+/// Edit a machine's global-network membership (join/switch/leave). `network:
+/// None` detaches it back to the isolated default. Applies on next start.
+#[tauri::command]
+async fn update_machine_network(
+    state: State<'_, AppState>,
+    id: String,
+    network: Option<String>,
+) -> Result<(), BkError> {
+    let bin = state.binary()?;
+    match network {
+        Some(net) if !net.is_empty() => {
+            bsdkrun::run(&bin, &["network", "connect", &id, &net]).await?;
+        }
+        _ => {
+            bsdkrun::run(&bin, &["network", "disconnect", &id]).await?;
+        }
+    }
     Ok(())
 }
 
@@ -691,7 +828,11 @@ async fn remove_machine(
 }
 
 #[tauri::command]
-async fn remove_volume(state: State<'_, AppState>, name: String, force: bool) -> Result<(), BkError> {
+async fn remove_volume(
+    state: State<'_, AppState>,
+    name: String,
+    force: bool,
+) -> Result<(), BkError> {
     let bin = state.binary()?;
     let mut args = vec!["volume", "rm"];
     if force {
@@ -742,7 +883,11 @@ async fn tailscale_action(
 
 /// One-shot console log (not `-f`). `boot` shows bsdkrun's own boot log instead.
 #[tauri::command]
-async fn machine_logs(state: State<'_, AppState>, id: String, boot: bool) -> Result<String, BkError> {
+async fn machine_logs(
+    state: State<'_, AppState>,
+    id: String,
+    boot: bool,
+) -> Result<String, BkError> {
     let bin = state.binary()?;
     if boot {
         bsdkrun::run(&bin, &["logs", "--boot", &id]).await
@@ -790,7 +935,15 @@ async fn term_open(
     } else {
         command
     };
-    term::open(&app, &terminals, &bin, &id, command, rows.max(1), cols.max(1))
+    term::open(
+        &app,
+        &terminals,
+        &bin,
+        &id,
+        command,
+        rows.max(1),
+        cols.max(1),
+    )
 }
 
 /// Open an interactive terminal on the HOST (the machine running this app),
@@ -806,7 +959,11 @@ async fn term_open_host(
 }
 
 #[tauri::command]
-async fn term_write(terminals: State<'_, Terminals>, session: String, data: String) -> Result<(), String> {
+async fn term_write(
+    terminals: State<'_, Terminals>,
+    session: String,
+    data: String,
+) -> Result<(), String> {
     term::write(&terminals, &session, &data)
 }
 
@@ -867,6 +1024,10 @@ pub fn run() {
             list_volumes,
             list_versions,
             list_flavors,
+            list_networks,
+            create_network,
+            remove_network,
+            sync_network,
             run_flavor,
             launch_flavor,
             build_flavor,
@@ -877,6 +1038,7 @@ pub fn run() {
             run_machine,
             launch_machine,
             update_machine,
+            update_machine_network,
             stop_machine,
             restart_machine,
             remove_machine,

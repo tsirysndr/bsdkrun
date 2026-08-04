@@ -18,6 +18,8 @@ export interface Machine {
   state_dir: string | null;
   created_at: string | null;
   finished_at: string | null;
+  network: string | null;
+  net_ip: string | null;
 }
 
 export interface Image {
@@ -42,6 +44,16 @@ export interface Volume {
 export interface VersionEntry {
   version: string;
   latest: boolean;
+}
+
+export interface Network {
+  name: string;
+  subnet: string;
+  gateway: string;
+  members: number;
+  running: number;
+  up: boolean;
+  created_at?: string | null;
 }
 
 // Payload for defining a custom flavor (`create_flavor` → `bsdkrun flavor add`).
@@ -108,7 +120,9 @@ export interface RunSpec {
   attach_disks: string[];
   disk_size?: string | null;
   repo?: string | null;
+  network?: string | null;
+  name?: string | null;
   command: string[];
 }
 
-export type ViewKey = "machines" | "images" | "volumes" | "flavors";
+export type ViewKey = "machines" | "images" | "volumes" | "flavors" | "networks";

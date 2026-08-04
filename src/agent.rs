@@ -258,6 +258,40 @@ pub fn exec(host_port: u16, argv: &[String], env: &[String], tty: bool) -> Resul
     Ok(code)
 }
 
+/// Run `argv` inside the guest via its agent without touching local stdio —
+/// stdout/stderr are drained and discarded. For fire-and-forget setup commands
+/// (e.g. tweaking `/etc/resolv.conf` post-boot). Returns the guest exit code.
+pub fn exec_quiet(host_port: u16, argv: &[String]) -> Result<i32> {
+    let mut stream = connect(host_port)?;
+    stream.set_nodelay(true).ok();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    write_request(&stream, false, argv, &[]).context("sending exec request")?;
+    // Signal stdin EOF so a command reading stdin doesn't hang.
+    let _ = write_frame(&mut stream, CH_STDIN, &[]);
+    let mut code = 0;
+    let mut saw_exit = false;
+    loop {
+        match read_frame(&mut stream) {
+            Some((CH_EXIT, data)) => {
+                if data.len() >= 4 {
+                    code = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as i32;
+                }
+                saw_exit = true;
+                break;
+            }
+            Some(_) => {} // drain stdout/stderr
+            None => break,
+        }
+    }
+    // gvproxy accepts the forwarded port before the guest agent is serving, so a
+    // connect can succeed yet yield no exit frame — treat that as a failure
+    // rather than a silent success.
+    if !saw_exit {
+        bail!("guest agent accepted the connection but sent no exit status");
+    }
+    Ok(code)
+}
+
 /// Connect to the forwarded agent port, retrying briefly: gvproxy holds the
 /// forward but the guest agent may still be starting right after boot.
 fn connect(host_port: u16) -> Result<TcpStream> {

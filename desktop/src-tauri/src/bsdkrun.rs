@@ -73,14 +73,14 @@ pub fn resolve_binary(override_path: Option<&str>) -> Result<PathBuf, BkError> {
     }
     // Search PATH (augmented so a GUI launch still finds Homebrew installs).
     let path = augmented_path();
-    if let Ok(found) = which::which_in("bsdkrun", Some(path), std::env::current_dir().unwrap_or_default())
-    {
+    if let Ok(found) = which::which_in(
+        "bsdkrun",
+        Some(path),
+        std::env::current_dir().unwrap_or_default(),
+    ) {
         return Ok(found);
     }
-    for cand in [
-        "/opt/homebrew/bin/bsdkrun",
-        "/usr/local/bin/bsdkrun",
-    ] {
+    for cand in ["/opt/homebrew/bin/bsdkrun", "/usr/local/bin/bsdkrun"] {
         let pb = PathBuf::from(cand);
         if pb.exists() {
             return Ok(pb);
@@ -157,7 +157,13 @@ pub async fn run_code(bin: &PathBuf, args: &[&str]) -> i32 {
 /// falls back to `/bin/sh` if every probe fails (e.g. no agent — the caller's
 /// error handling then surfaces the real problem).
 pub async fn resolve_guest_shell(bin: &PathBuf, id: &str) -> Vec<String> {
-    for sh in ["bash", "sh", "/bin/bash", "/bin/sh", "/run/current-system/sw/bin/bash"] {
+    for sh in [
+        "bash",
+        "sh",
+        "/bin/bash",
+        "/bin/sh",
+        "/run/current-system/sw/bin/bash",
+    ] {
         // 127 = spawn failed (not found). Anything else means the shell exists.
         if run_code(bin, &["exec", id, sh, "-c", ":"]).await != 127 {
             return vec![sh.to_string()];
@@ -212,7 +218,8 @@ pub async fn run_detached(bin: &PathBuf, args: &[&str]) -> Result<String, BkErro
         .map_err(|e| BkError::Io(e.to_string()))?;
 
     // Keep draining stdout too (the VM grandchild inherits it) so it can't fill.
-    let out_handle = tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+    let out_handle =
+        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
 
     // Wait for the (short-lived) parent to exit to learn its status.
     let status = tokio::time::timeout(Duration::from_secs(300), child.wait())
@@ -259,6 +266,10 @@ pub struct Machine {
     pub state_dir: Option<String>,
     pub created_at: Option<String>,
     pub finished_at: Option<String>,
+    #[serde(default)]
+    pub network: Option<String>,
+    #[serde(default)]
+    pub net_ip: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -312,6 +323,23 @@ pub async fn list_flavors(bin: &PathBuf) -> Result<Vec<Flavor>, BkError> {
     serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
 }
 
+/// A global network (mirrors `bsdkrun network ls --json`).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Network {
+    pub name: String,
+    pub subnet: String,
+    pub gateway: String,
+    pub members: i64,
+    pub running: i64,
+    pub up: bool,
+    pub created_at: Option<String>,
+}
+
+pub async fn list_networks(bin: &PathBuf) -> Result<Vec<Network>, BkError> {
+    let out = run(bin, &["network", "ls", "--json"]).await?;
+    serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
+}
+
 pub async fn list_machines(bin: &PathBuf, all: bool) -> Result<Vec<Machine>, BkError> {
     let args: &[&str] = if all {
         &["ps", "-a", "--json"]
@@ -341,7 +369,11 @@ pub async fn list_versions(bin: &PathBuf, os: &str) -> Result<Vec<VersionEntry>,
         let first = t.split_whitespace().next().unwrap_or("");
         // Accept version rows (`  15.1  (latest)`) and NetBSD's `current` row
         // (the recommended build that boots to root under libkrun).
-        let is_version = first.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false);
+        let is_version = first
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false);
         let is_current = first == "current";
         if !is_version && !is_current {
             continue;

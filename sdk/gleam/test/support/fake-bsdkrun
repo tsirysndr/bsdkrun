@@ -1,0 +1,11 @@
+#!/bin/sh
+# Test stand-in for the real `bsdkrun` binary.
+#
+# The SDK prefixes every invocation with the global `--log-level N` flag, so a
+# raw `/bin/sh` cannot be used as a fake — it rejects the flag. This drops that
+# prefix and then behaves like `sh`, letting the tests drive stdout, stderr,
+# stdin and the exit code from an ordinary shell snippet.
+if [ "$1" = "--log-level" ]; then
+  shift 2
+fi
+exec /bin/sh "$@"

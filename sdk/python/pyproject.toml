@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bsdkrun"
+version = "0.1.0"
+description = "Python SDK for bsdkrun — a Firecracker-style microVM launcher for BSD and Linux guests"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Tsiry Sandratraina", email = "tsiry.sndr@gmail.com" }]
+keywords = ["bsdkrun", "microvm", "libkrun", "sandbox", "freebsd", "netbsd", "linux"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Emulators",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/tsirysndr/bsdkrun"
+Repository = "https://github.com/tsirysndr/bsdkrun"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bsdkrun"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    # Powers `uv run console.py`; the SDK itself has no runtime dependencies.
+    "ipython>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# `networks.list` / `volumes.list` shadow the builtin on purpose: the namespaces
+# mirror the CLI's `bsdkrun network list`.
+ignore = ["A003"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/bsdkrun"]
+strict = true

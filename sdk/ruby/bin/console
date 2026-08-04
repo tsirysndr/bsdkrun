@@ -1,0 +1,56 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# An interactive IRB console with the bsdkrun SDK preloaded.
+#
+#   cd sdk/ruby && bin/console
+#
+# The SDK finds the binary the usual way — $BSDKRUN_BIN, then bsdkrun on $PATH,
+# then an in-repo dev build. Point it somewhere else for the session with:
+#
+#   bin/console --bin ../../target/release/bsdkrun
+
+require "irb"
+require_relative "../lib/bsdkrun"
+
+if (i = ARGV.index("--bin"))
+  path = ARGV[i + 1] or abort("--bin needs a path")
+  Bsdkrun.binary_path = path
+  ARGV.slice!(i, 2)
+end
+
+# Everything below is in scope at the prompt, since IRB starts in this context.
+
+# Every machine, exited ones included — a shorthand for poking around.
+def ps(all: true)
+  Bsdkrun::Sandbox.list(all: all)
+end
+
+# The machine you most recently created, for quick round-trips.
+def last
+  ps.max_by(&:created_at)
+end
+
+def binary_line
+  Bsdkrun.binary_path
+rescue Bsdkrun::BinaryNotFound => e
+  "NOT FOUND (#{e.message})"
+end
+
+puts <<~BANNER
+  bsdkrun #{Bsdkrun::VERSION} — interactive console
+  binary: #{binary_line}
+
+    Bsdkrun::Sandbox      create / get / list machines
+    Bsdkrun.images        host-level image operations
+    Bsdkrun.volumes       persistent volumes
+    Bsdkrun.networks      global networks
+    Bsdkrun.system        probe, fetch, versions, grow_disk
+    ps, last              every machine / the newest one
+
+    box = Bsdkrun::Sandbox.create(os: "linux", image: "alpine")
+    box.exec(["uname", "-a"]).text
+    box.stop
+BANNER
+
+IRB.start(__FILE__)

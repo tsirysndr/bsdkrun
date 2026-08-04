@@ -47,6 +47,29 @@ pub fn force_remove_dir_all_async(path: &Path) {
         .spawn();
 }
 
+/// Delete a directory tree *instantly from its real path*, GC'ing it in the
+/// background. Renaming the tree aside is atomic and O(1) — it needs write on the
+/// parent only, not on the read-only `0555` nix dirs inside — so the path vanishes
+/// immediately (e.g. a machine's state dir disappears the moment it's removed),
+/// while the slow `chmod -R`/`rm -rf` of a huge `/nix/store` runs detached. This
+/// is what keeps `bsdkrun rm` from blocking (and the desktop's delete from
+/// spinning) on a nix machine. Falls back to an in-place async remove if the
+/// rename fails.
+pub fn remove_dir_all_detached(path: &Path) {
+    if path.symlink_metadata().is_err() {
+        return;
+    }
+    // Rename to a hidden sibling in the same parent (same filesystem → atomic).
+    let trash = path.file_name().map(|name| {
+        path.with_file_name(format!(".trash-{}-{}", name.to_string_lossy(), std::process::id()))
+    });
+    let target = match trash {
+        Some(t) if t != path && std::fs::rename(path, &t).is_ok() => t,
+        _ => path.to_path_buf(),
+    };
+    force_remove_dir_all_async(&target);
+}
+
 /// Supported CPU architectures (host == guest for a hardware-virtualized VM).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Arch {

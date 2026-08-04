@@ -2840,8 +2840,9 @@ fn cmd_rm(ids: &[String], force: bool) -> Result<()> {
             }
         }
         // Remove the per-machine state dir (console log, sockets, CoW disk clone),
-        // then drop the DB row. force_remove handles a read-only nix rootfs.
-        host::force_remove_dir_all(&std::path::PathBuf::from(&vm.state_dir));
+        // then drop the DB row. Rename-aside + background GC so a huge read-only
+        // nix rootfs doesn't make `rm` (and the desktop's delete) hang.
+        host::remove_dir_all_detached(&std::path::PathBuf::from(&vm.state_dir));
         db.delete_machine(&vm.id)?;
         println!("{}", vm.id);
     }
@@ -3142,7 +3143,9 @@ fn cmd_flavor_rm(names: &[String], _force: bool) -> Result<()> {
         }
         match db.find_flavor(name)? {
             Some(f) => {
-                host::force_remove_dir_all(&std::path::PathBuf::from(&f.path));
+                // Rename-aside + background GC so a large (nix) snapshot rootfs
+                // doesn't make the delete hang, same as `rm`.
+                host::remove_dir_all_detached(&std::path::PathBuf::from(&f.path));
                 db.remove_flavor(name).ok();
                 println!("{name}");
             }

@@ -920,6 +920,12 @@ impl FromStr for PortForward {
 }
 
 fn main() -> Result<()> {
+    // Before anything opens a file: virtio-fs is passthrough, so every file the
+    // guest holds open burns an fd in this process. launchd hands GUI-launched
+    // processes (the desktop app) a 256-fd soft limit, which a guest running
+    // `nix` blows through — surfacing in the guest as "Too many open files".
+    host::raise_fd_limit();
+
     let cli = Cli::parse();
 
     // Our own diagnostics go through `tracing`, written to stderr so they never

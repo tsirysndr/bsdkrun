@@ -230,3 +230,59 @@ fn plain_copy(src: &Path, dst: &Path, recursive: bool) -> Result<()> {
         crate::fetch::run(Command::new("cp").arg(src).arg(dst), "cp (copy file)")
     }
 }
+
+/// Raise this process's open-file limit (`RLIMIT_NOFILE`) soft limit to the
+/// hard limit.
+///
+/// virtio-fs is a **passthrough** filesystem: every file the guest holds open
+/// costs one file descriptor in *this* process, the one serving the device. A
+/// guest that opens thousands of files (a `nix` store operation is the extreme
+/// case — SQLite plus a large substituter fan-out) therefore exhausts the host
+/// process's fd table, and the guest sees the failure as a bewildering
+/// `EMFILE`/"Too many open files" or SQLite's "unable to open database file"
+/// — errors that point at the guest when the limit is actually ours.
+///
+/// macOS makes this easy to hit: `launchctl limit maxfiles` defaults to a soft
+/// limit of **256** with an unlimited hard limit, and processes started by
+/// launchd (i.e. the desktop app, and anything it spawns) inherit that 256 —
+/// interactive shells often raise it, which is why the same command can work
+/// from a terminal and fail from the GUI. An idle Linux microVM already holds
+/// well over 100 fds, so 256 leaves almost no headroom.
+///
+/// `RLIM_INFINITY` is not a usable count, so cap the request at what the kernel
+/// will actually allow per process (`kern.maxfilesperproc` on macOS). Best
+/// effort: a failure here just leaves the inherited limit in place.
+pub fn raise_fd_limit() {
+    unsafe {
+        let mut lim: libc::rlimit = std::mem::zeroed();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) != 0 {
+            return;
+        }
+        let mut want = lim.rlim_max;
+        // macOS refuses any setrlimit above kern.maxfilesperproc, and reports
+        // rlim_max as RLIM_INFINITY — asking for infinity fails outright, so
+        // clamp to the per-process ceiling the kernel advertises.
+        #[cfg(target_os = "macos")]
+        {
+            let mut per_proc: libc::c_int = 0;
+            let mut sz = std::mem::size_of::<libc::c_int>();
+            let name = c"kern.maxfilesperproc";
+            if libc::sysctlbyname(
+                name.as_ptr(),
+                &mut per_proc as *mut _ as *mut libc::c_void,
+                &mut sz,
+                std::ptr::null_mut(),
+                0,
+            ) == 0
+                && per_proc > 0
+            {
+                want = want.min(per_proc as libc::rlim_t);
+            }
+        }
+        if want <= lim.rlim_cur {
+            return;
+        }
+        lim.rlim_cur = want;
+        let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &lim);
+    }
+}

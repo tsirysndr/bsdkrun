@@ -244,20 +244,14 @@ jobs:
           # virtio-fs layer mishandles them. `hello` is ~75 KiB, so it costs
           # seconds rather than the minutes a source build would.
           #
-          # build-users-group must be cleared. The image ships
-          # `build-users-group = nixbld`, so nix (running as root) drops the
-          # builder to a nixbld uid. libkrun's LINUX virtio-fs backend honours
-          # the guest's credentials for each operation, but the server itself
-          # is unprivileged and cannot act as that uid against a store owned by
-          # the runner — the build then dies with
+          # Note there is no `--option build-users-group ""` here on purpose:
+          # /init exports NIX_CONFIG to clear it for every nix guest, so this
+          # step also serves as the regression test for that. Without it the
+          # build runs as a nixbld uid the unprivileged virtio-fs server cannot
+          # act as, and fails with
           # `creating directory ".../user-environment": Permission denied`.
-          # Building as guest root instead lands on the server's own uid, which
-          # does own the store. Nothing is lost: the microVM is already the
-          # sandbox that build users would otherwise provide. macOS never hit
-          # this because its backend performs every operation as the host user
-          # regardless of guest uid.
           timeout 300 ./target/release/bsdkrun exec "$id" /bin/sh -c \
-            'nix-env --option build-users-group "" -iA nixpkgs.hello 2>&1 | tail -5'
+            'nix-env -iA nixpkgs.hello 2>&1 | tail -5'
           timeout 60 ./target/release/bsdkrun exec "$id" /bin/sh -c \
             '/root/.nix-profile/bin/hello' | grep -q Hello
           echo "🎉 nix-env installed and ran a package from the profile"
@@ -270,37 +264,12 @@ jobs:
           ./target/release/bsdkrun stop "$id" || true
           echo "🎉 nixos/nix guest works on Linux with no extra setup"
 
-      # The same guest on an initramfs (RAM) rootfs rather than virtio-fs — a
-      # different /init path, and the one macOS users fall back to.
-      - name: e2e — nixos/nix guest (initramfs rootfs)
-        run: |
-          set -eux
-
-          # Slower to become responsive than the virtio-fs run, by a lot: the
-          # whole rootfs is packed into a cpio and then unpacked into RAM
-          # before /init runs at all. Locally that is ~45s on fast hardware, so
-          # a fixed sleep is hopeless on a 2-core runner — poll instead.
-          wait_agent() {
-            for _ in $(seq 1 60); do
-              if timeout 20 ./target/release/bsdkrun exec "$1" /bin/sh -c 'echo agent-alive' \
-                   2>/dev/null | grep -q agent-alive; then
-                return 0
-              fi
-              sleep 3
-            done
-            echo "agent never became responsive for $1" >&2
-            ./target/release/bsdkrun logs "$1" | tail -60 || true
-            return 1
-          }
-
-          id=$(./target/release/bsdkrun linux -d --initramfs --mem 4096 nixos/nix -- sleep 300)
-          wait_agent "$id"
-          timeout 60 ./target/release/bsdkrun exec "$id" bash -c 'cat <(echo procsub-ok)' \
-            | grep -q procsub-ok
-          timeout 120 ./target/release/bsdkrun exec "$id" /bin/sh -c \
-            'echo hi > /tmp/probe && p=$(nix-store --add /tmp/probe) && test -f "$p" && echo store-add-ok' \
-            | grep -q store-add-ok
-          ./target/release/bsdkrun stop "$id" || true
+      # NOTE: there is deliberately no nixos-on-initramfs step. It packs the
+      # whole ~650 MB rootfs into a cpio and unpacks it into RAM before /init
+      # runs at all — ~45s on fast local hardware and considerably worse on a
+      # 2-core runner — to re-check the same generated /init the virtio-fs step
+      # above already covers. The initramfs path itself stays covered by the
+      # faster alpine steps.
 
       # The agent doubles as a feature CLI (ssh/tailscale/systemd) driven by the
       # matching host wrappers. ssh is the full loop: agent installs the key,

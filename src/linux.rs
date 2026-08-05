@@ -584,6 +584,31 @@ fn generate_init(ep: &Entrypoint, net: bool, persistent: bool, mounts: &[BindMou
             s.push_str(&format!("export {k}={}\n", sh_quote(v)));
         }
     }
+    // Neutralize nix's build users. The nixos/nix image ships
+    // `build-users-group = nixbld`, so nix — itself running as root — drops each
+    // *builder* to a nixbld uid. That is wrong for a microVM in two ways.
+    //
+    // On a Linux host, libkrun's virtio-fs backend honours the guest's
+    // credentials per operation, but the server process is unprivileged and
+    // cannot act as a nixbld uid against a store owned by the user who launched
+    // us, so any build that writes to the store dies with
+    // `creating directory ".../user-environment": Permission denied` — while
+    // plain `nix-store --add` (done by nix itself, not a build user) succeeds,
+    // which makes the failure look arbitrary. On macOS the backend performs
+    // every operation as the host user regardless of guest uid, so it does not
+    // bite there; the setting is still pointless.
+    //
+    // Build users exist to isolate builders from each other and from the store
+    // on a shared multi-user machine. A microVM is already that isolation, and
+    // it is single-user, so clearing this gives up nothing.
+    //
+    // Done via NIX_CONFIG rather than by editing /etc/nix/nix.conf, because in
+    // this image that path is a symlink into the read-only /nix/store and
+    // cannot be written. Skipped when the image (or `-e`) already set
+    // NIX_CONFIG, and when there is no nix store to care about.
+    if !ep.env.iter().any(|e| e.starts_with("NIX_CONFIG=")) {
+        s.push_str("if [ -d /nix/store ]; then export NIX_CONFIG='build-users-group ='; fi\n");
+    }
     // Default HOME when the image didn't set one. The kernel launches init with
     // no HOME, so it stays empty/`/` — nix then warns "$HOME ('/') is not owned
     // by you, falling back to … ('/root')". Guests run as root, so derive HOME
@@ -779,6 +804,29 @@ mod tests {
         assert!(s.contains("is_mounted /sys || mount -t sysfs sysfs /sys"));
         // The mountpoint check reads /proc/mounts in pure shell — no grep needed.
         assert!(s.contains("< /proc/mounts"));
+    }
+
+    #[test]
+    fn init_neutralizes_nix_build_users() {
+        let s = generate_init(&ep(), false, false, &[]);
+        // Guarded on /nix/store so non-nix images are untouched, and exported
+        // before the agent starts so `exec`/`shell` inherit it.
+        assert!(
+            s.contains("if [ -d /nix/store ]; then export NIX_CONFIG='build-users-group ='; fi")
+        );
+        let cfg = s.find("NIX_CONFIG").expect("NIX_CONFIG exported");
+        let agent = s.find("/sbin/bsdkrun-agent").expect("agent started");
+        assert!(cfg < agent, "NIX_CONFIG must be exported before the agent");
+    }
+
+    #[test]
+    fn image_nix_config_is_respected() {
+        let mut e = ep();
+        e.env.push("NIX_CONFIG=cores = 4".into());
+        let s = generate_init(&e, false, false, &[]);
+        // Don't clobber a value the image (or `-e`) already set.
+        assert!(!s.contains("export NIX_CONFIG='build-users-group ='"));
+        assert!(s.contains("export NIX_CONFIG='cores = 4'"));
     }
 
     #[test]

@@ -243,8 +243,21 @@ jobs:
           # symlinks into /nix/store, the exact shape that fails when the
           # virtio-fs layer mishandles them. `hello` is ~75 KiB, so it costs
           # seconds rather than the minutes a source build would.
+          #
+          # build-users-group must be cleared. The image ships
+          # `build-users-group = nixbld`, so nix (running as root) drops the
+          # builder to a nixbld uid. libkrun's LINUX virtio-fs backend honours
+          # the guest's credentials for each operation, but the server itself
+          # is unprivileged and cannot act as that uid against a store owned by
+          # the runner — the build then dies with
+          # `creating directory ".../user-environment": Permission denied`.
+          # Building as guest root instead lands on the server's own uid, which
+          # does own the store. Nothing is lost: the microVM is already the
+          # sandbox that build users would otherwise provide. macOS never hit
+          # this because its backend performs every operation as the host user
+          # regardless of guest uid.
           timeout 300 ./target/release/bsdkrun exec "$id" /bin/sh -c \
-            'nix-env -iA nixpkgs.hello 2>&1 | tail -5'
+            'nix-env --option build-users-group "" -iA nixpkgs.hello 2>&1 | tail -5'
           timeout 60 ./target/release/bsdkrun exec "$id" /bin/sh -c \
             '/root/.nix-profile/bin/hello' | grep -q Hello
           echo "🎉 nix-env installed and ran a package from the profile"

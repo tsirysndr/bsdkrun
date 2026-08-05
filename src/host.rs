@@ -218,6 +218,14 @@ pub fn cow_copy(src: &Path, dst: &Path, recursive: bool) -> Result<()> {
     plain_copy(src, dst, recursive)
 }
 
+/// Copy without attempting a CoW clone first. Use when the copy is *known* to
+/// cross filesystems (migrating onto the case-sensitive store, say): clonefile
+/// fails `EXDEV` there, and `cow_copy`'s fallback chain would print an alarming
+/// "cp: … clonefile failed: Cross-device link" on the way to succeeding.
+pub fn plain_copy_tree(src: &Path, dst: &Path) -> Result<()> {
+    plain_copy(src, dst, true)
+}
+
 fn plain_copy(src: &Path, dst: &Path, recursive: bool) -> Result<()> {
     if recursive {
         let _ = std::fs::remove_dir_all(dst);

@@ -14,7 +14,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::fetch::{cache_dir, run};
+use crate::fetch::run;
 
 /// An image's OCI runtime config — the bits we need to reconstruct its
 /// entrypoint inside the guest.
@@ -80,9 +80,7 @@ pub fn pull(reference: &str) -> Result<Image> {
 
     // Content-addressed cache: identical image contents => identical config
     // digest => reuse the already-extracted rootfs.
-    let dir = cache_dir()?
-        .join("oci")
-        .join(digest_to_dirname(&config_digest));
+    let dir = crate::fetch::oci_cache_dir()?.join(digest_to_dirname(&config_digest));
     let rootfs = dir.join("rootfs");
     let config_path = dir.join("config.json");
     if rootfs.exists() && config_path.exists() {

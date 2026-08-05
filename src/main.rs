@@ -23,6 +23,11 @@ mod names;
 mod net;
 mod network;
 mod oci;
+/// The case-sensitive store only exists to work around case-insensitive APFS;
+/// Linux filesystems are case-sensitive already, so nix guests work there
+/// out of the box and the module is not compiled.
+#[cfg(target_os = "macos")]
+mod store;
 mod tty;
 mod watchdog;
 
@@ -144,6 +149,10 @@ enum Command {
 
     /// Manage persistent volumes (list / remove).
     Volume(VolumeArgs),
+
+    /// Manage the case-sensitive store that nix guests need (macOS only).
+    #[cfg(target_os = "macos")]
+    Store(StoreArgs),
 
     /// Snapshot a machine's current state into a named flavor (like `docker commit`).
     Commit(CommitArgs),
@@ -386,6 +395,59 @@ enum VolumeCmd {
     Ls(VolumeLsArgs),
     /// Remove one or more volumes (and their data).
     Rm(VolumeRmArgs),
+}
+
+/// macOS formats the boot volume case-insensitively, which collapses nix store
+/// paths that differ only by case and breaks every nix guest. These commands
+/// manage the case-sensitive APFS sparsebundle that holds image rootfs trees
+/// and named volumes instead. Linux hosts are already case-sensitive and need
+/// none of this, so the subcommand is not compiled there.
+#[cfg(target_os = "macos")]
+#[derive(Parser)]
+struct StoreArgs {
+    #[command(subcommand)]
+    cmd: StoreCmd,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Subcommand)]
+enum StoreCmd {
+    /// Create the case-sensitive store and move existing volumes onto it.
+    Init(StoreInitArgs),
+    /// Show whether a store exists, is attached, and how much disk it uses.
+    Status,
+    /// Attach the store (done automatically, but useful after a manual detach).
+    Attach,
+    /// Detach the store. Machines using it must be stopped first.
+    Detach(StoreDetachArgs),
+    /// Delete the store and everything on it.
+    Rm(StoreRmArgs),
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Parser)]
+struct StoreInitArgs {
+    /// Capacity ceiling for the store, e.g. `200g`. Sparse — a fresh store of
+    /// any size occupies only ~24 MB until images are pulled into it.
+    #[arg(long, default_value = store::DEFAULT_SIZE)]
+    size: String,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Parser)]
+struct StoreDetachArgs {
+    /// Detach even if files on the store are still open.
+    #[arg(short, long)]
+    force: bool,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Parser)]
+struct StoreRmArgs {
+    /// Required: deleting the store destroys every cached image and every
+    /// named volume living on it.
+    #[arg(short, long)]
+    force: bool,
 }
 
 #[derive(Parser)]
@@ -926,6 +988,12 @@ fn main() -> Result<()> {
     // `nix` blows through — surfacing in the guest as "Too many open files".
     host::raise_fd_limit();
 
+    // A sparsebundle does not survive a reboot attached, so re-attach it before
+    // any path is resolved — otherwise `<cache>/store` is an empty directory on
+    // the case-insensitive boot volume and images would extract into it.
+    #[cfg(target_os = "macos")]
+    store::auto_attach();
+
     let cli = Cli::parse();
 
     // Our own diagnostics go through `tracing`, written to stderr so they never
@@ -978,6 +1046,14 @@ fn main() -> Result<()> {
         Command::Volume(args) => match args.cmd {
             VolumeCmd::Ls(a) => cmd_volume_ls(a.json),
             VolumeCmd::Rm(a) => cmd_volume_rm(&a.names, a.force),
+        },
+        #[cfg(target_os = "macos")]
+        Command::Store(args) => match args.cmd {
+            StoreCmd::Init(a) => cmd_store_init(&a.size),
+            StoreCmd::Status => cmd_store_status(),
+            StoreCmd::Attach => cmd_store_attach(),
+            StoreCmd::Detach(a) => cmd_store_detach(a.force),
+            StoreCmd::Rm(a) => cmd_store_rm(a.force),
         },
         Command::Commit(args) => cmd_commit(&args.id, &args.name, &args.description),
         Command::Flavors(args) => cmd_flavors(args.json),
@@ -1714,6 +1790,21 @@ fn machine_dir_or_tmp(id: &str) -> std::path::PathBuf {
     dir
 }
 
+/// Directory that will hold a machine's writable rootfs clone. On macOS with a
+/// case-sensitive store set up this lives on the store (nix guests need that,
+/// and the clone stays CoW because source and destination share a volume);
+/// everywhere else it is the machine's own state dir, as before.
+fn machine_rootfs_dir(id: &str, vdir: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(d) = store::machine_rootfs_dir(id) {
+            return d;
+        }
+    }
+    let _ = id;
+    vdir.to_path_buf()
+}
+
 /// The last path component, for display.
 fn basename(p: &std::path::Path) -> String {
     p.file_name()
@@ -2096,7 +2187,12 @@ fn boot_linux_from(
             rootfs_src, &ep, net_up, persistent, voldir, &mounts,
         )?),
         (None, true) => LinuxRoot::Virtiofs(linux::prepare_virtiofs_root(
-            rootfs_src, &ep, net_up, persistent, &vdir, &mounts,
+            rootfs_src,
+            &ep,
+            net_up,
+            persistent,
+            &machine_rootfs_dir(&machine_id, &vdir),
+            &mounts,
         )?),
         (None, false) => {
             linux::warn_initramfs_memory(rootfs_src, args.vm.mem);
@@ -2772,6 +2868,69 @@ fn cmd_images(json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Create the case-sensitive store, then move existing named volumes onto it.
+/// The image cache is dropped rather than moved — see [`store::migrate`].
+#[cfg(target_os = "macos")]
+fn cmd_store_init(size: &str) -> Result<()> {
+    // A stale "running" row whose pid is gone must not block the migration, so
+    // confirm liveness rather than trusting the recorded status.
+    let running = db::Db::open()
+        .and_then(|d| d.list_machines())
+        .map(|ms| {
+            ms.iter()
+                .filter(|m| m.status == "running" && m.pid.map(db::pid_alive).unwrap_or(false))
+                .count()
+        })
+        .unwrap_or(0);
+    if running > 0 {
+        anyhow::bail!(
+            "{running} machine(s) still running — stop them first, since their rootfs \
+             moves onto the new store"
+        );
+    }
+    store::create(size)?;
+    store::migrate()?;
+    println!("case-sensitive store ready at {}", store::root()?.display());
+    println!("images will re-pull into it on next use; nix guests now work.");
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn cmd_store_status() -> Result<()> {
+    println!("{}", store::describe()?);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn cmd_store_attach() -> Result<()> {
+    store::attach()?;
+    println!("{}", store::describe()?);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn cmd_store_detach(force: bool) -> Result<()> {
+    store::detach(force)?;
+    println!("store detached — images and volumes on it are unavailable until reattached");
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn cmd_store_rm(force: bool) -> Result<()> {
+    if !store::exists() {
+        println!("no store to remove");
+        return Ok(());
+    }
+    if !force {
+        anyhow::bail!(
+            "removing the store destroys every image and named volume on it — pass -f to confirm"
+        );
+    }
+    store::remove(true)?;
+    println!("store removed; the default cache and volume directories are in use again");
+    Ok(())
+}
+
 fn cmd_volume_ls(json: bool) -> Result<()> {
     let db = db::Db::open()?;
     // Hide reserved flavor-build volumes (the provisioning cache layers).
@@ -3140,6 +3299,10 @@ fn cmd_rm(ids: &[String], force: bool) -> Result<()> {
         // then drop the DB row. Rename-aside + background GC so a huge read-only
         // nix rootfs doesn't make `rm` (and the desktop's delete) hang.
         host::remove_dir_all_detached(&std::path::PathBuf::from(&vm.state_dir));
+        // The rootfs clone may live on the case-sensitive store rather than in
+        // the state dir; without this it would be orphaned there.
+        #[cfg(target_os = "macos")]
+        store::remove_machine_rootfs(&vm.id);
         db.delete_machine(&vm.id)?;
         println!("{}", vm.id);
     }

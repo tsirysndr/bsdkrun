@@ -506,6 +506,17 @@ fn generate_init(ep: &Entrypoint, net: bool, persistent: bool, mounts: &[BindMou
     // devpts is required for openpty (used by `exec -t` / `shell` in the agent).
     s.push_str("mkdir -p /dev/pts 2>/dev/null\n");
     s.push_str("mount -t devpts devpts /dev/pts 2>/dev/null\n");
+    // devtmpfs supplies only real device nodes — the /dev/fd, /dev/stdin,
+    // /dev/stdout and /dev/stderr symlinks are userspace convention, normally
+    // created by udev/systemd, which never runs here. Without /dev/fd, bash
+    // process substitution `<(…)` silently produces a path nothing can open:
+    // nix's stdenv setup.sh uses it, and every build dies with
+    // "/dev/fd/63: No such file or directory". These are plain symlinks into
+    // /proc/self/fd, so they cost nothing and must come after /proc is mounted.
+    s.push_str("[ -e /dev/fd ] || ln -s /proc/self/fd /dev/fd 2>/dev/null\n");
+    s.push_str("[ -e /dev/stdin ] || ln -s /proc/self/fd/0 /dev/stdin 2>/dev/null\n");
+    s.push_str("[ -e /dev/stdout ] || ln -s /proc/self/fd/1 /dev/stdout 2>/dev/null\n");
+    s.push_str("[ -e /dev/stderr ] || ln -s /proc/self/fd/2 /dev/stderr 2>/dev/null\n");
     // Set the clock when the guest has none: aarch64 microVMs get no RTC, so
     // the kernel boots at epoch 0 (Jan 1 1970) and ALL TLS fails ("certificate
     // not valid yet") — apk/apt, tailscale downloads, everything. This script
@@ -768,5 +779,29 @@ mod tests {
         assert!(s.contains("is_mounted /sys || mount -t sysfs sysfs /sys"));
         // The mountpoint check reads /proc/mounts in pure shell — no grep needed.
         assert!(s.contains("< /proc/mounts"));
+    }
+
+    #[test]
+    fn init_creates_dev_fd_symlinks() {
+        let s = generate_init(&ep(), false, false, &[]);
+        // udev/systemd never runs here, so /init must create the /dev/fd family
+        // itself — without it bash process substitution `<(…)` yields an
+        // unopenable /dev/fd/N and every nix stdenv build fails.
+        for (link, target) in [
+            ("/dev/fd", "/proc/self/fd"),
+            ("/dev/stdin", "/proc/self/fd/0"),
+            ("/dev/stdout", "/proc/self/fd/1"),
+            ("/dev/stderr", "/proc/self/fd/2"),
+        ] {
+            // Guarded so images that already ship the link aren't disturbed.
+            assert!(
+                s.contains(&format!("[ -e {link} ] || ln -s {target} {link}")),
+                "{link} -> {target}"
+            );
+        }
+        // They are symlinks into /proc/self/fd, so /proc must be mounted first.
+        let proc_pos = s.find("mount -t proc").expect("proc mount present");
+        let fd_pos = s.find("ln -s /proc/self/fd /dev/fd").expect("/dev/fd link");
+        assert!(proc_pos < fd_pos, "/proc must be mounted before /dev/fd");
     }
 }

@@ -615,6 +615,21 @@ pub(crate) fn cache_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".cache").join("bsdkrun"))
 }
 
+/// Directory holding extracted OCI rootfs trees. On macOS this is the
+/// case-sensitive store when one is set up (see [`crate::store`]) — a nix guest
+/// needs a case-sensitive filesystem or its store paths collide — otherwise the
+/// historical `<cache>/oci`.
+pub(crate) fn oci_cache_dir() -> Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::store::oci_dir()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(cache_dir()?.join("oci"))
+    }
+}
+
 /// Expose the cached image inside `dir` without copying its bytes — a hard link
 /// when possible, else a symlink. Returns the usable path. If `dir` already is
 /// the cache directory, the cached path is returned as-is.

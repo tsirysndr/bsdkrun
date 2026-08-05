@@ -39,15 +39,31 @@ pub fn machine_dir(id: &str) -> Result<PathBuf> {
     Ok(state_dir()?.join("machines").join(id))
 }
 
-/// Directory holding named persistent volumes (`<state>/volumes`). Unlike a
-/// machine's runtime dir, these survive across runs so guest changes persist.
 /// Directory holding saved snapshot flavors (`<state>/flavors`).
 pub fn flavors_dir() -> Result<PathBuf> {
     Ok(state_dir()?.join("flavors"))
 }
 
-pub fn volumes_dir() -> Result<PathBuf> {
+/// The historical location for named volumes, `<state>/volumes`. Prefer
+/// [`volumes_dir`] — on macOS the volumes may have been relocated onto the
+/// case-sensitive store.
+pub fn volumes_dir_default() -> Result<PathBuf> {
     Ok(state_dir()?.join("volumes"))
+}
+
+/// Directory holding named persistent volumes. Unlike a machine's runtime dir,
+/// these survive across runs so guest changes persist. On macOS they live on
+/// the case-sensitive store when one is set up (see [`crate::store`]), which
+/// also keeps `--volume`'s CoW clone of a base rootfs on the same volume.
+pub fn volumes_dir() -> Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::store::volumes_dir()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        volumes_dir_default()
+    }
 }
 
 /// Directory holding global-network runtime state (`<state>/networks/<name>`):

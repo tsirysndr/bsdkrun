@@ -168,6 +168,66 @@ jobs:
           ./target/release/bsdkrun volume ls
           ./target/release/bsdkrun stop "$id2"
 
+      # nixos/nix is the strictest Linux guest we support: it keeps every binary
+      # under /nix/store (nothing on a normal PATH), needs a case-sensitive
+      # filesystem, and its stdenv leans on bash process substitution. On a
+      # Linux host it must work with no extra setup — the case-sensitive store
+      # is a macOS-only workaround — so this asserts exactly that.
+      - name: e2e — nixos/nix guest (virtio-fs rootfs)
+        run: |
+          set -eux
+          id=$(./target/release/bsdkrun linux -d --mem 2048 nixos/nix -- sleep 300)
+          sleep 5
+          ./target/release/bsdkrun logs "$id" | tail -30 || true
+
+          # /init must resolve mount(8) etc. out of /nix/store — if PATH setup
+          # regressed the guest would not have booted far enough to exec at all.
+          timeout 60 ./target/release/bsdkrun exec "$id" /bin/sh -c 'echo agent-alive' \
+            | grep -q agent-alive
+
+          # devtmpfs supplies no /dev/fd; /init creates the symlinks itself.
+          # Without them bash process substitution silently breaks and every
+          # nix stdenv build dies on "/dev/fd/63: No such file or directory".
+          timeout 60 ./target/release/bsdkrun exec "$id" /bin/sh -c \
+            'for l in /dev/fd /dev/stdin /dev/stdout /dev/stderr; do [ -e "$l" ] || { echo "MISSING $l"; exit 1; }; done; echo dev-fd-ok' \
+            | grep -q dev-fd-ok
+          out=$(timeout 60 ./target/release/bsdkrun exec "$id" bash -c 'cat <(echo procsub-ok)')
+          echo "$out" | grep -q procsub-ok
+
+          # A nix store holds paths differing only by case (perl ships Pod/ and
+          # pod/). Linux filesystems are case-sensitive, so this must pass with
+          # no store set up.
+          timeout 60 ./target/release/bsdkrun exec "$id" /bin/sh -c \
+            'rm -rf /tmp/ct && mkdir -p /tmp/ct/Pod && mkdir /tmp/ct/pod && echo case-sensitive-ok' \
+            | grep -q case-sensitive-ok
+
+          # Write a real path into the store: exercises the SQLite db under
+          # /nix/var/nix/db, which is what fails when file descriptors run out.
+          # Offline on purpose — no substituter fetch, so CI stays fast.
+          timeout 120 ./target/release/bsdkrun exec "$id" /bin/sh -c \
+            'echo hello > /tmp/probe && p=$(nix-store --add /tmp/probe) && test -f "$p" && echo store-add-ok' \
+            | grep -q store-add-ok
+          timeout 60 ./target/release/bsdkrun exec "$id" /bin/sh -c \
+            'nix-store --verify --check-contents && echo store-verify-ok' \
+            | grep -q store-verify-ok
+
+          ./target/release/bsdkrun stop "$id" || true
+          echo "🎉 nixos/nix guest works on Linux with no extra setup"
+
+      # The same guest on an initramfs (RAM) rootfs rather than virtio-fs — a
+      # different /init path, and the one macOS users fall back to.
+      - name: e2e — nixos/nix guest (initramfs rootfs)
+        run: |
+          set -eux
+          id=$(./target/release/bsdkrun linux -d --initramfs --mem 4096 nixos/nix -- sleep 300)
+          sleep 5
+          timeout 60 ./target/release/bsdkrun exec "$id" bash -c 'cat <(echo procsub-ok)' \
+            | grep -q procsub-ok
+          timeout 120 ./target/release/bsdkrun exec "$id" /bin/sh -c \
+            'echo hi > /tmp/probe && p=$(nix-store --add /tmp/probe) && test -f "$p" && echo store-add-ok' \
+            | grep -q store-add-ok
+          ./target/release/bsdkrun stop "$id" || true
+
       # The agent doubles as a feature CLI (ssh/tailscale/systemd) driven by the
       # matching host wrappers. ssh is the full loop: agent installs the key,
       # then we REALLY ssh in through a forwarded port.

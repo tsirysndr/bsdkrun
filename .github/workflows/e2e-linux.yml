@@ -176,14 +176,32 @@ jobs:
       - name: e2e — nixos/nix guest (virtio-fs rootfs)
         run: |
           set -eux
-          id=$(./target/release/bsdkrun linux -d --mem 2048 nixos/nix -- sleep 300)
-          sleep 5
-          ./target/release/bsdkrun logs "$id" | tail -30 || true
 
-          # /init must resolve mount(8) etc. out of /nix/store — if PATH setup
-          # regressed the guest would not have booted far enough to exec at all.
-          timeout 60 ./target/release/bsdkrun exec "$id" /bin/sh -c 'echo agent-alive' \
-            | grep -q agent-alive
+          # Poll rather than sleep a fixed amount. A nix guest is far slower to
+          # reach a responsive agent than alpine — it has no binaries on a
+          # normal PATH, so /init resolves them out of /nix/store first — and a
+          # 2-core runner is slower again than a dev machine. A fixed sleep
+          # either flakes or wastes time; this does neither. Dumps the console
+          # on failure, which is the only useful artefact when it never boots.
+          wait_agent() {
+            for _ in $(seq 1 60); do
+              if timeout 20 ./target/release/bsdkrun exec "$1" /bin/sh -c 'echo agent-alive' \
+                   2>/dev/null | grep -q agent-alive; then
+                return 0
+              fi
+              sleep 3
+            done
+            echo "agent never became responsive for $1" >&2
+            ./target/release/bsdkrun logs "$1" | tail -60 || true
+            return 1
+          }
+
+          id=$(./target/release/bsdkrun linux -d --mem 2048 nixos/nix -- sleep 300)
+
+          # Reaching the agent at all proves /init resolved mount(8) and friends
+          # out of /nix/store; a PATH regression never gets this far.
+          wait_agent "$id"
+          ./target/release/bsdkrun logs "$id" | tail -30 || true
 
           # devtmpfs supplies no /dev/fd; /init creates the symlinks itself.
           # Without them bash process substitution silently breaks and every
@@ -218,6 +236,19 @@ jobs:
              && nix-store -q --hash "$p" >/dev/null && echo store-add-ok' \
             | grep -q store-add-ok
 
+          # Install a real package end to end. This is the closest thing to
+          # what a user actually does, and it exercises the parts that broke:
+          # it resolves the nixpkgs channel, fetches from cache.nixos.org, and
+          # builds a user-environment — which is assembled entirely from
+          # symlinks into /nix/store, the exact shape that fails when the
+          # virtio-fs layer mishandles them. `hello` is ~75 KiB, so it costs
+          # seconds rather than the minutes a source build would.
+          timeout 300 ./target/release/bsdkrun exec "$id" /bin/sh -c \
+            'nix-env -iA nixpkgs.hello 2>&1 | tail -5'
+          timeout 60 ./target/release/bsdkrun exec "$id" /bin/sh -c \
+            '/root/.nix-profile/bin/hello' | grep -q Hello
+          echo "🎉 nix-env installed and ran a package from the profile"
+
           # Surface the host fd ceiling we actually got, so an EMFILE in a
           # future run is immediately attributable.
           ./target/release/bsdkrun exec "$id" /bin/sh -c 'ulimit -n' || true
@@ -231,8 +262,26 @@ jobs:
       - name: e2e — nixos/nix guest (initramfs rootfs)
         run: |
           set -eux
+
+          # Slower to become responsive than the virtio-fs run, by a lot: the
+          # whole rootfs is packed into a cpio and then unpacked into RAM
+          # before /init runs at all. Locally that is ~45s on fast hardware, so
+          # a fixed sleep is hopeless on a 2-core runner — poll instead.
+          wait_agent() {
+            for _ in $(seq 1 60); do
+              if timeout 20 ./target/release/bsdkrun exec "$1" /bin/sh -c 'echo agent-alive' \
+                   2>/dev/null | grep -q agent-alive; then
+                return 0
+              fi
+              sleep 3
+            done
+            echo "agent never became responsive for $1" >&2
+            ./target/release/bsdkrun logs "$1" | tail -60 || true
+            return 1
+          }
+
           id=$(./target/release/bsdkrun linux -d --initramfs --mem 4096 nixos/nix -- sleep 300)
-          sleep 5
+          wait_agent "$id"
           timeout 60 ./target/release/bsdkrun exec "$id" bash -c 'cat <(echo procsub-ok)' \
             | grep -q procsub-ok
           timeout 120 ./target/release/bsdkrun exec "$id" /bin/sh -c \

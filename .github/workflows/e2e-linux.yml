@@ -201,15 +201,27 @@ jobs:
             'rm -rf /tmp/ct && mkdir -p /tmp/ct/Pod && mkdir /tmp/ct/pod && echo case-sensitive-ok' \
             | grep -q case-sensitive-ok
 
-          # Write a real path into the store: exercises the SQLite db under
-          # /nix/var/nix/db, which is what fails when file descriptors run out.
-          # Offline on purpose — no substituter fetch, so CI stays fast.
+          # Write a real path into the store, then read it back through the
+          # SQLite db under /nix/var/nix/db — the db is what fails when file
+          # descriptors run out. Offline on purpose (no substituter fetch), so
+          # CI stays fast.
+          #
+          # Deliberately NOT `nix-store --verify --check-contents`: that walks
+          # every path in the store, and libkrun's Linux virtio-fs backend pins
+          # an O_PATH fd per inode until the guest sends FUSE `forget`, so a
+          # full-store walk exhausts the host fd table by itself. It measures
+          # that backend's inode accounting rather than anything about bsdkrun,
+          # and no host fd limit makes it reliable. A scoped add + query
+          # exercises the same db on a bounded number of inodes.
           timeout 120 ./target/release/bsdkrun exec "$id" /bin/sh -c \
-            'echo hello > /tmp/probe && p=$(nix-store --add /tmp/probe) && test -f "$p" && echo store-add-ok' \
+            'echo hello > /tmp/probe && p=$(nix-store --add /tmp/probe) && test -f "$p" \
+             && nix-store -q --hash "$p" >/dev/null && echo store-add-ok' \
             | grep -q store-add-ok
-          timeout 60 ./target/release/bsdkrun exec "$id" /bin/sh -c \
-            'nix-store --verify --check-contents && echo store-verify-ok' \
-            | grep -q store-verify-ok
+
+          # Surface the host fd ceiling we actually got, so an EMFILE in a
+          # future run is immediately attributable.
+          ./target/release/bsdkrun exec "$id" /bin/sh -c 'ulimit -n' || true
+          ulimit -Hn; ulimit -Sn
 
           ./target/release/bsdkrun stop "$id" || true
           echo "🎉 nixos/nix guest works on Linux with no extra setup"

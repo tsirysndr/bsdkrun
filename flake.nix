@@ -90,7 +90,7 @@
         commonArgs = {
           inherit src;
           pname = "bsdkrun";
-          version = "0.5.0";
+          version = "0.5.1";
           strictDeps = true;
 
           # llvm (llvm-config) + libclang for bindgen-based crates.

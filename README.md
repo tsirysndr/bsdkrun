@@ -102,9 +102,17 @@ libkrun's virtio-console — is exactly what this tool is for probing.
 brew install tsirysndr/tap/bsdkrun
 ```
 
-This auto-taps `libkrun/krun` and pulls in its dependencies (`libkrun`, `gvproxy`). The binary
-ships codesigned with the hypervisor entitlement, so there's nothing else to set up — jump to
-[Usage](#usage).
+This pulls in `tsirysndr/tap/libkrun` — our libkrun fork, which carries the PVH boot support and
+the virtio-fs fixes bsdkrun's guests need — plus `gvproxy` from `libkrun/krun`, auto-tapping both.
+The binary ships codesigned with the hypervisor entitlement, so there's nothing else to set up —
+jump to [Usage](#usage).
+
+If you already have upstream `libkrun/krun/libkrun`, the two conflict (same install paths) and
+Homebrew will ask you to remove it first:
+
+```sh
+brew uninstall --ignore-dependencies libkrun
+```
 
 **npm** — install the prebuilt host binary for your platform (macOS/arm64, Linux/x64, Linux/arm64):
 
@@ -115,13 +123,14 @@ npm install -g @bsdkrun/cli   # or: npx @bsdkrun/cli linux alpine -- echo hi
 A postinstall step downloads the matching `bsdkrun` from the GitHub release and verifies its
 SHA-256. On **Linux** the archive **bundles libkrun** (`libkrun.so`/`libkrunfw.so`, rpath'd to
 `$ORIGIN`), so it works with no separate libkrun install — only `gvproxy` is needed for guest
-networking. On **macOS** it's just the binary and links Homebrew's libkrun (`brew install libkrun`).
+networking. On **macOS** it's just the binary and links Homebrew's libkrun
+(`brew install tsirysndr/tap/libkrun`).
 Unsupported platforms (Windows, Intel macOS, 32-bit) fail the install with a clear message. See
 [`npm/`](npm/) for details.
 
 **Nix flake** — builds bsdkrun with all its dependencies. On **Linux (amd64/arm64)** it links
 nixpkgs' libkrun; on **macOS** it links your Homebrew libkrun, so those need `--impure`
-(`brew install libkrun/krun/libkrun` first) and produce a binary re-signed with the hypervisor
+(`brew install tsirysndr/tap/libkrun` first) and produce a binary re-signed with the hypervisor
 entitlement.
 
 ```sh
@@ -131,7 +140,7 @@ nix profile install github:tsirysndr/bsdkrun                 # install into your
 nix develop       github:tsirysndr/bsdkrun                   # dev shell with the full toolchain
 
 # macOS (Apple Silicon) — impure link against Homebrew's libkrun
-brew install libkrun/krun/libkrun
+brew install tsirysndr/tap/libkrun
 nix build  --impure github:tsirysndr/bsdkrun                  # -> ./result/bin/bsdkrun
 nix run    --impure github:tsirysndr/bsdkrun -- linux alpine
 ```
@@ -150,19 +159,33 @@ the hypervisor. The hypervisor part differs by OS.
 
 ### macOS (Apple Silicon)
 
-libkrun, `krunvm`, and `krunkit` live in the **`libkrun/krun`** tap (redirected from the old
-`slp/krun`). Homebrew 6.x requires you to trust a third-party tap before it will run its install
-code:
+bsdkrun links **our libkrun fork** from the `tsirysndr/tap` tap. `krunkit` comes from the
+**`libkrun/krun`** tap (redirected from the old `slp/krun`). Homebrew 6.x requires you to trust a
+third-party tap before it will run its install code:
 
 ```sh
+brew tap tsirysndr/tap
 brew tap libkrun/krun
 brew trust libkrun/krun     # required on Homebrew 6.x for third-party taps
-brew install libkrun krunkit
+brew install tsirysndr/tap/libkrun krunkit
 ```
 
 - **`libkrun`** provides `libkrun.dylib` (the C ABI we link against).
 - **`krunkit`** ships the EDK2 UEFI firmware we use for EFI boot
   (`.../share/krunkit/KRUN_EFI.silent.fd`).
+
+**Why the fork and not upstream `libkrun/krun/libkrun`?** It carries two changes bsdkrun depends
+on. PVH direct boot, which is how FreeBSD and NetBSD boot on Linux/amd64. And `XATTR_NOFOLLOW` in
+the virtio-fs xattr handlers — upstream follows the final symlink, and since a nix profile is
+built entirely from symlinks whose absolute targets only exist *inside* the guest, the host
+resolves them against its own root and returns `ENOENT`. nix then aborts with `querying extended
+attributes of "…": No such file or directory` on a path that `ls` happily shows. Upstream libkrun
+still works for most guests; nix guests need the fork.
+
+The two formulae install to the same paths and therefore conflict, so remove upstream's first if
+you have it (`brew uninstall --ignore-dependencies libkrun`). They share an opt prefix — it is
+keyed on the formula name, not the tap — so an already-linked bsdkrun keeps resolving across the
+switch.
 
 **The Hypervisor entitlement (the part that bites everyone).** A binary that calls libkrun must be
 codesigned with `com.apple.security.hypervisor` (plus `com.apple.security.cs.disable-library-validation`

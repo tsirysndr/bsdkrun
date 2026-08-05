@@ -257,9 +257,20 @@ fn plain_copy(src: &Path, dst: &Path, recursive: bool) -> Result<()> {
 /// from a terminal and fail from the GUI. An idle Linux microVM already holds
 /// well over 100 fds, so 256 leaves almost no headroom.
 ///
+/// Linux needs a **much** higher ceiling than macOS, because the two
+/// virtio-fs backends represent an inode differently. libkrun's macOS
+/// passthrough keeps a path (`InodeHandle::Path`) and opens on demand, so an
+/// idle-to-busy guest sits around a couple hundred fds. Its Linux passthrough
+/// keeps an `O_PATH` **file descriptor per inode**, pinned in the inode map
+/// until the guest sends FUSE `forget` — so the cost scales with the number of
+/// inodes the guest has *ever looked up*, not with what it currently has open.
+/// Walking a large tree (`nix-store --verify` over a whole store) touches
+/// hundreds of thousands of inodes and exhausts the table on its own.
+///
 /// `RLIM_INFINITY` is not a usable count, so cap the request at what the kernel
-/// will actually allow per process (`kern.maxfilesperproc` on macOS). Best
-/// effort: a failure here just leaves the inherited limit in place.
+/// will actually allow per process (`kern.maxfilesperproc` on macOS,
+/// `/proc/sys/fs/nr_open` on Linux). Best effort throughout: a failure here
+/// just leaves the inherited limit in place.
 pub fn raise_fd_limit() {
     unsafe {
         let mut lim: libc::rlimit = std::mem::zeroed();
@@ -267,6 +278,29 @@ pub fn raise_fd_limit() {
             return;
         }
         let mut want = lim.rlim_max;
+        // Linux lets a privileged process (CAP_SYS_RESOURCE, i.e. root) raise
+        // the HARD limit as well, up to /proc/sys/fs/nr_open — commonly
+        // 1048576, against a hard limit that is often only 65536. Unprivileged
+        // runs get EPERM and fall through to the soft-to-hard raise below, so
+        // this only ever helps.
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(nr_open) = std::fs::read_to_string("/proc/sys/fs/nr_open")
+                .ok()
+                .and_then(|s| s.trim().parse::<libc::rlim_t>().ok())
+            {
+                if nr_open > lim.rlim_max {
+                    let hard = libc::rlimit {
+                        rlim_cur: nr_open,
+                        rlim_max: nr_open,
+                    };
+                    if libc::setrlimit(libc::RLIMIT_NOFILE, &hard) == 0 {
+                        return;
+                    }
+                }
+                want = want.min(nr_open);
+            }
+        }
         // macOS refuses any setrlimit above kern.maxfilesperproc, and reports
         // rlim_max as RLIM_INFINITY — asking for infinity fails outright, so
         // clamp to the per-process ceiling the kernel advertises.
@@ -292,5 +326,48 @@ pub fn raise_fd_limit() {
         }
         lim.rlim_cur = want;
         let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &lim);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole point of `raise_fd_limit` is that an inherited-low soft limit
+    /// does not survive startup — launchd hands GUI processes 256, and a
+    /// virtio-fs guest blows through that immediately.
+    #[test]
+    fn raise_fd_limit_lifts_a_lowered_soft_limit() {
+        unsafe {
+            let mut orig: libc::rlimit = std::mem::zeroed();
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut orig), 0);
+            // Nothing to prove if the hard limit is already tiny.
+            if orig.rlim_max <= 256 {
+                return;
+            }
+
+            // 256 is deliberately generous enough for the other tests running
+            // concurrently in this process — the limit is process-wide.
+            let low = libc::rlimit {
+                rlim_cur: 256,
+                rlim_max: orig.rlim_max,
+            };
+            assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &low), 0);
+
+            raise_fd_limit();
+
+            let mut after: libc::rlimit = std::mem::zeroed();
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut after), 0);
+            let raised = after.rlim_cur;
+            let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &orig);
+
+            assert!(
+                raised > 256,
+                "soft limit should have been raised above 256, got {raised}"
+            );
+            // And it must be a usable count rather than RLIM_INFINITY, which
+            // macOS rejects outright.
+            assert_ne!(raised, libc::RLIM_INFINITY);
+        }
     }
 }

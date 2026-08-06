@@ -43,6 +43,99 @@
         craneLib = crane.mkLib pkgs;
         src = craneLib.cleanCargoSource ./.;
 
+        # ---- web UI ---------------------------------------------------------
+        #
+        # `bsdkrun ui` serves an SPA compiled into the binary by rust-embed, so
+        # the bundle has to exist before cargo runs.
+
+        # node_modules for the web SPA. `bun install` needs the network, so
+        # dependency resolution lives in a fixed-output derivation.
+        #
+        # The tree is NOT platform-independent: native optional deps (e.g.
+        # @tailwindcss/oxide-*) are installed per-OS/CPU, so each system needs
+        # its own hash.
+        #
+        # Updating: change web/package.json or web/bun.lock, set the current
+        # system's hash below to lib.fakeHash, run `nix build`, and copy the
+        # hash Nix reports on mismatch back in. Repeat per platform.
+        webNodeModules = pkgs.stdenv.mkDerivation {
+          pname = "bsdkrun-web-node-modules";
+          version = "0.1.0";
+
+          src = lib.fileset.toSource {
+            root = ./web;
+            fileset = lib.fileset.unions [
+              ./web/package.json
+              ./web/bun.lock
+            ];
+          };
+
+          nativeBuildInputs = [ pkgs.bun ];
+
+          dontConfigure = true;
+
+          buildPhase = ''
+            runHook preBuild
+            export HOME=$(mktemp -d)
+            bun install --frozen-lockfile --no-progress
+            runHook postBuild
+          '';
+
+          installPhase = ''
+            runHook preInstall
+            mv node_modules $out
+            runHook postInstall
+          '';
+
+          dontFixup = true;
+
+          outputHashMode = "recursive";
+          outputHashAlgo = "sha256";
+          outputHash = {
+            # Computed with `nix hash path` over a `bun install` tree, NOT yet
+            # confirmed by a sandboxed build — the first `nix build` on this
+            # platform will say so if it is wrong, and report the right one.
+            aarch64-darwin = "sha256-HBlPd3BIT0bhXsqQtgzf2x9L4p+UHRST+cAuPTvIAdY=";
+            # Fill these from the mismatch error on their first build; the tree
+            # is per-platform, so they cannot be copied from darwin.
+            x86_64-linux = lib.fakeHash;
+            aarch64-linux = lib.fakeHash;
+          }.${system};
+        };
+
+        # The built SPA. Embedded into the bsdkrun binary at compile time.
+        webUi = pkgs.stdenv.mkDerivation {
+          pname = "bsdkrun-web";
+          version = "0.1.0";
+
+          src = ./web;
+
+          nativeBuildInputs = [ pkgs.bun pkgs.nodejs ];
+
+          configurePhase = ''
+            runHook preConfigure
+            cp -r ${webNodeModules} node_modules
+            chmod -R u+w node_modules
+            patchShebangs node_modules
+            export HOME=$(mktemp -d)
+            runHook postConfigure
+          '';
+
+          buildPhase = ''
+            runHook preBuild
+            bun run build
+            runHook postBuild
+          '';
+
+          installPhase = ''
+            runHook preInstall
+            cp -r dist $out
+            runHook postInstall
+          '';
+        };
+
+
+
         # Linux: the PVH libkrun fork's flake (built with BLK=1 NET=1 there).
         # Beyond stock libkrun it adds the PVH direct-boot path that NetBSD's
         # MICROVM and FreeBSD's FIRECRACKER amd64 kernels need. Only defined
@@ -99,6 +192,16 @@
 
           LIBKRUN_PREFIX = libkrunPrefix;
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+
+          # rust-embed reads web/dist at compile time, and cleanCargoSource
+          # strips the whole web directory, so drop the pre-built SPA back in
+          # before cargo runs. Without this the binary compiles fine and ships
+          # build.rs's "UI not built" placeholder.
+          preBuild = ''
+            mkdir -p web
+            cp -r ${webUi} web/dist
+            chmod -R u+w web/dist
+          '';
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
@@ -205,6 +308,8 @@
         packages.default = bsdkrun;
         packages.bsdkrun = bsdkrun;
         packages.bsdkrund = bsdkrund;
+        # The SPA on its own, for serving from something other than `bsdkrun ui`.
+        packages.web = webUi;
 
         apps.default = flake-utils.lib.mkApp { drv = bsdkrun; };
         apps.bsdkrund = flake-utils.lib.mkApp { drv = bsdkrund; };
@@ -219,7 +324,8 @@
 
           packages = with pkgs;
             # protobuf so `cargo build` inside daemon/ can run protoc too.
-            [ pkg-config llvmPackages.llvm cargo-zigbuild zig protobuf ]
+            # bun + node to build the web UI (`make web`).
+            [ pkg-config llvmPackages.llvm cargo-zigbuild zig protobuf bun nodejs ]
             ++ lib.optionals (!isDarwin) [ libkrun ]
             ++ runtimeDeps;
         };

@@ -68,3 +68,14 @@ $ bun run build      # -> web/dist, embedded by the Rust build
 `web/dist` is gitignored. `build.rs` writes a placeholder page there when it is
 missing, so `cargo build` works in a checkout that has never run node — the
 placeholder just explains how to build the real thing.
+
+### Nix
+
+`nix build .#bsdkrun` builds the SPA too, so the binary it produces has a real
+UI. `nix build .#web` builds just the bundle.
+
+`bun install` needs the network, so node_modules lives in a fixed-output
+derivation with a pinned hash. The tree is **per-platform** — native optional
+deps like `@tailwindcss/oxide-*` differ by OS and CPU — so each system needs its
+own hash. To fill one in: set it to `lib.fakeHash`, run `nix build`, and copy
+the hash Nix reports on the mismatch.

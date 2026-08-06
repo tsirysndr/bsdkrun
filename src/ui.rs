@@ -60,9 +60,8 @@ fn serve(path: &str) -> HttpResponse {
             .content_type("text/html; charset=utf-8")
             .insert_header((header::CACHE_CONTROL, "no-cache"))
             .body(index.data.into_owned()),
-        None => HttpResponse::InternalServerError().body(
-            "the web UI was not bundled into this binary — build it with `make web`",
-        ),
+        None => HttpResponse::InternalServerError()
+            .body("the web UI was not bundled into this binary — build it with `make web`"),
     }
 }
 

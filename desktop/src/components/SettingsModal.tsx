@@ -31,7 +31,17 @@ import { useToast } from "../state/toast";
 const schema = z.object({
   binaryPath: z.string(),
   cachePath: z.string(),
+  token: z.string(),
 });
+
+/**
+ * Does this target look like a daemon URL rather than a local binary path?
+ *
+ * Mirrors the Rust side (src-tauri/src/target.rs) exactly: only an explicit
+ * scheme counts, because a bare `host:50051` is ambiguous with a relative path.
+ */
+const looksLikeUrl = (s: string) =>
+  /^(grpc|grpcs|http|https):\/\/.+/i.test(s.trim());
 type FormValues = z.infer<typeof schema>;
 
 export default function SettingsModal() {
@@ -42,9 +52,9 @@ export default function SettingsModal() {
   const saveMutation = useSaveSettings();
   const toast = useToast();
 
-  const { control, handleSubmit, reset, setValue } = useForm<FormValues>({
+  const { control, handleSubmit, reset, setValue, watch } = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { binaryPath: "", cachePath: "" },
+    defaultValues: { binaryPath: "", cachePath: "", token: "" },
   });
 
   useEffect(() => {
@@ -52,8 +62,12 @@ export default function SettingsModal() {
       reset({
         binaryPath: settings?.binary_path || "",
         cachePath: settings?.cache_path || "",
+        token: settings?.token || "",
       });
-  }, [open, settings?.binary_path, settings?.cache_path, reset]);
+  }, [open, settings?.binary_path, settings?.cache_path, settings?.token, reset]);
+
+  // The token field only makes sense for a daemon, so it appears with one.
+  const isRemote = looksLikeUrl(watch("binaryPath") || "");
 
   const browse = async () => {
     const picked = await openDialog({ multiple: false, directory: false });
@@ -70,6 +84,7 @@ export default function SettingsModal() {
       await saveMutation.mutateAsync({
         binaryPath: data.binaryPath.trim(),
         cachePath: data.cachePath.trim(),
+        token: data.token.trim(),
       });
       toast("success", "Settings saved");
       await refetchProbe();
@@ -131,7 +146,7 @@ export default function SettingsModal() {
 
             <div>
               <label className="mb-1.5 block text-sm font-medium">
-                bsdkrun binary path
+                bsdkrun binary path or daemon URL
               </label>
               <div className="flex gap-2">
                 <Controller
@@ -141,7 +156,7 @@ export default function SettingsModal() {
                     <Input
                       value={field.value}
                       onValueChange={field.onChange}
-                      placeholder="Auto-detected from PATH / Homebrew"
+                      placeholder="Auto-detected from PATH, or grpc://host:50051"
                       variant="bordered"
                       classNames={{ input: "font-mono text-xs" }}
                     />
@@ -158,10 +173,46 @@ export default function SettingsModal() {
                 </Button>
               </div>
               <p className="mt-1.5 text-xs text-foreground-500">
-                Leave empty to auto-resolve. bsdkrun runs the microVMs; this GUI
-                just drives it.
+                {isRemote ? (
+                  <>
+                    Driving a remote <code className="font-mono">bsdkrund</code>. Every
+                    action — including terminals and logs — runs on that host, so the
+                    VMs live there, not here.
+                  </>
+                ) : (
+                  <>
+                    Leave empty to auto-resolve. bsdkrun runs the microVMs; this GUI
+                    just drives it. Enter a{" "}
+                    <code className="font-mono">grpc://host:50051</code> URL instead to
+                    drive a remote daemon.
+                  </>
+                )}
               </p>
             </div>
+
+            {isRemote && (
+              <div>
+                <label className="mb-1.5 block text-sm font-medium">Access token</label>
+                <Controller
+                  control={control}
+                  name="token"
+                  render={({ field }) => (
+                    <Input
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      placeholder="the token bsdkrund printed on startup"
+                      variant="bordered"
+                      type="password"
+                      classNames={{ input: "font-mono text-xs" }}
+                    />
+                  )}
+                />
+                <p className="mt-1.5 text-xs text-foreground-500">
+                  Falls back to <code className="font-mono">$BSDKRUN_TOKEN</code> when
+                  left empty.
+                </p>
+              </div>
+            )}
 
             <div>
               <label className="mb-1.5 block text-sm font-medium">
@@ -192,6 +243,9 @@ export default function SettingsModal() {
                 </Button>
               </div>
               <p className="mt-1.5 text-xs text-foreground-500">
+                {isRemote
+                  ? "Ignored for a remote daemon — the cache lives on that host, configured there. "
+                  : ""}
                 Where bsdkrun stores pulled images, kernels, the agent and flavor
                 builds (<code className="font-mono">$BSDKRUN_CACHE</code>). Leave
                 empty for the default

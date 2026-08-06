@@ -284,10 +284,12 @@ export function useSaveSettings() {
     mutationFn: ({
       binaryPath,
       cachePath,
+      token,
     }: {
       binaryPath: string;
       cachePath: string;
-    }) => api.setSettings(binaryPath, cachePath),
+      token: string;
+    }) => api.setSettings(binaryPath, cachePath, token),
     onSuccess: (s) => {
       qc.setQueryData(qk.settings, s);
       qc.invalidateQueries({ queryKey: qk.probe });

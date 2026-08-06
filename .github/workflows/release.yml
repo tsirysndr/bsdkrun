@@ -69,6 +69,16 @@ jobs:
       - name: Build guest agents
         run: make agent
 
+      # The web UI is compiled into the bsdkrun binary (`bsdkrun ui`), and
+      # build.rs embeds whatever is in web/dist at compile time. Without this
+      # the binary ships the "UI not built" placeholder instead.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Build the web UI
+        run: cd web && bun install --frozen-lockfile && bun run build
+
       - name: Build + sign bsdkrun (release)
         run: make release
 
@@ -188,6 +198,16 @@ jobs:
           echo /usr/local/lib64 | sudo tee /etc/ld.so.conf.d/libkrun.conf
           sudo ldconfig
           ls -l /usr/local/lib64/libkrun.so*
+
+      # The web UI is compiled into the bsdkrun binary (`bsdkrun ui`), and
+      # build.rs embeds whatever is in web/dist at compile time. Without this
+      # the binary ships the "UI not built" placeholder instead.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Build the web UI
+        run: cd web && bun install --frozen-lockfile && bun run build
 
       - name: Build bsdkrun (release)
         run: cargo build --release

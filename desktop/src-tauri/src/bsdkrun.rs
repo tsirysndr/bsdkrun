@@ -8,6 +8,8 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+use crate::target::Target;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
@@ -104,7 +106,20 @@ pub fn command(bin: &PathBuf) -> Command {
 /// Wrapped in a timeout so a misbehaving invocation can never wedge the IPC and
 /// freeze the UI: `command()` sets `kill_on_drop`, so a timeout drops (and thus
 /// kills) the child, and the caller gets an error instead of hanging forever.
-pub async fn run(bin: &PathBuf, args: &[&str]) -> Result<String, BkError> {
+pub async fn run(bin: &Target, args: &[&str]) -> Result<String, BkError> {
+    let bin = match bin {
+        Target::Local(p) => p,
+        Target::Remote { endpoint, token } => {
+            let out = crate::remote::run(endpoint, token, args).await?;
+            if out.code != 0 {
+                return Err(BkError::NonZero {
+                    code: out.code,
+                    stderr: out.stderr.trim().to_string(),
+                });
+            }
+            return Ok(out.stdout);
+        }
+    };
     let fut = command(bin).args(args).output();
     let out = tokio::time::timeout(Duration::from_secs(60), fut)
         .await
@@ -122,14 +137,30 @@ pub async fn run(bin: &PathBuf, args: &[&str]) -> Result<String, BkError> {
 /// code**. Used for diagnostic/agent actions (`ssh`/`tailscale` status/setup)
 /// where a non-zero exit is a legitimate state ("not installed", "not running")
 /// the user should see, not a hard error. Only spawn/timeout failures error.
-pub async fn run_output(bin: &PathBuf, args: &[&str]) -> Result<String, BkError> {
+pub async fn run_output(bin: &Target, args: &[&str]) -> Result<String, BkError> {
+    let bin = match bin {
+        Target::Local(p) => p,
+        Target::Remote { endpoint, token } => {
+            let out = crate::remote::run(endpoint, token, args).await?;
+            return Ok(combine(out.code, &out.stdout, &out.stderr));
+        }
+    };
     let fut = command(bin).args(args).output();
     let out = tokio::time::timeout(Duration::from_secs(120), fut)
         .await
         .map_err(|_| BkError::Io(format!("`bsdkrun {}` timed out", args.join(" "))))??;
-    let mut s = String::from_utf8_lossy(&out.stdout).trim_end().to_string();
-    let err = String::from_utf8_lossy(&out.stderr);
-    let err = err.trim();
+    Ok(combine(
+        out.status.code().unwrap_or(-1),
+        &String::from_utf8_lossy(&out.stdout),
+        &String::from_utf8_lossy(&out.stderr),
+    ))
+}
+
+/// Both streams, with a stand-in when a command said nothing at all — shared by
+/// the local and remote paths so they read identically in the UI.
+fn combine(code: i32, stdout: &str, stderr: &str) -> String {
+    let mut s = stdout.trim_end().to_string();
+    let err = stderr.trim();
     if !err.is_empty() {
         if !s.is_empty() {
             s.push('\n');
@@ -137,14 +168,23 @@ pub async fn run_output(bin: &PathBuf, args: &[&str]) -> Result<String, BkError>
         s.push_str(err);
     }
     if s.trim().is_empty() {
-        s = format!("(no output — exit {})", out.status.code().unwrap_or(-1));
+        s = format!("(no output — exit {code})");
     }
-    Ok(s)
+    s
 }
 
 /// Run a subcommand and return only its exit code (no output capture beyond
 /// what's needed), never erroring on non-zero. Used for cheap probes.
-pub async fn run_code(bin: &PathBuf, args: &[&str]) -> i32 {
+pub async fn run_code(bin: &Target, args: &[&str]) -> i32 {
+    let bin = match bin {
+        Target::Local(p) => p,
+        Target::Remote { endpoint, token } => {
+            return match crate::remote::run(endpoint, token, args).await {
+                Ok(out) => out.code,
+                Err(_) => -1,
+            };
+        }
+    };
     match tokio::time::timeout(Duration::from_secs(20), command(bin).args(args).output()).await {
         Ok(Ok(out)) => out.status.code().unwrap_or(-1),
         _ => -1,
@@ -156,7 +196,7 @@ pub async fn run_code(bin: &PathBuf, args: &[&str]) -> i32 {
 /// Prefers bash, then a PATH `sh`, then absolute paths. Returns the argv to run;
 /// falls back to `/bin/sh` if every probe fails (e.g. no agent — the caller's
 /// error handling then surfaces the real problem).
-pub async fn resolve_guest_shell(bin: &PathBuf, id: &str) -> Vec<String> {
+pub async fn resolve_guest_shell(bin: &Target, id: &str) -> Vec<String> {
     for sh in [
         "bash",
         "sh",
@@ -179,7 +219,15 @@ pub async fn resolve_guest_shell(bin: &PathBuf, id: &str) -> Vec<String> {
 /// reading to EOF would block forever (wedging the IPC worker and freezing the
 /// UI). Instead we read exactly the one id line the parent prints, then wait for
 /// the short-lived parent to exit — never touching EOF.
-pub async fn run_detached(bin: &PathBuf, args: &[&str]) -> Result<String, BkError> {
+pub async fn run_detached(bin: &Target, args: &[&str]) -> Result<String, BkError> {
+    let bin = match bin {
+        Target::Local(p) => p,
+        // The daemon always launches detached and returns the id itself, so
+        // none of the pipe-holding-grandchild care below applies.
+        Target::Remote { endpoint, token } => {
+            return crate::remote::run_detached(endpoint, token, args).await
+        }
+    };
     let mut cmd = Command::new(bin);
     cmd.env("PATH", augmented_path());
     cmd.args(args);
@@ -318,7 +366,7 @@ pub struct Flavor {
     pub created_at: Option<String>,
 }
 
-pub async fn list_flavors(bin: &PathBuf) -> Result<Vec<Flavor>, BkError> {
+pub async fn list_flavors(bin: &Target) -> Result<Vec<Flavor>, BkError> {
     let out = run(bin, &["flavors", "--json"]).await?;
     serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
 }
@@ -335,12 +383,12 @@ pub struct Network {
     pub created_at: Option<String>,
 }
 
-pub async fn list_networks(bin: &PathBuf) -> Result<Vec<Network>, BkError> {
+pub async fn list_networks(bin: &Target) -> Result<Vec<Network>, BkError> {
     let out = run(bin, &["network", "ls", "--json"]).await?;
     serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
 }
 
-pub async fn list_machines(bin: &PathBuf, all: bool) -> Result<Vec<Machine>, BkError> {
+pub async fn list_machines(bin: &Target, all: bool) -> Result<Vec<Machine>, BkError> {
     let args: &[&str] = if all {
         &["ps", "-a", "--json"]
     } else {
@@ -350,18 +398,18 @@ pub async fn list_machines(bin: &PathBuf, all: bool) -> Result<Vec<Machine>, BkE
     serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
 }
 
-pub async fn list_images(bin: &PathBuf) -> Result<Vec<Image>, BkError> {
+pub async fn list_images(bin: &Target) -> Result<Vec<Image>, BkError> {
     let out = run(bin, &["images", "--json"]).await?;
     serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
 }
 
-pub async fn list_volumes(bin: &PathBuf) -> Result<Vec<Volume>, BkError> {
+pub async fn list_volumes(bin: &Target) -> Result<Vec<Volume>, BkError> {
     let out = run(bin, &["volume", "ls", "--json"]).await?;
     serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
 }
 
 /// Parse `versions --os <os>` — indented `  <ver>  (latest)` lines.
-pub async fn list_versions(bin: &PathBuf, os: &str) -> Result<Vec<VersionEntry>, BkError> {
+pub async fn list_versions(bin: &Target, os: &str) -> Result<Vec<VersionEntry>, BkError> {
     let out = run(bin, &["versions", "--os", os]).await?;
     let mut v = Vec::new();
     for line in out.lines() {

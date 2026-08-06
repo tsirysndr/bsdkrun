@@ -18,6 +18,29 @@ path = "src/lib.rs"
 [[bin]]
 name = "bsdkrund"
 path = "src/main.rs"
+required-features = ["server"]
+
+[features]
+# Everything: the gRPC + GraphQL servers and the CLI driver behind them.
+default = ["server"]
+# The server half. Off, only the generated types and the gRPC client are built
+# — which is all a *consumer* like the desktop app needs, and saves it pulling
+# in a web server, a GraphQL engine and a pty implementation it will never use.
+server = [
+    "dep:async-graphql",
+    "dep:async-graphql-axum",
+    "dep:async-stream",
+    "dep:axum",
+    "dep:base64",
+    "dep:clap",
+    "dep:portable-pty",
+    "dep:sysinfo",
+    "dep:tonic-health",
+    "dep:tonic-reflection",
+    "dep:tower-http",
+    "dep:tracing-subscriber",
+    "dep:which",
+]
 
 [build-dependencies]
 tonic-prost-build = "0.14"
@@ -25,8 +48,8 @@ tonic-prost-build = "0.14"
 [dependencies]
 tonic = { version = "0.14", features = ["router", "transport", "tls-ring", "tls-native-roots", "gzip"] }
 tonic-prost = "0.14"
-tonic-health = "0.14"
-tonic-reflection = "0.14"
+tonic-health = { version = "0.14", optional = true }
+tonic-reflection = { version = "0.14", optional = true }
 prost = "0.14"
 tokio = { version = "1", features = [
     "rt-multi-thread",
@@ -41,21 +64,21 @@ tokio = { version = "1", features = [
 tokio-stream = { version = "0.1", features = ["net"] }
 # Interactive Exec/Attach needs a real pty on the daemon host, the same way the
 # desktop app drives `bsdkrun shell` locally.
-portable-pty = "0.8"
-clap = { version = "4", features = ["derive", "env"] }
+portable-pty = { version = "0.8", optional = true }
+clap = { version = "4", features = ["derive", "env"], optional = true }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-which = "6"
-async-graphql = "7"
-async-graphql-axum = "7"
-axum = { version = "0.8", features = ["ws"] }
-tower-http = { version = "0.6", features = ["cors"] }
-base64 = "0.22"
-async-stream = "0.3"
-sysinfo = "0.33"
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+which = { version = "6", optional = true }
+async-graphql = { version = "7", optional = true }
+async-graphql-axum = { version = "7", optional = true }
+axum = { version = "0.8", features = ["ws"], optional = true }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
+base64 = { version = "0.22", optional = true }
+async-stream = { version = "0.3", optional = true }
+sysinfo = { version = "0.33", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

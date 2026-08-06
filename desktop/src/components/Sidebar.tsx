@@ -7,6 +7,9 @@ import {
   IconNetwork,
   IconSettings,
   IconKeyboard,
+  IconCloud,
+  IconDeviceLaptop,
+  IconLogout,
 } from "@tabler/icons-react";
 import { Tooltip } from "@heroui/react";
 import {
@@ -19,6 +22,9 @@ import {
   useImages,
   useMachines,
   useNetworks,
+  useProbe,
+  useSaveSettings,
+  useSettings,
   useVolumes,
 } from "../lib/queries";
 import type { ViewKey } from "../lib/types";
@@ -112,7 +118,91 @@ export default function Sidebar() {
           <IconSettings size={18} className="text-foreground-400" />
           <span className="font-medium">Settings</span>
         </button>
+        <ConnectionBadge />
       </div>
     </aside>
   );
 }
+
+/**
+ * Which engine we are driving, pinned to the bottom of the sidebar.
+ *
+ * Worth permanent screen space because the app looks identical whether the VMs
+ * are on this machine or a server — and "which host am I about to destroy a
+ * machine on" is not a question to answer by opening Settings.
+ */
+function ConnectionBadge() {
+  const { data: settings } = useSettings();
+  const { data: probe } = useProbe();
+  const [, setSettingsOpen] = useAtom(settingsOpenAtom);
+  const saveSettings = useSaveSettings();
+
+  const targetValue = settings?.binary_path ?? "";
+  const remote = looksLikeUrl(targetValue);
+  const host = remote ? hostOf(targetValue) : "this machine";
+
+  // Logging out of a remote means going back to a local bsdkrun, which is this
+  // app's default state — not signing out of anything.
+  const disconnect = () =>
+    saveSettings.mutate({
+      binaryPath: "",
+      cachePath: settings?.cache_path ?? "",
+      token: "",
+    });
+
+  return (
+    <div className="mt-1 rounded-lg border border-white/10 bg-content2/40 px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        <span
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+            probe?.ok ? "bg-emerald-400" : "bg-amber-400"
+          }`}
+          aria-hidden
+        />
+        {remote ? (
+          <IconCloud size={14} className="shrink-0 text-foreground-400" />
+        ) : (
+          <IconDeviceLaptop size={14} className="shrink-0 text-foreground-400" />
+        )}
+        <Tooltip content={remote ? targetValue : probe?.binary || "local bsdkrun"} placement="right">
+          <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-foreground-400">
+            {host}
+          </span>
+        </Tooltip>
+        {remote && (
+          <Tooltip content="Disconnect and go back to local" placement="right">
+            <button
+              onClick={disconnect}
+              aria-label="Disconnect from the remote daemon"
+              className="shrink-0 rounded p-0.5 text-foreground-500 transition hover:bg-white/10 hover:text-danger"
+            >
+              <IconLogout size={14} />
+            </button>
+          </Tooltip>
+        )}
+      </div>
+      {!remote && (
+        <button
+          onClick={() => setSettingsOpen(true)}
+          className="mt-1 text-[11px] text-foreground-600 transition hover:text-primary"
+        >
+          Connect to a remote host…
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Mirrors src-tauri/src/target.rs — only an explicit scheme is a URL. */
+const looksLikeUrl = (s: string) => /^(grpc|grpcs|http|https):\/\/.+/i.test(s.trim());
+
+/** Just the host:port, so a long URL still fits the sidebar. */
+function hostOf(url: string): string {
+  try {
+    const u = new URL(url.trim().replace(/^grpcs:\/\//i, "https://").replace(/^grpc:\/\//i, "http://"));
+    return u.port ? `${u.hostname}:${u.port}` : u.hostname;
+  } catch {
+    return url;
+  }
+}
+

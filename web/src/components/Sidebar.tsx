@@ -7,6 +7,8 @@ import {
   IconNetwork,
   IconSettings,
   IconKeyboard,
+  IconCloud,
+  IconLogout,
 } from "@tabler/icons-react";
 import { Tooltip } from "@heroui/react";
 import {
@@ -19,8 +21,10 @@ import {
   useImages,
   useMachines,
   useNetworks,
+  useProbe,
   useVolumes,
 } from "../lib/queries";
+import { clearConnection, getConnection } from "../lib/connection";
 import type { ViewKey } from "../lib/types";
 
 const ITEMS: {
@@ -112,7 +116,75 @@ export default function Sidebar() {
           <IconSettings size={18} className="text-foreground-400" />
           <span className="font-medium">Settings</span>
         </button>
+        <ConnectionBadge />
       </div>
     </aside>
   );
 }
+
+/**
+ * Which daemon this browser is driving, pinned to the bottom of the sidebar.
+ *
+ * The web app is always remote, and the UI is identical whichever host it is
+ * pointed at — so "which machine am I about to destroy a VM on" needs to be on
+ * screen, not behind a Settings dialog.
+ */
+function ConnectionBadge() {
+  const { data: probe } = useProbe();
+  const [, setSettingsOpen] = useAtom(settingsOpenAtom);
+  const conn = getConnection();
+
+  const logout = () => {
+    clearConnection();
+    // A reload is the honest way to drop every cached query, live subscription
+    // and open terminal belonging to the daemon we just left.
+    window.location.reload();
+  };
+
+  return (
+    <div className="mt-1 rounded-lg border border-white/10 bg-content2/40 px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        <span
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+            probe?.ok ? "bg-emerald-400" : "bg-amber-400"
+          }`}
+          aria-hidden
+        />
+        <IconCloud size={14} className="shrink-0 text-foreground-400" />
+        <Tooltip content={conn?.url ?? "not connected"} placement="right">
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="min-w-0 flex-1 truncate text-left text-[11px] font-medium text-foreground-400 transition hover:text-foreground-200"
+          >
+            {hostOf(conn?.url ?? "")}
+          </button>
+        </Tooltip>
+        <Tooltip content="Disconnect" placement="right">
+          <button
+            onClick={logout}
+            aria-label="Disconnect from this daemon"
+            className="shrink-0 rounded p-0.5 text-foreground-500 transition hover:bg-white/10 hover:text-danger"
+          >
+            <IconLogout size={14} />
+          </button>
+        </Tooltip>
+      </div>
+      {probe && !probe.ok && (
+        <div className="mt-1 truncate text-[11px] text-amber-400" title={probe.message}>
+          unreachable
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Just the host:port, so a long URL still fits the sidebar. */
+function hostOf(url: string): string {
+  try {
+    const u = new URL(url);
+    return u.port ? `${u.hostname}:${u.port}` : u.hostname;
+  } catch {
+    return url || "not connected";
+  }
+}
+

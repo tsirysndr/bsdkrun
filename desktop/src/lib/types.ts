@@ -99,8 +99,14 @@ export interface SystemStats {
 }
 
 export interface Settings {
+  /**
+   * Where bsdkrun lives: a path to the binary on this machine, or a `bsdkrund`
+   * gRPC URL (`grpc://host:50051`) to drive a remote host.
+   */
   binary_path: string;
   cache_path: string;
+  /** Access token, used only when `binary_path` is a daemon URL. */
+  token: string;
 }
 
 // The Run dialog payload. Field names are snake_case to match the Rust

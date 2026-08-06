@@ -76,7 +76,6 @@ fn link_dir(dir: &str) {
     println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
 }
 
-
 /// Tell cargo to rerun when any file under `dir` changes.
 fn watch_tree(dir: &std::path::Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {

@@ -6,7 +6,9 @@
 
 mod bsdkrun;
 mod menu;
+pub mod remote;
 mod system;
+pub mod target;
 mod term;
 mod tray;
 
@@ -18,14 +20,21 @@ use tauri::{Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use bsdkrun::{BkError, Flavor, Image, Machine, Network, VersionEntry, Volume};
+use target::Target;
 use term::{LogStreams, Terminals};
 
 /// Persisted app settings.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Settings {
-    /// Explicit path to the `bsdkrun` binary; empty ⇒ auto-resolve.
+    /// Where bsdkrun lives: a path to the binary on this machine, OR a
+    /// `bsdkrund` gRPC URL (`grpc://host:50051`) to drive a remote host.
+    /// Empty ⇒ auto-resolve a local binary.
     #[serde(default)]
     pub binary_path: String,
+    /// Access token, used only when `binary_path` is a daemon URL. Falls back
+    /// to `$BSDKRUN_TOKEN`.
+    #[serde(default)]
+    pub token: String,
     /// Override for bsdkrun's cache directory (images/kernels/agent/flavor
     /// builds), applied via `$BSDKRUN_CACHE`; empty ⇒ the CLI default.
     #[serde(default)]
@@ -71,10 +80,16 @@ impl Default for AppState {
 }
 
 impl AppState {
-    fn binary(&self) -> Result<PathBuf, BkError> {
-        let over = self.settings.lock().unwrap().binary_path.clone();
-        let over = if over.is_empty() { None } else { Some(over) };
-        bsdkrun::resolve_binary(over.as_deref())
+    /// The backend to drive: a local binary or a remote daemon.
+    ///
+    /// Still called `binary()` because every call site treats it as "the thing
+    /// I run commands against", which is exactly what it still is.
+    fn binary(&self) -> Result<Target, BkError> {
+        let (target, token) = {
+            let s = self.settings.lock().unwrap();
+            (s.binary_path.clone(), s.token.clone())
+        };
+        target::resolve(&target, &token)
     }
 }
 
@@ -124,10 +139,12 @@ fn set_settings(
     state: State<AppState>,
     binary_path: String,
     cache_path: String,
+    token: String,
 ) -> Settings {
     let mut s = state.settings.lock().unwrap();
     s.binary_path = binary_path;
     s.cache_path = cache_path;
+    s.token = token;
     apply_env(&s);
     save_settings(&app, &s);
     s.clone()
@@ -164,12 +181,12 @@ async fn probe(state: State<'_, AppState>) -> Result<ProbeResult, BkError> {
         Ok(out) => Ok(ProbeResult {
             ok: true,
             message: out.trim().to_string(),
-            binary: Some(bin.to_string_lossy().into_owned()),
+            binary: Some(bin.describe()),
         }),
         Err(e) => Ok(ProbeResult {
             ok: false,
             message: e.to_string(),
-            binary: Some(bin.to_string_lossy().into_owned()),
+            binary: Some(bin.describe()),
         }),
     }
 }
@@ -367,7 +384,7 @@ struct FlavorDone {
 
 /// Strip ANSI escape sequences and trim a trailing curl progress meter so a
 /// streamed launch/build line reads cleanly in the UI.
-fn sanitize_log(line: &str) -> String {
+pub(crate) fn sanitize_log(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.chars().peekable();
     while let Some(c) = chars.next() {
@@ -400,12 +417,21 @@ fn sanitize_log(line: &str) -> String {
 /// `build`). Returns immediately; the work runs on a background task.
 fn stream_bsdkrun(
     app: tauri::AppHandle,
-    bin: PathBuf,
+    bin: Target,
     args: Vec<String>,
     launch_id: String,
     capture_id: bool,
     timeout_msg: &'static str,
 ) {
+    // A remote target streams the same argv through the daemon, which reports
+    // stdout, stderr and the exit code exactly as a local child does.
+    let bin = match bin {
+        Target::Local(p) => p,
+        Target::Remote { endpoint, token } => {
+            stream_remote(app, endpoint, token, args, launch_id, capture_id);
+            return;
+        }
+    };
     tokio::spawn(async move {
         use std::process::Stdio;
         let mut cmd = tokio::process::Command::new(&bin);
@@ -1057,4 +1083,67 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running bsdkrun desktop");
+}
+
+/// The remote half of [`stream_bsdkrun`]: run an argv on the daemon and emit
+/// the same `flavor://log` / `flavor://done` events the local path does, so the
+/// launch UI cannot tell which backend it is watching.
+fn stream_remote(
+    app: tauri::AppHandle,
+    endpoint: String,
+    token: String,
+    args: Vec<String>,
+    launch_id: String,
+    capture_id: bool,
+) {
+    tokio::spawn(async move {
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        match remote::run(&endpoint, &token, &argv).await {
+            Ok(out) => {
+                let mut id = None;
+                for line in out.stdout.lines().chain(out.stderr.lines()) {
+                    let t = line.trim();
+                    if t.is_empty() {
+                        continue;
+                    }
+                    // A bare 12-hex-digit line is the machine id, not progress.
+                    if capture_id
+                        && id.is_none()
+                        && t.len() == 12
+                        && t.chars().all(|c| c.is_ascii_hexdigit())
+                    {
+                        id = Some(t.to_string());
+                        continue;
+                    }
+                    let _ = app.emit(
+                        "flavor://log",
+                        FlavorLog {
+                            launch_id: launch_id.clone(),
+                            line: sanitize_log(t),
+                        },
+                    );
+                }
+                let error =
+                    (out.code != 0).then(|| format!("bsdkrun exited with status {}", out.code));
+                let _ = app.emit(
+                    "flavor://done",
+                    FlavorDone {
+                        launch_id,
+                        id,
+                        error,
+                    },
+                );
+            }
+            Err(e) => {
+                let _ = app.emit(
+                    "flavor://done",
+                    FlavorDone {
+                        launch_id,
+                        id: None,
+                        error: Some(e.to_string()),
+                    },
+                );
+            }
+        }
+    });
 }

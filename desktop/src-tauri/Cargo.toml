@@ -24,6 +24,10 @@ which = "6"
 thiserror = "1"
 tokio = { version = "1", features = ["process", "rt", "rt-multi-thread", "macros", "io-util", "time"] }
 sysinfo = "0.33"
+# The daemon's client half, so Settings can point at a remote bsdkrund instead
+# of a local binary. A path dep: the daemon is its own workspace, not published.
+bsdkrun-daemon = { version = "0.1.0", path = "../../daemon", default-features = false }
+tokio-stream = "0.1"
 
 [features]
 # By default Tauri runs in production mode; a custom-protocol build is used by

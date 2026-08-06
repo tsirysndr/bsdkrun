@@ -1,0 +1,55 @@
+name: web
+
+# Typecheck and build the web UI on its own, so a broken frontend is caught
+# here rather than in a release job that only builds it as a side effect of
+# embedding it into the bsdkrun binary.
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+  push:
+    branches:
+      - "main"
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: web
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # --frozen-lockfile so a dependency cannot drift from bun.lock unnoticed.
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Build
+        run: bun run build
+
+      # The Rust side embeds web/dist; an empty or missing bundle would compile
+      # fine and ship the "UI not built" placeholder, so check it is really there.
+      - name: The bundle is real
+        run: |
+          set -eux
+          test -f dist/index.html
+          grep -q '/assets/index-' dist/index.html
+          test "$(find dist/assets -name 'index-*.js' | wc -l)" -ge 1

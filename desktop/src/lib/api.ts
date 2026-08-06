@@ -16,8 +16,8 @@ import type {
 
 export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
-  setSettings: (binaryPath: string, cachePath: string) =>
-    invoke<Settings>("set_settings", { binaryPath, cachePath }),
+  setSettings: (binaryPath: string, cachePath: string, token: string) =>
+    invoke<Settings>("set_settings", { binaryPath, cachePath, token }),
   defaultCache: () => invoke<string>("default_cache"),
 
   probe: () => invoke<ProbeResult>("probe"),

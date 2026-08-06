@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -15,6 +14,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use crate::bsdkrun;
+use crate::remote;
+use crate::target::Target;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -22,10 +23,20 @@ fn next_session_id(prefix: &str) -> String {
     format!("{prefix}-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed))
 }
 
-pub struct TermSession {
-    master: Mutex<Box<dyn MasterPty + Send>>,
-    writer: Mutex<Box<dyn Write + Send>>,
-    child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+/// A live terminal, local or remote.
+///
+/// The remote variant holds only a channel: the pty itself lives on the daemon's
+/// host, which is the whole point — the guest shell gets a real terminal there,
+/// and this side just moves bytes.
+pub enum TermSession {
+    Pty {
+        master: Mutex<Box<dyn MasterPty + Send>>,
+        writer: Mutex<Box<dyn Write + Send>>,
+        child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+    },
+    Remote {
+        input: tokio::sync::mpsc::UnboundedSender<remote::Input>,
+    },
 }
 
 #[derive(Default)]
@@ -59,12 +70,22 @@ fn env_setup(cmd: &mut CommandBuilder) {
 pub fn open(
     app: &AppHandle,
     sessions: &Terminals,
-    bin: &PathBuf,
+    bin: &Target,
     machine_id: &str,
     command: Vec<String>,
     rows: u16,
     cols: u16,
 ) -> Result<String, String> {
+    // Remote: the daemon allocates the pty on its own host and bridges it, so
+    // there is no local process here at all.
+    let bin = match bin {
+        Target::Local(p) => p,
+        Target::Remote { endpoint, token } => {
+            return Ok(open_remote(
+                app, sessions, endpoint, token, machine_id, command, rows, cols,
+            ))
+        }
+    };
     let mut cmd = CommandBuilder::new(bin);
     cmd.arg("exec");
     cmd.arg("-t");
@@ -146,7 +167,7 @@ fn spawn_pty(
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
     let session_id = next_session_id("term");
-    let session = Arc::new(TermSession {
+    let session = Arc::new(TermSession::Pty {
         master: Mutex::new(pair.master),
         writer: Mutex::new(writer),
         child: Mutex::new(child),
@@ -178,12 +199,15 @@ fn spawn_pty(
             }
         }
         // Reap the child so `wait()` yields a code, then notify the UI.
-        let code = {
-            let mut guard = session.child.lock().unwrap();
-            guard.wait().ok().and_then(|s| {
-                let c = s.exit_code();
-                Some(c as i32)
-            })
+        let code = match &*session {
+            TermSession::Pty { child, .. } => child
+                .lock()
+                .unwrap()
+                .wait()
+                .ok()
+                .map(|s| s.exit_code() as i32),
+            // This reader task only ever runs for a local pty.
+            TermSession::Remote { .. } => None,
         };
         let _ = app2.emit(
             "term://exit",
@@ -208,38 +232,62 @@ fn session(sessions: &Terminals, id: &str) -> Result<Arc<TermSession>, String> {
 }
 
 pub fn write(sessions: &Terminals, session_id: &str, data: &str) -> Result<(), String> {
-    let s = session(sessions, session_id)?;
-    let mut w = s.writer.lock().unwrap();
-    w.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
-    w.flush().map_err(|e| e.to_string())
+    match &*session(sessions, session_id)? {
+        TermSession::Pty { writer, .. } => {
+            let mut w = writer.lock().unwrap();
+            w.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+            w.flush().map_err(|e| e.to_string())
+        }
+        TermSession::Remote { input } => input
+            .send(remote::Input::Data(data.as_bytes().to_vec()))
+            .map_err(|_| "the remote session has ended".to_string()),
+    }
 }
 
 pub fn resize(sessions: &Terminals, session_id: &str, rows: u16, cols: u16) -> Result<(), String> {
-    let s = session(sessions, session_id)?;
-    let master = s.master.lock().unwrap();
-    master
-        .resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| e.to_string())
+    match &*session(sessions, session_id)? {
+        TermSession::Pty { master, .. } => master
+            .lock()
+            .unwrap()
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| e.to_string()),
+        TermSession::Remote { input } => input
+            .send(remote::Input::Resize { rows, cols })
+            .map_err(|_| "the remote session has ended".to_string()),
+    }
 }
 
 pub fn close(sessions: &Terminals, session: &str) -> Result<(), String> {
     if let Some(s) = sessions.0.lock().unwrap().remove(session) {
-        let _ = s.child.lock().unwrap().kill();
+        match &*s {
+            TermSession::Pty { child, .. } => {
+                let _ = child.lock().unwrap().kill();
+            }
+            // Dropping the request stream ends the RPC, and the daemon kills
+            // the pty with it.
+            TermSession::Remote { input } => {
+                let _ = input.send(remote::Input::Close);
+            }
+        }
     }
     Ok(())
 }
 
 // ---- live log streaming ---------------------------------------------------
 
+/// A running log follow, local or remote.
+pub enum LogStream {
+    Pty(Mutex<Box<dyn portable_pty::Child + Send + Sync>>),
+    Remote(tokio::task::AbortHandle),
+}
+
 #[derive(Default)]
-pub struct LogStreams(
-    pub Mutex<HashMap<String, Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>>>,
-);
+pub struct LogStreams(pub Mutex<HashMap<String, Arc<LogStream>>>);
 
 #[derive(Clone, Serialize)]
 struct LogLine {
@@ -258,9 +306,16 @@ struct LogEnd {
 pub fn start_logs(
     app: &AppHandle,
     streams: &LogStreams,
-    bin: &PathBuf,
+    bin: &Target,
     machine_id: &str,
 ) -> Result<(), String> {
+    let bin = match bin {
+        Target::Local(p) => p,
+        Target::Remote { endpoint, token } => {
+            start_logs_remote(app, streams, endpoint, token, machine_id);
+            return Ok(());
+        }
+    };
     // Replace any existing stream for this id.
     stop_logs(streams, machine_id);
 
@@ -282,12 +337,10 @@ pub fn start_logs(
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-    let child = Arc::new(Mutex::new(child));
-    streams
-        .0
-        .lock()
-        .unwrap()
-        .insert(machine_id.to_string(), child);
+    streams.0.lock().unwrap().insert(
+        machine_id.to_string(),
+        Arc::new(LogStream::Pty(Mutex::new(child))),
+    );
 
     let app2 = app.clone();
     let id = machine_id.to_string();
@@ -334,7 +387,112 @@ pub fn start_logs(
 }
 
 pub fn stop_logs(streams: &LogStreams, machine_id: &str) {
-    if let Some(child) = streams.0.lock().unwrap().remove(machine_id) {
-        let _ = child.lock().unwrap().kill();
+    if let Some(stream) = streams.0.lock().unwrap().remove(machine_id) {
+        match &*stream {
+            LogStream::Pty(child) => {
+                let _ = child.lock().unwrap().kill();
+            }
+            LogStream::Remote(handle) => handle.abort(),
+        }
     }
+}
+
+// ---- remote sessions -------------------------------------------------------
+
+/// A terminal backed by a daemon rather than a local pty.
+///
+/// It emits the same `term://data` / `term://exit` events, so the webview
+/// cannot tell the two apart — which is the point: the UI is identical whether
+/// the VMs are on this machine or a server.
+#[allow(clippy::too_many_arguments)]
+fn open_remote(
+    app: &AppHandle,
+    sessions: &Terminals,
+    endpoint: &str,
+    token: &str,
+    machine_id: &str,
+    command: Vec<String>,
+    rows: u16,
+    cols: u16,
+) -> String {
+    let session_id = next_session_id("term");
+
+    let app_data = app.clone();
+    let id_data = session_id.clone();
+    let app_exit = app.clone();
+    let id_exit = session_id.clone();
+
+    let input = remote::exec_session(
+        endpoint.to_string(),
+        token.to_string(),
+        machine_id.to_string(),
+        // An empty command means "this machine's shell"; the daemon resolves a
+        // shell that exists in the guest, so we do not probe for one from here.
+        command,
+        rows,
+        cols,
+        move |bytes| {
+            let _ = app_data.emit(
+                "term://data",
+                TermData {
+                    session: id_data.clone(),
+                    bytes,
+                },
+            );
+        },
+        move |code| {
+            let _ = app_exit.emit(
+                "term://exit",
+                TermExit {
+                    session: id_exit,
+                    code,
+                },
+            );
+        },
+    );
+
+    sessions
+        .0
+        .lock()
+        .unwrap()
+        .insert(session_id.clone(), Arc::new(TermSession::Remote { input }));
+    session_id
+}
+
+/// Follow a remote machine's console, emitting the same log events.
+fn start_logs_remote(
+    app: &AppHandle,
+    streams: &LogStreams,
+    endpoint: &str,
+    token: &str,
+    machine_id: &str,
+) {
+    let app_line = app.clone();
+    let id_line = machine_id.to_string();
+    let app_end = app.clone();
+    let id_end = machine_id.to_string();
+
+    let handle = remote::logs_session(
+        endpoint.to_string(),
+        token.to_string(),
+        machine_id.to_string(),
+        move |line| {
+            let _ = app_line.emit(
+                "log://line",
+                LogLine {
+                    id: id_line.clone(),
+                    line: crate::sanitize_log(&line),
+                },
+            );
+        },
+        move || {
+            let _ = app_end.emit("log://end", LogEnd { id: id_end });
+        },
+    );
+
+    streams
+        .0
+        .lock()
+        .unwrap()
+        .insert(machine_id.to_string(), Arc::new(LogStream::Remote(handle)));
 }

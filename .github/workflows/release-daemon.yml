@@ -18,6 +18,15 @@ on:
       - "bsdkrund-v*"
   workflow_dispatch:
     inputs:
+      # `ref` and `tag` are deliberately separate. Checking out the publish tag
+      # is wrong for a component this new: any pre-existing release tag — and
+      # `main`, until the daemon lands there — has no daemon/ directory at all,
+      # so the build fails before it starts. Build from a ref that has the code,
+      # publish to whichever release you want the assets on.
+      ref:
+        description: "Branch, tag or SHA to build from. Defaults to the ref this run was started from."
+        required: false
+        default: ""
       tag:
         description: "Existing release tag to publish assets to (e.g. v0.5.3). Leave empty to only produce workflow artifacts."
         required: false
@@ -52,7 +61,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag != '' && inputs.tag || github.ref }}
+          ref: ${{ inputs.ref != '' && inputs.ref || github.ref }}
+
+      # Fail here, with a reason, rather than several steps later as an opaque
+      # "cannot start /bin/bash: No such file or directory" from the first step
+      # that sets working-directory: daemon.
+      - name: Check out contains the daemon
+        run: |
+          set -eu
+          if [ ! -f daemon/Cargo.toml ]; then
+            echo "::error::No daemon/ in $(git rev-parse --short HEAD) (ref: ${{ inputs.ref != '' && inputs.ref || github.ref }})."
+            echo "::error::Build from a ref that contains the daemon — set the 'ref' input; 'tag' only chooses where assets are published."
+            exit 1
+          fi
 
       - uses: dtolnay/rust-toolchain@stable
         with:

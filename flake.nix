@@ -103,6 +103,42 @@
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
+        # ---- bsdkrund: the gRPC daemon ------------------------------------
+        # A separate crate with its own workspace and lockfile. It links no
+        # libkrun — it drives the `bsdkrun` binary as a subprocess — so unlike
+        # bsdkrun itself it builds purely on every system, darwin included, and
+        # needs no `--impure` and no Homebrew.
+        daemonArgs = {
+          src = craneLib.cleanCargoSource ./daemon;
+          pname = "bsdkrund";
+          version = "0.1.0";
+          strictDeps = true;
+
+          # tonic-prost-build shells out to protoc to compile the .proto.
+          nativeBuildInputs = [ pkgs.protobuf ];
+          PROTOC = "${pkgs.protobuf}/bin/protoc";
+        };
+
+        daemonArtifacts = craneLib.buildDepsOnly daemonArgs;
+
+        bsdkrund = craneLib.buildPackage (daemonArgs // {
+          cargoArtifacts = daemonArtifacts;
+
+          # Deliberately NOT wrapped with bsdkrun on PATH. The daemon's contract
+          # is that it drives whatever `bsdkrun` the host has installed, and
+          # baking one in would drag bsdkrun's libkrun dependency — impure on
+          # darwin — into a package that otherwise builds anywhere. Install both
+          # into the same profile and the daemon finds the CLI on PATH.
+          meta = with lib; {
+            description =
+              "Token-authenticated gRPC daemon that drives the bsdkrun CLI on a remote VPS or bare-metal KVM host";
+            homepage = "https://github.com/tsirysndr/bsdkrun";
+            license = licenses.mit;
+            mainProgram = "bsdkrund";
+            platforms = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
+          };
+        });
+
         bsdkrun = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
 
@@ -133,7 +169,7 @@
       in
       {
         checks = {
-          inherit bsdkrun;
+          inherit bsdkrun bsdkrund;
 
           bsdkrun-clippy = craneLib.cargoClippy (commonArgs // {
             inherit cargoArtifacts;
@@ -141,12 +177,24 @@
           });
 
           bsdkrun-fmt = craneLib.cargoFmt { inherit src; };
+
+          bsdkrund-clippy = craneLib.cargoClippy (daemonArgs // {
+            cargoArtifacts = daemonArtifacts;
+            cargoClippyExtraArgs = "--all-targets -- -D warnings";
+          });
+
+          bsdkrund-fmt = craneLib.cargoFmt {
+            inherit (daemonArgs) src;
+            pname = "bsdkrund";
+          };
         };
 
         packages.default = bsdkrun;
         packages.bsdkrun = bsdkrun;
+        packages.bsdkrund = bsdkrund;
 
         apps.default = flake-utils.lib.mkApp { drv = bsdkrun; };
+        apps.bsdkrund = flake-utils.lib.mkApp { drv = bsdkrund; };
 
         # `nix develop` — toolchain + libkrun (Linux) + everything bsdkrun needs,
         # plus zig/cargo-zigbuild for cross-building guest agents.
@@ -157,7 +205,8 @@
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
 
           packages = with pkgs;
-            [ pkg-config llvmPackages.llvm cargo-zigbuild zig ]
+            # protobuf so `cargo build` inside daemon/ can run protoc too.
+            [ pkg-config llvmPackages.llvm cargo-zigbuild zig protobuf ]
             ++ lib.optionals (!isDarwin) [ libkrun ]
             ++ runtimeDeps;
         };

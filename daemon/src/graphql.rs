@@ -274,6 +274,33 @@ pub struct ShellOutput {
     pub exit_code: Option<i32>,
 }
 
+/// Host resources, for the status bar.
+#[derive(SimpleObject)]
+pub struct SystemStats {
+    /// Host CPU usage, 0-100.
+    pub cpu: f64,
+    /// Bytes. `Float` because RAM and disk exceed a 32-bit `Int`.
+    pub mem_used: f64,
+    pub mem_total: f64,
+    /// Real (CoW-aware) bytes used by all microVMs and volumes.
+    pub vm_disk: f64,
+    pub vm_count: i32,
+}
+
+/// One step of a launch: a progress line, or the terminal event carrying the
+/// new machine's id (or the error that stopped it).
+///
+/// Booting can take minutes — an image pull, provisioning, a BSD boot — so a
+/// plain mutation would leave the UI with nothing to show. This streams the
+/// same output a terminal user would watch scroll past.
+#[derive(SimpleObject)]
+pub struct LaunchEvent {
+    pub line: Option<String>,
+    /// Set exactly once, on success, when the machine id is known.
+    pub machine_id: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(Enum, Copy, Clone, Eq, PartialEq)]
 pub enum BsdOs {
     Freebsd,
@@ -513,6 +540,29 @@ impl Query {
                 latest: v.latest,
             })
             .collect())
+    }
+
+    /// Host CPU, RAM and microVM disk usage.
+    async fn system_stats(&self, ctx: &Context<'_>) -> async_graphql::Result<SystemStats> {
+        let s = api(ctx)?.ops.system_stats().await.map_err(gql_err)?;
+        Ok(SystemStats {
+            cpu: s.cpu as f64,
+            mem_used: s.mem_used as f64,
+            mem_total: s.mem_total as f64,
+            vm_disk: s.vm_disk as f64,
+            vm_count: s.vm_count as i32,
+        })
+    }
+
+    /// A machine's console log as a single string. Use the `machineLogs`
+    /// subscription to follow it live instead.
+    async fn machine_logs(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+        #[graphql(default)] boot: bool,
+    ) -> async_graphql::Result<String> {
+        api(ctx)?.ops.machine_logs(&id, boot).await.map_err(gql_err)
     }
 
     /// Currently open shell sessions.
@@ -795,6 +845,40 @@ impl Mutation {
             .into())
     }
 
+    // -- guest tools ---------------------------------------------------------
+
+    /// Run an in-guest agent action, e.g. `ssh` with ["setup"] or `tailscale`
+    /// with ["status"]. A non-zero `exitCode` is a state to display, not a
+    /// failure — "not installed" and "not running" both arrive that way.
+    async fn guest_tool(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+        tool: GuestTool,
+        args: Vec<String>,
+    ) -> async_graphql::Result<CommandResult> {
+        Ok(api(ctx)?
+            .ops
+            .guest_tool(tool.into(), &id, &args)
+            .await
+            .map_err(gql_err)?
+            .into())
+    }
+
+    /// Install the current agent inside a running guest, over a stale one.
+    async fn update_agent(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+    ) -> async_graphql::Result<CommandResult> {
+        Ok(api(ctx)?
+            .ops
+            .update_agent(&id)
+            .await
+            .map_err(gql_err)?
+            .into())
+    }
+
     // -- shell sessions ------------------------------------------------------
 
     /// Open an interactive session on a machine and return its id.
@@ -938,6 +1022,90 @@ impl Subscription_ {
         )
     }
 
+    /// Boot a Linux machine, streaming progress until its id is known.
+    async fn launch_linux(
+        &self,
+        ctx: &Context<'_>,
+        input: RunLinuxInput,
+    ) -> async_graphql::Result<impl Stream<Item = LaunchEvent>> {
+        let api = api(ctx)?;
+        let opts = ops::RunLinuxOpts {
+            image: input.image,
+            cpus: input.cpus,
+            mem: input.mem,
+            net: input.net.map(Into::into).unwrap_or_default(),
+            volume: input.volume,
+            mounts: input.mounts,
+            env: input.env,
+            entrypoint: input.entrypoint,
+            initramfs: input.initramfs,
+            kernel: input.kernel,
+            kernel_version: input.kernel_version,
+            console: input.console,
+            repo: input.repo,
+            command: input.command,
+        };
+        Ok(launch_stream(api.ops.clone(), opts.to_argv()))
+    }
+
+    /// Boot a FreeBSD/NetBSD machine, streaming progress until its id is known.
+    async fn launch_bsd(
+        &self,
+        ctx: &Context<'_>,
+        input: RunBsdInput,
+    ) -> async_graphql::Result<impl Stream<Item = LaunchEvent>> {
+        let api = api(ctx)?;
+        let opts = ops::RunBsdOpts {
+            os: input.os.into(),
+            version: input.version,
+            cpus: input.cpus,
+            mem: input.mem,
+            net: input.net.map(Into::into).unwrap_or_default(),
+            volume: input.volume,
+            persist: input.persist,
+            force: input.force,
+            firmware: input.firmware,
+            attach_disk: input.attach_disk,
+            disk_size: input.disk_size,
+            repo: input.repo,
+            command: input.command,
+        };
+        Ok(launch_stream(api.ops.clone(), opts.to_argv()))
+    }
+
+    /// Boot a flavor, streaming provisioning output until its id is known.
+    async fn launch_flavor(
+        &self,
+        ctx: &Context<'_>,
+        input: RunFlavorInput,
+    ) -> async_graphql::Result<impl Stream<Item = LaunchEvent>> {
+        let api = api(ctx)?;
+        let opts = ops::RunFlavorOpts {
+            name: input.name,
+            cpus: input.cpus,
+            mem: input.mem,
+            ports: input.ports,
+            volume: input.volume,
+            repo: input.repo,
+        };
+        Ok(launch_stream(api.ops.clone(), opts.to_argv()))
+    }
+
+    /// Pre-build a flavor's provisioned rootfs, streaming the build log. No
+    /// machine is started, so no `machineId` is ever emitted.
+    async fn build_flavor(
+        &self,
+        ctx: &Context<'_>,
+        name: String,
+        cpus: Option<u32>,
+        mem: Option<u32>,
+        #[graphql(default)] force: bool,
+    ) -> async_graphql::Result<impl Stream<Item = LaunchEvent>> {
+        let api = api(ctx)?;
+        let argv = api.ops.build_flavor_argv(&name, cpus, mem, force);
+        Ok(launch_stream(api.ops.clone(), argv))
+    }
+
     /// Poll-backed machine list, so a dashboard can stay current without the
     /// frontend running its own timer.
     ///
@@ -961,5 +1129,96 @@ impl Subscription_ {
                 }
             }
         })
+    }
+}
+
+/// Run a boot command and turn its output into [`LaunchEvent`]s.
+///
+/// The CLI writes progress to stderr and the new machine's id to stdout, so the
+/// two streams are classified separately. An id is a bare 12-hex-digit line —
+/// the same shape the desktop app looks for — and anything else on stdout is
+/// just more progress.
+fn launch_stream(ops: Ops, argv: Vec<String>) -> impl Stream<Item = LaunchEvent> {
+    async_stream::stream! {
+        let mut rx = ops.cli().stream(&argv);
+        let mut machine_id: Option<String> = None;
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+
+        while let Some(chunk) = rx.recv().await {
+            let Ok(chunk) = chunk else { continue };
+            match chunk.payload {
+                Some(crate::pb::output_chunk::Payload::Stdout(b)) => {
+                    stdout.push_str(&String::from_utf8_lossy(&b));
+                    while let Some(nl) = stdout.find('\n') {
+                        let line: String = stdout.drain(..=nl).collect();
+                        let t = line.trim().to_string();
+                        if t.is_empty() {
+                            continue;
+                        }
+                        if machine_id.is_none() && is_machine_id(&t) {
+                            machine_id = Some(t);
+                        } else {
+                            yield LaunchEvent { line: Some(t), machine_id: None, error: None };
+                        }
+                    }
+                }
+                Some(crate::pb::output_chunk::Payload::Stderr(b)) => {
+                    stderr.push_str(&String::from_utf8_lossy(&b));
+                    while let Some(nl) = stderr.find('\n') {
+                        let line: String = stderr.drain(..=nl).collect();
+                        let t = line.trim_end().to_string();
+                        if !t.trim().is_empty() {
+                            yield LaunchEvent { line: Some(t), machine_id: None, error: None };
+                        }
+                    }
+                }
+                Some(crate::pb::output_chunk::Payload::ExitCode(code)) => {
+                    // Flush whatever was still buffered without a trailing newline.
+                    for rest in [stdout.trim(), stderr.trim()] {
+                        if !rest.is_empty() {
+                            yield LaunchEvent {
+                                line: Some(rest.to_string()),
+                                machine_id: None,
+                                error: None,
+                            };
+                        }
+                    }
+                    yield if code == 0 {
+                        LaunchEvent { line: None, machine_id: machine_id.clone(), error: None }
+                    } else {
+                        LaunchEvent {
+                            line: None,
+                            machine_id: None,
+                            error: Some(format!("bsdkrun exited with status {code}")),
+                        }
+                    };
+                    return;
+                }
+                None => {}
+            }
+        }
+    }
+}
+
+/// A machine id as the CLI prints it: exactly 12 hex digits on a line of its own.
+fn is_machine_id(line: &str) -> bool {
+    line.len() == 12 && line.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn machine_ids_are_told_apart_from_progress_lines() {
+        assert!(is_machine_id("fab8f81e4f91"));
+        assert!(is_machine_id("000000000000"));
+        // Progress output must never be mistaken for an id.
+        assert!(!is_machine_id("pulling alpine:3.20"));
+        assert!(!is_machine_id("fab8f81e4f9")); // 11
+        assert!(!is_machine_id("fab8f81e4f912")); // 13
+        assert!(!is_machine_id("zzzzzzzzzzzz"));
+        assert!(!is_machine_id(""));
     }
 }

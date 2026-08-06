@@ -1,0 +1,40 @@
+{
+  "name": "bsdkrun-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A Docker Desktop-style web UI for bsdkrun, talking to a bsdkrund GraphQL API.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@heroui/react": "~2.7.0",
+    "@hookform/resolvers": "^3.10.0",
+    "@tabler/icons-react": "^3.28.1",
+    "@tanstack/react-query": "^5.62.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-search": "^0.15.0",
+    "@xterm/xterm": "^5.5.0",
+    "dayjs": "^1.11.13",
+    "framer-motion": "^11.15.0",
+    "jotai": "^2.11.0",
+    "react": "^18.3.1",
+    "react-content-loader": "^7.0.2",
+    "react-dom": "^18.3.1",
+    "react-hook-form": "^7.54.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7"
+  }
+}

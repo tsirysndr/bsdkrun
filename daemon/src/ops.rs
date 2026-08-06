@@ -679,6 +679,49 @@ impl Ops {
         Ok(self.cli.output(&argv).await?)
     }
 
+    // -- guest tools ---------------------------------------------------------
+
+    /// Run an in-guest agent action (`ssh`/`tailscale`/`systemd`) and collect
+    /// its output. A non-zero exit is returned rather than raised: for these
+    /// commands "not installed" / "not running" is a legitimate state the UI
+    /// should display, not a transport failure.
+    pub async fn guest_tool(
+        &self,
+        tool: GuestTool,
+        id: &str,
+        args: &[String],
+    ) -> OpResult<CommandResult> {
+        let argv = self.guest_tool_argv(tool, id, args)?;
+        Ok(self.cli.output(&argv).await?)
+    }
+
+    pub async fn update_agent(&self, id: &str) -> OpResult<CommandResult> {
+        Ok(self.cli.output(&self.update_agent_argv(id)).await?)
+    }
+
+    /// A machine's console log as a single string, for a non-following read.
+    pub async fn machine_logs(&self, id: &str, boot: bool) -> OpResult<String> {
+        let res = self.cli.output(&self.logs_argv(id, false, boot)).await?;
+        // Console output goes to stdout and bsdkrun's own boot log to stderr,
+        // so which one carries the content depends on `boot`.
+        Ok(if res.stdout.trim().is_empty() {
+            res.stderr
+        } else {
+            res.stdout
+        })
+    }
+
+    // -- host ----------------------------------------------------------------
+
+    /// Host CPU/RAM and the real on-disk size of every microVM.
+    ///
+    /// Off the async runtime: it walks the whole state directory.
+    pub async fn system_stats(&self) -> OpResult<crate::system::SystemStats> {
+        tokio::task::spawn_blocking(crate::system::sample)
+            .await
+            .map_err(|e| OpError::Failed(format!("sampling host stats: {e}")))
+    }
+
     // -- argv for the streaming operations ------------------------------------
     //
     // These return a command line rather than running it: the caller decides

@@ -22,6 +22,7 @@ pub mod ops;
 pub mod pty;
 pub mod service;
 pub mod shell;
+pub mod system;
 
 /// Generated protobuf types and the gRPC client/server stubs.
 pub mod pb {

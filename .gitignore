@@ -6,5 +6,8 @@
 /agent/target
 /daemon/target
 
+# Node dependencies, wherever they land (desktop/, web/).
+node_modules/
+
 # Cross-compiled guest agent binaries — regenerate with `make agent`.
 /src/agent-bin/bsdkrun-agent.*

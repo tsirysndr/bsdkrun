@@ -29,6 +29,7 @@ mod oci;
 #[cfg(target_os = "macos")]
 mod store;
 mod tty;
+mod ui;
 mod watchdog;
 
 use std::path::PathBuf;
@@ -172,6 +173,23 @@ enum Command {
     /// Manage global networks (a shared subnet + internal DNS) that machines join
     /// with `--network` to reach each other by IP and by name.
     Network(NetworkArgs),
+
+    /// Serve the bundled web interface (a Docker-Desktop-style UI in a browser).
+    ///
+    /// Static assets only — the UI drives a `bsdkrund` GraphQL API, which it
+    /// asks for on first run, so it can manage a daemon on any reachable host.
+    Ui(UiArgs),
+}
+
+#[derive(Parser)]
+struct UiArgs {
+    /// Address to serve the UI on.
+    #[arg(long, default_value = "127.0.0.1:8088")]
+    bind: std::net::SocketAddr,
+
+    /// Do not open a browser.
+    #[arg(long)]
+    no_open: bool,
 }
 
 #[derive(Parser)]
@@ -1085,6 +1103,7 @@ fn main() -> Result<()> {
             FlavorCmd::Build(a) => cmd_flavor_prebuild(&a.name, a.vm.cpus, a.vm.mem, a.force),
             FlavorCmd::BuildInternal(a) => cmd_flavor_build(&a.name, &a.key, a.vm.cpus, a.vm.mem),
         },
+        Command::Ui(args) => ui::serve_ui(args.bind, !args.no_open),
         Command::Network(args) => match args.cmd {
             NetworkCmd::Create(a) => network::cmd_create(&a.name),
             NetworkCmd::Ls(a) => network::cmd_ls(a.json),

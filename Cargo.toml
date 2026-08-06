@@ -15,3 +15,6 @@ serde_json = "1"
 toml = "0.8"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tokio = { version = "1", features = ["rt", "time"] }
+actix-web = "4"
+rust-embed = "8"
+mime_guess = "2"

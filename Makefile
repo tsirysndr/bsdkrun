@@ -15,7 +15,7 @@ UNAME_S      := $(shell uname -s)
 # for the user to copy into a running BSD guest). Not tracked in git.
 AGENT_DIR := src/agent-bin
 
-.PHONY: build release sign sign-release run test e2e clean \
+.PHONY: build release sign sign-release run test e2e clean web daemon \
         agent agent-linux agent-freebsd agent-netbsd
 
 build:
@@ -37,6 +37,22 @@ sign-release:
 ifeq ($(UNAME_S),Darwin)
 	codesign --entitlements $(ENTITLEMENTS) --force -s - $(BIN_RELEASE)
 endif
+
+# --- web UI ----------------------------------------------------------------
+#
+# Builds the SPA in web/ into web/dist, which build.rs embeds into the bsdkrun
+# binary for `bsdkrun ui`. Run this BEFORE `make release` — cargo picks up
+# whatever is in web/dist at compile time, and build.rs writes a placeholder
+# page there when the real bundle is missing, so a checkout without node still
+# compiles.
+web:
+	cd web && (bun install || npm install) && (bun run build || npm run build)
+
+# --- daemon ----------------------------------------------------------------
+#
+# Standalone crate (own workspace): the gRPC + GraphQL server.
+daemon:
+	cd daemon && cargo build --release
 
 # --- guest agents (release assets) -----------------------------------------
 #

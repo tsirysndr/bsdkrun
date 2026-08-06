@@ -14,11 +14,15 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use bsdkrun_daemon::auth::{generate_token, TokenAuth};
 use bsdkrun_daemon::cli::Cli as BsdkrunCli;
+use bsdkrun_daemon::ops::Ops;
 use bsdkrun_daemon::pb::bsdkrun_server::BsdkrunServer;
 use bsdkrun_daemon::service::BsdkrunService;
+use bsdkrun_daemon::shell::ShellRegistry;
 use clap::Parser;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing::{info, warn};
@@ -35,6 +39,19 @@ struct Args {
     /// network is a deliberate act, since it hands out full VM and shell access.
     #[arg(long, default_value = "127.0.0.1:50051", env = "BSDKRUN_DAEMON_BIND")]
     bind: SocketAddr,
+
+    /// Address for the GraphQL API (queries + subscriptions), used by the web
+    /// frontend. Same token as gRPC. Pass `--no-graphql` to turn it off.
+    #[arg(
+        long,
+        default_value = "127.0.0.1:50052",
+        env = "BSDKRUN_DAEMON_GRAPHQL_BIND"
+    )]
+    graphql_bind: SocketAddr,
+
+    /// Do not serve GraphQL at all.
+    #[arg(long)]
+    no_graphql: bool,
 
     /// Access token clients must present. Generated and printed when omitted.
     #[arg(long, env = "BSDKRUN_TOKEN", hide_env_values = true)]
@@ -122,10 +139,39 @@ async fn main() -> Result<()> {
         .build_v1alpha()
         .context("building the v1alpha reflection service")?;
 
-    let svc =
-        BsdkrunServer::with_interceptor(BsdkrunService::new(cli), TokenAuth::new(token.clone()));
+    // One Ops behind both front ends, so gRPC and GraphQL cannot disagree
+    // about what command a given request actually runs.
+    let ops = Ops::new(cli);
+    let auth = Arc::new(TokenAuth::new(token.clone()));
+    let svc = BsdkrunServer::with_interceptor(
+        BsdkrunService::from_ops(ops.clone()),
+        TokenAuth::new(token.clone()),
+    );
 
-    print_banner(&args.bind, &token, generated, tls.is_some());
+    print_banner(
+        &args.bind,
+        (!args.no_graphql).then_some(&args.graphql_bind),
+        &token,
+        generated,
+        tls.is_some(),
+    );
+
+    // GraphQL runs on its own port: gRPC needs the whole connection to speak
+    // HTTP/2 with its own framing, so the two cannot share a listener.
+    let graphql = (!args.no_graphql).then(|| {
+        let schema = bsdkrun_daemon::graphql::schema(ops.clone(), Arc::new(ShellRegistry::new()));
+        let bind = args.graphql_bind;
+        let auth = auth.clone();
+        tokio::spawn(async move {
+            if let Err(e) = bsdkrun_daemon::http::serve(bind, schema, auth, async {
+                let _ = tokio::signal::ctrl_c().await;
+            })
+            .await
+            {
+                tracing::error!(error = %e, "the GraphQL server stopped");
+            }
+        })
+    });
 
     let mut server = Server::builder()
         // Interactive sessions send one small frame per keystroke.
@@ -147,13 +193,23 @@ async fn main() -> Result<()> {
         .await
         .context("serving")?;
 
+    if let Some(graphql) = graphql {
+        graphql.abort();
+    }
+
     Ok(())
 }
 
 /// Print the token once on startup. A generated token exists nowhere else, so
 /// this is the operator's only chance to copy it — it goes to stdout (not the
 /// log) so `bsdkrund > token.txt` and piping both work.
-fn print_banner(bind: &SocketAddr, token: &str, generated: bool, tls: bool) {
+fn print_banner(
+    bind: &SocketAddr,
+    graphql_bind: Option<&SocketAddr>,
+    token: &str,
+    generated: bool,
+    tls: bool,
+) {
     let scheme = if tls { "https" } else { "http" };
     let host = if bind.ip().is_unspecified() {
         format!("<this-host>:{}", bind.port())
@@ -161,7 +217,11 @@ fn print_banner(bind: &SocketAddr, token: &str, generated: bool, tls: bool) {
         bind.to_string()
     };
 
-    println!("bsdkrun daemon listening on {scheme}://{bind}");
+    println!("bsdkrun daemon listening on {scheme}://{bind}  (gRPC)");
+    if let Some(gql) = graphql_bind {
+        println!("  GraphQL      http://{gql}/graphql");
+        println!("  subscriptions ws://{gql}/graphql/ws");
+    }
     if generated {
         println!();
         println!("  access token (generated — shown only once):");

@@ -70,8 +70,11 @@ jobs:
       - name: Unit tests
         run: cargo test --lib
 
-      - name: End-to-end tests
+      - name: End-to-end tests (gRPC)
         run: cargo test --test e2e
+
+      - name: End-to-end tests (GraphQL)
+        run: cargo test --test graphql
 
   # Exercises the actual shipped binary over the wire with a third-party client,
   # which is the only way to prove the parts no Rust test touches: that
@@ -85,6 +88,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+
+      # Node 22+ for its global WebSocket, used by the shell subscription test.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -116,22 +124,29 @@ jobs:
             --version) echo "bsdkrun 9.9.9-stub" ;;
             ps) echo '[]' ;;
             probe) echo "probe ok" ;;
+            # Backs the interactive-shell test: echo a marker, then read stdin
+            # so keystrokes sent over GraphQL have something to reach.
+            exec) echo "EXEC_OK"; cat ;;
             *) echo "unknown: $1" >&2; exit 2 ;;
           esac
           EOF
           chmod +x /tmp/bsdkrun
 
           BSDKRUN_TOKEN=ci-secret-token \
-            ./target/release/bsdkrund --bind 127.0.0.1:50077 --bsdkrun /tmp/bsdkrun \
+            ./target/release/bsdkrund --bind 127.0.0.1:50077 \
+            --graphql-bind 127.0.0.1:50078 --bsdkrun /tmp/bsdkrun \
             > /tmp/daemon.log 2>&1 &
           echo $! > /tmp/daemon.pid
 
-          # Wait for the listener rather than sleeping a fixed amount.
-          for _ in $(seq 1 60); do
-            if bash -c '</dev/tcp/127.0.0.1/50077' 2>/dev/null; then break; fi
-            sleep 0.5
+          # Wait for the listeners rather than sleeping a fixed amount.
+          for port in 50077 50078; do
+            for _ in $(seq 1 60); do
+              if bash -c "</dev/tcp/127.0.0.1/$port" 2>/dev/null; then break; fi
+              sleep 0.5
+            done
+            bash -c "</dev/tcp/127.0.0.1/$port" 2>/dev/null \
+              || { echo "port $port never opened"; cat /tmp/daemon.log; exit 1; }
           done
-          bash -c '</dev/tcp/127.0.0.1/50077' 2>/dev/null || { cat /tmp/daemon.log; exit 1; }
 
       - name: Reflection is reachable anonymously
         run: |
@@ -195,6 +210,146 @@ jobs:
             -d '{"start":{"args":["nope"]}}' \
             127.0.0.1:50077 bsdkrun.v1.Bsdkrun/Run | tee /tmp/fail.json
           grep -q '"exitCode": 2' /tmp/fail.json
+
+      # -- GraphQL ------------------------------------------------------------
+
+      - name: GraphQL rejects a request with no token
+        run: |
+          set -eux
+          code=$(curl -s -o /tmp/anon.json -w '%{http_code}' -X POST \
+            http://127.0.0.1:50078/graphql -H 'content-type: application/json' \
+            -d '{"query":"{ info { cliVersion } }"}')
+          cat /tmp/anon.json
+          [ "$code" = "401" ]
+          grep -q UNAUTHENTICATED /tmp/anon.json
+
+      - name: GraphQL accepts the bearer token
+        run: |
+          set -eux
+          curl -sf -X POST http://127.0.0.1:50078/graphql \
+            -H 'content-type: application/json' \
+            -H 'authorization: Bearer ci-secret-token' \
+            -d '{"query":"{ info { daemonVersion cliVersion os arch } }"}' | tee /tmp/info.json
+          grep -q "9.9.9-stub" /tmp/info.json
+
+      - name: GraphiQL is served anonymously
+        run: |
+          set -eux
+          curl -sf http://127.0.0.1:50078/graphql | grep -qi graphiql
+
+      - name: CORS lets a cross-origin frontend through
+        run: |
+          set -eux
+          curl -s -D- -o /dev/null -X OPTIONS http://127.0.0.1:50078/graphql \
+            -H 'origin: http://localhost:5173' \
+            -H 'access-control-request-method: POST' \
+            -H 'access-control-request-headers: authorization' \
+            | tee /tmp/cors.txt
+          grep -qi 'access-control-allow-origin' /tmp/cors.txt
+
+      # The one path no HTTP client can cover: a subscription over a real
+      # WebSocket, carrying an interactive shell. Output arrives on the
+      # subscription while input goes back as mutations on the same socket —
+      # this proves that split actually works end to end.
+      - name: Interactive shell over a GraphQL subscription
+        run: |
+          set -eux
+          cat > /tmp/shell-test.mjs <<'EOF'
+          const WS = 'ws://127.0.0.1:50078/graphql/ws';
+          const HTTP = 'http://127.0.0.1:50078/graphql';
+          const TOKEN = 'ci-secret-token';
+
+          async function gql(query, variables = {}) {
+            const r = await fetch(HTTP, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+              body: JSON.stringify({ query, variables }),
+            });
+            const j = await r.json();
+            if (j.errors) throw new Error(JSON.stringify(j.errors));
+            return j.data;
+          }
+
+          const ws = new WebSocket(WS, 'graphql-transport-ws');
+          const chunks = [];
+          const send = (o) => ws.send(JSON.stringify(o));
+          const fail = (m) => { console.error('FAIL:', m); process.exit(1); };
+
+          ws.onerror = () => fail('websocket error');
+          ws.onopen = () => send({ type: 'connection_init', payload: { authorization: `Bearer ${TOKEN}` } });
+
+          ws.onmessage = async (ev) => {
+            const msg = JSON.parse(ev.data);
+
+            if (msg.type === 'connection_ack') {
+              console.log('connection_ack: authenticated over the websocket');
+              // Open first, subscribe second — the real ordering, and the race
+              // the server-side buffer exists to cover.
+              const r = await gql(
+                'mutation($m:String!){ openShell(machineId:$m, command:["cat"], rows:40, cols:120){ id } }',
+                { m: 'abc123' },
+              );
+              const id = r.openShell.id;
+              console.log('openShell ->', id);
+
+              // Deliberately wait, so the stub's output is produced with nobody
+              // listening. It must still be replayed to the subscriber.
+              await new Promise((r) => setTimeout(r, 750));
+
+              send({
+                id: '1',
+                type: 'subscribe',
+                payload: {
+                  query: 'subscription($s:String!){ shellOutput(sessionId:$s){ dataBase64 exitCode } }',
+                  variables: { s: id },
+                },
+              });
+
+              await gql('mutation($s:String!,$d:String!){ sendShellInput(sessionId:$s, dataBase64:$d) }', {
+                s: id,
+                d: Buffer.from('hello-from-graphql\n\x04').toString('base64'),
+              });
+              await gql('mutation($s:String!){ resizeShell(sessionId:$s, rows:50, cols:100) }', { s: id });
+              console.log('sent input + resize');
+              return;
+            }
+
+            if (msg.type === 'next') {
+              const p = msg.payload.data.shellOutput;
+              if (p.dataBase64) chunks.push(Buffer.from(p.dataBase64, 'base64'));
+              if (p.exitCode !== null && p.exitCode !== undefined) {
+                const text = Buffer.concat(chunks).toString('utf8');
+                console.log('--- output ---\n' + text + '\n--- end --- exit=' + p.exitCode);
+                if (!text.includes('EXEC_OK')) fail('output buffered before subscribing was lost');
+                if (!text.includes('hello-from-graphql')) fail('keystrokes never reached the command');
+                console.log('PASS');
+                process.exit(0);
+              }
+              return;
+            }
+
+            if (msg.type === 'error') fail(JSON.stringify(msg.payload));
+          };
+
+          setTimeout(() => fail('timed out'), 45000);
+          EOF
+          node /tmp/shell-test.mjs
+
+      - name: A subscription without a token is refused
+        run: |
+          set -eux
+          cat > /tmp/ws-auth.mjs <<'EOF'
+          const ws = new WebSocket('ws://127.0.0.1:50078/graphql/ws', 'graphql-transport-ws');
+          // No token in connection_init: the socket must not be acknowledged.
+          ws.onopen = () => ws.send(JSON.stringify({ type: 'connection_init', payload: {} }));
+          ws.onmessage = (ev) => {
+            const msg = JSON.parse(ev.data);
+            if (msg.type === 'connection_ack') { console.error('FAIL: acked without a token'); process.exit(1); }
+          };
+          ws.onclose = () => { console.log('PASS: closed without acking'); process.exit(0); };
+          setTimeout(() => { console.error('FAIL: timed out'); process.exit(1); }, 20000);
+          EOF
+          node /tmp/ws-auth.mjs
 
       - name: Stop the daemon
         if: always()

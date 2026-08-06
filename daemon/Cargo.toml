@@ -49,9 +49,16 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 which = "6"
+async-graphql = "7"
+async-graphql-axum = "7"
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors"] }
+base64 = "0.22"
+async-stream = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
+tower = "0.5"
 
 [profile.release]
 opt-level = 2

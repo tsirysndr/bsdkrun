@@ -16,8 +16,12 @@
 pub mod auth;
 pub mod cli;
 pub mod client;
+pub mod graphql;
+pub mod http;
+pub mod ops;
 pub mod pty;
 pub mod service;
+pub mod shell;
 
 /// Generated protobuf types and the gRPC client/server stubs.
 pub mod pb {

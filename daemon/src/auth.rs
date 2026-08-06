@@ -25,7 +25,14 @@ const TOKEN_BYTES: usize = 32;
 /// (macOS and the BSD/Linux hypervisor hosts bsdkrun targets), and this keeps a
 /// security-relevant path free of a dependency's version churn.
 pub fn generate_token() -> Result<String> {
-    let mut buf = [0u8; TOKEN_BYTES];
+    random_hex(TOKEN_BYTES)
+}
+
+/// `n` random bytes, hex-encoded. Also used for shell session ids, which are
+/// handed out over the API and should not be guessable by a client that holds
+/// a session it was not given.
+pub fn random_hex(n: usize) -> Result<String> {
+    let mut buf = vec![0u8; n];
     File::open("/dev/urandom")
         .context("opening /dev/urandom")?
         .read_exact(&mut buf)
@@ -42,6 +49,18 @@ pub struct TokenAuth {
 impl TokenAuth {
     pub fn new(token: String) -> Self {
         Self { token }
+    }
+
+    /// Whether a presented credential is the expected one. `None` (nothing
+    /// presented) is never a match.
+    ///
+    /// Shared by gRPC and HTTP so there is exactly one place that decides who
+    /// may drive this host, and only one comparison to get right.
+    pub fn matches(&self, presented: Option<&str>) -> bool {
+        match presented {
+            Some(t) => constant_time_eq(t.as_bytes(), self.token.as_bytes()),
+            None => false,
+        }
     }
 }
 
@@ -61,7 +80,7 @@ impl Interceptor for TokenAuth {
             .or_else(|| md.get("x-bsdkrun-token").and_then(|v| v.to_str().ok()));
 
         match presented {
-            Some(t) if constant_time_eq(t.as_bytes(), self.token.as_bytes()) => Ok(req),
+            Some(_) if self.matches(presented) => Ok(req),
             Some(_) => Err(Status::unauthenticated("invalid token")),
             None => Err(Status::unauthenticated(
                 "missing token: send `authorization: Bearer <token>`",

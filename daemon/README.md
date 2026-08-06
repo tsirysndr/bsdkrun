@@ -1,8 +1,16 @@
-# bsdkrund — the bsdkrun gRPC daemon
+# bsdkrund — the bsdkrun daemon
 
-A token-authenticated gRPC server that drives the `bsdkrun` CLI, so a machine
-that can actually run VMs — a Linux/KVM box, bare metal, a VPS — can be
-controlled from somewhere else.
+A token-authenticated server that drives the `bsdkrun` CLI, so a machine that
+can actually run VMs — a Linux/KVM box, bare metal, a VPS — can be controlled
+from somewhere else. It speaks two protocols over the same operations:
+
+| API     | Port  | For                                                     |
+| ------- | ----- | ------------------------------------------------------- |
+| gRPC    | 50051 | The CLI, the desktop app, scripts, anything typed        |
+| GraphQL | 50052 | The web frontend — queries, mutations and subscriptions  |
+
+Both are backed by one shared operations layer, so they cannot drift in what
+commands they actually run.
 
 The daemon owns no VM logic. It resolves the `bsdkrun` binary installed beside
 it and runs it as a subprocess, so a daemon always exposes exactly the feature
@@ -70,6 +78,64 @@ $ grpcurl -plaintext -H "authorization: Bearer $BSDKRUN_TOKEN" \
     -d '{"all":true}' localhost:50051 bsdkrun.v1.Bsdkrun/ListMachines
 ```
 
+## The GraphQL API
+
+For the web frontend. Served on `--graphql-bind` (default `127.0.0.1:50052`),
+or turned off with `--no-graphql`.
+
+| Endpoint      | What                                                    |
+| ------------- | ------------------------------------------------------- |
+| `POST /graphql`   | Queries and mutations. `Authorization: Bearer <token>`  |
+| `GET /graphql`    | GraphiQL IDE — anonymous, like gRPC reflection          |
+| `/graphql/ws`     | Subscriptions over `graphql-transport-ws`               |
+| `GET /health`     | Liveness                                                |
+
+```console
+$ curl -X POST localhost:50052/graphql \
+    -H "authorization: Bearer $BSDKRUN_TOKEN" \
+    -H 'content-type: application/json' \
+    -d '{"query":"{ machines(all:true){ id name status netIp } }"}'
+```
+
+The browser cannot set headers on a WebSocket handshake, so subscriptions carry
+the same token in the `connection_init` payload instead:
+
+```js
+{ type: 'connection_init', payload: { authorization: `Bearer ${token}` } }
+```
+
+CORS is permissive. The API is gated by a bearer token that a browser will not
+attach on its own — there is no cookie or session for a hostile page to ride
+on — so same-origin policy is not what protects it, and being strict would only
+break a dev server on another port.
+
+### Interactive shells over GraphQL
+
+A GraphQL subscription only flows server→client, so there is nowhere to put
+keystrokes. A terminal is therefore assembled from three operations over one
+socket:
+
+```graphql
+mutation { openShell(machineId: "abc", rows: 40, cols: 120) { id } }
+subscription { shellOutput(sessionId: "…") { dataBase64 exitCode } }
+mutation { sendShellInput(sessionId: "…", dataBase64: "bHMK") }
+mutation { resizeShell(sessionId: "…", rows: 50, cols: 100) }
+mutation { closeShell(sessionId: "…") }
+```
+
+Bytes are base64 because a terminal emits arbitrary binary — escape sequences,
+UTF-8 split across chunk boundaries — that a GraphQL `String` would not survive.
+Feed `dataBase64` straight into xterm.js and send its `onData` back.
+
+Output is buffered from the moment the session opens. That is a correctness
+requirement, not an optimisation: the subscription is necessarily a *separate*
+operation from the mutation that opened the shell, so a prompt written in
+between would otherwise be lost before anyone was listening.
+
+Two other subscriptions exist: `machineLogs` (a machine's console, `logs -f`)
+and `machinesChanged` (a polled machine list, so a dashboard needs no timer of
+its own — the CLI has no change feed, so this genuinely polls).
+
 ### Machines are always detached
 
 The daemon outlives any single RPC, so a foreground VM would have nowhere to
@@ -131,13 +197,15 @@ $ cargo test                   # unit + end-to-end
 $ cargo clippy --all-targets -- -D warnings
 ```
 
-The e2e suite (`tests/e2e.rs`) runs a real server over a real socket against a
-**stub** `bsdkrun`. That keeps it hermetic — no hypervisor, no VM boots, no
-downloads — while letting each test assert the exact argv the service produced,
-which is the part most likely to break: the whole daemon is a translation layer
-from proto messages to command lines.
+The suites (`tests/e2e.rs` for gRPC, `tests/graphql.rs` for GraphQL) run against
+a **stub** `bsdkrun`. That keeps them hermetic — no hypervisor, no VM boots, no
+downloads — while letting each test assert the exact argv produced, which is the
+part most likely to break: the whole daemon is a translation layer from wire
+messages to command lines.
 
-CI: [`e2e-daemon.yml`](../.github/workflows/e2e-daemon.yml) runs the suite on
-macOS and Linux plus a `grpcurl` pass over the wire;
+CI: [`e2e-daemon.yml`](../.github/workflows/e2e-daemon.yml) runs both suites on
+macOS and Linux, plus an over-the-wire job — `grpcurl` for gRPC, `curl` for
+GraphQL, and a real WebSocket client driving an interactive shell through a
+subscription;
 [`release-daemon.yml`](../.github/workflows/release-daemon.yml) builds
 macOS arm64 and static musl Linux binaries for amd64 and arm64.

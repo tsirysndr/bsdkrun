@@ -239,6 +239,316 @@ fn plain_copy(src: &Path, dst: &Path, recursive: bool) -> Result<()> {
     }
 }
 
+/// The KVM device node every hardware-virtualized VM on Linux needs.
+#[cfg(target_os = "linux")]
+const KVM_DEV: &str = "/dev/kvm";
+
+/// The KVM userspace API version libkrun (and every other VMM) expects.
+/// `KVM_GET_API_VERSION` has returned 12 since Linux 2.6.22 and is stable.
+#[cfg(target_os = "linux")]
+const KVM_API_VERSION: i32 = 12;
+
+/// `_IO(KVMIO, 0x00)` — `KVM_GET_API_VERSION`, the one ioctl that's safe to
+/// issue on a bare `/dev/kvm` fd (it takes no argument and creates nothing).
+#[cfg(target_os = "linux")]
+const KVM_GET_API_VERSION: u64 = 0xAE00;
+
+/// Why `/dev/kvm` isn't usable. Kept separate from the message so the advice
+/// can be built (and tested) from host facts the probe gathers.
+#[cfg(target_os = "linux")]
+#[derive(Debug, PartialEq, Eq)]
+pub enum KvmProblem {
+    /// No device node at all — module not loaded, no virt extensions, or a
+    /// container that wasn't given the device.
+    Missing,
+    /// Something is at `/dev/kvm`, but it isn't a character device.
+    NotADevice,
+    /// The node exists but this user can't open it read-write (EACCES/EPERM).
+    Permission,
+    /// EBUSY — another hypervisor holds the CPU's virtualization extensions.
+    Busy,
+    /// Any other open(2) failure, or an ioctl that didn't come back.
+    OpenFailed(String),
+    /// It opened, but it isn't speaking the KVM API we expect.
+    ApiVersion(i32),
+}
+
+/// Verify this host can actually run a hardware-virtualized machine, so a
+/// missing/inaccessible `/dev/kvm` surfaces as one actionable sentence instead
+/// of libkrun failing deep inside `krun_create_ctx` with a bare errno.
+///
+/// A no-op on macOS, where Hypervisor.framework is gated by an entitlement
+/// rather than a device node.
+#[cfg(target_os = "linux")]
+pub fn check_kvm() -> Result<()> {
+    match probe_kvm() {
+        Ok(version) => {
+            tracing::debug!(api_version = version, "/dev/kvm is usable");
+            Ok(())
+        }
+        Err(problem) => bail!("{}", kvm_advice(&problem, &KvmFacts::gather())),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn check_kvm() -> Result<()> {
+    Ok(())
+}
+
+/// One-line summary of the KVM state for `bsdkrun probe`. `None` off Linux.
+pub fn kvm_summary() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        // The advice text already names the device, so only the ok line needs it.
+        Some(match probe_kvm() {
+            Ok(version) => format!("{KVM_DEV}: ok (KVM API version {version})"),
+            Err(problem) => kvm_advice(&problem, &KvmFacts::gather()),
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// Everything `bsdkrun kvm` reports: the verdict, plus the host facts that
+/// explain it. Gathered in one pass so the command prints a consistent picture.
+#[cfg(target_os = "linux")]
+pub struct KvmStatus {
+    pub device: &'static str,
+    /// `Ok(api_version)` when a machine can boot here.
+    pub result: std::result::Result<i32, KvmProblem>,
+    pub facts: KvmFacts,
+}
+
+#[cfg(target_os = "linux")]
+impl KvmStatus {
+    pub fn gather() -> KvmStatus {
+        KvmStatus {
+            device: KVM_DEV,
+            result: probe_kvm(),
+            facts: KvmFacts::gather(),
+        }
+    }
+
+    pub fn is_ok(&self) -> bool {
+        self.result.is_ok()
+    }
+
+    /// The fix for whatever is wrong, or `None` when nothing is.
+    pub fn advice(&self) -> Option<String> {
+        self.result
+            .as_ref()
+            .err()
+            .map(|p| kvm_advice(p, &self.facts))
+    }
+
+    /// Short verdict for the first line of the report.
+    pub fn headline(&self) -> String {
+        match &self.result {
+            Ok(v) => format!("ok (KVM API version {v})"),
+            Err(KvmProblem::Missing) => "missing".to_string(),
+            Err(KvmProblem::NotADevice) => "not a character device".to_string(),
+            Err(KvmProblem::Permission) => "permission denied".to_string(),
+            Err(KvmProblem::Busy) => "busy".to_string(),
+            Err(KvmProblem::OpenFailed(e)) => format!("unusable ({e})"),
+            Err(KvmProblem::ApiVersion(v)) => format!("unexpected API version {v}"),
+        }
+    }
+}
+
+/// Open `/dev/kvm` read-write and ask it its API version. Read-write because
+/// that's how a VMM opens it — a read-only-capable node would still fail at
+/// boot, so checking anything less would pass a host that can't run a machine.
+#[cfg(target_os = "linux")]
+fn probe_kvm() -> std::result::Result<i32, KvmProblem> {
+    probe_kvm_at(Path::new(KVM_DEV))
+}
+
+#[cfg(target_os = "linux")]
+fn probe_kvm_at(dev: &Path) -> std::result::Result<i32, KvmProblem> {
+    use std::os::unix::fs::FileTypeExt;
+    use std::os::unix::io::AsRawFd;
+
+    match std::fs::metadata(dev) {
+        Ok(md) if !md.file_type().is_char_device() => return Err(KvmProblem::NotADevice),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(KvmProblem::Missing),
+        Err(e) if e.raw_os_error() == Some(libc::EACCES) => return Err(KvmProblem::Permission),
+        Err(e) => return Err(KvmProblem::OpenFailed(e.to_string())),
+    }
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dev)
+        .map_err(|e| match e.raw_os_error() {
+            Some(libc::EACCES) | Some(libc::EPERM) => KvmProblem::Permission,
+            Some(libc::EBUSY) => KvmProblem::Busy,
+            _ => KvmProblem::OpenFailed(e.to_string()),
+        })?;
+
+    // SAFETY: a valid fd we own, and KVM_GET_API_VERSION takes no argument. The
+    // request number is arch-independent (`_IO(KVMIO, 0x00)` — verified 0xAE00
+    // on both x86_64 and aarch64 kernel headers), so this is the same on arm64.
+    let version = unsafe { libc::ioctl(file.as_raw_fd(), KVM_GET_API_VERSION as _) };
+    if version < 0 {
+        return Err(KvmProblem::OpenFailed(format!(
+            "KVM_GET_API_VERSION: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    if version != KVM_API_VERSION {
+        return Err(KvmProblem::ApiVersion(version));
+    }
+    Ok(version)
+}
+
+/// Host facts that decide *which* advice a `/dev/kvm` failure deserves —
+/// gathered once, passed in, so the message logic stays a pure function.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Default)]
+pub struct KvmFacts {
+    /// `vmx` (Intel) / `svm` (AMD) in `/proc/cpuinfo`; `None` on arm64, where
+    /// virtualization isn't advertised as a CPU flag.
+    pub cpu_virt_flag: Option<&'static str>,
+    /// A `kvm_intel` / `kvm_amd` / `kvm` module is loaded.
+    pub module_loaded: bool,
+    /// We're inside a container, so the node most likely just wasn't passed in.
+    pub in_container: bool,
+    /// Group that owns the node, and its mode — for the permission hint.
+    pub owner_group: Option<String>,
+    pub mode: Option<u32>,
+}
+
+#[cfg(target_os = "linux")]
+impl KvmFacts {
+    fn gather() -> KvmFacts {
+        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+        let (owner_group, mode) = kvm_ownership();
+        KvmFacts {
+            cpu_virt_flag: cpu_virt_flag(&cpuinfo),
+            module_loaded: ["kvm_intel", "kvm_amd", "kvm"]
+                .iter()
+                .any(|m| Path::new(&format!("/sys/module/{m}")).exists()),
+            in_container: Path::new("/.dockerenv").exists()
+                || Path::new("/run/.containerenv").exists(),
+            owner_group,
+            mode,
+        }
+    }
+}
+
+/// The virtualization flag `/proc/cpuinfo` advertises, if any. Only meaningful
+/// on x86 — arm64 kernels don't list one, so `None` there says nothing.
+#[cfg(target_os = "linux")]
+fn cpu_virt_flag(cpuinfo: &str) -> Option<&'static str> {
+    let flags = cpuinfo
+        .lines()
+        .find(|l| l.starts_with("flags") || l.starts_with("Features"))?;
+    let has = |f: &str| flags.split_whitespace().any(|w| w == f);
+    if has("vmx") {
+        Some("vmx")
+    } else if has("svm") {
+        Some("svm")
+    } else {
+        None
+    }
+}
+
+/// The owning group name and permission bits of `/dev/kvm`, for the "you're not
+/// in the right group" hint. Distros hand the node to `kvm` (Debian/Ubuntu) or
+/// `libvirt`/`wheel` (others), so quote the real one rather than guessing.
+#[cfg(target_os = "linux")]
+fn kvm_ownership() -> (Option<String>, Option<u32>) {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(md) = std::fs::metadata(KVM_DEV) else {
+        return (None, None);
+    };
+    let group = std::fs::read_to_string("/etc/group")
+        .ok()
+        .and_then(|g| group_name(&g, md.gid()));
+    (group, Some(md.mode() & 0o777))
+}
+
+/// Look a gid up in `/etc/group` contents (`name:passwd:gid:members`).
+#[cfg(target_os = "linux")]
+fn group_name(etc_group: &str, gid: u32) -> Option<String> {
+    etc_group.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        let name = fields.next()?;
+        let found: u32 = fields.nth(1)?.parse().ok()?;
+        (found == gid).then(|| name.to_string())
+    })
+}
+
+/// Turn a probe failure plus host facts into the message the user sees:
+/// what's wrong, and the specific command that fixes it on *this* host.
+#[cfg(target_os = "linux")]
+fn kvm_advice(problem: &KvmProblem, facts: &KvmFacts) -> String {
+    let x86 = cfg!(target_arch = "x86_64");
+    match problem {
+        KvmProblem::Missing => {
+            let hint = if facts.in_container {
+                "This looks like a container — start it with `--device /dev/kvm` \
+                 (and make sure the host itself has KVM)."
+                    .to_string()
+            } else if x86 && facts.cpu_virt_flag.is_none() {
+                "This CPU advertises no virtualization extensions (no `vmx`/`svm` in \
+                 /proc/cpuinfo). Enable VT-x / AMD-V in the BIOS/UEFI — or, if this \
+                 machine is itself a VM, enable nested virtualization on its host."
+                    .to_string()
+            } else if !x86 {
+                // arm64 kernels build KVM in rather than shipping a module, so
+                // modprobe advice would be wrong here: a missing node means the
+                // kernel didn't boot at EL2 (the common cause being a guest on a
+                // host without nested virtualization — GitHub's arm64 runners,
+                // and Apple silicon before M3, are exactly this).
+                "KVM is built into arm64 kernels, so a missing node means the kernel \
+                 didn't come up at EL2 — usually because this machine is itself a VM \
+                 on a host without nested virtualization. Check `dmesg | grep -i kvm`."
+                    .to_string()
+            } else if !facts.module_loaded {
+                let module = match facts.cpu_virt_flag {
+                    Some("svm") => "kvm_amd",
+                    _ => "kvm_intel",
+                };
+                format!("The KVM module isn't loaded — try `sudo modprobe {module}`.")
+            } else {
+                "The KVM module is loaded but the device node is missing — check udev \
+                 (`sudo udevadm trigger`) and `dmesg | grep -i kvm`."
+                    .to_string()
+            };
+            format!("{KVM_DEV} does not exist, so this host can't run a machine.\n{hint}")
+        }
+        KvmProblem::NotADevice => format!(
+            "{KVM_DEV} exists but is not a character device — something has replaced the \
+             KVM node. Remove it and reload the kvm module."
+        ),
+        KvmProblem::Permission => {
+            let group = facts.owner_group.as_deref().unwrap_or("kvm");
+            let mode = facts
+                .mode
+                .map(|m| format!(" (mode {m:04o}, group `{group}`)"))
+                .unwrap_or_default();
+            format!(
+                "{KVM_DEV} exists but this user can't open it read-write{mode}.\n\
+                 Join the owning group, then start a new login session:\n    \
+                 sudo usermod -aG {group} $USER\n\
+                 `newgrp {group}` picks it up in this shell without logging out."
+            )
+        }
+        KvmProblem::Busy => format!(
+            "{KVM_DEV} is busy — another hypervisor (VirtualBox, VMware) is holding the \
+             CPU's virtualization extensions. Stop it and retry."
+        ),
+        KvmProblem::OpenFailed(e) => format!("{KVM_DEV} could not be opened: {e}"),
+        KvmProblem::ApiVersion(v) => {
+            format!("{KVM_DEV} reports KVM API version {v}, but {KVM_API_VERSION} is required.")
+        }
+    }
+}
+
 /// Raise this process's open-file limit (`RLIMIT_NOFILE`) soft limit to the
 /// hard limit.
 ///
@@ -326,6 +636,110 @@ pub fn raise_fd_limit() {
         }
         lim.rlim_cur = want;
         let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &lim);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod kvm_tests {
+    use super::*;
+
+    /// A CPU with no virt extensions is the one case where no amount of
+    /// modprobe-ing helps, so it must win over the "module not loaded" advice.
+    #[test]
+    fn missing_node_on_a_cpu_without_virt_extensions_points_at_the_bios() {
+        let facts = KvmFacts {
+            cpu_virt_flag: None,
+            module_loaded: false,
+            ..KvmFacts::default()
+        };
+        let msg = kvm_advice(&KvmProblem::Missing, &facts);
+        if cfg!(target_arch = "x86_64") {
+            assert!(msg.contains("nested virtualization"), "{msg}");
+            assert!(!msg.contains("modprobe"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn missing_node_on_an_amd_host_names_the_amd_module() {
+        let facts = KvmFacts {
+            cpu_virt_flag: Some("svm"),
+            module_loaded: false,
+            ..KvmFacts::default()
+        };
+        let msg = kvm_advice(&KvmProblem::Missing, &facts);
+        if cfg!(target_arch = "x86_64") {
+            assert!(msg.contains("modprobe kvm_amd"), "{msg}");
+        }
+    }
+
+    /// In a container the node is almost never missing for a host-level
+    /// reason — it just wasn't passed through, and modprobe advice misleads.
+    #[test]
+    fn missing_node_in_a_container_says_to_pass_the_device_through() {
+        let facts = KvmFacts {
+            in_container: true,
+            cpu_virt_flag: None,
+            ..KvmFacts::default()
+        };
+        let msg = kvm_advice(&KvmProblem::Missing, &facts);
+        assert!(msg.contains("--device /dev/kvm"), "{msg}");
+    }
+
+    /// The fix is distro-specific: quote the group that actually owns the node.
+    #[test]
+    fn permission_advice_names_the_owning_group() {
+        let facts = KvmFacts {
+            owner_group: Some("libvirt".into()),
+            mode: Some(0o660),
+            ..KvmFacts::default()
+        };
+        let msg = kvm_advice(&KvmProblem::Permission, &facts);
+        assert!(msg.contains("usermod -aG libvirt"), "{msg}");
+        assert!(msg.contains("0660"), "{msg}");
+    }
+
+    /// arm64 has no loadable kvm module, so `modprobe` advice would send the
+    /// user down a dead end — the real cause is a kernel that never reached EL2.
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn missing_node_on_arm64_talks_about_el2_not_modprobe() {
+        let msg = kvm_advice(&KvmProblem::Missing, &KvmFacts::default());
+        assert!(msg.contains("EL2"), "{msg}");
+        assert!(!msg.contains("modprobe"), "{msg}");
+    }
+
+    /// Classification must not depend on a usable `/dev/kvm` — these runs on
+    /// KVM-less machines (GitHub's arm64 runners) too, so they use temp paths.
+    #[test]
+    fn probe_classifies_an_absent_node_and_a_non_device() {
+        let dir = std::env::temp_dir().join(format!("bsdkrun-kvm-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+
+        let absent = dir.join("nope");
+        assert_eq!(probe_kvm_at(&absent), Err(KvmProblem::Missing));
+
+        let regular = dir.join("regular");
+        std::fs::write(&regular, b"not a device").unwrap();
+        assert_eq!(probe_kvm_at(&regular), Err(KvmProblem::NotADevice));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn group_name_resolves_a_gid_from_etc_group() {
+        let etc = "root:x:0:\nkvm:x:104:alice\nusers:x:100:\n";
+        assert_eq!(group_name(etc, 104).as_deref(), Some("kvm"));
+        assert_eq!(group_name(etc, 999), None);
+    }
+
+    #[test]
+    fn cpu_virt_flag_reads_the_flags_line() {
+        let intel = "processor\t: 0\nflags\t\t: fpu vme vmx smx est\n";
+        let amd = "processor\t: 0\nflags\t\t: fpu vme svm npt\n";
+        let none = "processor\t: 0\nflags\t\t: fpu vme de pse\n";
+        assert_eq!(cpu_virt_flag(intel), Some("vmx"));
+        assert_eq!(cpu_virt_flag(amd), Some("svm"));
+        assert_eq!(cpu_virt_flag(none), None);
     }
 }
 

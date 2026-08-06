@@ -1,0 +1,204 @@
+name: e2e (daemon / gRPC)
+
+# The daemon is a gRPC front end over the `bsdkrun` CLI — it links no
+# hypervisor and boots nothing itself, so its tests need neither /dev/kvm nor
+# libkrun and run on ordinary runners. The Rust suite drives a real server over
+# a real socket against a stub CLI, which keeps it hermetic while still
+# asserting the exact command lines the service produces.
+#
+# Both hosts are covered because the interactive path differs between them:
+# remote shells run the CLI under a pty, and pty behaviour is where macOS and
+# Linux diverge most.
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - "daemon/**"
+      - ".github/workflows/e2e-daemon.yml"
+  push:
+    branches:
+      - "main"
+    paths:
+      - "daemon/**"
+      - ".github/workflows/e2e-daemon.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: daemon
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: daemon
+
+      # tonic-prost-build shells out to protoc to compile the .proto.
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - run: protoc --version
+
+      - name: Formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Unit tests
+        run: cargo test --lib
+
+      - name: End-to-end tests
+        run: cargo test --test e2e
+
+  # Exercises the actual shipped binary over the wire with a third-party client,
+  # which is the only way to prove the parts no Rust test touches: that
+  # reflection really is reachable *without* a token, and that the token gate
+  # really does stand in front of everything else.
+  wire:
+    name: wire protocol (grpcurl)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: daemon
+
+      - name: Install protoc and grpcurl
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          GRPCURL_VERSION=1.9.1
+          curl -fsSL -o /tmp/grpcurl.tar.gz \
+            "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/grpcurl_${GRPCURL_VERSION}_linux_x86_64.tar.gz"
+          tar -xzf /tmp/grpcurl.tar.gz -C /tmp grpcurl
+          sudo install -m 0755 /tmp/grpcurl /usr/local/bin/grpcurl
+          grpcurl --version
+
+      - name: Build the daemon
+        run: cargo build --release --bins
+
+      - name: Start the daemon against a stub CLI
+        run: |
+          set -eux
+          # A stub stands in for the real CLI: this job is about the wire
+          # protocol, not about booting VMs.
+          cat > /tmp/bsdkrun <<'EOF'
+          #!/bin/sh
+          case "$1" in
+            --version) echo "bsdkrun 9.9.9-stub" ;;
+            ps) echo '[]' ;;
+            probe) echo "probe ok" ;;
+            *) echo "unknown: $1" >&2; exit 2 ;;
+          esac
+          EOF
+          chmod +x /tmp/bsdkrun
+
+          BSDKRUN_TOKEN=ci-secret-token \
+            ./target/release/bsdkrund --bind 127.0.0.1:50077 --bsdkrun /tmp/bsdkrun \
+            > /tmp/daemon.log 2>&1 &
+          echo $! > /tmp/daemon.pid
+
+          # Wait for the listener rather than sleeping a fixed amount.
+          for _ in $(seq 1 60); do
+            if bash -c '</dev/tcp/127.0.0.1/50077' 2>/dev/null; then break; fi
+            sleep 0.5
+          done
+          bash -c '</dev/tcp/127.0.0.1/50077' 2>/dev/null || { cat /tmp/daemon.log; exit 1; }
+
+      - name: Reflection is reachable anonymously
+        run: |
+          set -eux
+          services=$(grpcurl -plaintext 127.0.0.1:50077 list)
+          echo "$services"
+          echo "$services" | grep -qx "bsdkrun.v1.Bsdkrun"
+          echo "$services" | grep -qx "grpc.health.v1.Health"
+          # Method-level detail must be discoverable too, not just names.
+          grpcurl -plaintext 127.0.0.1:50077 describe bsdkrun.v1.Bsdkrun | grep -q "rpc Exec"
+
+      - name: Health check answers without a token
+        run: |
+          set -eux
+          grpcurl -plaintext -d '{}' 127.0.0.1:50077 grpc.health.v1.Health/Check | grep -q SERVING
+
+      - name: An RPC without a token is rejected
+        run: |
+          set -eux
+          out=$(grpcurl -plaintext -d '{}' 127.0.0.1:50077 bsdkrun.v1.Bsdkrun/Info 2>&1 || true)
+          echo "$out"
+          echo "$out" | grep -q "Unauthenticated"
+
+      - name: An RPC with the wrong token is rejected
+        run: |
+          set -eux
+          out=$(grpcurl -plaintext -H 'authorization: Bearer wrong' -d '{}' \
+            127.0.0.1:50077 bsdkrun.v1.Bsdkrun/Info 2>&1 || true)
+          echo "$out"
+          echo "$out" | grep -q "Unauthenticated"
+          echo "$out" | grep -q "invalid token"
+
+      - name: An RPC with the right token succeeds
+        run: |
+          set -eux
+          grpcurl -plaintext -H 'authorization: Bearer ci-secret-token' -d '{}' \
+            127.0.0.1:50077 bsdkrun.v1.Bsdkrun/Info | tee /tmp/info.json
+          grep -q "9.9.9-stub" /tmp/info.json
+
+      - name: The x-bsdkrun-token header works too
+        run: |
+          set -eux
+          grpcurl -plaintext -H 'x-bsdkrun-token: ci-secret-token' -d '{}' \
+            127.0.0.1:50077 bsdkrun.v1.Bsdkrun/ListMachines | grep -q "{}"
+
+      # A streaming RPC over the wire: output frames arrive and the stream ends
+      # with the command's real exit code rather than hanging.
+      - name: Streaming passthrough returns output and an exit code
+        run: |
+          set -eux
+          grpcurl -plaintext -H 'authorization: Bearer ci-secret-token' \
+            -d '{"start":{"args":["probe"]}}' \
+            127.0.0.1:50077 bsdkrun.v1.Bsdkrun/Run | tee /tmp/run.json
+          grep -q '"stdout"' /tmp/run.json
+          grep -q '"exitCode": 0' /tmp/run.json
+
+      - name: A failing command propagates its exit code
+        run: |
+          set -eux
+          grpcurl -plaintext -H 'authorization: Bearer ci-secret-token' \
+            -d '{"start":{"args":["nope"]}}' \
+            127.0.0.1:50077 bsdkrun.v1.Bsdkrun/Run | tee /tmp/fail.json
+          grep -q '"exitCode": 2' /tmp/fail.json
+
+      - name: Stop the daemon
+        if: always()
+        run: |
+          [ -f /tmp/daemon.pid ] && kill "$(cat /tmp/daemon.pid)" 2>/dev/null || true
+          echo "--- daemon log ---"
+          cat /tmp/daemon.log || true

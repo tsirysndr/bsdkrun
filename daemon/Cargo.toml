@@ -1,0 +1,59 @@
+[package]
+name = "bsdkrun-daemon"
+version = "0.1.0"
+edition = "2021"
+description = "Token-authenticated gRPC daemon that drives the bsdkrun CLI (for remote VPS / bare-metal KVM hosts)"
+
+# Standalone crate — built on demand, deliberately not part of the root bsdkrun
+# build so the CLI's release flow keeps its small dependency tree. Mirrors how
+# `agent/` opts out.
+[workspace]
+
+# The generated client is exported as a library so the CLI and the desktop app
+# can link it and talk to a remote daemon instead of forking a local CLI.
+[lib]
+name = "bsdkrun_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bsdkrund"
+path = "src/main.rs"
+
+[build-dependencies]
+tonic-prost-build = "0.14"
+
+[dependencies]
+tonic = { version = "0.14", features = ["router", "transport", "tls-ring", "tls-native-roots", "gzip"] }
+tonic-prost = "0.14"
+tonic-health = "0.14"
+tonic-reflection = "0.14"
+prost = "0.14"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "process",
+    "io-util",
+    "net",
+    "sync",
+    "time",
+    "signal",
+] }
+tokio-stream = { version = "0.1", features = ["net"] }
+# Interactive Exec/Attach needs a real pty on the daemon host, the same way the
+# desktop app drives `bsdkrun shell` locally.
+portable-pty = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+which = "6"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+strip = true

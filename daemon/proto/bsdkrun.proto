@@ -1,0 +1,521 @@
+// The bsdkrun daemon API.
+//
+// The daemon is a thin, authenticated gRPC front end over the `bsdkrun` CLI: it
+// drives the very same binary a local user would, so a remote KVM/bare-metal
+// host exposes exactly the feature set of the CLI installed on it. Nothing here
+// replaces the CLI — talking to a daemon is always opt-in, and every operation
+// remains available by running `bsdkrun` directly on the host.
+//
+// Two layers are offered:
+//
+//   * Typed RPCs for the surface clients actually program against (machines,
+//     images, volumes, networks, flavors, lifecycle, exec, logs). These parse
+//     the CLI's `--json` output into real messages.
+//   * A generic `Run` passthrough that forwards an argv to the CLI and streams
+//     the result. It covers the long tail (probe/kernel/firmware/grow/store/…)
+//     and any subcommand added to the CLI after this proto was written, so a
+//     client is never blocked waiting for the daemon to catch up.
+//
+// Every RPC requires a bearer token (see the `authorization` metadata header).
+
+syntax = "proto3";
+
+package bsdkrun.v1;
+
+// ---------------------------------------------------------------------------
+// Common
+// ---------------------------------------------------------------------------
+
+// One frame of a streamed subprocess. A stream ends with exactly one
+// `exit_code` frame unless it is aborted by an error status.
+message OutputChunk {
+  oneof payload {
+    bytes stdout = 1;
+    bytes stderr = 2;
+    int32 exit_code = 3;
+  }
+}
+
+// The collected result of a short, non-streaming command.
+message CommandResult {
+  int32 exit_code = 1;
+  string stdout = 2;
+  string stderr = 3;
+}
+
+// vCPU / memory sizing, shared by every boot RPC.
+message VmConfig {
+  // vCPUs (default 1 when unset or 0).
+  uint32 cpus = 1;
+  // Guest RAM in MiB (default 512 when unset or 0).
+  uint32 mem = 2;
+}
+
+// User-mode networking, shared by every boot RPC.
+message NetConfig {
+  // Boot with no NIC at all. Incompatible with `ports`.
+  bool no_net = 1;
+  // Host->guest TCP forwards, each "HOST:GUEST" (e.g. "2222:22").
+  repeated string ports = 2;
+  // Guest NIC MAC, "AA:BB:CC:DD:EE:FF".
+  optional string mac = 3;
+  // Global network to join, so members reach each other by IP and name.
+  optional string network = 4;
+  // Machine name (its DNS name on a network; shown in ListMachines).
+  optional string name = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Machines
+// ---------------------------------------------------------------------------
+
+message Machine {
+  string id = 1;
+  optional string name = 2;
+  string image = 3;
+  string kind = 4;
+  string command = 5;
+  string status = 6;
+  bool running = 7;
+  optional int64 exit_code = 8;
+  optional int64 pid = 9;
+  bool detached = 10;
+  optional int64 cpus = 11;
+  optional int64 mem = 12;
+  optional string volume = 13;
+  optional string state_dir = 14;
+  optional string created_at = 15;
+  optional string finished_at = 16;
+  optional string network = 17;
+  optional string net_ip = 18;
+}
+
+message ListMachinesRequest {
+  // Include stopped machines (the CLI's `ps -a`).
+  bool all = 1;
+}
+
+message ListMachinesResponse {
+  repeated Machine machines = 1;
+}
+
+// Machine id or name. A unique id prefix is enough, exactly as on the CLI.
+message MachineRequest {
+  string id = 1;
+}
+
+message RemoveMachinesRequest {
+  repeated string ids = 1;
+  // Stop running machines first instead of refusing.
+  bool force = 2;
+}
+
+message UpdateMachineRequest {
+  string id = 1;
+  // New vCPU count. Takes effect on the next Start.
+  optional uint32 cpus = 2;
+  // New guest RAM in MiB. Takes effect on the next Start.
+  optional uint32 mem = 3;
+}
+
+message CommitRequest {
+  string id = 1;
+  // Name for the new flavor.
+  string name = 2;
+  string description = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Booting
+//
+// Daemon-launched machines are always detached: the daemon outlives any one
+// RPC, so a foreground VM would have nowhere to live. Each boot RPC returns the
+// new machine id; use Logs to watch it come up and Attach for a shell.
+// ---------------------------------------------------------------------------
+
+message RunResponse {
+  string id = 1;
+}
+
+message RunLinuxRequest {
+  // OCI reference, e.g. "alpine", "alpine:3.20", "ghcr.io/owner/name:tag".
+  string image = 1;
+  VmConfig vm = 2;
+  NetConfig net = 3;
+  // Persist the rootfs to a named volume that survives reboots.
+  optional string volume = 4;
+  // Host directories bind-mounted over virtio-fs, each "HOST:GUEST[:ro]".
+  repeated string mounts = 5;
+  // Environment for the guest, each "K=V".
+  repeated string env = 6;
+  // Override the image entrypoint.
+  optional string entrypoint = 7;
+  // Boot from an initramfs instead of serving the rootfs over virtio-fs.
+  bool initramfs = 8;
+  // Kernel to boot: a host path to an ELF vmlinux or raw arm64 Image.
+  optional string kernel = 9;
+  // vmlinux-builder release to download (ignored when `kernel` is set).
+  optional string kernel_version = 10;
+  // Guest console device the kernel logs to (default "hvc0").
+  optional string console = 11;
+  // Clone this git repo into the guest after boot.
+  optional string repo = 12;
+  // Command to run instead of the image's default Cmd.
+  repeated string command = 13;
+}
+
+// `freebsd` / `netbsd`.
+enum BsdOs {
+  BSD_OS_UNSPECIFIED = 0;
+  BSD_OS_FREEBSD = 1;
+  BSD_OS_NETBSD = 2;
+}
+
+message RunBsdRequest {
+  BsdOs os = 1;
+  // Release to run: FreeBSD "15.1", NetBSD "10.1" or "current". Default latest.
+  optional string version = 2;
+  VmConfig vm = 3;
+  NetConfig net = 4;
+  optional string volume = 5;
+  // Boot the base image in place instead of a per-machine CoW clone.
+  bool persist = 6;
+  // Re-download even if the image is cached.
+  bool force = 7;
+  // UEFI firmware path (default: krunkit's KRUN_EFI, auto-located).
+  optional string firmware = 8;
+  // Extra virtio-blk disks, each "PATH[:ro]".
+  repeated string attach_disk = 9;
+  // Grow the root disk before boot, e.g. "8G". Only enlarges.
+  optional string disk_size = 10;
+  // Clone this git repo into the guest after boot.
+  optional string repo = 11;
+  // Command to run in the guest via its agent once booted.
+  repeated string command = 12;
+}
+
+// ---------------------------------------------------------------------------
+// Images / fetching
+// ---------------------------------------------------------------------------
+
+message Image {
+  string id = 1;
+  string reference = 2;
+  optional string digest = 3;
+  int64 size = 4;
+  optional string rootfs = 5;
+  optional string created_at = 6;
+}
+
+message ListImagesRequest {}
+
+message ListImagesResponse {
+  repeated Image images = 1;
+}
+
+message FetchRequest {
+  BsdOs os = 1;
+  optional string version = 2;
+  // Directory (on the daemon host) to link the cached image into.
+  optional string dir = 3;
+  bool force = 4;
+}
+
+message ListVersionsRequest {
+  BsdOs os = 1;
+}
+
+message Version {
+  string version = 1;
+  bool latest = 2;
+}
+
+message ListVersionsResponse {
+  repeated Version versions = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Volumes
+// ---------------------------------------------------------------------------
+
+message Volume {
+  string name = 1;
+  optional string guest = 2;
+  optional string base = 3;
+  optional string path = 4;
+  // Human-readable on-disk size, e.g. "2.3 GiB". The CLI reports volume size
+  // as text rather than a byte count, and unset when it cannot be measured.
+  optional string size = 5;
+  optional string created_at = 6;
+  bool tracked = 7;
+}
+
+message ListVolumesRequest {}
+
+message ListVolumesResponse {
+  repeated Volume volumes = 1;
+}
+
+message RemoveVolumesRequest {
+  repeated string names = 1;
+  // Remove even if a running machine is using the volume.
+  bool force = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Networks
+// ---------------------------------------------------------------------------
+
+message Network {
+  string name = 1;
+  string subnet = 2;
+  string gateway = 3;
+  int64 members = 4;
+  int64 running = 5;
+  bool up = 6;
+  optional string created_at = 7;
+}
+
+message ListNetworksRequest {}
+
+message ListNetworksResponse {
+  repeated Network networks = 1;
+}
+
+message CreateNetworkRequest {
+  string name = 1;
+}
+
+message RemoveNetworksRequest {
+  repeated string names = 1;
+  // Remove even with running members.
+  bool force = 2;
+}
+
+message ConnectNetworkRequest {
+  // Machine id or name.
+  string machine = 1;
+  string network = 2;
+}
+
+message DisconnectNetworkRequest {
+  string machine = 1;
+}
+
+message SyncNetworkRequest {
+  string network = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Flavors
+// ---------------------------------------------------------------------------
+
+message Flavor {
+  string name = 1;
+  // "catalog" | "user" | "snapshot".
+  string source = 2;
+  // "linux" | "freebsd" | "netbsd".
+  string kind = 3;
+  string base = 4;
+  string category = 5;
+  // "docker" | "nix" | "system" | "snapshot".
+  string method = 6;
+  string description = 7;
+  repeated string ports = 8;
+  repeated string nix = 9;
+  optional string created_at = 10;
+}
+
+message ListFlavorsRequest {}
+
+message ListFlavorsResponse {
+  repeated Flavor flavors = 1;
+}
+
+message RunFlavorRequest {
+  string name = 1;
+  VmConfig vm = 2;
+  // Extra host->guest forwards on top of the flavor's defaults, "HOST:GUEST".
+  repeated string ports = 3;
+  optional string volume = 4;
+  optional string repo = 5;
+}
+
+message AddFlavorRequest {
+  string name = 1;
+  // An OCI ref (e.g. "node:22"), or "freebsd" / "netbsd".
+  string base = 2;
+  string category = 3;
+  string description = 4;
+  repeated string ports = 5;
+  repeated string env = 6;
+  repeated string nix = 7;
+  // Provisioning commands run in the guest after boot, in order.
+  repeated string provision = 8;
+}
+
+message RemoveFlavorsRequest {
+  repeated string names = 1;
+  bool force = 2;
+}
+
+message BuildFlavorRequest {
+  string name = 1;
+  VmConfig vm = 2;
+  // Rebuild even if a cached build exists.
+  bool force = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Guest interaction
+// ---------------------------------------------------------------------------
+
+// The first message on an Exec stream must be `start`; every later message
+// carries stdin bytes or a terminal resize.
+message ExecInput {
+  oneof payload {
+    ExecStart start = 1;
+    bytes stdin = 2;
+    Resize resize = 3;
+    // Close the guest command's stdin (EOF).
+    bool stdin_eof = 4;
+  }
+}
+
+message ExecStart {
+  string id = 1;
+  // Command and arguments. Empty means "open the machine's shell" (the CLI's
+  // `shell` subcommand), which always implies a TTY.
+  repeated string command = 2;
+  // Environment for the command, each "K=V".
+  repeated string env = 3;
+  // Allocate a pseudo-TTY, like `docker exec -it`.
+  bool tty = 4;
+  // Initial terminal size; only meaningful with `tty`.
+  Resize size = 5;
+}
+
+message Resize {
+  uint32 rows = 1;
+  uint32 cols = 2;
+}
+
+message LogsRequest {
+  string id = 1;
+  // Follow the live console output.
+  bool follow = 2;
+  // Show bsdkrun's own boot log instead of the guest console.
+  bool boot = 3;
+}
+
+// `ssh` / `tailscale` / `systemd` share a shape: an id plus a verb and its
+// arguments, handed to the in-guest agent.
+enum GuestTool {
+  GUEST_TOOL_UNSPECIFIED = 0;
+  GUEST_TOOL_SSH = 1;
+  GUEST_TOOL_TAILSCALE = 2;
+  GUEST_TOOL_SYSTEMD = 3;
+}
+
+message GuestToolRequest {
+  string id = 1;
+  GuestTool tool = 2;
+  // The action and its arguments, e.g. ["setup", "--user", "root"].
+  repeated string args = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Generic passthrough
+// ---------------------------------------------------------------------------
+
+// The first message must be `start`; later messages carry stdin or a resize.
+message RunInput {
+  oneof payload {
+    RunStart start = 1;
+    bytes stdin = 2;
+    Resize resize = 3;
+    bool stdin_eof = 4;
+  }
+}
+
+// Forward an argv straight to the CLI. `args` excludes the program name, so
+// `bsdkrun ps -a --json` is ["ps", "-a", "--json"].
+message RunStart {
+  repeated string args = 1;
+  bool tty = 2;
+  Resize size = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Daemon itself
+// ---------------------------------------------------------------------------
+
+message InfoRequest {}
+
+message InfoResponse {
+  // The daemon's own version.
+  string daemon_version = 1;
+  // `bsdkrun --version` on the daemon host.
+  string cli_version = 2;
+  // Resolved path to the CLI the daemon drives.
+  string cli_path = 3;
+  // Host OS ("macos" | "linux" | …) and architecture.
+  string os = 4;
+  string arch = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Service
+// ---------------------------------------------------------------------------
+
+service Bsdkrun {
+  // -- daemon ---------------------------------------------------------------
+  rpc Info(InfoRequest) returns (InfoResponse);
+
+  // -- machines -------------------------------------------------------------
+  rpc ListMachines(ListMachinesRequest) returns (ListMachinesResponse);
+  rpc Start(MachineRequest) returns (CommandResult);
+  rpc Stop(MachineRequest) returns (CommandResult);
+  rpc RemoveMachines(RemoveMachinesRequest) returns (CommandResult);
+  rpc UpdateMachine(UpdateMachineRequest) returns (CommandResult);
+  rpc Commit(CommitRequest) returns (CommandResult);
+  rpc UpdateAgent(MachineRequest) returns (stream OutputChunk);
+
+  // -- booting --------------------------------------------------------------
+  rpc RunLinux(RunLinuxRequest) returns (RunResponse);
+  rpc RunBsd(RunBsdRequest) returns (RunResponse);
+  rpc RunFlavor(RunFlavorRequest) returns (RunResponse);
+
+  // -- images ---------------------------------------------------------------
+  rpc ListImages(ListImagesRequest) returns (ListImagesResponse);
+  rpc Fetch(FetchRequest) returns (stream OutputChunk);
+  rpc ListVersions(ListVersionsRequest) returns (ListVersionsResponse);
+
+  // -- volumes --------------------------------------------------------------
+  rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
+  rpc RemoveVolumes(RemoveVolumesRequest) returns (CommandResult);
+
+  // -- networks -------------------------------------------------------------
+  rpc ListNetworks(ListNetworksRequest) returns (ListNetworksResponse);
+  rpc CreateNetwork(CreateNetworkRequest) returns (CommandResult);
+  rpc RemoveNetworks(RemoveNetworksRequest) returns (CommandResult);
+  rpc ConnectNetwork(ConnectNetworkRequest) returns (CommandResult);
+  rpc DisconnectNetwork(DisconnectNetworkRequest) returns (CommandResult);
+  rpc SyncNetwork(SyncNetworkRequest) returns (CommandResult);
+
+  // -- flavors --------------------------------------------------------------
+  rpc ListFlavors(ListFlavorsRequest) returns (ListFlavorsResponse);
+  rpc AddFlavor(AddFlavorRequest) returns (CommandResult);
+  rpc RemoveFlavors(RemoveFlavorsRequest) returns (CommandResult);
+  rpc BuildFlavor(BuildFlavorRequest) returns (stream OutputChunk);
+
+  // -- guest interaction ----------------------------------------------------
+  rpc Exec(stream ExecInput) returns (stream OutputChunk);
+  rpc Logs(LogsRequest) returns (stream OutputChunk);
+  rpc GuestToolCall(GuestToolRequest) returns (stream OutputChunk);
+
+  // -- everything else ------------------------------------------------------
+  // Escape hatch: forwards an argv to the CLI verbatim. Covers probe, kernel,
+  // firmware, grow, store, and any subcommand newer than this proto.
+  rpc Run(stream RunInput) returns (stream OutputChunk);
+}

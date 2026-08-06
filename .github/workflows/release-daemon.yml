@@ -1,0 +1,127 @@
+name: release (bsdkrund)
+
+# Builds the gRPC daemon for macOS and Linux on both architectures.
+#
+# Unlike the CLI, the daemon links no libkrun: it drives the `bsdkrun` binary
+# already installed on the host as a subprocess. That makes this a plain Rust
+# build with no hypervisor dependency, so no libkrunfw kernel compile and no
+# per-arch native library juggling.
+#
+# Linux targets are musl, so the artifacts are statically linked and run on any
+# distro a user might have on a VPS or bare-metal box — glibc builds from a
+# 24.04 runner would refuse to start on anything older.
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "bsdkrund-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish assets to (e.g. v0.5.3). Leave empty to only produce workflow artifacts."
+        required: false
+        default: ""
+
+permissions:
+  contents: write # create the release and upload assets
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS is Apple Silicon only, matching the bsdkrun CLI release —
+          # the CLI needs an arm64 host for libkrun, so an Intel daemon would
+          # have no CLI to drive.
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            os: darwin
+          # Linux: native runners per arch, so `ring`'s C code is compiled by a
+          # musl toolchain for the arch it will actually run on.
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            os: linux
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            os: linux
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: daemon
+          key: ${{ matrix.target }}
+
+      # tonic-prost-build shells out to protoc to compile the .proto.
+      - name: Install protoc (Linux)
+        if: matrix.os == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler musl-tools
+
+      - name: Install protoc (macOS)
+        if: matrix.os == 'darwin'
+        run: brew install protobuf
+
+      - name: Build
+        working-directory: daemon
+        run: cargo build --release --bin bsdkrund --target ${{ matrix.target }}
+
+      # A statically linked binary must not have an interpreter or NEEDED
+      # entries; catching that here beats discovering it on someone's server.
+      - name: Verify the Linux binary is static
+        if: matrix.os == 'linux'
+        working-directory: daemon
+        run: |
+          set -eux
+          bin=target/${{ matrix.target }}/release/bsdkrund
+          file "$bin"
+          if ldd "$bin" 2>&1 | grep -qv "not a dynamic executable"; then
+            echo "expected a static binary, but it has dynamic dependencies:"
+            ldd "$bin" || true
+            exit 1
+          fi
+
+      # Every target is built on a runner of its own architecture, so the
+      # artifact can simply be run.
+      - name: Smoke-test the binary
+        working-directory: daemon
+        run: ./target/${{ matrix.target }}/release/bsdkrund --version
+
+      - name: Package
+        working-directory: daemon
+        run: |
+          set -eux
+          mkdir -p dist
+          # tar preserves the exec bit; the name matches the CLI's convention.
+          tar -C "target/${{ matrix.target }}/release" \
+            -czf "dist/bsdkrund-${{ matrix.target }}.tar.gz" bsdkrund
+          # Per-tarball checksum sidecar, mirroring the bsdkrun release layout.
+          ( cd dist && shasum -a 256 "bsdkrund-${{ matrix.target }}.tar.gz" \
+              > "bsdkrund-${{ matrix.target }}.tar.gz.sha256" )
+          cat "dist/bsdkrund-${{ matrix.target }}.tar.gz.sha256"
+
+      # Always produced, so a manual run without a tag is still useful.
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bsdkrund-${{ matrix.target }}
+          path: daemon/dist/*
+
+      - name: Publish release assets
+        if: ${{ startsWith(github.ref, 'refs/tags/') || inputs.tag != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
+          files: daemon/dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

@@ -87,8 +87,8 @@ your terminal (raw mode)              daemon host (VPS / bare metal)
   ├─► stdin bytes ─────────────────────►│   ↕                    │
   ├─► Resize{rows, cols}  (SIGWINCH) ──►│ `bsdkrun shell <id>`   │ ← sees a real tty
   │                                     │   ↕ guest agent        │
-  ◄── stdout bytes ────────────────────┤ guest shell            │
-  ◄── exit_code ───────────────────────└────────────────────────┘
+  ◄── stdout bytes ─────────────────────┤ guest shell            │
+  ◄── exit_code ────────────────────────└────────────────────────┘
         one HTTP/2 bidi stream, TLS + bearer token
 ```
 

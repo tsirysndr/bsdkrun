@@ -46,8 +46,8 @@ pub const DEFAULT_COLS: u16 = 80;
 /// has nothing more to send half-closes its half of the stream, which drops
 /// this handle while the session is still running and producing output — so
 /// killing the child here would cut every non-interactive call short. Cleanup
-/// is driven from the other end instead: a watchdog kills the CLI when the
-/// client stops reading the response stream (a disconnect or cancelled RPC).
+/// is driven from the other end instead: [`SessionStream`] kills the CLI when
+/// it is dropped, i.e. when the client stops reading the response stream.
 pub struct PtySession {
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     input: mpsc::UnboundedSender<SessionInput>,
@@ -83,9 +83,9 @@ impl PtySession {
         if std::env::var_os("TERM").is_none() {
             cmd.env("TERM", "xterm-256color");
         }
-        if let Some(dir) = dirs_home() {
-            cmd.cwd(dir);
-        }
+        // Always set this — see session_cwd() for why leaving it unset is not
+        // the same as letting portable-pty pick.
+        cmd.cwd(session_cwd());
 
         let mut child = pair
             .slave
@@ -223,8 +223,94 @@ impl Drop for SessionStream {
     }
 }
 
-/// The daemon's home directory, so the CLI resolves `~/.bsdkrun` state the same
-/// way it would for an interactive login as that user.
-fn dirs_home() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(std::path::PathBuf::from)
+/// A working directory for the session that is guaranteed to exist.
+///
+/// Starting in `HOME` matches what an interactive login would do, so relative
+/// host paths resolve somewhere predictable rather than wherever the daemon
+/// happened to be started.
+///
+/// This must always return *something*, and it is not enough to simply leave
+/// the cwd unset: portable-pty falls back to `$HOME` on its own, and that
+/// fallback is unchecked —
+///
+/// ```text
+/// let dir = self.cwd.as_ref().filter(|d| Path::new(d).is_dir())
+///               .unwrap_or(home.as_ref());   // no is_dir check
+/// ```
+///
+/// so a `HOME` that does not exist becomes the child's cwd and the spawn fails
+/// with ENOENT. Daemons hit this easily: Nix's build sandbox sets
+/// `/homeless-shelter`, and service managers often set something equally
+/// notional. It surfaced as every interactive session failing with
+/// "spawning bsdkrun under a pty: No such file or directory".
+fn session_cwd() -> std::path::PathBuf {
+    session_cwd_from(std::env::var_os("HOME"), std::env::current_dir().ok())
+}
+
+fn session_cwd_from(
+    home: Option<std::ffi::OsString>,
+    cwd: Option<std::path::PathBuf>,
+) -> std::path::PathBuf {
+    home.map(std::path::PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| cwd.filter(|p| p.is_dir()))
+        // Root is the last resort because it is the one directory that is
+        // always there. A session started there still works; a session that
+        // cannot start at all does not.
+        .unwrap_or_else(|| std::path::PathBuf::from("/"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefers_a_real_home() {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        assert_eq!(
+            session_cwd_from(
+                Some(home.path().as_os_str().to_owned()),
+                Some(cwd.path().to_path_buf())
+            ),
+            home.path()
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_cwd_when_home_does_not_exist() {
+        let cwd = tempfile::tempdir().unwrap();
+        assert_eq!(
+            session_cwd_from(
+                Some("/nonexistent-homeless-shelter".into()),
+                Some(cwd.path().to_path_buf())
+            ),
+            cwd.path()
+        );
+    }
+
+    /// The case that broke the Nix build: a bogus HOME and no usable cwd.
+    #[test]
+    fn falls_back_to_root_when_nothing_else_exists() {
+        assert_eq!(
+            session_cwd_from(
+                Some("/nonexistent-homeless-shelter".into()),
+                Some(std::path::PathBuf::from("/also-not-there"))
+            ),
+            std::path::PathBuf::from("/")
+        );
+        assert_eq!(session_cwd_from(None, None), std::path::PathBuf::from("/"));
+    }
+
+    /// A regular file is not somewhere a process can start.
+    #[test]
+    fn rejects_a_home_that_is_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-a-dir");
+        std::fs::write(&file, b"").unwrap();
+        assert_eq!(
+            session_cwd_from(Some(file.into_os_string()), None),
+            std::path::PathBuf::from("/")
+        );
+    }
 }

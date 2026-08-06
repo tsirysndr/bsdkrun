@@ -131,6 +131,49 @@ struct Req {
     env: Vec<Vec<u8>>,
 }
 
+/// The effective user's home directory according to the passwd database, or
+/// `None` if it has nothing useful to say.
+///
+/// Resolved once: it cannot change while we run, and this is on the path of
+/// every spawned command. `getpwuid_r` rather than `getpwuid` because we serve
+/// connections from several tokio worker threads and `getpwuid` hands back a
+/// shared static buffer.
+fn passwd_home() -> Option<&'static str> {
+    static HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        // SAFETY: getpwuid_r writes only into the buffers we hand it, and we
+        // check its return value plus the result pointer before reading.
+        unsafe {
+            let mut pwd: libc::passwd = std::mem::zeroed();
+            let mut buf = vec![0 as libc::c_char; 1024];
+            let mut result: *mut libc::passwd = std::ptr::null_mut();
+            if libc::getpwuid_r(
+                libc::geteuid(),
+                &mut pwd,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut result,
+            ) != 0
+                || result.is_null()
+                || pwd.pw_dir.is_null()
+            {
+                return None;
+            }
+            let dir = std::ffi::CStr::from_ptr(pwd.pw_dir)
+                .to_string_lossy()
+                .into_owned();
+            // `/` is what we are trying to get away from, so treat it as no
+            // answer rather than replacing one useless value with the same one.
+            if dir.is_empty() || dir == "/" {
+                None
+            } else {
+                Some(dir)
+            }
+        }
+    })
+    .as_deref()
+}
+
 /// Build a `std::process::Command` from the request's argv + env (env is applied
 /// on top of the agent's own environment).
 fn build_command(req: &Req) -> std::process::Command {
@@ -141,6 +184,30 @@ fn build_command(req: &Req) -> std::process::Command {
     for kv in &req.env {
         if let Some(pos) = kv.iter().position(|&b| b == b'=') {
             cmd.env(os_str(&kv[..pos]), os_str(&kv[pos + 1..]));
+        }
+    }
+
+    // Give the child a real HOME when what we inherited is useless.
+    //
+    // BSD guests boot their own init, so this agent is started by rc(8) — which
+    // runs with HOME=/ — and every command we spawn would inherit that, even
+    // though /etc/passwd records root's home as /root on both FreeBSD and
+    // NetBSD. The symptom is subtle: tools write dotfiles into /, and anything
+    // that checks $HOME ownership complains. Linux guests are unaffected either
+    // way, because there bsdkrun generates /init and exports HOME itself.
+    //
+    // A caller-supplied HOME (`-e HOME=…`) always wins, and so does any sane
+    // value we inherited — this only fills a vacuum.
+    let caller_set_home = req.env.iter().any(|kv| kv.starts_with(b"HOME="));
+    if !caller_set_home {
+        let inherited = std::env::var_os("HOME");
+        let unusable = inherited
+            .as_deref()
+            .is_none_or(|h| h.is_empty() || h == "/");
+        if unusable {
+            if let Some(home) = passwd_home() {
+                cmd.env("HOME", home);
+            }
         }
     }
     cmd

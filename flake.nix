@@ -109,14 +109,27 @@
         # bsdkrun itself it builds purely on every system, darwin included, and
         # needs no `--impure` and no Homebrew.
         daemonArgs = {
-          src = craneLib.cleanCargoSource ./daemon;
+          # NOT `cleanCargoSource`: that keeps only Rust and Cargo files, which
+          # drops proto/bsdkrun.proto and leaves the build script failing with
+          # "Could not make proto path relative". Keep .proto files too.
+          src = lib.cleanSourceWith {
+            src = ./daemon;
+            name = "source";
+            filter = path: type:
+              (builtins.match ".*\\.proto$" path != null)
+              || (craneLib.filterCargoSources path type);
+          };
           pname = "bsdkrund";
           version = "0.1.0";
           strictDeps = true;
 
           # tonic-prost-build shells out to protoc to compile the .proto.
+          # PROTOC_INCLUDE isn't needed today (nothing imports a well-known
+          # type), but without it the first `import "google/protobuf/*.proto"`
+          # would fail only under Nix, which is a confusing way to find out.
           nativeBuildInputs = [ pkgs.protobuf ];
           PROTOC = "${pkgs.protobuf}/bin/protoc";
+          PROTOC_INCLUDE = "${pkgs.protobuf}/include";
         };
 
         daemonArtifacts = craneLib.buildDepsOnly daemonArgs;

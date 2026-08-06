@@ -131,6 +131,18 @@ jobs:
       - name: Build bsdkrun
         run: cargo build --release
 
+      # The KVM readiness check every boot runs implicitly. Asserting it here
+      # ties it to a runner that genuinely has a working /dev/kvm — the success
+      # path can't be exercised on the arm64 runners, which have no KVM at all.
+      - name: bsdkrun kvm — host readiness check
+        run: |
+          set -eux
+          ./target/release/bsdkrun kvm
+          ./target/release/bsdkrun kvm --json
+          # It must agree with reality: exit 0 here, and report the API version.
+          ./target/release/bsdkrun kvm --json | grep -q '"ok": true'
+          ./target/release/bsdkrun kvm --json | grep -q '"api_version": 12'
+
       - name: Build guest agent (static musl)
         run: |
           set -eux

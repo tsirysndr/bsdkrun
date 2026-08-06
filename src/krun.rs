@@ -157,6 +157,9 @@ pub struct Ctx {
 
 impl Ctx {
     pub fn new() -> anyhow::Result<Self> {
+        // Every boot path funnels through here, so this is where a host without
+        // usable KVM gets told *why* instead of an opaque libkrun errno.
+        crate::host::check_kvm()?;
         let id = unsafe { krun_create_ctx() };
         let id = check(id, "krun_create_ctx")?;
         Ok(Ctx {

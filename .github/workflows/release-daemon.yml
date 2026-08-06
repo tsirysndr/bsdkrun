@@ -106,8 +106,21 @@ jobs:
           set -eux
           bin=target/${{ matrix.target }}/release/bsdkrund
           file "$bin"
-          if ldd "$bin" 2>&1 | grep -qv "not a dynamic executable"; then
-            echo "expected a static binary, but it has dynamic dependencies:"
+
+          # Assert on `file`, which reports "dynamically linked" only for a
+          # binary that has an interpreter. Matching ldd's static wording
+          # instead is not portable: glibc's ldd prints "not a dynamic
+          # executable" while musl's prints "statically linked".
+          if file "$bin" | grep -q "dynamically linked"; then
+            echo "::error::expected a static binary, but it is dynamically linked"
+            exit 1
+          fi
+
+          # Belt and braces: a static binary maps no shared objects, so ldd
+          # lists no "=>" lines. (ldd exits non-zero on a static binary, which
+          # is why this is only ever read through grep.)
+          if ldd "$bin" 2>&1 | grep -q "=>"; then
+            echo "::error::expected a static binary, but it maps shared objects:"
             ldd "$bin" || true
             exit 1
           fi

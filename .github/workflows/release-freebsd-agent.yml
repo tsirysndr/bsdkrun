@@ -1,0 +1,113 @@
+name: Release (FreeBSD agent)
+
+# Rebuild the FreeBSD guest agents and attach them to an existing GitHub
+# release, without cutting a new version. Use this when an agent-side fix
+# needs to reach FreeBSD guests: `bsdkrun agent update <id>` pulls the binary
+# straight from the release, so republishing here is what actually ships it.
+#
+# Unlike the NetBSD agent, these cross-compile — zig has a FreeBSD libc — so
+# this runs on a normal Linux runner in a couple of minutes instead of inside
+# an emulated VM. The FreeBSD targets are tier 3, hence nightly + rust-src to
+# build the standard library from source (`-Z build-std`).
+#
+# The tag-release path (release.yml) already builds these on a version tag.
+# This workflow is for everything in between.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach the FreeBSD agents to (e.g. v0.5.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write # upload assets to the release
+
+jobs:
+  build:
+    name: freebsd agents (aarch64 + x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # Deliberately no `ref:` — build the CURRENT branch's agent; the `tag`
+        # input only says which release to attach to. Building the tag's code
+        # instead would silently republish the very binary you are trying to
+        # replace. (The NetBSD workflow learned this the hard way.)
+        uses: actions/checkout@v4
+
+      # Tier-3 targets have no prebuilt std, so `make agent-freebsd` passes
+      # `-Z build-std` — which needs nightly and rust-src.
+      - name: Rust nightly (+ rust-src for build-std)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Cache cargo + build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent -> agent/target
+
+      # cargo-zigbuild + zig (via the pip ziglang package, version-matched) —
+      # same install the tag release uses.
+      - name: Install zig + cargo-zigbuild
+        run: |
+          python3 -m venv "$HOME/.zb"
+          "$HOME/.zb/bin/pip" install --upgrade pip
+          "$HOME/.zb/bin/pip" install cargo-zigbuild ziglang
+          echo "$HOME/.zb/bin" >> "$GITHUB_PATH"
+
+      - name: Build the FreeBSD agents
+        run: make agent-freebsd
+
+      # A cross-build that silently produced the wrong OS or arch still exits 0
+      # and still uploads, and the failure only shows up as a guest that will
+      # not exec. Assert what we actually built before it goes anywhere.
+      - name: Verify the binaries
+        run: |
+          set -eux
+          mkdir -p dist
+          for slug in aarch64 x86_64; do
+            bin="src/agent-bin/bsdkrun-agent.freebsd-$slug"
+            test -s "$bin"
+            file "$bin"
+            file "$bin" | grep -q FreeBSD
+            case "$slug" in
+              aarch64) file "$bin" | grep -qi "ARM aarch64" ;;
+              x86_64)  file "$bin" | grep -qi "x86-64" ;;
+            esac
+            cp "$bin" dist/
+          done
+          ( cd dist && shasum -a 256 bsdkrun-agent.freebsd-* > SHA256SUMS.freebsd-agent.txt )
+          cat dist/SHA256SUMS.freebsd-agent.txt
+
+      # Keep a copy regardless of whether the upload below runs, so a failed
+      # release step doesn't mean rebuilding.
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-agents
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Attach to the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag }}"
+          # Fail early with a clear message rather than letting `upload` do it.
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release upload "$tag" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          echo "attached to $tag:"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name' | grep freebsd
+
+      - name: Note
+        run: |
+          echo "Replaced assets can be served stale by the release CDN for a"
+          echo "while after --clobber. If a guest still gets the old agent,"
+          echo "wait and retry rather than assuming the build was wrong."
+          echo
+          echo "Existing guests pick this up with: bsdkrun agent update <id>"
+          echo "Baked-in image agents need their image workflow re-run."

@@ -1,9 +1,9 @@
 name: nix
 
-# Build bsdkrun through the Nix flake and run `nix flake check` (package build +
-# clippy + rustfmt). Linux links nixpkgs' libkrun; macOS links Homebrew's libkrun
-# impurely (`--impure`) and re-signs with the hypervisor entitlement. Pure build,
-# no KVM needed, so it runs on the standard runners.
+# Build bsdkrun and bsdkrund through the Nix flake and run `nix flake check`
+# (package builds + clippy + rustfmt). Linux links nixpkgs' libkrun; macOS links
+# Homebrew's libkrun impurely (`--impure`) and re-signs with the hypervisor
+# entitlement. No KVM needed, so it runs on the standard runners.
 
 on:
   push:
@@ -52,6 +52,17 @@ jobs:
         env:
           BSDKRUN_IMPURE: "1"
         run: nix build -L ${{ matrix.flags }} .#bsdkrun
+
+      # The daemon drives the bsdkrun CLI as a subprocess and links no libkrun,
+      # so it builds purely everywhere. Deliberately built WITHOUT
+      # ${{ matrix.flags }}: on darwin that omits --impure, which turns this
+      # step into an assertion that the daemon has no Homebrew dependency.
+      - name: nix build (bsdkrund)
+        run: nix build -L --out-link result-bsdkrund .#bsdkrund
+
+      - name: Smoke-test bsdkrund
+        run: ./result-bsdkrund/bin/bsdkrund --version
+
       - name: nix flake check
         env:
           BSDKRUN_IMPURE: "1"

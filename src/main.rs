@@ -4250,29 +4250,73 @@ fn cmd_exec(id: &str, command: &[String], env: &[String], tty: bool) -> Result<(
 fn cmd_agent_update(id: &str) -> Result<()> {
     let (vm, port) = agent_target(id)?;
     let arch = host::Arch::current()?;
-    let reference = vm.image.to_lowercase();
 
-    // (guest OS, install path, download command incl. its output flag).
-    let (os, dest, fetch_cmd) = if vm.kind == "linux" {
-        (host::GuestOs::Linux, "/sbin/bsdkrun-agent", "curl -fL -o")
-    } else if vm.kind == "kernel" || reference.starts_with("netbsd") {
-        (
+    // (guest OS, install path, download command incl. its output flag, and the
+    // ELF interpreter that proves the binary really is for this guest).
+    //
+    // Route through `guest_os_kind` rather than re-deriving the OS here: this
+    // used to test `kind == "kernel" || image starts with "netbsd"`, which
+    // misses a machine recorded as kind `netbsd` whose image is named anything
+    // else (`bsdkrun netbsd` on a custom disk, e.g. `disk.img`). Such a guest
+    // fell through to the FreeBSD arm and got a FreeBSD binary installed over
+    // its agent — see the verification below for why that is so bad.
+    //
+    // Download tools are base-system only, and differ per BSD: FreeBSD has
+    // fetch(1), NetBSD has ftp(1) (which does handle HTTPS and redirects),
+    // and neither ships curl.
+    let (os, dest, fetch_cmd, interp) = match guest_os_kind(&vm.kind, &vm.image) {
+        "linux" => (
+            host::GuestOs::Linux,
+            "/sbin/bsdkrun-agent",
+            "curl -fL -o",
+            // Built against musl and statically linked — no interpreter to
+            // match on, so the ELF magic check below is all we can assert.
+            "",
+        ),
+        "netbsd" => (
             host::GuestOs::Netbsd,
             "/usr/local/sbin/bsdkrun-agent",
             "ftp -o",
-        )
-    } else {
-        (
+            "/usr/libexec/ld.elf_so",
+        ),
+        _ => (
             host::GuestOs::Freebsd,
             "/usr/local/sbin/bsdkrun-agent",
             "fetch -o",
-        )
+            "/libexec/ld-elf.so.1",
+        ),
     };
     let url = agent::asset_url(os, arch);
 
-    // Download to a temp file, chmod, then atomically move over the old binary.
+    // Download to a temp file, verify it, chmod, then atomically move over the
+    // old binary.
+    //
+    // Verify BEFORE the move, because the agent we are replacing is the only
+    // channel we have into the guest: install a binary the guest cannot
+    // execute and `exec` stops working, which also removes the means to put it
+    // right. Two cheap checks catch both ways that happens — a wrong-OS build
+    // (checked via the ELF interpreter) and a download that saved an error page
+    // instead of a binary (checked via the ELF magic, since ftp(1) has no
+    // equivalent of curl's --fail).
+    let verify = format!(
+        "head -c 4 \"$tmp\" | grep -q ELF || {{ \
+           echo 'refusing to install: downloaded file is not an ELF binary' >&2; \
+           rm -f \"$tmp\"; exit 1; }}; \
+         {}",
+        if interp.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "grep -aq '{interp}' \"$tmp\" || {{ \
+                   echo 'refusing to install: not a {} binary (no {interp})' >&2; \
+                   rm -f \"$tmp\"; exit 1; }}; ",
+                os.slug()
+            )
+        }
+    );
     let script = format!(
         "set -e; tmp=/tmp/bsdkrun-agent.new; {fetch_cmd} \"$tmp\" '{url}'; \
+         {verify}\
          chmod +x \"$tmp\"; mv \"$tmp\" '{dest}'; \
          echo \"updated {dest}\"; echo \"from {url}\"",
     );

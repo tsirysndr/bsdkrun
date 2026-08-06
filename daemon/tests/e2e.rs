@@ -50,7 +50,7 @@ esac
 
 case "$1" in
 ps)
-  echo '[{"id":"abc123","name":"web","image":"alpine","kind":"linux","command":"sh","status":"running","running":true,"exit_code":null,"pid":42,"detached":true,"cpus":2,"mem":1024,"volume":null,"state_dir":"/s","created_at":"1785993650","finished_at":null,"network":"devnet","net_ip":"192.168.127.7"}]'
+  echo '[{"id":"abc123","name":"web","image":"alpine","kind":"linux","command":"sh","status":"running","running":true,"exit_code":null,"pid":42,"detached":true,"cpus":2,"mem":1024,"volume":null,"state_dir":"/s","created_at":"1785993650","finished_at":null,"network":"devnet","net_ip":"192.168.127.7"},{"id":"bsd456789abc","name":"fbsd","image":"disk.raw","kind":"freebsd","command":"","status":"running","running":true,"exit_code":null,"pid":43,"detached":true,"cpus":2,"mem":1024,"volume":null,"state_dir":"/s2","created_at":"1785993651","finished_at":null,"network":null,"net_ip":null}]'
   exit 0 ;;
 images)
   echo '[{"id":"img1","reference":"alpine:3.20","digest":"sha256:deadbeef","size":28886818,"rootfs":"/r","created_at":"1785854268"}]'
@@ -161,11 +161,19 @@ impl Harness {
         all
     }
 
-    /// The argv of the last invocation that is not the `--version` probe.
+    /// The argv of the last invocation that is not bookkeeping.
+    ///
+    /// `--version` is the startup probe, and an interactive exec runs a `ps`
+    /// first to learn whether the guest needs a TERM supplied — neither is what
+    /// a test is asserting about.
     fn last_argv(&self) -> Vec<String> {
         self.invocations()
             .into_iter()
-            .rfind(|a| a.first().map(|s| s != "--version").unwrap_or(false))
+            .rfind(|a| {
+                a.first()
+                    .map(|s| s != "--version" && s != "ps")
+                    .unwrap_or(false)
+            })
             .expect("expected at least one recorded invocation")
     }
 }
@@ -240,14 +248,15 @@ async fn lists_machines() {
         .unwrap()
         .into_inner();
 
-    assert_eq!(res.machines.len(), 1);
+    assert_eq!(res.machines.len(), 2);
     let m = &res.machines[0];
     assert_eq!(m.id, "abc123");
     assert_eq!(m.name.as_deref(), Some("web"));
     assert!(m.running);
     assert_eq!(m.cpus, Some(2));
     assert_eq!(m.net_ip.as_deref(), Some("192.168.127.7"));
-    assert_eq!(h.last_argv(), ["ps", "-a", "--json"]);
+    // `ps` is filtered out of last_argv, so assert on the recorded call directly.
+    assert_eq!(h.invocations().last().unwrap(), &["ps", "-a", "--json"]);
 }
 
 #[tokio::test]
@@ -257,7 +266,7 @@ async fn list_machines_without_all_omits_the_flag() {
     c.list_machines(ListMachinesRequest { all: false })
         .await
         .unwrap();
-    assert_eq!(h.last_argv(), ["ps", "--json"]);
+    assert_eq!(h.invocations().last().unwrap(), &["ps", "--json"]);
 }
 
 #[tokio::test]

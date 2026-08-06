@@ -523,10 +523,16 @@ impl Bsdkrun for BsdkrunService {
             .size
             .map(|s| (s.rows as u16, s.cols as u16))
             .unwrap_or((DEFAULT_ROWS, DEFAULT_COLS));
+        // A terminal on a BSD guest needs TERM supplied; see Ops::interactive_env.
+        let env = if start.tty || start.command.is_empty() {
+            self.ops.interactive_env(&start.id, start.env).await
+        } else {
+            start.env
+        };
         let (argv, tty) = ops::ExecOpts {
             id: start.id,
             command: start.command,
-            env: start.env,
+            env,
             tty: start.tty,
         }
         .to_argv();

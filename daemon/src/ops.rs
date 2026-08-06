@@ -251,6 +251,28 @@ impl AddFlavorOpts {
     }
 }
 
+/// Whether a guest kind is a BSD rather than Linux.
+///
+/// Mirrors the CLI's own rule: anything that is not `linux` is a BSD guest.
+/// The boot-mode kinds (`firmware`, `kernel`) are BSD too.
+pub fn is_bsd(kind: &str) -> bool {
+    kind != "linux"
+}
+
+/// `TERM` for an interactive session on a guest of this kind.
+///
+/// FreeBSD and NetBSD guests boot with no `TERM` on the agent's pty, which
+/// leaves the shell in `dumb` mode — no line editing, no colour, no key
+/// sequences. `xterm` is in both guests' terminfo. Linux images set their own,
+/// so they are left alone.
+///
+/// The CLI injects this for `shell`, but an explicit `exec` runs verbatim with
+/// no injected env by design — so anything driving `exec` for an interactive
+/// terminal has to supply it, as the desktop app does locally.
+pub fn interactive_term(kind: &str) -> Option<String> {
+    is_bsd(kind).then(|| "TERM=xterm".to_string())
+}
+
 /// An `exec` invocation. An empty `command` means "open this machine's shell",
 /// which only makes sense on a terminal and therefore implies a tty.
 #[derive(Debug, Default, Clone)]
@@ -677,6 +699,42 @@ impl Ops {
             .args(names.to_vec())
             .take();
         Ok(self.cli.output(&argv).await?)
+    }
+
+    /// Environment for an interactive session, with `TERM` supplied when the
+    /// guest needs one.
+    ///
+    /// Every interactive path must go through this. A BSD guest boots with no
+    /// usable TERM and the CLI injects none for an explicit `exec` — by design,
+    /// since a non-interactive exec should run verbatim — so a terminal opened
+    /// that way comes up `dumb` unless the caller supplies it. A caller that set
+    /// TERM itself always wins.
+    pub async fn interactive_env(&self, id: &str, env: Vec<String>) -> Vec<String> {
+        let mut env = env;
+        if env.iter().any(|e| e.starts_with("TERM=")) {
+            return env;
+        }
+        if let Some(term) = self
+            .machine_kind(id)
+            .await
+            .as_deref()
+            .and_then(interactive_term)
+        {
+            env.push(term);
+        }
+        env
+    }
+
+    /// A machine's guest kind ("linux" | "freebsd" | "netbsd" | …), or None if
+    /// there is no such machine.
+    ///
+    /// Ids may be a unique prefix, exactly as on the CLI.
+    pub async fn machine_kind(&self, id: &str) -> Option<String> {
+        let machines = self.list_machines(true).await.ok()?;
+        machines
+            .into_iter()
+            .find(|m| m.id == id || m.name.as_deref() == Some(id) || m.id.starts_with(id))
+            .map(|m| m.kind)
     }
 
     // -- guest tools ---------------------------------------------------------

@@ -78,11 +78,13 @@ impl PtySession {
             cmd.arg(a);
         }
         cmd.env("PATH", env_path);
-        // Without TERM the guest shell falls back to a dumb terminal and emits
-        // no colour or cursor control, which makes a remote shell feel broken.
-        if std::env::var_os("TERM").is_none() {
-            cmd.env("TERM", "xterm-256color");
-        }
+        // Set unconditionally rather than only when unset. This pty backs a
+        // *client's* terminal, so whatever TERM the daemon process happens to
+        // have inherited is irrelevant — and frequently wrong: a service
+        // manager commonly hands a daemon `TERM=dumb`, which would then be
+        // passed straight down and leave the session with no line editing,
+        // colour or key sequences.
+        cmd.env("TERM", "xterm-256color");
         // Always set this — see session_cwd() for why leaving it unset is not
         // the same as letting portable-pty pick.
         cmd.cwd(session_cwd());

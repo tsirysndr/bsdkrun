@@ -896,6 +896,7 @@ impl Mutation {
         #[graphql(default = 80)] cols: u32,
     ) -> async_graphql::Result<ShellSessionInfo> {
         let api = api(ctx)?;
+        let env = api.ops.interactive_env(&machine_id, env).await;
         let session = api
             .shells
             .open(

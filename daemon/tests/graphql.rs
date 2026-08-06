@@ -26,7 +26,7 @@ printf -- '---\n' >> "$LOG"
 case "$1" in
 --version) echo "bsdkrun 9.9.9-stub"; exit 0 ;;
 ps)
-  echo '[{"id":"abc123","name":"web","image":"alpine","kind":"linux","command":"sh","status":"running","running":true,"exit_code":null,"pid":42,"detached":true,"cpus":2,"mem":1024,"volume":null,"state_dir":"/s","created_at":"1785993650","finished_at":null,"network":"devnet","net_ip":"192.168.127.7"}]'
+  echo '[{"id":"abc123","name":"web","image":"alpine","kind":"linux","command":"sh","status":"running","running":true,"exit_code":null,"pid":42,"detached":true,"cpus":2,"mem":1024,"volume":null,"state_dir":"/s","created_at":"1785993650","finished_at":null,"network":"devnet","net_ip":"192.168.127.7"},{"id":"bsd456789abc","name":"fbsd","image":"disk.raw","kind":"freebsd","command":"","status":"running","running":true,"exit_code":null,"pid":43,"detached":true,"cpus":2,"mem":1024,"volume":null,"state_dir":"/s2","created_at":"1785993651","finished_at":null,"network":null,"net_ip":null}]'
   exit 0 ;;
 images)
   echo '[{"id":"img1","reference":"alpine:3.20","digest":"sha256:dead","size":3221225472,"rootfs":"/r","created_at":"1785854268"}]'
@@ -110,23 +110,23 @@ impl Harness {
             .expect("expected a recorded invocation")
     }
 
-    /// Same, but for commands spawned under a pty.
+    /// Wait for the invocation whose subcommand is `verb`.
     ///
-    /// `openShell` returns as soon as the pty is created; the CLI process is
-    /// still being exec'd at that point, so reading the log immediately is a
-    /// race the assertion would lose about half the time.
-    async fn wait_last_argv(&self) -> Vec<String> {
+    /// Opening a shell spawns the pty asynchronously *and* runs a `ps` first to
+    /// learn the guest kind, so neither "the last invocation" nor "read it
+    /// immediately" is right — this waits for the one under test.
+    async fn wait_argv(&self, verb: &str) -> Vec<String> {
         for _ in 0..100 {
             if let Some(argv) = self
                 .invocations()
                 .into_iter()
-                .rfind(|a| a.first().map(|s| s != "--version").unwrap_or(false))
+                .rfind(|a| a.first().map(|s| s == verb).unwrap_or(false))
             {
                 return argv;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        panic!("no invocation was recorded within 5s");
+        panic!("no `{verb}` invocation was recorded within 5s");
     }
 }
 
@@ -348,7 +348,7 @@ async fn shell_output_produced_before_subscribing_is_not_lost() {
     let session_id = json(&d)["openShell"]["id"].as_str().unwrap().to_string();
     assert_eq!(json(&d)["openShell"]["machineId"], "abc123");
     // openShell always allocates a terminal: it exists to back one.
-    assert_eq!(h.wait_last_argv().await, ["exec", "-t", "abc123", "cat"]);
+    assert_eq!(h.wait_argv("exec").await, ["exec", "-t", "abc123", "cat"]);
 
     // Let the stub write EXEC_OK *before* anyone is listening.
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
@@ -393,7 +393,48 @@ async fn open_shell_with_no_command_opens_the_machine_shell() {
     let h = Harness::new();
     h.query(r#"mutation { openShell(machineId: "abc123") { id } }"#)
         .await;
-    assert_eq!(h.wait_last_argv().await, ["shell", "abc123"]);
+    assert_eq!(h.wait_argv("shell").await, ["shell", "abc123"]);
+}
+
+/// A BSD guest boots with no usable TERM, and `exec` gets no env injected by
+/// the CLI by design — so without this the shell comes up `dumb`: no line
+/// editing, no colour, no arrow keys. Reported against the desktop app driving
+/// a remote daemon.
+#[tokio::test]
+async fn a_bsd_guest_gets_a_usable_term() {
+    let h = Harness::new();
+    h.query(r#"mutation { openShell(machineId: "bsd456789abc", command: ["cat"]) { id } }"#)
+        .await;
+    assert_eq!(
+        h.wait_argv("exec").await,
+        ["exec", "-t", "-e", "TERM=xterm", "bsd456789abc", "cat"]
+    );
+}
+
+/// Linux images set their own TERM, so nothing is injected for them.
+#[tokio::test]
+async fn a_linux_guest_keeps_its_own_term() {
+    let h = Harness::new();
+    h.query(r#"mutation { openShell(machineId: "abc123", command: ["cat"]) { id } }"#)
+        .await;
+    let argv = h.wait_argv("exec").await;
+    assert!(
+        !argv.iter().any(|a| a.starts_with("TERM=")),
+        "TERM was injected for a Linux guest: {argv:?}"
+    );
+}
+
+/// A caller that sets TERM itself is not overridden.
+#[tokio::test]
+async fn an_explicit_term_wins() {
+    let h = Harness::new();
+    h.query(
+        r#"mutation { openShell(machineId: "bsd456789abc", command: ["cat"], env: ["TERM=screen"]) { id } }"#,
+    )
+    .await;
+    let argv = h.wait_argv("exec").await;
+    assert!(argv.contains(&"TERM=screen".to_string()), "{argv:?}");
+    assert!(!argv.contains(&"TERM=xterm".to_string()), "{argv:?}");
 }
 
 #[tokio::test]

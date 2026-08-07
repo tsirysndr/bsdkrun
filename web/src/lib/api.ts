@@ -148,6 +148,22 @@ function bsdInput(spec: RunSpec) {
   };
 }
 
+/** A unikernel has no disk and no agent — no volume/mounts/repo/command. */
+function unikraftInput(spec: RunSpec) {
+  return {
+    path: orNull(spec.path),
+    cpus: spec.cpus ?? null,
+    mem: spec.mem ?? null,
+    net: {
+      noNet: spec.no_net,
+      ports: clean(spec.ports),
+      network: orNull(spec.network),
+      name: orNull(spec.name),
+    },
+    cmdline: orNull(spec.cmdline),
+  };
+}
+
 const termUnsubs = new Map<string, UnlistenFn>();
 const logUnsubs = new Map<string, UnlistenFn>();
 const launchUnsubs = new Map<string, UnlistenFn>();
@@ -375,6 +391,13 @@ export const api = {
         "launchLinux",
         `subscription($i:RunLinuxInput!){ launchLinux(input:$i){ line machineId error } }`,
         { i: linuxInput(spec) },
+      );
+    } else if (spec.kind === "unikraft") {
+      streamLaunch(
+        launchId,
+        "launchUnikraft",
+        `subscription($i:RunUnikraftInput!){ launchUnikraft(input:$i){ line machineId error } }`,
+        { i: unikraftInput(spec) },
       );
     } else {
       streamLaunch(

@@ -22,20 +22,23 @@ import { useNetworks, useVersions } from "../lib/queries";
 import { useLaunchMachine } from "../hooks/useLaunchFlavor";
 import type { RunSpec } from "../lib/types";
 
-type Kind = "linux" | "freebsd" | "netbsd";
+type Kind = "linux" | "freebsd" | "netbsd" | "unikraft";
 
 const KIND_LABEL: Record<Kind, string> = {
   linux: "Linux (OCI)",
   freebsd: "FreeBSD",
   netbsd: "NetBSD",
+  unikraft: "Unikraft",
 };
 
 // ---- zod schema ------------------------------------------------------------
 
 const schema = z
   .object({
-    kind: z.enum(["linux", "freebsd", "netbsd"]),
+    kind: z.enum(["linux", "freebsd", "netbsd", "unikraft"]),
     image: z.string(),
+    path: z.string(),
+    cmdline: z.string(),
     version: z.string(),
     cpus: z.coerce
       .number({ invalid_type_error: "Enter a number" })
@@ -78,6 +81,10 @@ const schema = z
   .refine((d) => d.kind !== "linux" || d.image.trim().length > 0, {
     message: "An image reference is required",
     path: ["image"],
+  })
+  .refine((d) => d.kind !== "unikraft" || d.path.trim().length > 0, {
+    message: "A kraft project directory or unikernel image is required",
+    path: ["path"],
   });
 
 type FormValues = z.infer<typeof schema>;
@@ -85,6 +92,8 @@ type FormValues = z.infer<typeof schema>;
 const DEFAULTS: FormValues = {
   kind: "linux",
   image: "alpine",
+  path: "",
+  cmdline: "",
   version: "",
   cpus: 1,
   mem: 512,
@@ -130,7 +139,10 @@ export default function RunDialog() {
   });
 
   const kind = watch("kind") as Kind;
-  const bsd = kind !== "linux";
+  const bsd = kind === "freebsd" || kind === "netbsd";
+  // A unikernel is the application linked into the kernel: no disk, no
+  // userland. Everything disk- or agent-shaped is hidden for it.
+  const unikraft = kind === "unikraft";
   const version = watch("version");
 
   const { data: allVersions = [] } = useVersions(kind, open && bsd);
@@ -175,13 +187,18 @@ export default function RunDialog() {
     const spec: RunSpec = {
       kind: data.kind,
       image: data.kind === "linux" ? data.image.trim() : null,
+      path: data.kind === "unikraft" ? data.path.trim() : null,
+      cmdline:
+        data.kind === "unikraft" && data.cmdline.trim()
+          ? data.cmdline.trim()
+          : null,
       // Only NetBSD takes a --version (it selects the bundled kernel). A FreeBSD
       // --version makes the CLI DOWNLOAD the official (agent-less) image, which
       // the GUI can't exec/terminal into — always use the bundled arm64 image.
       version: data.kind === "netbsd" && data.version ? data.version : null,
       cpus: data.cpus,
       mem: data.mem,
-      volume: data.volume.trim() || null,
+      volume: unikraft ? null : data.volume.trim() || null,
       no_net: data.noNet,
       initramfs: data.kind === "linux" ? data.initramfs : false,
       entrypoint:
@@ -192,15 +209,19 @@ export default function RunDialog() {
       ports: lines(data.ports),
       attach_disks: bsd ? lines(data.attachDisks) : [],
       disk_size: bsd && data.diskSize.trim() ? data.diskSize.trim() : null,
-      repo: data.repo.trim() ? data.repo.trim() : null,
+      repo: unikraft || !data.repo.trim() ? null : data.repo.trim(),
       network: data.network.trim() ? data.network.trim() : null,
       name: data.machineName.trim() ? data.machineName.trim() : null,
-      command: splitArgs(data.command),
+      command: unikraft ? [] : splitArgs(data.command),
     };
     // Stream the launch (pull / download / boot) in the progress modal instead
     // of blocking the dialog on a silent spinner — close the dialog right away.
     const label =
-      data.kind === "linux" ? data.image.trim() || "machine" : KIND_LABEL[data.kind];
+      data.kind === "linux"
+        ? data.image.trim() || "machine"
+        : data.kind === "unikraft"
+          ? data.path.trim().split("/").filter(Boolean).pop() || "unikernel"
+          : KIND_LABEL[data.kind];
     launchMachine(label, spec);
     setOpen(false);
     reset(DEFAULTS);
@@ -245,6 +266,7 @@ export default function RunDialog() {
                   <Tab key="linux" title="Linux (OCI)" />
                   <Tab key="freebsd" title="FreeBSD" />
                   <Tab key="netbsd" title="NetBSD" />
+                  <Tab key="unikraft" title="Unikraft" />
                 </Tabs>
               )}
             />
@@ -267,6 +289,33 @@ export default function RunDialog() {
                   />
                 )}
               />
+            ) : unikraft ? (
+              <>
+                <Controller
+                  control={control}
+                  name="path"
+                  render={({ field }) => (
+                    <Input
+                      label="Unikernel"
+                      labelPlacement="outside"
+                      placeholder="~/projects/helloworld  (a kraft project dir, or a built image)"
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      isRequired
+                      variant="bordered"
+                      isInvalid={!!errors.path}
+                      errorMessage={errors.path?.message}
+                      description="Build it first with `kraft build --plat fc`; a project directory is searched for the image under .unikraft/build/."
+                      classNames={{ input: "font-mono text-xs" }}
+                    />
+                  )}
+                />
+                <div className="rounded-xl border border-white/10 bg-content2/40 px-3 py-2 text-xs text-foreground-400">
+                  The application is linked into the kernel — there is no disk and
+                  no shell, so volumes, snapshots and the terminal don&apos;t apply.
+                  Use logs to read its output.
+                </div>
+              </>
             ) : kind === "netbsd" ? (
               <Controller
                 control={control}
@@ -335,7 +384,7 @@ export default function RunDialog() {
               />
             )}
 
-            <div className="grid grid-cols-3 gap-3">
+            <div className={unikraft ? "grid grid-cols-2 gap-3" : "grid grid-cols-3 gap-3"}>
               <Controller
                 control={control}
                 name="cpus"
@@ -371,59 +420,85 @@ export default function RunDialog() {
                   />
                 )}
               />
+              {/* No volume for a unikernel: there is no disk to persist. */}
+              {!unikraft && (
+                <Controller
+                  control={control}
+                  name="volume"
+                  render={({ field }) => (
+                    <Input
+                      label="Volume"
+                      labelPlacement="outside"
+                      placeholder="optional name"
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      variant="bordered"
+                      isInvalid={!!errors.volume}
+                      errorMessage={errors.volume?.message}
+                    />
+                  )}
+                />
+              )}
+            </div>
+
+            {/* A unikernel takes a kernel cmdline (which Unikraft hands the
+                application as argv) rather than an agent-run command. */}
+            {unikraft ? (
               <Controller
                 control={control}
-                name="volume"
+                name="cmdline"
                 render={({ field }) => (
                   <Input
-                    label="Volume"
+                    label="Command line"
                     labelPlacement="outside"
-                    placeholder="optional name"
+                    placeholder="helloworld --port 8080"
                     value={field.value}
                     onValueChange={field.onChange}
                     variant="bordered"
-                    isInvalid={!!errors.volume}
-                    errorMessage={errors.volume?.message}
+                    description="Passed to the application as argv — the first word is argv[0]."
+                    classNames={{ input: "font-mono text-xs" }}
                   />
                 )}
               />
-            </div>
-
-            <Controller
-              control={control}
-              name="command"
-              render={({ field }) => (
-                <Input
-                  label="Command"
-                  labelPlacement="outside"
-                  placeholder={
-                    kind === "linux"
-                      ? "override CMD, e.g. sh -c 'echo hi'"
-                      : "run once via agent, e.g. uname -a (optional)"
-                  }
-                  value={field.value}
-                  onValueChange={field.onChange}
-                  variant="bordered"
-                  classNames={{ input: "font-mono text-xs" }}
+            ) : (
+              <>
+                <Controller
+                  control={control}
+                  name="command"
+                  render={({ field }) => (
+                    <Input
+                      label="Command"
+                      labelPlacement="outside"
+                      placeholder={
+                        kind === "linux"
+                          ? "override CMD, e.g. sh -c 'echo hi'"
+                          : "run once via agent, e.g. uname -a (optional)"
+                      }
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      variant="bordered"
+                      classNames={{ input: "font-mono text-xs" }}
+                    />
+                  )}
                 />
-              )}
-            />
 
-            <Controller
-              control={control}
-              name="repo"
-              render={({ field }) => (
-                <Input
-                  label="Git repository"
-                  labelPlacement="outside"
-                  placeholder="https://github.com/owner/name (cloned & cd'd on shell)"
-                  value={field.value}
-                  onValueChange={field.onChange}
-                  variant="bordered"
-                  classNames={{ input: "font-mono text-xs" }}
+                <Controller
+                  control={control}
+                  name="repo"
+                  render={({ field }) => (
+                    <Input
+                      label="Git repository"
+                      labelPlacement="outside"
+                      placeholder="https://github.com/owner/name (cloned & cd'd on shell)"
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      variant="bordered"
+                      classNames={{ input: "font-mono text-xs" }}
+                    />
+                  )}
                 />
-              )}
-            />
+              </>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               <Controller
@@ -497,7 +572,9 @@ export default function RunDialog() {
                       <div>
                         <div className="text-sm font-medium">Disable networking</div>
                         <div className="text-xs text-foreground-500">
-                          Isolated guest (no gvproxy; exec/shell unavailable).
+                          {unikraft
+                            ? "Isolated guest (no gvproxy, no NIC)."
+                            : "Isolated guest (no gvproxy; exec/shell unavailable)."}
                         </div>
                       </div>
                       <Switch

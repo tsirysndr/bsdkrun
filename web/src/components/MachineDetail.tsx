@@ -37,7 +37,7 @@ import {
   useRestartMachine,
   useStopMachine,
 } from "../lib/queries";
-import { ago, exitLabel, kindColor, shortId } from "../lib/format";
+import { ago, exitLabel, isUnikraft, kindColor, shortId } from "../lib/format";
 import { useToast } from "../state/toast";
 import TerminalPane from "./TerminalPane";
 import LogsPane from "./LogsPane";
@@ -218,12 +218,22 @@ export default function MachineDetail() {
                     <IconNetwork size={16} />
                   </Button>
                 </Tooltip>
-                <Tooltip content="Snapshot into a flavor" placement="bottom">
+                {/* A unikernel has no disk, so there is nothing to snapshot. */}
+                <Tooltip
+                  content={
+                    isUnikraft(m.kind)
+                      ? "No disk — a unikernel can't be snapshotted"
+                      : "Snapshot into a flavor"
+                  }
+                  placement="bottom"
+                >
+                  <div>
                   <Button
                     isIconOnly
                     size="sm"
                     variant="flat"
                     className="text-rose-300"
+                    isDisabled={isUnikraft(m.kind)}
                     onPress={() =>
                       setCommitTarget({
                         id: m.id,
@@ -235,6 +245,7 @@ export default function MachineDetail() {
                   >
                     <IconCamera size={16} />
                   </Button>
+                  </div>
                 </Tooltip>
                 {m.running ? (
                   <Tooltip content="Stop machine" placement="bottom">
@@ -303,7 +314,8 @@ export default function MachineDetail() {
                 />
                 <Tab
                   key="terminal"
-                  isDisabled={!m.running}
+                  // A unikernel has no userland for the agent to shell into.
+                  isDisabled={!m.running || isUnikraft(m.kind)}
                   title={
                     <span className="flex items-center gap-1.5">
                       <IconTerminal2 size={15} /> Terminal
@@ -312,6 +324,9 @@ export default function MachineDetail() {
                 />
                 <Tab
                   key="setup"
+                  // ssh / tailscale / systemd all run through the in-guest
+                  // agent, which a unikernel has no userland to host.
+                  isDisabled={isUnikraft(m.kind)}
                   title={
                     <span className="flex items-center gap-1.5">
                       <IconSettingsBolt size={15} /> Setup
@@ -330,7 +345,7 @@ export default function MachineDetail() {
             </DrawerHeader>
             <DrawerBody className="p-0">
               <div className="h-full min-h-0">
-                {tab === "terminal" && m.running && (
+                {tab === "terminal" && m.running && !isUnikraft(m.kind) && (
                   <div className="h-full overflow-hidden rounded-lg bg-[#0a0d13]">
                     <TerminalPane machineId={m.id} command={EMPTY} />
                   </div>

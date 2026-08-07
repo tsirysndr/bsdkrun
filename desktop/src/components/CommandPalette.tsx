@@ -39,7 +39,7 @@ import {
 } from "../lib/queries";
 import { useLaunchFlavor } from "../hooks/useLaunchFlavor";
 import { useToast } from "../state/toast";
-import { kindColor, shortId } from "../lib/format";
+import { isUnikraft, kindColor, shortId } from "../lib/format";
 import type { ViewKey } from "../lib/types";
 
 interface Command {
@@ -188,7 +188,8 @@ export default function CommandPalette() {
           section: "Machines",
           icon: IconTerminal2,
           keywords: `${m.id} ${m.image} ${m.kind} logs terminal details ${m.running ? "running" : "exited stopped"}`,
-          terminalFor: m.running ? m.id : undefined,
+          // A unikernel has no shell: don't offer to open a terminal on it.
+          terminalFor: m.running && !isUnikraft(m.kind) ? m.id : undefined,
           running: m.running,
           run: () => {
             setSelected(m.id);
@@ -196,18 +197,21 @@ export default function CommandPalette() {
           },
         },
       ];
-      cmds.push({
-        id: `snapshot-${m.id}`,
-        title: `Snapshot ${label}`,
-        subtitle: shortId(m.id),
-        section: "Machines",
-        icon: IconCamera,
-        keywords: `${m.id} commit flavor save capture`,
-        run: () => {
-          setOpen(false);
-          setCommitTarget({ id: m.id, label, kind: m.kind, running: m.running });
-        },
-      });
+      // A unikernel has no disk, so there is nothing to snapshot.
+      if (!isUnikraft(m.kind)) {
+        cmds.push({
+          id: `snapshot-${m.id}`,
+          title: `Snapshot ${label}`,
+          subtitle: shortId(m.id),
+          section: "Machines",
+          icon: IconCamera,
+          keywords: `${m.id} commit flavor save capture`,
+          run: () => {
+            setOpen(false);
+            setCommitTarget({ id: m.id, label, kind: m.kind, running: m.running });
+          },
+        });
+      }
       cmds.push({
         id: `resources-${m.id}`,
         title: `Edit resources · ${label}`,

@@ -26,7 +26,7 @@ import {
   runOpenAtom,
   selectedMachineAtom,
 } from "../state/atoms";
-import { ago, exitLabel, fullDate, kindColor, shortId } from "../lib/format";
+import { ago, exitLabel, fullDate, isUnikraft, kindColor, shortId } from "../lib/format";
 import {
   useMachines,
   useRemoveMachine,
@@ -137,7 +137,7 @@ export default function MachinesView() {
       onEnter: (m) => setSelected(m.id),
       keys: {
         l: (m) => setSelected(m.id),
-        t: (m) => m.running && openTerminal(m.id),
+        t: (m) => m.running && !isUnikraft(m.kind) && openTerminal(m.id),
       },
     },
   );
@@ -295,15 +295,26 @@ export default function MachinesView() {
                   <div className="flex items-center justify-end gap-1">
                     {m.running ? (
                       <>
-                        <Tooltip content="Open terminal" placement="top">
-                          <Button
-                            isIconOnly
-                            size="sm"
-                            variant="light"
-                            onPress={() => openTerminal(m.id)}
-                          >
-                            <IconTerminal2 size={17} />
-                          </Button>
+                        {/* A unikernel has no shell to attach to. */}
+                        <Tooltip
+                          content={
+                            isUnikraft(m.kind)
+                              ? "No shell — a unikernel has no userland"
+                              : "Open terminal"
+                          }
+                          placement="top"
+                        >
+                          <div>
+                            <Button
+                              isIconOnly
+                              size="sm"
+                              variant="light"
+                              isDisabled={isUnikraft(m.kind)}
+                              onPress={() => openTerminal(m.id)}
+                            >
+                              <IconTerminal2 size={17} />
+                            </Button>
+                          </div>
                         </Tooltip>
                         <Tooltip content="Stop" placement="top">
                           <Button

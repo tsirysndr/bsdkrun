@@ -4,8 +4,9 @@ name: release-desktop
 # (plus a zipped .app) to the GitHub release for the pushed v* tag.
 #
 # The app is a thin GUI that shells out to the `bsdkrun` CLI (it does not link
-# libkrun), so a plain native build is enough. release.yml creates the release
-# for the tag; this job uploads to it.
+# libkrun), so a plain native build is enough — but it does link the daemon's
+# gRPC client, whose build script compiles the .proto, so protoc is required.
+# release.yml creates the release for the tag; this job uploads to it.
 
 on:
   push:
@@ -33,6 +34,12 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
+
+      # The app depends on bsdkrun-daemon for its gRPC client (Settings can
+      # point at a remote daemon), and that crate's build.rs shells out to
+      # protoc to compile the .proto — even with the server half disabled.
+      - name: Install protoc
+        run: brew install protobuf
 
       - name: Install bun
         uses: oven-sh/setup-bun@v2

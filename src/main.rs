@@ -3708,6 +3708,7 @@ fn cmd_commit(id: &str, name: &str, description: &str) -> Result<()> {
     valid_flavor_name(name)?;
     let db = db::Db::open()?;
     let vm = db.find_machine(id)?;
+    reject_unikraft(&vm, "snapshot")?;
     let dir = db::flavors_dir()?.join(name);
     if dir.exists() || db.find_flavor(name)?.is_some() {
         anyhow::bail!("flavor {name:?} already exists (remove it first)");
@@ -4340,6 +4341,7 @@ fn cmd_logs(id: &str, follow: bool, boot: bool) -> Result<()> {
 fn cmd_shell(id: &str) -> Result<()> {
     let db = db::Db::open()?;
     let vm = db.find_machine(id)?;
+    reject_unikraft(&vm, "open a shell in")?;
     if !vm.pid.map(db::pid_alive).unwrap_or(false) {
         anyhow::bail!("machine {} is not running", vm.id);
     }
@@ -4422,6 +4424,24 @@ fn guest_os_kind(kind: &str, image: &str) -> &'static str {
     }
 }
 
+/// Refuse an operation that a unikernel fundamentally cannot support.
+///
+/// A Unikraft guest is the application linked into the kernel: there is no
+/// disk to snapshot and no userland for the agent to run a shell or command in.
+/// Failing here with the reason beats letting the caller hang waiting for an
+/// agent that will never answer.
+fn reject_unikraft(vm: &db::MachineRow, what: &str) -> Result<()> {
+    if vm.kind == "unikraft" {
+        anyhow::bail!(
+            "cannot {what} {} — it is a Unikraft unikernel: the application *is* the kernel, \
+             so there is no disk to snapshot and no shell or agent to talk to. \
+             Use `logs` to see its output.",
+            vm.id
+        );
+    }
+    Ok(())
+}
+
 /// Add a guest-specific hint to an agent connection/exec failure.
 fn agent_error(kind: &str, e: anyhow::Error) -> anyhow::Error {
     if is_bsd(kind) {
@@ -4447,6 +4467,9 @@ fn agent_error(kind: &str, e: anyhow::Error) -> anyhow::Error {
 fn agent_target(id: &str) -> Result<(db::MachineRow, u16)> {
     let db = db::Db::open()?;
     let vm = db.find_machine(id)?;
+    // Covers exec/tailscale/ssh/systemd/agent-update in one place: they all
+    // resolve their target through here, and none of them can work.
+    reject_unikraft(&vm, "run commands in")?;
     if !vm.pid.map(db::pid_alive).unwrap_or(false) {
         anyhow::bail!("machine {} is not running", vm.id);
     }

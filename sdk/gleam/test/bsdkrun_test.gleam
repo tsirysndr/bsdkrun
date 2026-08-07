@@ -369,3 +369,25 @@ pub fn cli_log_level_prefix_test() {
 
   binary.reset_binary_path()
 }
+
+// A unikernel takes no disk options — except volumes, which are virtio-fs
+// shares and need neither a disk nor an agent. The path stays positional and
+// last, as the CLI expects.
+pub fn unikraft_with_volumes_test() {
+  build(
+    args.new(
+      args.Unikraft(path: "~/x", cmdline: None, initramfs: None, mounts: [
+        "~/d:/data",
+        "~/l:/logs",
+      ]),
+    ),
+  )
+  |> should.equal([
+    "unikraft", "-d", "--mount", "~/d:/data", "--mount", "~/l:/logs", "~/x",
+  ])
+}
+
+pub fn unikraft_without_volumes_test() {
+  build(args.unikraft("."))
+  |> should.equal(["unikraft", "-d", "."])
+}

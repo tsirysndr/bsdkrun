@@ -1,0 +1,165 @@
+name: e2e (Unikraft volumes / KVM)
+
+# Boots a Unikraft unikernel with a host directory mounted over virtio-fs and
+# proves the data survives the VM: the guest increments a counter file on every
+# boot, so three boots must read back 1, 2, 3 and leave "3" on the host.
+#
+# Separate from e2e-unikraft.yml because this build is a different shape — it
+# needs two upstream patches applied between fetch and build (see
+# examples/unikraft-volume/patches), and a failure here means volumes broke,
+# not that unikernels broke.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - "main"
+    paths:
+      - "src/**"
+      - "examples/unikraft-volume/**"
+      - ".github/workflows/e2e-unikraft-volume.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  volumes:
+    name: x86_64
+    runs-on: ubuntu-latest # x86_64; has /dev/kvm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          set -eux
+          test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 0666 /dev/kvm
+
+      - name: Install build deps (bsdkrun, libkrun/libkrunfw, and Unikraft)
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl ca-certificates xz-utils python3 \
+            python3-pyelftools pkg-config patchelf patch cpio kmod rsync zstd \
+            flex bison bc libelf-dev libssl-dev libncurses-dev libyaml-dev \
+            uuid-runtime unzip wget clang libclang-dev llvm-dev
+
+      # Same cache key as the other e2e workflows: a hit from any of them saves
+      # the ~15-20 min libkrunfw kernel compile.
+      - name: Restore libkrun build
+        id: libkrun-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v15
+
+      - name: Build libkrun (cache miss)
+        if: steps.libkrun-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          git clone --depth 1 -b v5.5.0 https://github.com/containers/libkrunfw
+          ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
+          git clone --depth 1 -b feat/pvh-boot https://github.com/tsirysndr/libkrun
+          ( cd libkrun && make -j"$(nproc)" BLK=1 NET=1 )
+
+      - name: Save libkrun build
+        if: steps.libkrun-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v15
+
+      - name: Install libkrun
+        run: |
+          set -eux
+          ( cd libkrunfw && sudo make install )
+          ( cd libkrun && sudo make install BLK=1 NET=1 )
+          echo "PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo /usr/local/lib64 | sudo tee /etc/ld.so.conf.d/libkrun.conf
+          sudo ldconfig
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build bsdkrun
+        run: cargo build --release
+
+      - name: Install kraft
+        run: |
+          set -eux
+          curl -fsSLo /tmp/kraft.deb \
+            "https://github.com/unikraft/kraftkit/releases/download/v${KRAFT_VERSION}/kraftkit_${KRAFT_VERSION}_linux_amd64.deb"
+          sudo dpkg -i /tmp/kraft.deb
+        env:
+          KRAFT_VERSION: 0.12.15
+
+      # The runner is already Linux/x86_64, so run the three steps directly
+      # rather than through build.sh, which wraps them in a container for
+      # macOS hosts. Keep them in step with examples/unikraft-volume/build.sh.
+      - name: Build the volume unikernel (fetch -> patch -> build)
+        working-directory: examples/unikraft-volume
+        env:
+          KRAFTKIT_NO_PROMPT: 1
+        run: |
+          set -eux
+          kraft pkg update
+          kraft fetch --arch x86_64 --plat fc
+          for p in patches/*.patch; do
+            echo "applying $p"
+            patch -p1 -N -r - -d .unikraft/unikraft <"$p" || true
+          done
+          # Assert the patches really landed: without them the build either
+          # fails to link or the guest crashes on the first file it creates,
+          # and both are much harder to read than this.
+          grep -q 'uk/assert.h' .unikraft/unikraft/lib/ukpod/anon.c
+          grep -q 'virtiofs_node_fmode(newnode)' .unikraft/unikraft/lib/ukfs-virtiofs/virtiofs.c
+          kraft build --arch x86_64 --plat fc --log-level info --log-type basic
+          ls -l .unikraft/build/volume_fc-x86_64
+
+      - name: e2e — a volume persists across boots
+        run: |
+          set -eux
+          vol="$(mktemp -d)"
+          # Three boots against the same host directory. The guest reads the
+          # counter, increments it, writes it back — so the count can only go
+          # up if the write actually reached the host and outlived the VM.
+          for i in 1 2 3; do
+            timeout 120 ./target/release/bsdkrun unikraft examples/unikraft-volume \
+              --no-net --mount "$vol:/data" | tee "vol-$i.out"
+            grep -q "VOLUME OK: boot count is now $i" "vol-$i.out"
+          done
+          # Boots 2 and 3 must have *read* what the previous boot wrote, not
+          # just written their own — that is the part that proves persistence.
+          grep -q "read counter = 1" vol-2.out
+          grep -q "read counter = 2" vol-3.out
+          # And the host side agrees.
+          test "$(cat "$vol/counter")" = "3"
+          echo "🎉 virtio-fs volume persisted across three boots"
+
+      - name: e2e — no volume means no mount table
+        run: |
+          set -eux
+          # Without --mount the guest gets a plain command line: no ramfs, no
+          # fstab, and the app's open() simply fails. Asserting this keeps the
+          # generated fstab from silently leaking into every boot.
+          timeout 120 ./target/release/bsdkrun unikraft examples/unikraft-volume \
+            --no-net | tee vol-none.out
+          grep -q "VOLUME FAIL" vol-none.out
+
+      - name: Upload console output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unikraft-volume-console
+          path: vol-*.out
+          if-no-files-found: ignore

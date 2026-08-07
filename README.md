@@ -541,10 +541,34 @@ bsdkrun unikraft .unikraft/build/helloworld_fc-arm64      # the image
 bsdkrun unikraft -d .                                     # detached; use logs/stop/rm
 bsdkrun unikraft . --cmdline "helloworld --port 8080"     # cmdline arrives as argv
 bsdkrun unikraft . --initramfs initrd.cpio                # for a --rootfs build
+bsdkrun unikraft . --mount ~/data:/data                   # persistent volume
 ```
 
 A unikernel has no shell and no agent, so `exec` and `shell` don't apply — `logs`, `ps`, `stop`,
 `start`, and `rm` all work as usual. When `main` returns, the guest powers the VM off.
+
+#### Volumes
+
+`--mount HOST:GUEST` (repeatable) shares a host directory into the guest over **virtio-fs**, so
+data written there survives the VM. The guest path must be absolute.
+
+```sh
+bsdkrun unikraft . --mount ~/pgdata:/var/lib/data
+```
+
+virtio-fs is the only option that works: libkrun has no virtio-9p (what `kraft run -v` uses under
+QEMU), and while both sides have virtio-blk, Unikraft's core registers only `ramfs` and `virtiofs`
+as filesystems — a raw disk gives you blocks, not a mountable tree.
+
+The unikernel has to be built for it (`CONFIG_LIBUKFS_VIRTIOFS`, `CONFIG_LIBPOSIX_VFS_FSTAB_USER`,
+`CONFIG_LIBUKFS_RAMFS`), and unikraft 0.21.0 needs two one-line upstream fixes before a virtio-fs
+guest works at all. [`examples/unikraft-volume`](examples/unikraft-volume) is a working setup with
+both patches and a fetch → patch → build script; its README explains each.
+
+bsdkrun generates the mount table onto the kernel command line — a program name, the `vfs.fstab`
+entries, then `--` — and mounts a ramfs at `/` first so the mountpoints have somewhere to exist.
+`commit` still doesn't apply: the data lives in a host directory, so there is no disk image to
+snapshot.
 
 #### How it boots
 

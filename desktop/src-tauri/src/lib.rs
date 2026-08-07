@@ -755,6 +755,14 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
             a.push("--cmdline".into());
             a.push(c.into());
         }
+        // Volumes are the one disk-shaped option a unikernel takes: virtio-fs
+        // shares, which need neither a disk nor an agent.
+        for m in &spec.mounts {
+            if !m.is_empty() {
+                a.push("--mount".into());
+                a.push(m.clone());
+            }
+        }
         // The path is positional and last; default to "." like the CLI.
         a.push(nonempty(&spec.path).unwrap_or(".").into());
     } else {

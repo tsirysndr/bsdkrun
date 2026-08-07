@@ -131,6 +131,9 @@ module Bsdkrun
       a = ["unikraft", "-d"]
       a.push("--cmdline", opts[:cmdline]) if opts[:cmdline]
       a.push("--initramfs", opts[:initramfs]) if opts[:initramfs]
+      # Volumes are the exception to "no disk options": virtio-fs shares,
+      # which need neither a disk nor an agent.
+      Array(opts[:mounts]).each { |m| a.push("--mount", m) }
       a.concat(net_args(opts[:net])).concat(name_args(opts)).concat(vm_args(opts))
       a.push((opts[:path] || ".").to_s)
     end

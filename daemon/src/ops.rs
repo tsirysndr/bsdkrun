@@ -207,17 +207,21 @@ pub struct RunUnikraftOpts {
     pub net: NetOpts,
     pub cmdline: Option<String>,
     pub initramfs: Option<String>,
+    /// Host directories shared in over virtio-fs, each "HOST:GUEST".
+    pub mounts: Vec<String>,
 }
 
 impl RunUnikraftOpts {
     pub fn to_argv(&self) -> Vec<String> {
         // No -v/--persist/--repo/command: a unikernel has no disk to persist
-        // and no agent to run anything through.
+        // and no agent to run anything through. `--mount` is the exception —
+        // it shares a host directory over virtio-fs, which needs neither.
         Argv::new(&["unikraft", "-d"])
             .vm(self.cpus, self.mem)
             .net(&self.net)
             .opt("--cmdline", &self.cmdline)
             .opt("--initramfs", &self.initramfs)
+            .each("--mount", &self.mounts)
             .arg(self.path.clone().unwrap_or_else(|| ".".into()))
             .take()
     }

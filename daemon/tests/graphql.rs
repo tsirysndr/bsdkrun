@@ -328,6 +328,32 @@ async fn run_unikraft_puts_the_path_last_and_omits_disk_flags() {
     );
 }
 
+/// Volumes are the one disk-shaped option a unikernel does take: they are
+/// virtio-fs shares, needing neither a disk nor an agent. Each is a separate
+/// `--mount`, and they stay before the positional path.
+#[tokio::test]
+async fn run_unikraft_passes_each_volume_as_its_own_mount() {
+    let h = Harness::new();
+    h.query(
+        r#"mutation { runUnikraft(input: {
+            path: "~/hello", mounts: ["~/data:/data", "~/logs:/logs"]
+        }) }"#,
+    )
+    .await;
+    assert_eq!(
+        h.last_argv(),
+        [
+            "unikraft",
+            "-d",
+            "--mount",
+            "~/data:/data",
+            "--mount",
+            "~/logs:/logs",
+            "~/hello",
+        ]
+    );
+}
+
 /// The path defaults to the current directory, exactly as the CLI does.
 #[tokio::test]
 async fn run_unikraft_defaults_the_path_to_the_current_directory() {

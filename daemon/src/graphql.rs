@@ -416,6 +416,10 @@ pub struct RunUnikraftInput {
     /// Kernel command line; Unikraft hands it to the application as argv.
     pub cmdline: Option<String>,
     pub initramfs: Option<String>,
+    /// Persistent volumes over virtio-fs, each "HOST:GUEST" with an absolute
+    /// guest path. Needs a unikernel built for it (examples/unikraft-volume).
+    #[graphql(default)]
+    pub mounts: Vec<String>,
 }
 
 #[derive(InputObject)]
@@ -735,6 +739,7 @@ impl Mutation {
             net: input.net.map(Into::into).unwrap_or_default(),
             cmdline: input.cmdline,
             initramfs: input.initramfs,
+            mounts: input.mounts,
         };
         api(ctx)?.ops.run_unikraft(&opts).await.map_err(gql_err)
     }
@@ -1118,6 +1123,7 @@ impl Subscription_ {
             net: input.net.map(Into::into).unwrap_or_default(),
             cmdline: input.cmdline,
             initramfs: input.initramfs,
+            mounts: input.mounts,
         };
         Ok(launch_stream(api.ops.clone(), opts.to_argv()))
     }

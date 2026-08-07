@@ -1,0 +1,3 @@
+$(eval $(call addlib,appvolume))
+
+APPVOLUME_SRCS-y += $(APPVOLUME_BASE)/main.c

@@ -850,6 +850,13 @@ struct UnikraftArgs {
     #[arg(long)]
     initramfs: Option<PathBuf>,
 
+    /// Share a host directory into the unikernel over virtio-fs, as
+    /// HOST:GUEST (repeatable). The guest path must be absolute. Requires a
+    /// unikernel built with CONFIG_LIBUKFS_VIRTIOFS and
+    /// CONFIG_LIBPOSIX_VFS_FSTAB_USER — see examples/unikraft-volume.
+    #[arg(long = "mount", value_name = "HOST:GUEST")]
+    mount: Vec<String>,
+
     /// Run the machine in the background and print its id (like `docker run -d`).
     /// Use `logs`/`stop` to interact with it afterwards — a unikernel has no
     /// shell, so `shell`/`exec` don't apply.
@@ -1441,6 +1448,11 @@ fn boot_kernel(args: KernelArgs) -> Result<()> {
 /// host-side shim before libkrun's aarch64 loader will enter it.
 fn boot_unikraft(args: UnikraftArgs) -> Result<()> {
     let kernel = unikraft::resolve(&args.path)?;
+    let volumes = args
+        .mount
+        .iter()
+        .map(|m| unikraft::parse_volume(m))
+        .collect::<Result<Vec<_>>>()?;
     boot_unikraft_image(
         &kernel,
         &args.cmdline,
@@ -1448,6 +1460,7 @@ fn boot_unikraft(args: UnikraftArgs) -> Result<()> {
         args.detach,
         args.net,
         args.vm,
+        &volumes,
     )
 }
 
@@ -1459,16 +1472,24 @@ fn boot_unikraft_image(
     detach: bool,
     net: NetConfig,
     vm: VmConfig,
+    volumes: &[unikraft::Volume],
 ) -> Result<()> {
     let prepared = unikraft::prepare(kernel)?;
     let machine_id = id::next_machine_id();
     let vdir = machine_dir_or_tmp(&machine_id);
     let image = basename(kernel);
+    // Save the cmdline as given; the fstab fragment is derived from `volumes`
+    // on every boot, so a restart re-generates it instead of stacking a second
+    // copy on top of the saved one.
     let spec = unikraft::BootSpec {
         kernel: kernel.to_path_buf(),
         cmdline: cmdline.to_string(),
         initramfs: initramfs.map(|p| p.to_path_buf()),
+        volumes: volumes.to_vec(),
     };
+    // Volumes are mounted by the guest from its command line, so the mount
+    // table has to be prepended before the cmdline is handed to libkrun.
+    let cmdline = unikraft::build_cmdline(cmdline, volumes, &image);
 
     let build = || -> Result<(Ctx, Option<Gvproxy>)> {
         let ctx = Ctx::new()?;
@@ -1480,7 +1501,13 @@ fn boot_unikraft_image(
         // No agent lives in a unikernel; this just gives it a NIC (which it
         // uses only if it was built with a virtio-net driver).
         let gvproxy = setup_networking_with_agent(&ctx, &net, Some(&vdir))?;
-        ctx.set_kernel(&prepared.path, prepared.format, initramfs, cmdline)
+        // Each volume is a virtio-fs share; the guest finds it by tag, which
+        // is what the vfs.fstab entry above names as the source device.
+        for (i, v) in volumes.iter().enumerate() {
+            ctx.add_virtiofs(&unikraft::volume_tag(i), &v.host)
+                .with_context(|| format!("sharing --mount host dir {}", v.host.display()))?;
+        }
+        ctx.set_kernel(&prepared.path, prepared.format, initramfs, &cmdline)
             .context("configuring unikernel")?;
         spec.save(&vdir)?;
         Ok((ctx, gvproxy))
@@ -3465,6 +3492,7 @@ fn cmd_start(id: &str) -> Result<()> {
             true,
             net,
             vmcfg,
+            &spec.volumes,
         )
     } else if is_freebsd || is_netbsd {
         // Boot the machine's own disk in place when it exists (see above), so a

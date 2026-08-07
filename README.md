@@ -8,6 +8,7 @@
 [![e2e (Linux / KVM)](https://github.com/tsirysndr/bsdkrun/actions/workflows/e2e-linux.yml/badge.svg)](https://github.com/tsirysndr/bsdkrun/actions/workflows/e2e-linux.yml)
 [![FlakeHub](https://img.shields.io/endpoint?url=https://flakehub.com/f/tsirysndr/bsdkrun/badge)](https://flakehub.com/flake/tsirysndr/bsdkrun)
 [![skills.sh](https://skills.sh/b/tsirysndr/bsdkrun)](https://skills.sh/tsirysndr/bsdkrun/bsdkrun-cli)
+![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/tsirysndr/bsdkrun/total)
 
 
 A Firecracker-style **microVM launcher for BSD and Linux guests on macOS and Linux**, built on

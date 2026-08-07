@@ -22,6 +22,12 @@
 //!
 //! On x86_64 the `fc` build is an ELF that libkrun's ELF loader boots directly
 //! via the same Linux protocol, so no shim is needed.
+//!
+//! **Volumes** ride in over virtio-fs — the only shared-directory transport
+//! libkrun has (no virtio-9p) and the only Unikraft filesystem that can be
+//! backed by a host directory. The host adds a share per `--mount` and names it
+//! in a mount table on the kernel command line; see [`build_cmdline`], which is
+//! where the awkward parts live.
 
 use std::path::{Path, PathBuf};
 
@@ -187,14 +193,115 @@ pub fn resolve(path: &Path) -> Result<PathBuf> {
     }
 }
 
+/// A host directory shared into the unikernel over virtio-fs.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct Volume {
+    pub host: PathBuf,
+    pub guest: String,
+}
+
+/// Parse a `HOST:GUEST` volume spec. `GUEST` must be absolute — Unikraft's
+/// fstab parser rejects a relative mountpoint outright.
+pub fn parse_volume(spec: &str) -> Result<Volume> {
+    let (host, guest) = spec
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow::anyhow!("--mount {spec:?} must be HOST:GUEST, e.g. ./data:/data"))?;
+    if host.is_empty() || guest.is_empty() {
+        bail!("--mount {spec:?} must be HOST:GUEST, e.g. ./data:/data");
+    }
+    if !guest.starts_with('/') {
+        bail!("--mount {spec:?}: the guest path must be absolute (start with '/')");
+    }
+    let host = std::fs::canonicalize(host)
+        .with_context(|| format!("--mount {spec:?}: host path {host:?} does not exist"))?;
+    Ok(Volume {
+        host,
+        guest: guest.to_string(),
+    })
+}
+
+/// The virtio-fs tag for the `i`th volume. Unikraft matches devices on this
+/// (36 bytes, read from the device's config space), and it is also what the
+/// `vfs.fstab` entry names as the source device.
+pub fn volume_tag(i: usize) -> String {
+    format!("vol{i}")
+}
+
+/// Build the full guest command line: the `vfs.fstab=[...]` mount table (a
+/// *kernel* parameter) followed by the user's command line (the application's
+/// `argv`).
+///
+/// Two details of Unikraft's parser make this fiddlier than it looks, and
+/// getting either wrong mounts nothing while the guest still boots happily —
+/// every open() simply fails:
+///
+///   * **`argv[0]` is skipped.** `lib/ukboot/early_init.c` hands the parser
+///     `&argv[1]`, treating the first word as the program name. A command line
+///     that *starts* with `vfs.fstab=` therefore has the mount table silently
+///     eaten as the program name. So a program name always goes first.
+///   * **`--` separates the two halves.** Everything before it is parsed as
+///     kernel library parameters, everything after becomes the application's
+///     `argv`. Without it, nothing is treated as a parameter at all.
+///
+/// The user's command line keeps its usual meaning throughout — its first word
+/// is the application's `argv[0]` — so it is split around the injected table.
+///
+/// The table format is `"<dev>:<mountpoint>:<fsdriver>"` entries separated by
+/// whitespace and wrapped in brackets (`lib/posix-vfs-fstab`,
+/// `lib/vfscore/automount.c`); `virtiofs` is the driver name registered by
+/// `lib/ukfs-virtiofs`, and `<dev>` is the virtio-fs tag.
+pub fn build_cmdline(user_cmdline: &str, vols: &[Volume], progname: &str) -> String {
+    if vols.is_empty() {
+        return user_cmdline.to_string();
+    }
+    let mut entries: Vec<String> = Vec::new();
+    // A mountpoint has to exist before anything can be mounted on it, and a
+    // freshly booted unikernel has no root filesystem at all — so mounting
+    // /data fails with ENOENT before virtio-fs is ever consulted. Give it a
+    // ramfs root first, unless a volume is itself taking "/".
+    if !vols.iter().any(|v| v.guest == "/") {
+        entries.push("\"ramfs:/:ramfs\"".into());
+    }
+    // `mkmp` (make mount point) creates the directory in that root; without it
+    // the mount fails with ENOENT for exactly the same reason. The empty
+    // fields between are the mount flags and fs-specific options.
+    entries.extend(vols.iter().enumerate().map(|(i, v)| {
+        if v.guest == "/" {
+            format!("\"{}:/:virtiofs\"", volume_tag(i))
+        } else {
+            format!("\"{}:{}:virtiofs:::mkmp\"", volume_tag(i), v.guest)
+        }
+    }));
+    let fstab = format!("vfs.fstab=[ {} ]", entries.join(" "));
+
+    // Split the user's line into argv[0] and the rest; fall back to the image
+    // name when they gave nothing, since the slot cannot be left empty.
+    let user = user_cmdline.trim();
+    let (argv0, rest) = match user.split_once(char::is_whitespace) {
+        Some((first, rest)) => (first, rest.trim()),
+        None if !user.is_empty() => (user, ""),
+        None => (progname, ""),
+    };
+    if rest.is_empty() {
+        format!("{argv0} {fstab} --")
+    } else {
+        format!("{argv0} {fstab} -- {rest}")
+    }
+}
+
 /// What a unikraft machine was booted from, saved in its state dir so
 /// `bsdkrun start` can boot the same image again (nothing else records it: the
 /// DB row only carries the image's display name).
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct BootSpec {
     pub kernel: PathBuf,
+    /// The cmdline as the user gave it, WITHOUT the generated `vfs.fstab`
+    /// fragment — that is re-derived from `volumes` on each boot, so a restart
+    /// does not append a second copy.
     pub cmdline: String,
     pub initramfs: Option<PathBuf>,
+    #[serde(default)]
+    pub volumes: Vec<Volume>,
 }
 
 impl BootSpec {
@@ -218,5 +325,72 @@ impl BootSpec {
             )
         })?;
         Ok(serde_json::from_slice(&bytes)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vol(guest: &str) -> Volume {
+        Volume {
+            host: PathBuf::from("/tmp/x"),
+            guest: guest.into(),
+        }
+    }
+
+    /// Without volumes the user's line is passed through untouched — no mount
+    /// table, and no `--` that would turn their first word into a parameter.
+    #[test]
+    fn no_volumes_leaves_the_cmdline_alone() {
+        assert_eq!(build_cmdline("app -v", &[], "img"), "app -v");
+        assert_eq!(build_cmdline("", &[], "img"), "");
+    }
+
+    /// The three things that silently mount nothing if they are wrong: a
+    /// program name first (the parser skips argv[0]), `--` before the app's
+    /// args, and `mkmp` so the mountpoint gets created.
+    #[test]
+    fn volumes_build_a_mount_table_after_a_program_name() {
+        assert_eq!(
+            build_cmdline("", &[vol("/data")], "myimg"),
+            "myimg vfs.fstab=[ \"ramfs:/:ramfs\" \"vol0:/data:virtiofs:::mkmp\" ] --"
+        );
+    }
+
+    /// The user's own line keeps its meaning: first word stays argv[0], the
+    /// rest lands after the separator.
+    #[test]
+    fn the_users_argv0_is_preserved_around_the_table() {
+        assert_eq!(
+            build_cmdline("app one two", &[vol("/data")], "img"),
+            "app vfs.fstab=[ \"ramfs:/:ramfs\" \"vol0:/data:virtiofs:::mkmp\" ] -- one two"
+        );
+    }
+
+    /// A volume mounted at / IS the root, so no ramfs is added and it needs no
+    /// mkmp — the mountpoint it wants already exists by definition.
+    #[test]
+    fn a_volume_at_the_root_replaces_the_ramfs() {
+        assert_eq!(
+            build_cmdline("", &[vol("/")], "img"),
+            "img vfs.fstab=[ \"vol0:/:virtiofs\" ] --"
+        );
+    }
+
+    /// Tags are positional and must line up with the virtio-fs devices added
+    /// in the same order.
+    #[test]
+    fn each_volume_gets_its_own_tag() {
+        let out = build_cmdline("", &[vol("/a"), vol("/b")], "img");
+        assert!(out.contains("\"vol0:/a:virtiofs:::mkmp\""), "{out}");
+        assert!(out.contains("\"vol1:/b:virtiofs:::mkmp\""), "{out}");
+    }
+
+    #[test]
+    fn volume_specs_are_validated() {
+        assert!(parse_volume("/tmp:relative").is_err());
+        assert!(parse_volume("noguest").is_err());
+        assert!(parse_volume("/tmp/definitely-not-there-12345:/x").is_err());
     }
 }

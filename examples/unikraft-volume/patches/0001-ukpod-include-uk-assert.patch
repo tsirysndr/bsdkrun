@@ -1,0 +1,21 @@
+lib/ukpod: include <uk/assert.h>
+
+anon.c calls UK_ASSERT but includes only its own header, so the assertion
+compiles as an implicit function call and the link fails:
+
+    lib/ukpod/anon.c:23: undefined reference to `UK_ASSERT'
+
+Unavoidable for any virtio-fs build: LIBUKFS_VIRTIOFS needs the posix-vfs
+stack, which pulls in ukfs-ramfs, which selects LIBUKPOD_ANON.
+
+Found against unikraft 0.21.0 (Ijiraq).
+--- a/lib/ukpod/anon.c
++++ b/lib/ukpod/anon.c
+@@ -6,6 +6,7 @@
+ 
+ /* Page I/O ops for anonymous memory */
+ 
++#include <uk/assert.h>
+ #include <uk/pod/anon.h>
+ 
+ /**

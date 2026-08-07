@@ -75,7 +75,13 @@ placeholder just explains how to build the real thing.
 UI. `nix build .#web` builds just the bundle.
 
 `bun install` needs the network, so node_modules lives in a fixed-output
-derivation with a pinned hash. The tree is **per-platform** — native optional
-deps like `@tailwindcss/oxide-*` differ by OS and CPU — so each system needs its
-own hash. To fill one in: set it to `lib.fakeHash`, run `nix build`, and copy
-the hash Nix reports on the mismatch.
+derivation with a pinned hash, one per system in `flake.nix`.
+
+The trees really are different — esbuild and rollup install native binaries per
+platform (`@esbuild/linux-x64` vs `@esbuild/linux-arm64`), so the three hashes
+are three distinct values and none can be copied from another.
+
+**Any change to `web/package.json` or `web/bun.lock` invalidates all three.** To
+regenerate: set the ones you cannot build locally to `lib.fakeHash`, push, and
+read the correct values out of the `nix` workflow's mismatch errors — it builds
+every system, so one CI run reports them all.

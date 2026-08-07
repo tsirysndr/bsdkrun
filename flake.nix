@@ -91,15 +91,12 @@
 
           outputHashMode = "recursive";
           outputHashAlgo = "sha256";
+          # These genuinely differ per system — the three below are three
+          # distinct trees, which is the per-platform caveat above in practice.
           outputHash = {
-            # Computed with `nix hash path` over a `bun install` tree, NOT yet
-            # confirmed by a sandboxed build — the first `nix build` on this
-            # platform will say so if it is wrong, and report the right one.
             aarch64-darwin = "sha256-HBlPd3BIT0bhXsqQtgzf2x9L4p+UHRST+cAuPTvIAdY=";
-            # Fill these from the mismatch error on their first build; the tree
-            # is per-platform, so they cannot be copied from darwin.
-            x86_64-linux = lib.fakeHash;
-            aarch64-linux = lib.fakeHash;
+            x86_64-linux = "sha256-817iL8whjah44OISnq2vwyCeYrAeGVlJxk4j0ri4ACw=";
+            aarch64-linux = "sha256-dAAh/6mXbzHSiqqFDjoNlw9rLHB4CWqYMdpiSoLApbY=";
           }.${system};
         };
 

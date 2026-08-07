@@ -24,3 +24,6 @@ yarn-error.log*
 
 # Vite dep cache
 .vite/
+
+# npm lockfile: this project uses bun (bun.lock).
+package-lock.json

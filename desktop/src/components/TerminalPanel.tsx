@@ -126,8 +126,8 @@ export default function TerminalPanel() {
                 )}
                 <span className="max-w-[140px] truncate">{label}</span>
                 {os && (
-                  <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-foreground-600">
-                    {os}
+                  <span className="shrink-0 text-[11px] text-foreground-600">
+                    · {os}
                   </span>
                 )}
                 <button

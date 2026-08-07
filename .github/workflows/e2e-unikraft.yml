@@ -1,0 +1,166 @@
+name: e2e (Unikraft / KVM)
+
+# Builds a unikernel from the Unikraft catalog with `kraft` and boots it with
+# `bsdkrun unikraft` under KVM. Only GitHub's x86_64 runners expose /dev/kvm
+# (the arm64 ones don't), so this is what covers the x86_64 side of the
+# unikraft command — the arm64 side (raw Image + the text_offset entry shim) is
+# exercised on a macOS/HVF host.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - "main"
+    paths:
+      - "src/**"
+      - "build.rs"
+      - ".github/workflows/e2e-unikraft.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  boot:
+    name: x86_64
+    runs-on: ubuntu-latest # x86_64; has /dev/kvm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          set -eux
+          test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 0666 /dev/kvm
+          ls -l /dev/kvm
+
+      - name: Install build deps (bsdkrun, libkrun/libkrunfw, and Unikraft)
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl ca-certificates xz-utils python3 \
+            python3-pyelftools pkg-config patchelf patch cpio kmod rsync zstd \
+            flex bison bc libelf-dev libssl-dev libncurses-dev libyaml-dev \
+            uuid-runtime unzip wget clang libclang-dev llvm-dev
+
+      # Same build + cache shape as e2e-linux.yml, and deliberately the same key:
+      # a hit from either workflow saves the ~15-20 min libkrunfw kernel compile.
+      - name: Restore libkrun build
+        id: libkrun-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v13
+
+      - name: Build libkrun (cache miss)
+        if: steps.libkrun-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          git clone --depth 1 -b v5.5.0 https://github.com/containers/libkrunfw
+          ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
+          git clone --depth 1 -b feat/pvh-boot https://github.com/tsirysndr/libkrun
+          ( cd libkrun && make -j"$(nproc)" BLK=1 NET=1 )
+
+      - name: Save libkrun build
+        if: steps.libkrun-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v13
+
+      - name: Install libkrun
+        run: |
+          set -eux
+          ( cd libkrunfw && sudo make install )
+          ( cd libkrun && sudo make install BLK=1 NET=1 )
+          echo "PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo /usr/local/lib64 | sudo tee /etc/ld.so.conf.d/libkrun.conf
+          sudo ldconfig
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build bsdkrun
+        run: cargo build --release
+
+      - name: Install kraft
+        run: |
+          set -eux
+          curl -fsSLo /tmp/kraft.deb \
+            "https://github.com/unikraft/kraftkit/releases/download/v${KRAFT_VERSION}/kraftkit_${KRAFT_VERSION}_linux_amd64.deb"
+          sudo dpkg -i /tmp/kraft.deb
+          kraft version
+        env:
+          KRAFT_VERSION: 0.12.15
+
+      # `library/helloworld` is the smallest thing in the catalog: a single
+      # main.c, no rootfs, and its Kraftfile already lists an fc/x86_64 target.
+      # On x86_64 the fc platform's console is an ns16550 on COM1 (0x3f8), which
+      # is exactly the serial port libkrun exposes — so no kconfig override is
+      # needed here, unlike arm64 (where libkrun's console is a PL011).
+      - name: Build a unikernel from the Unikraft catalog
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/unikraft/catalog
+          cd catalog/library/helloworld
+          kraft build --arch x86_64 --plat fc --no-cache --log-level info --log-type basic
+          ls -l .unikraft/build/
+          file .unikraft/build/helloworld_fc-x86_64
+
+      - name: e2e — boot the unikernel (foreground)
+        run: |
+          set -eux
+          timeout 120 ./target/release/bsdkrun --log-level 5 unikraft \
+            catalog/library/helloworld/.unikraft/build/helloworld_fc-x86_64 \
+            --no-net | tee uk.out
+          grep -q "Hello from Unikraft" uk.out
+          echo "🎉 Unikraft unikernel booted under libkrun/KVM"
+
+      # The path argument also takes a kraft project directory: bsdkrun finds the
+      # image its build wrote under .unikraft/build/.
+      - name: e2e — boot from the project directory
+        run: |
+          set -eux
+          timeout 120 ./target/release/bsdkrun unikraft catalog/library/helloworld --no-net \
+            | tee uk-dir.out
+          grep -q "Hello from Unikraft" uk-dir.out
+
+      # The cmdline reaches the application as argv, which is how a unikernel
+      # takes configuration (it has no shell to pass flags from).
+      - name: e2e — cmdline is handed to the unikernel
+        run: |
+          set -eux
+          timeout 120 ./target/release/bsdkrun unikraft catalog/library/helloworld \
+            --no-net --cmdline "helloworld e2e-arg" | tee uk-args.out
+          grep -q "Hello from Unikraft" uk-args.out
+
+      # Detached: the machine is recorded like any other, its console is captured
+      # to the state dir, and `logs`/`ps`/`rm` work on it.
+      - name: e2e — detached machine, logs, and lifecycle
+        run: |
+          set -eux
+          id=$(./target/release/bsdkrun unikraft -d catalog/library/helloworld --no-net)
+          sleep 5
+          ./target/release/bsdkrun ps -a
+          ./target/release/bsdkrun logs "$id" | tee uk-logs.out
+          grep -q "Hello from Unikraft" uk-logs.out
+          # It ran to completion, so it is already exited; `rm` must still work.
+          ./target/release/bsdkrun stop "$id" 2>/dev/null || true
+          ./target/release/bsdkrun rm -f "$id"
+
+      - name: Upload console output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unikraft-console
+          path: uk*.out
+          if-no-files-found: ignore

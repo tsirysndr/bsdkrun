@@ -109,6 +109,15 @@ impl Arch {
         }
     }
 
+    /// The architecture name Unikraft/`kraft` uses (`kraft build --arch <uk>`,
+    /// and the `<name>_fc-<uk>` image it writes).
+    pub fn uk_slug(self) -> &'static str {
+        match self {
+            Arch::X86_64 => "x86_64",
+            Arch::Aarch64 => "arm64",
+        }
+    }
+
     /// The OCI platform architecture (`linux/<oci>`).
     pub fn oci(self) -> &'static str {
         match self {

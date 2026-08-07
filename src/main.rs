@@ -30,6 +30,7 @@ mod oci;
 mod store;
 mod tty;
 mod ui;
+mod unikraft;
 mod watchdog;
 
 use std::path::PathBuf;
@@ -110,6 +111,9 @@ enum Command {
 
     /// Run NetBSD — fetch + direct-kernel boot (no firmware needed).
     Netbsd(BsdArgs),
+
+    /// Boot a Unikraft unikernel (built with `kraft build --plat fc`).
+    Unikraft(UnikraftArgs),
 
     /// List machines.
     Ps(PsArgs),
@@ -827,6 +831,38 @@ struct KernelArgs {
     vm: VmConfig,
 }
 
+/// Options for the `unikraft` command.
+#[derive(Parser)]
+struct UnikraftArgs {
+    /// The unikernel to boot: an image built by `kraft` (the raw
+    /// `<name>_fc-<arch>` image, or the `.dbg` ELF beside it), or a project
+    /// directory whose `.unikraft/build/` holds one.
+    #[arg(value_name = "IMAGE|DIR", default_value = ".")]
+    path: PathBuf,
+
+    /// Kernel command line. Unikraft reads it from the device tree and hands it
+    /// to the application as `argv` — the first word is `argv[0]`.
+    #[arg(long, default_value = "")]
+    cmdline: String,
+
+    /// Optional initrd, for a unikernel built with an initrd-backed rootfs
+    /// (`kraft build --rootfs`).
+    #[arg(long)]
+    initramfs: Option<PathBuf>,
+
+    /// Run the machine in the background and print its id (like `docker run -d`).
+    /// Use `logs`/`stop` to interact with it afterwards — a unikernel has no
+    /// shell, so `shell`/`exec` don't apply.
+    #[arg(short = 'd', long)]
+    detach: bool,
+
+    #[command(flatten)]
+    net: NetConfig,
+
+    #[command(flatten)]
+    vm: VmConfig,
+}
+
 #[derive(Parser)]
 struct FirmwareArgs {
     /// Path to the UEFI firmware image (e.g. edk2/AAVMF for aarch64).
@@ -1067,6 +1103,7 @@ fn main() -> Result<()> {
         Command::Linux(args) => boot_linux(args),
         Command::Freebsd(args) => boot_freebsd(args),
         Command::Netbsd(args) => boot_netbsd(args),
+        Command::Unikraft(args) => boot_unikraft(args),
         Command::Ps(args) => cmd_ps(args.all, args.json),
         Command::Images(args) => cmd_images(args.json),
         Command::Stop(args) => cmd_stop(&args.id),
@@ -1393,6 +1430,75 @@ fn boot_kernel(args: KernelArgs) -> Result<()> {
         args.run.detach,
         true, // BSD: use the SMP-shutdown watchdog on the foreground path
         args.run.volume.as_deref(),
+        &[],
+        false,
+        false,
+        build,
+    )
+}
+
+/// Boot a Unikraft unikernel. See [`crate::unikraft`] for why the image needs a
+/// host-side shim before libkrun's aarch64 loader will enter it.
+fn boot_unikraft(args: UnikraftArgs) -> Result<()> {
+    let kernel = unikraft::resolve(&args.path)?;
+    boot_unikraft_image(
+        &kernel,
+        &args.cmdline,
+        args.initramfs.as_deref(),
+        args.detach,
+        args.net,
+        args.vm,
+    )
+}
+
+/// Shared by `unikraft` and `start` (which re-boots a machine's saved image).
+fn boot_unikraft_image(
+    kernel: &std::path::Path,
+    cmdline: &str,
+    initramfs: Option<&std::path::Path>,
+    detach: bool,
+    net: NetConfig,
+    vm: VmConfig,
+) -> Result<()> {
+    let prepared = unikraft::prepare(kernel)?;
+    let machine_id = id::next_machine_id();
+    let vdir = machine_dir_or_tmp(&machine_id);
+    let image = basename(kernel);
+    let spec = unikraft::BootSpec {
+        kernel: kernel.to_path_buf(),
+        cmdline: cmdline.to_string(),
+        initramfs: initramfs.map(|p| p.to_path_buf()),
+    };
+
+    let build = || -> Result<(Ctx, Option<Gvproxy>)> {
+        let ctx = Ctx::new()?;
+        ctx.set_vm_config(vm.cpus, vm.mem)?;
+        // Unikraft's arm64 console is a PL011, which is libkrun's explicit
+        // serial — not the implicit virtio-console the Linux path uses.
+        ctx.attach_stdio_serial_console()
+            .context("wiring guest serial console to stdio")?;
+        // No agent lives in a unikernel; this just gives it a NIC (which it
+        // uses only if it was built with a virtio-net driver).
+        let gvproxy = setup_networking_with_agent(&ctx, &net, Some(&vdir))?;
+        ctx.set_kernel(&prepared.path, prepared.format, initramfs, cmdline)
+            .context("configuring unikernel")?;
+        spec.save(&vdir)?;
+        Ok((ctx, gvproxy))
+    };
+
+    run_machine(
+        &machine_id,
+        &vdir,
+        "unikraft",
+        &image,
+        "",
+        vm.cpus,
+        vm.mem,
+        detach,
+        // A unikernel that returns from main powers the VM off through PSCI,
+        // the same path the watchdog covers for a BSD guest.
+        true,
+        None,
         &[],
         false,
         false,
@@ -3348,6 +3454,18 @@ fn cmd_start(id: &str) -> Result<()> {
         } else {
             boot_linux(largs)
         }
+    } else if vm.kind == "unikraft" {
+        // Nothing to resume — a unikernel has no disk — so this just boots the
+        // same image again, from the spec saved beside its console log.
+        let spec = unikraft::BootSpec::load(std::path::Path::new(&vm.state_dir))?;
+        boot_unikraft_image(
+            &spec.kernel,
+            &spec.cmdline,
+            spec.initramfs.as_deref(),
+            true,
+            net,
+            vmcfg,
+        )
     } else if is_freebsd || is_netbsd {
         // Boot the machine's own disk in place when it exists (see above), so a
         // snapshot machine keeps its data; otherwise fall back to the base image.

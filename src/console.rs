@@ -1,7 +1,7 @@
 //! Console broker + client for detached microVMs.
 //!
 //! A detached VM has no terminal, so its guest console (hvc0) is wired to one
-//! end of a socketpair; a broker thread inside the VM process pumps the other
+//! end of a pty; a broker process alongside the VM pumps the other
 //! end to two places: an append-only `console.log`, and a Unix socket
 //! (`console.sock`) that `logs`/`shell` clients connect to. `logs` reads the
 //! file (optionally following the live socket); `shell` connects to the socket
@@ -12,13 +12,12 @@ use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::thread;
 
 use anyhow::{Context, Result};
 
 /// Set up a detached console under `dir`. Returns the fd to give libkrun for the
-/// guest console (the caller `dup2`s it onto fd 0 and 1); a broker thread is
-/// spawned that fans guest output to `console.log` and to `console.sock`
+/// guest console (the caller `dup2`s it onto fd 0 and 1); a broker process is
+/// forked off that fans guest output to `console.log` and to `console.sock`
 /// clients, and forwards client input back to the guest.
 ///
 /// The guest console must be a **PTY slave**: libkrun's implicit virtio-console
@@ -63,7 +62,63 @@ pub fn setup_detached(dir: &Path) -> Result<RawFd> {
         .open(&log_path)
         .with_context(|| format!("opening {}", log_path.display()))?;
 
-    thread::spawn(move || broker_loop(master, listener, logfile, log_path));
+    // The broker runs in its own process, not a thread of the VM's.
+    //
+    // libkrun does not return from `krun_start_enter`: when the guest powers
+    // off, its `Vmm::stop` ends the process with a bare `_exit`, which kills
+    // every other thread wherever it happens to stand. A broker *thread* would
+    // therefore lose whatever the guest wrote in its last moments — and a
+    // unikernel's whole life is its last moments: it prints and powers off in
+    // tens of milliseconds, so `logs` showed an empty console for a machine
+    // that had run perfectly. No amount of flushing on our side helps, because
+    // no code of ours runs after that `_exit`. A separate process outlives it
+    // and reads the pty dry afterwards.
+    //
+    // `live` is how it knows when that happened: the VM process holds the write
+    // end and never touches it, so the broker sees EOF exactly when the process
+    // dies, however it dies. CLOEXEC keeps the write end out of gvproxy and
+    // friends, which would otherwise hold the pipe open past the VM's exit.
+    let mut live = [-1 as RawFd; 2];
+    if unsafe { libc::pipe(live.as_mut_ptr()) } != 0 {
+        anyhow::bail!("pipe: {}", std::io::Error::last_os_error());
+    }
+    for fd in live {
+        unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
+
+    match unsafe { libc::fork() } {
+        -1 => anyhow::bail!("fork (console broker): {}", std::io::Error::last_os_error()),
+        0 => {
+            // Fork once more so the broker is reparented to init: a machine
+            // that outlives its broker must not collect a zombie child.
+            if unsafe { libc::fork() } == 0 {
+                // Its own session, so the hangup the kernel sends to the pty's
+                // foreground group when the VM process (the session leader)
+                // dies cannot kill the broker before it has drained. The pty
+                // slave stays open here on purpose — it keeps the terminal
+                // alive so that last read returns the guest's output rather
+                // than EOF.
+                unsafe {
+                    libc::setsid();
+                    libc::close(live[1]);
+                }
+                broker_loop(master, live[0], listener, logfile, log_path);
+            }
+            unsafe { libc::_exit(0) };
+        }
+        pid => {
+            // VM process: reap the intermediate fork and keep only what the
+            // guest needs — the pty slave, and the liveness pipe whose close is
+            // the broker's cue.
+            unsafe {
+                libc::waitpid(pid, std::ptr::null_mut(), 0);
+                libc::close(master);
+                libc::close(live[0]);
+            }
+            drop(listener);
+            drop(logfile);
+        }
+    }
     Ok(slave)
 }
 
@@ -72,9 +127,11 @@ pub fn setup_detached(dir: &Path) -> Result<RawFd> {
 /// attach shows the prompt immediately without dumping old scrollback.
 const REPLAY_WINDOW: u64 = 4096;
 
-/// The broker: `poll` over the PTY master, the listener, and connected clients.
+/// The broker: `poll` over the PTY master, the listener, the VM process's
+/// liveness pipe, and connected clients.
 fn broker_loop(
     master_fd: RawFd,
+    live_fd: RawFd,
     listener: UnixListener,
     mut logfile: std::fs::File,
     log_path: std::path::PathBuf,
@@ -88,9 +145,10 @@ fn broker_loop(
     let mut clients: Vec<UnixStream> = Vec::new();
 
     loop {
-        let mut pfds: Vec<libc::pollfd> = Vec::with_capacity(2 + clients.len());
+        let mut pfds: Vec<libc::pollfd> = Vec::with_capacity(3 + clients.len());
         pfds.push(pollin(guest.as_raw_fd()));
         pfds.push(pollin(listener.as_raw_fd()));
+        pfds.push(pollin(live_fd));
         for c in &clients {
             pfds.push(pollin(c.as_raw_fd()));
         }
@@ -124,6 +182,24 @@ fn broker_loop(
             }
         }
 
+        // The VM process is gone. Its output can still be sitting in the pty,
+        // so read the terminal dry before going away — this is the whole reason
+        // the broker is a process and not a thread.
+        if pfds[2].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+            let mut buf = [0u8; 4096];
+            while let Ok(k) = guest.read(&mut buf) {
+                if k == 0 {
+                    break;
+                }
+                let _ = logfile.write_all(&buf[..k]);
+                for c in clients.iter_mut() {
+                    let _ = c.write_all(&buf[..k]);
+                }
+            }
+            let _ = logfile.flush();
+            return;
+        }
+
         // New client connections.
         if pfds[1].revents & libc::POLLIN != 0 {
             while let Ok((mut stream, _)) = listener.accept() {
@@ -139,10 +215,10 @@ fn broker_loop(
         // Client input (from `shell`) -> guest console. Only iterate the clients
         // that were in *this* poll set: `accept` above may have appended new ones
         // (they have no pollfd yet and are handled next iteration).
-        let polled_clients = pfds.len() - 2;
+        let polled_clients = pfds.len() - 3;
         let mut drop_idx = Vec::new();
         for i in 0..polled_clients {
-            if pfds[2 + i].revents & (libc::POLLIN | libc::POLLHUP) == 0 {
+            if pfds[3 + i].revents & (libc::POLLIN | libc::POLLHUP) == 0 {
                 continue;
             }
             let mut buf = [0u8; 4096];

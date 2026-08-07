@@ -91,5 +91,14 @@ export function buildCreateArgs(opts: CreateOptions): string[] {
       a.push(...diskArgs(opts), ...netArgs(opts.net), ...nameArgs(opts), ...vmArgs(opts));
       return a;
     }
+    case "unikraft": {
+      // No diskArgs: a unikernel has nothing to persist.
+      const a = ["unikraft", "-d"];
+      if (opts.cmdline) a.push("--cmdline", opts.cmdline);
+      if (opts.initramfs) a.push("--initramfs", opts.initramfs);
+      a.push(...netArgs(opts.net), ...nameArgs(opts), ...vmArgs(opts));
+      a.push(opts.path ?? ".");
+      return a;
+    }
   }
 }

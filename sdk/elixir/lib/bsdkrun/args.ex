@@ -5,7 +5,7 @@ defmodule Bsdkrun.Args do
   path ends with `-d` so `create` yields a handle.
 
   Options are given as a keyword list or map, discriminated on `:os`
-  (`:linux`, `:freebsd`, `:netbsd`, `:firmware`, `:kernel`). See
+  (`:linux`, `:freebsd`, `:netbsd`, `:firmware`, `:kernel`, `:unikraft`). See
   `Bsdkrun.Sandbox.create/1` for the full set of per-kind keys.
   """
 
@@ -21,6 +21,7 @@ defmodule Bsdkrun.Args do
         :netbsd -> netbsd(opts)
         :firmware -> firmware(opts)
         :kernel -> kernel(opts)
+        :unikraft -> unikraft(opts)
         other -> raise ArgumentError, "unknown os #{inspect(other)}"
       end
 
@@ -83,6 +84,18 @@ defmodule Bsdkrun.Args do
     |> concat(net_args(o[:net]))
     |> concat(name_args(o))
     |> concat(vm_args(o))
+  end
+
+  # No `disk_args`: a unikernel has no disk, so there is nothing to persist,
+  # attach or clone. `:path` is a kraft project dir or an image; default ".".
+  defp unikraft(o) do
+    ["unikraft", "-d"]
+    |> opt(o, :cmdline, "--cmdline")
+    |> opt(o, :initramfs, "--initramfs")
+    |> concat(net_args(o[:net]))
+    |> concat(name_args(o))
+    |> concat(vm_args(o))
+    |> concat([o[:path] || "."])
   end
 
   # --- shared fragment helpers ------------------------------------------------

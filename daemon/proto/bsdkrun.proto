@@ -194,6 +194,18 @@ message RunBsdRequest {
   repeated string command = 12;
 }
 
+message RunUnikraftRequest {
+  // The unikernel to boot: a `kraft` project directory (the image is found
+  // under its .unikraft/build/) or the image itself. Defaults to ".".
+  optional string path = 1;
+  VmConfig vm = 2;
+  NetConfig net = 3;
+  // Kernel command line. Unikraft hands it to the application as argv.
+  optional string cmdline = 4;
+  // Optional initrd, for a unikernel built with an initrd-backed rootfs.
+  optional string initramfs = 5;
+}
+
 // ---------------------------------------------------------------------------
 // Images / fetching
 // ---------------------------------------------------------------------------
@@ -484,6 +496,7 @@ service Bsdkrun {
   // -- booting --------------------------------------------------------------
   rpc RunLinux(RunLinuxRequest) returns (RunResponse);
   rpc RunBsd(RunBsdRequest) returns (RunResponse);
+  rpc RunUnikraft(RunUnikraftRequest) returns (RunResponse);
   rpc RunFlavor(RunFlavorRequest) returns (RunResponse);
 
   // -- images ---------------------------------------------------------------

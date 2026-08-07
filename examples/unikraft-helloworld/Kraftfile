@@ -1,0 +1,17 @@
+spec: v0.6
+
+name: helloworld
+
+unikraft:
+  version: stable
+  kconfig:
+    # libkrun's aarch64 console is an ARM PL011; Firecracker's is an ns16550,
+    # so a stock fc/arm64 build boots silently under bsdkrun. Both drivers
+    # probe the device tree, so enabling PL011 alongside the default costs
+    # nothing and gives one image that boots under either VMM.
+    CONFIG_LIBPL011: 'y'
+    CONFIG_LIBPL011_EARLY_CONSOLE: 'y'
+
+targets:
+- fc/arm64
+- fc/x86_64

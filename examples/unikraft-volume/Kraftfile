@@ -1,0 +1,40 @@
+spec: v0.6
+
+name: volume
+
+unikraft:
+  version: stable
+  kconfig:
+    # libkrun's aarch64 console is a PL011 (see ../unikraft-helloworld).
+    CONFIG_LIBPL011: 'y'
+    CONFIG_LIBPL011_EARLY_CONSOLE: 'y'
+
+    # Volumes come in over virtio-fs: it is the only shared-directory
+    # transport libkrun implements (no virtio-9p), and the only Unikraft
+    # filesystem that can back a host directory.
+    CONFIG_LIBVIRTIO_FS: 'y'
+    CONFIG_LIBUKFS_VIRTIOFS: 'y'
+    # Off deliberately: it selects LIBUKPOD, whose anon.c calls UK_ASSERT
+    # without including <uk/assert.h>, so the link fails with "undefined
+    # reference to `UK_ASSERT'" (upstream bug, unikraft 0.21.0). It only adds
+    # shared file mappings (mmap), which a read/write test does not need.
+    CONFIG_LIBUKFS_VIRTIOFS_IOMEM: 'n'
+
+    # The virtiofs driver lives on the newer ukfs/posix-vfs stack, which is
+    # mutually exclusive with vfscore (lib/posix-vfs/Config.uk: depends on
+    # !LIBVFSCORE). Nothing here uses vfscore, so we simply select the new one.
+    CONFIG_LIBPOSIX_VFS: 'y'
+    CONFIG_LIBUKFS: 'y'
+    CONFIG_LIBUKFILE: 'y'
+
+    # Mount table from the kernel command line, so the *host* decides what is
+    # mounted where: vfs.fstab=[ "<tag>:/data:virtiofs" ].
+    CONFIG_LIBPOSIX_VFS_FSTAB: 'y'
+    CONFIG_LIBPOSIX_VFS_FSTAB_USER: 'y'
+
+    # A writable root, so /data exists as a mount point to mount onto.
+    CONFIG_LIBUKFS_RAMFS: 'y'
+
+targets:
+- fc/arm64
+- fc/x86_64

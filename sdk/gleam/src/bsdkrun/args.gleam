@@ -52,6 +52,18 @@ pub type Guest {
     cmdline: Option(String),
     disk: Option(String),
   )
+  /// Boot a Unikraft unikernel — the application linked into the kernel.
+  ///
+  /// There is no disk and no userland, so the persist / volume / attach-disk
+  /// options are ignored, and the resulting sandbox supports neither `exec`
+  /// nor `shell` nor snapshots. Read its output with `logs`.
+  Unikraft(
+    /// A `kraft` project directory (the image is found under its
+    /// `.unikraft/build/`) or a built unikernel image.
+    path: String,
+    cmdline: Option(String),
+    initramfs: Option(String),
+  )
 }
 
 /// Everything `sandbox.create` needs: the guest, plus the options every guest
@@ -133,6 +145,12 @@ pub fn kernel(kernel: String) -> CreateOptions {
     cmdline: None,
     disk: None,
   ))
+}
+
+/// Boot the Unikraft unikernel at `path` — a `kraft` project directory or a
+/// built image. Pass `"."` for the current directory.
+pub fn unikraft(path: String) -> CreateOptions {
+  new(Unikraft(path: path, cmdline: None, initramfs: None))
 }
 
 // --- shared option setters --------------------------------------------------
@@ -339,6 +357,20 @@ fn try_guest(
           opt("--disk", disk),
         ]),
       )
+
+    Unikraft(path: "", ..) ->
+      Error(InvalidOptions(
+        "unikraft guests need a non-empty path (\".\" for the current directory)",
+      ))
+    Unikraft(path:, cmdline:, initramfs:) ->
+      next(
+        list.flatten([
+          ["unikraft", "-d"],
+          opt("--cmdline", cmdline),
+          opt("--initramfs", initramfs),
+          [path],
+        ]),
+      )
   }
 }
 
@@ -347,6 +379,8 @@ fn try_guest(
 fn disk_args(opts: CreateOptions) -> List(String) {
   case opts.guest {
     Linux(..) -> opt("-v", opts.volume)
+    // A unikernel has no disk, so there is nothing to persist or attach.
+    Unikraft(..) -> []
     _ ->
       list.flatten([
         flag("--persist", opts.persist),

@@ -128,16 +128,44 @@ export interface KernelCreateOptions
   disk?: string;
 }
 
+/**
+ * Boot a Unikraft unikernel (`bsdkrun unikraft`).
+ *
+ * A unikernel is the application linked into the kernel: there is no disk and
+ * no userland, so this extends neither {@link DiskPersistenceOptions} nor the
+ * agent-backed options — `exec`, `shell` and `snapshot` do not apply to the
+ * resulting sandbox. Use `logs` to read its output.
+ */
+export interface UnikraftCreateOptions extends BaseCreateOptions {
+  os: "unikraft";
+  /**
+   * A `kraft` project directory (the image is found under its
+   * `.unikraft/build/`) or a built unikernel image. Defaults to `"."`.
+   */
+  path?: string;
+  /** Kernel command line; Unikraft hands it to the application as `argv`. */
+  cmdline?: string;
+  /** Optional initrd, for a unikernel built with an initrd-backed rootfs. */
+  initramfs?: string;
+}
+
 /** The full set of ways to boot a sandbox. Discriminated on `os`. */
 export type CreateOptions =
   | LinuxCreateOptions
   | FreebsdCreateOptions
   | NetbsdCreateOptions
   | FirmwareCreateOptions
-  | KernelCreateOptions;
+  | KernelCreateOptions
+  | UnikraftCreateOptions;
 
 /** Kind of guest a sandbox is running. */
-export type GuestKind = "linux" | "freebsd" | "netbsd" | "firmware" | "kernel";
+export type GuestKind =
+  | "linux"
+  | "freebsd"
+  | "netbsd"
+  | "firmware"
+  | "kernel"
+  | "unikraft";
 
 /** A machine as reported by `bsdkrun ps --json`. */
 export interface SandboxInfo {

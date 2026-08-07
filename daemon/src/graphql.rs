@@ -404,6 +404,20 @@ pub struct RunBsdInput {
     pub command: Vec<String>,
 }
 
+/// A unikernel has no disk and no agent, so this carries none of the
+/// volume/persist/repo/command fields the other guests take.
+#[derive(InputObject)]
+pub struct RunUnikraftInput {
+    /// A `kraft` project directory or a built unikernel image. Defaults to ".".
+    pub path: Option<String>,
+    pub cpus: Option<u32>,
+    pub mem: Option<u32>,
+    pub net: Option<NetInput>,
+    /// Kernel command line; Unikraft hands it to the application as argv.
+    pub cmdline: Option<String>,
+    pub initramfs: Option<String>,
+}
+
 #[derive(InputObject)]
 pub struct RunFlavorInput {
     pub name: String,
@@ -707,6 +721,22 @@ impl Mutation {
             command: input.command,
         };
         api(ctx)?.ops.run_bsd(&opts).await.map_err(gql_err)
+    }
+
+    async fn run_unikraft(
+        &self,
+        ctx: &Context<'_>,
+        input: RunUnikraftInput,
+    ) -> async_graphql::Result<String> {
+        let opts = ops::RunUnikraftOpts {
+            path: input.path,
+            cpus: input.cpus,
+            mem: input.mem,
+            net: input.net.map(Into::into).unwrap_or_default(),
+            cmdline: input.cmdline,
+            initramfs: input.initramfs,
+        };
+        api(ctx)?.ops.run_unikraft(&opts).await.map_err(gql_err)
     }
 
     async fn run_flavor(
@@ -1070,6 +1100,24 @@ impl Subscription_ {
             disk_size: input.disk_size,
             repo: input.repo,
             command: input.command,
+        };
+        Ok(launch_stream(api.ops.clone(), opts.to_argv()))
+    }
+
+    /// Boot a Unikraft unikernel, streaming progress until its id is known.
+    async fn launch_unikraft(
+        &self,
+        ctx: &Context<'_>,
+        input: RunUnikraftInput,
+    ) -> async_graphql::Result<impl Stream<Item = LaunchEvent>> {
+        let api = api(ctx)?;
+        let opts = ops::RunUnikraftOpts {
+            path: input.path,
+            cpus: input.cpus,
+            mem: input.mem,
+            net: input.net.map(Into::into).unwrap_or_default(),
+            cmdline: input.cmdline,
+            initramfs: input.initramfs,
         };
         Ok(launch_stream(api.ops.clone(), opts.to_argv()))
     }

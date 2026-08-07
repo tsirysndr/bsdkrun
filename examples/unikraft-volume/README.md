@@ -60,10 +60,25 @@ wrong mounts nothing while the guest still boots perfectly:
   `ENOENT` before virtio-fs is ever consulted. The generated table mounts a
   ramfs at `/` first, and `mkmp` (make mount point) creates the directory.
 
+## How the guest finds the device (and why x86_64 is different)
+
+On arm64 libkrun hands the guest a device tree and Unikraft reads its
+virtio-mmio devices out of it. On x86_64 there is no device tree: the only
+discovery path is the `virtio_mmio.device=<size>@<base>:<irq>` parameters
+libkrun appends to the command line once the devices exist — which is *after*
+the caller set that command line, and so past the `--` above. A guest that
+stops parsing at `--` then boots with no virtio devices at all and fails the
+mount with `-ENOENT`, which is why this needs a libkrun that inserts those
+hints ahead of the stop sequence rather than at the end.
+
+Those hints cover *every* device on the bus, including a virtio-balloon and a
+virtio-entropy libkrun always creates ahead of ours — hence
+`CONFIG_VIRTIO_MMIO_MAX_DEV_CMDLINE=8`, and patch 3 below.
+
 ## The patches
 
-`build.sh` is a three-step build — **fetch, patch, build** — because two bugs in
-unikraft 0.21.0 stop a virtio-fs guest working at all. Both are one-liners, in
+`build.sh` is a three-step build — **fetch, patch, build** — because three bugs
+in unikraft 0.21.0 stop a virtio-fs guest working at all. All are one-liners, in
 `patches/`:
 
 1. `lib/ukpod/anon.c` calls `UK_ASSERT` without including `<uk/assert.h>`, so
@@ -74,8 +89,13 @@ unikraft 0.21.0 stop a virtio-fs guest working at all. Both are one-liners, in
    regular file when creating a file, instead of the file it just created. A
    directory never is, so creating *any* file on a virtio-fs mount crashes the
    guest — on any VMM, with assertions at their default `y`.
+3. `drivers/virtio/mmio/virtio_mmio_cmdl.c` abandons the whole bus as soon as
+   one command-line device fails to attach, so libkrun's balloon and entropy
+   devices — which Unikraft has no drivers for — hide the virtio-fs device
+   declared behind them. The device-tree probe already skips and carries on;
+   this makes the command-line probe do the same.
 
-Both should go upstream. Until they do, this example carries them; `patch -N`
+All should go upstream. Until they do, this example carries them; `patch -N`
 makes the step idempotent, so rebuilds work without a clean fetch. Note
 `build.sh` deliberately does **not** pass `--no-cache`, which would re-fetch the
 sources and discard the patches.

@@ -199,6 +199,31 @@ impl RunBsdOpts {
 }
 
 #[derive(Debug, Default, Clone)]
+pub struct RunUnikraftOpts {
+    /// A `kraft` project directory or a built unikernel image. Empty = ".".
+    pub path: Option<String>,
+    pub cpus: Option<u32>,
+    pub mem: Option<u32>,
+    pub net: NetOpts,
+    pub cmdline: Option<String>,
+    pub initramfs: Option<String>,
+}
+
+impl RunUnikraftOpts {
+    pub fn to_argv(&self) -> Vec<String> {
+        // No -v/--persist/--repo/command: a unikernel has no disk to persist
+        // and no agent to run anything through.
+        Argv::new(&["unikraft", "-d"])
+            .vm(self.cpus, self.mem)
+            .net(&self.net)
+            .opt("--cmdline", &self.cmdline)
+            .opt("--initramfs", &self.initramfs)
+            .arg(self.path.clone().unwrap_or_else(|| ".".into()))
+            .take()
+    }
+}
+
+#[derive(Debug, Default, Clone)]
 pub struct RunFlavorOpts {
     pub name: String,
     pub cpus: Option<u32>,
@@ -585,6 +610,10 @@ impl Ops {
     }
 
     pub async fn run_bsd(&self, opts: &RunBsdOpts) -> OpResult<String> {
+        Ok(self.cli.detached(&opts.to_argv()).await?)
+    }
+
+    pub async fn run_unikraft(&self, opts: &RunUnikraftOpts) -> OpResult<String> {
         Ok(self.cli.detached(&opts.to_argv()).await?)
     }
 

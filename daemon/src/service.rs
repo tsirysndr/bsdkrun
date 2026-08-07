@@ -305,6 +305,25 @@ impl Bsdkrun for BsdkrunService {
         }))
     }
 
+    async fn run_unikraft(
+        &self,
+        req: Request<RunUnikraftRequest>,
+    ) -> Result<Response<RunResponse>, Status> {
+        let r = req.into_inner();
+        let (cpus, mem) = vm_opts(r.vm);
+        let opts = ops::RunUnikraftOpts {
+            path: r.path,
+            cpus,
+            mem,
+            net: net_opts(r.net),
+            cmdline: r.cmdline,
+            initramfs: r.initramfs,
+        };
+        Ok(Response::new(RunResponse {
+            id: self.ops.run_unikraft(&opts).await?,
+        }))
+    }
+
     async fn run_flavor(
         &self,
         req: Request<RunFlavorRequest>,

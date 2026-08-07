@@ -91,11 +91,24 @@ export default function TerminalPanel() {
               ? undefined
               : machines.find((x) => x.id === t.machineId);
             const kc = m ? kindColor(m.kind, m.image) : null;
-            const label = isHost ? "Host" : m?.image || shortId(t.machineId);
+            // The machine's own name, not its image: several machines commonly
+            // run the same image, and a row of identical "alpine" tabs tells you
+            // nothing about which shell you are typing into. The generated name
+            // is unique per machine and is what `ps` and the lists show.
+            const label = isHost ? "Host" : m?.name || shortId(t.machineId);
+            // Guest OS spelled out beside it. The dot already encodes it by
+            // colour, which is only legible once you know the scheme.
+            const os = isHost ? null : kc?.label ?? null;
+            const tooltip = isHost
+              ? "Host shell"
+              : [m?.name, os, m?.image, shortId(t.machineId)]
+                  .filter(Boolean)
+                  .join(" · ");
             const isActive = t.id === activeId;
             return (
               <div
                 key={t.id}
+                title={tooltip}
                 onClick={() => setActive(t.id)}
                 onAuxClick={(e) => {
                   if (e.button === 1) closeTab(t.id); // middle-click closes
@@ -112,6 +125,11 @@ export default function TerminalPanel() {
                   <IconTerminal2 size={13} className="shrink-0" />
                 )}
                 <span className="max-w-[140px] truncate">{label}</span>
+                {os && (
+                  <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-foreground-600">
+                    {os}
+                  </span>
+                )}
                 <button
                   onClick={(e) => {
                     e.stopPropagation();

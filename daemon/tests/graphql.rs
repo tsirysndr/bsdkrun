@@ -41,7 +41,7 @@ flavors)
   echo '[{"name":"node","source":"catalog","kind":"linux","base":"node:22","category":"language","method":"docker","description":"Node","ports":["3000:3000"],"nix":[],"created_at":null}]'
   exit 0 ;;
 versions) printf 'Available builds:\n  14.3\n  15.1  (latest)\n'; exit 0 ;;
-linux|freebsd|netbsd) echo "m-$1-001"; exit 0 ;;
+linux|freebsd|netbsd|unikraft) echo "m-$1-001"; exit 0 ;;
 exec)
   echo "EXEC_OK"
   cat
@@ -295,6 +295,45 @@ async fn run_bsd_maps_the_enum_and_is_always_detached() {
             "8G",
         ]
     );
+}
+
+/// A unikernel has no disk and no agent, so its argv carries none of the
+/// volume / persist / repo / command flags — and the path is positional, last.
+#[tokio::test]
+async fn run_unikraft_puts_the_path_last_and_omits_disk_flags() {
+    let h = Harness::new();
+    let d = h
+        .query(
+            r#"mutation { runUnikraft(input: {
+                path: "~/hello", cpus: 2, mem: 256,
+                net: { noNet: true }, cmdline: "helloworld a b"
+            }) }"#,
+        )
+        .await;
+    assert_eq!(json(&d)["runUnikraft"], "m-unikraft-001");
+    assert_eq!(
+        h.last_argv(),
+        [
+            "unikraft",
+            "-d",
+            "--cpus",
+            "2",
+            "--mem",
+            "256",
+            "--no-net",
+            "--cmdline",
+            "helloworld a b",
+            "~/hello",
+        ]
+    );
+}
+
+/// The path defaults to the current directory, exactly as the CLI does.
+#[tokio::test]
+async fn run_unikraft_defaults_the_path_to_the_current_directory() {
+    let h = Harness::new();
+    h.query(r#"mutation { runUnikraft(input: {}) }"#).await;
+    assert_eq!(h.last_argv(), ["unikraft", "-d", "."]);
 }
 
 #[tokio::test]

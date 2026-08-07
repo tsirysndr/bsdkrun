@@ -92,6 +92,9 @@ defmodule Bsdkrun.Args do
     ["unikraft", "-d"]
     |> opt(o, :cmdline, "--cmdline")
     |> opt(o, :initramfs, "--initramfs")
+    # Volumes are the exception to "no disk options": virtio-fs shares, which
+    # need neither a disk nor an agent.
+    |> multi(o, :mounts, "--mount")
     |> concat(net_args(o[:net]))
     |> concat(name_args(o))
     |> concat(vm_args(o))

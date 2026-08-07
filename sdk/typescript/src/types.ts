@@ -147,6 +147,13 @@ export interface UnikraftCreateOptions extends BaseCreateOptions {
   cmdline?: string;
   /** Optional initrd, for a unikernel built with an initrd-backed rootfs. */
   initramfs?: string;
+  /**
+   * Persistent volumes: host directories shared in over virtio-fs, each
+   * `"HOST:GUEST"` with an absolute guest path. The one disk-shaped option a
+   * unikernel does take — a share needs neither a disk nor an agent. Requires
+   * a unikernel built for it; see `examples/unikraft-volume`.
+   */
+  mounts?: string[];
 }
 
 /** The full set of ways to boot a sandbox. Discriminated on `os`. */

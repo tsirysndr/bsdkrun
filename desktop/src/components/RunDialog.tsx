@@ -205,7 +205,10 @@ export default function RunDialog() {
         data.kind === "linux" && data.entrypoint.trim()
           ? data.entrypoint.trim()
           : null,
-      mounts: data.kind === "linux" ? lines(data.mounts) : [],
+      mounts:
+        data.kind === "linux" || data.kind === "unikraft"
+          ? lines(data.mounts)
+          : [],
       ports: lines(data.ports),
       attach_disks: bsd ? lines(data.attachDisks) : [],
       disk_size: bsd && data.diskSize.trim() ? data.diskSize.trim() : null,
@@ -624,23 +627,42 @@ export default function RunDialog() {
                         />
                       )}
                     />
-                    <Controller
-                      control={control}
-                      name="mounts"
-                      render={({ field }) => (
-                        <Textarea
-                          label="Bind mounts (one per line)"
-                          labelPlacement="outside"
-                          placeholder={"~/project:/src\n~/data:/data:ro"}
-                          value={field.value}
-                          onValueChange={field.onChange}
-                          minRows={2}
-                          variant="bordered"
-                          classNames={{ input: "font-mono text-xs" }}
-                        />
-                      )}
-                    />
                   </>
+                )}
+
+                {/* Both kinds share host directories over virtio-fs. For a
+                    unikernel it is the only way to keep anything, so it is
+                    labelled as volumes rather than bind mounts. */}
+                {(kind === "linux" || unikraft) && (
+                  <Controller
+                    control={control}
+                    name="mounts"
+                    render={({ field }) => (
+                      <Textarea
+                        label={
+                          unikraft
+                            ? "Volumes (one per line, HOST:GUEST)"
+                            : "Bind mounts (one per line)"
+                        }
+                        labelPlacement="outside"
+                        placeholder={
+                          unikraft
+                            ? "~/data:/data\n~/logs:/var/log"
+                            : "~/project:/src\n~/data:/data:ro"
+                        }
+                        value={field.value}
+                        onValueChange={field.onChange}
+                        minRows={2}
+                        variant="bordered"
+                        description={
+                          unikraft
+                            ? "Shared over virtio-fs and persist across boots. The guest path must be absolute, and the unikernel must be built for it."
+                            : undefined
+                        }
+                        classNames={{ input: "font-mono text-xs" }}
+                      />
+                    )}
+                  />
                 )}
 
                 <Controller

@@ -148,7 +148,10 @@ function bsdInput(spec: RunSpec) {
   };
 }
 
-/** A unikernel has no disk and no agent — no volume/mounts/repo/command. */
+/**
+ * A unikernel has no disk and no agent, so no volume/repo/command. `mounts`
+ * is the exception: virtio-fs shares, which need neither.
+ */
 function unikraftInput(spec: RunSpec) {
   return {
     path: orNull(spec.path),
@@ -161,6 +164,7 @@ function unikraftInput(spec: RunSpec) {
       name: orNull(spec.name),
     },
     cmdline: orNull(spec.cmdline),
+    mounts: clean(spec.mounts),
   };
 }
 

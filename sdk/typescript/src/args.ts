@@ -92,10 +92,12 @@ export function buildCreateArgs(opts: CreateOptions): string[] {
       return a;
     }
     case "unikraft": {
-      // No diskArgs: a unikernel has nothing to persist.
+      // No diskArgs: a unikernel has nothing to persist. Volumes are the
+      // exception — virtio-fs shares, which need no disk.
       const a = ["unikraft", "-d"];
       if (opts.cmdline) a.push("--cmdline", opts.cmdline);
       if (opts.initramfs) a.push("--initramfs", opts.initramfs);
+      for (const m of opts.mounts ?? []) a.push("--mount", m);
       a.push(...netArgs(opts.net), ...nameArgs(opts), ...vmArgs(opts));
       a.push(opts.path ?? ".");
       return a;

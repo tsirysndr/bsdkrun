@@ -204,6 +204,10 @@ message RunUnikraftRequest {
   optional string cmdline = 4;
   // Optional initrd, for a unikernel built with an initrd-backed rootfs.
   optional string initramfs = 5;
+  // Persistent volumes: host directories shared in over virtio-fs, each
+  // "HOST:GUEST" (the guest path must be absolute). Needs a unikernel built
+  // for it — see examples/unikraft-volume.
+  repeated string mounts = 6;
 }
 
 // ---------------------------------------------------------------------------

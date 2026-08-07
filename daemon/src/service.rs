@@ -318,6 +318,7 @@ impl Bsdkrun for BsdkrunService {
             net: net_opts(r.net),
             cmdline: r.cmdline,
             initramfs: r.initramfs,
+            mounts: r.mounts,
         };
         Ok(Response::new(RunResponse {
             id: self.ops.run_unikraft(&opts).await?,

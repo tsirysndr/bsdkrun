@@ -63,6 +63,10 @@ pub type Guest {
     path: String,
     cmdline: Option(String),
     initramfs: Option(String),
+    /// Persistent volumes over virtio-fs, each `"HOST:GUEST"` with an
+    /// absolute guest path. The one disk-shaped option a unikernel takes: a
+    /// share needs neither a disk nor an agent.
+    mounts: List(String),
   )
 }
 
@@ -150,7 +154,7 @@ pub fn kernel(kernel: String) -> CreateOptions {
 /// Boot the Unikraft unikernel at `path` — a `kraft` project directory or a
 /// built image. Pass `"."` for the current directory.
 pub fn unikraft(path: String) -> CreateOptions {
-  new(Unikraft(path: path, cmdline: None, initramfs: None))
+  new(Unikraft(path: path, cmdline: None, initramfs: None, mounts: []))
 }
 
 // --- shared option setters --------------------------------------------------
@@ -362,12 +366,13 @@ fn try_guest(
       Error(InvalidOptions(
         "unikraft guests need a non-empty path (\".\" for the current directory)",
       ))
-    Unikraft(path:, cmdline:, initramfs:) ->
+    Unikraft(path:, cmdline:, initramfs:, mounts:) ->
       next(
         list.flatten([
           ["unikraft", "-d"],
           opt("--cmdline", cmdline),
           opt("--initramfs", initramfs),
+          multi("--mount", mounts),
           [path],
         ]),
       )

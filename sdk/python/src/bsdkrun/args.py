@@ -162,6 +162,10 @@ def build_create_args(*, os: str, **opts: Any) -> list[str]:
             a += ["--cmdline", opts["cmdline"]]
         if opts.get("initramfs"):
             a += ["--initramfs", opts["initramfs"]]
+        # Volumes are the exception to "no disk options": virtio-fs shares,
+        # which need neither a disk nor an agent.
+        for mount in opts.get("mounts") or []:
+            a += ["--mount", mount]
         a += _net_args(net) + _name_args(opts) + _vm_args(opts)
         a.append(opts.get("path") or ".")
         return a

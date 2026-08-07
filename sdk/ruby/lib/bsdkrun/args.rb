@@ -65,6 +65,7 @@ module Bsdkrun
       when "netbsd"   then netbsd_args(opts)
       when "firmware" then firmware_args(opts)
       when "kernel"   then kernel_args(opts)
+      when "unikraft" then unikraft_args(opts)
       else raise ArgumentError, "unknown os: #{opts[:os].inspect}"
       end
     end
@@ -120,6 +121,18 @@ module Bsdkrun
       a.push("--disk", opts[:disk]) if opts[:disk]
       a.concat(disk_args(opts)).concat(net_args(opts[:net]))
        .concat(name_args(opts)).concat(vm_args(opts))
+    end
+
+    # @!visibility private
+    #
+    # No +disk_args+: a unikernel has no disk, so there is nothing to persist,
+    # attach or clone. +:path+ is a kraft project dir or an image; default +.+.
+    def unikraft_args(opts)
+      a = ["unikraft", "-d"]
+      a.push("--cmdline", opts[:cmdline]) if opts[:cmdline]
+      a.push("--initramfs", opts[:initramfs]) if opts[:initramfs]
+      a.concat(net_args(opts[:net])).concat(name_args(opts)).concat(vm_args(opts))
+      a.push((opts[:path] || ".").to_s)
     end
   end
 end

@@ -628,9 +628,17 @@ async fn system_stats(state: State<'_, AppState>) -> Result<system::SystemStats,
 /// always runs detached (`-d`).
 #[derive(Debug, Deserialize)]
 pub struct RunSpec {
-    pub kind: String, // "linux" | "freebsd" | "netbsd"
+    pub kind: String, // "linux" | "freebsd" | "netbsd" | "unikraft"
     #[serde(default)]
     pub image: Option<String>,
+    /// Unikraft only: a `kraft` project directory (the image is found under its
+    /// `.unikraft/build/`) or a built unikernel image.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Unikraft only: the kernel command line, which Unikraft hands to the
+    /// application as `argv`.
+    #[serde(default)]
+    pub cmdline: Option<String>,
     #[serde(default)]
     pub version: Option<String>,
     #[serde(default)]
@@ -676,6 +684,9 @@ fn nonempty(s: &Option<String>) -> Option<&str> {
 fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
     let mut a: Vec<String> = vec![spec.kind.clone(), "-d".into()];
     let bsd = spec.kind == "freebsd" || spec.kind == "netbsd";
+    // A unikernel is the application linked into the kernel: no disk to
+    // persist and no agent to run a repo clone or a command through.
+    let unikraft = spec.kind == "unikraft";
 
     if bsd {
         if let Some(v) = nonempty(&spec.version) {
@@ -691,9 +702,11 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
         a.push("--mem".into());
         a.push(m.to_string());
     }
-    if let Some(v) = nonempty(&spec.volume) {
-        a.push("-v".into());
-        a.push(v.into());
+    if !unikraft {
+        if let Some(v) = nonempty(&spec.volume) {
+            a.push("-v".into());
+            a.push(v.into());
+        }
     }
     if spec.no_net {
         a.push("--no-net".into());
@@ -705,9 +718,11 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
         }
     }
     // `--repo` clones a git repo after boot (both Linux and BSD support it).
-    if let Some(r) = nonempty(&spec.repo) {
-        a.push("--repo".into());
-        a.push(r.into());
+    if !unikraft {
+        if let Some(r) = nonempty(&spec.repo) {
+            a.push("--repo".into());
+            a.push(r.into());
+        }
     }
     // Global network membership + friendly/DNS name.
     if let Some(n) = nonempty(&spec.network) {
@@ -735,6 +750,13 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
         let image = nonempty(&spec.image)
             .ok_or_else(|| BkError::Parse("an image reference is required for linux".into()))?;
         a.push(image.into());
+    } else if unikraft {
+        if let Some(c) = nonempty(&spec.cmdline) {
+            a.push("--cmdline".into());
+            a.push(c.into());
+        }
+        // The path is positional and last; default to "." like the CLI.
+        a.push(nonempty(&spec.path).unwrap_or(".").into());
     } else {
         // BSD: grow the root disk + attach extra virtio-blk disks.
         if let Some(sz) = nonempty(&spec.disk_size) {
@@ -748,7 +770,7 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
             }
         }
     }
-    if !spec.command.is_empty() {
+    if !unikraft && !spec.command.is_empty() {
         a.push("--".into());
         a.extend(spec.command.iter().cloned());
     }

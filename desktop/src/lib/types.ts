@@ -112,8 +112,12 @@ export interface Settings {
 // The Run dialog payload. Field names are snake_case to match the Rust
 // `RunSpec` struct exactly (nested structs are not camelCase-converted).
 export interface RunSpec {
-  kind: "linux" | "freebsd" | "netbsd";
+  kind: "linux" | "freebsd" | "netbsd" | "unikraft";
   image?: string | null;
+  /** Unikraft only: a kraft project directory or a built unikernel image. */
+  path?: string | null;
+  /** Unikraft only: kernel cmdline, handed to the application as argv. */
+  cmdline?: string | null;
   version?: string | null;
   cpus?: number | null;
   mem?: number | null;

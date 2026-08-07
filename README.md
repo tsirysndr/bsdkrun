@@ -47,6 +47,7 @@ image** (`bsdkrun linux alpine` pulls it from any registry, extracts the rootfs,
   - [`firmware`](#firmware--boot-a-disk-through-its-uefi-loader)
   - [`kernel`](#kernel--boot-a-kernel-directly-no-bootloader)
   - [`linux`](#linux--run-an-oci-image-as-a-microvm)
+  - [`unikraft`](#unikraft--boot-a-unikraft-unikernel)
 - [Managing machines](#managing-machines)
 - [Flavors — preconfigured environments & snapshots](#flavors--preconfigured-environments--snapshots)
 - [Networking](#networking)
@@ -442,6 +443,135 @@ under systemd), and drops a marker (`/etc/bsdkrun-systemd`) that makes the gener
 systemd as PID 1** on the next boot. `disable` removes the marker. In systemd mode the image
 entrypoint/`--` command is not run — systemd owns userspace; manage workloads as units. Boot on a
 **volume** (`-v`) so the installed packages + marker survive across machines.
+
+### `unikraft` — boot a Unikraft unikernel
+
+[Unikraft](https://unikraft.org) builds your application *into* the kernel: one binary, no
+userland, no init, no shell. A hello-world image is ~220 KB and boots in milliseconds. bsdkrun
+runs those as microVMs the same way it runs everything else.
+
+Build for the **Firecracker platform** (`--plat fc`) — its memory layout and boot protocol are
+what libkrun implements — then point `bsdkrun unikraft` at the result.
+
+#### Step by step
+
+**1. Install `kraft`** (Unikraft's build tool):
+
+```sh
+brew install unikraft/cli/kraftkit          # macOS
+curl -sSfL https://get.kraftkit.sh | sh     # Linux
+```
+
+**2. Get an example from the catalog.** [`unikraft/catalog`](https://github.com/unikraft/catalog)
+holds ready-made apps — `library/helloworld` is the smallest (one `main.c`):
+
+```sh
+git clone --depth 1 https://github.com/unikraft/catalog
+cd catalog/library/helloworld
+```
+
+**3. On arm64, add the PL011 console driver.** libkrun's aarch64 serial is an ARM PL011;
+Firecracker's is an ns16550, so a stock `fc/arm64` build boots *silently*. Both drivers probe the
+device tree, so enabling PL011 alongside the default costs nothing and gives you one image that
+boots under either VMM. Replace the `Kraftfile` with:
+
+```yaml
+spec: v0.6
+
+name: helloworld
+
+unikraft:
+  version: stable
+  kconfig:
+    CONFIG_LIBPL011: 'y'
+    CONFIG_LIBPL011_EARLY_CONSOLE: 'y'
+
+targets:
+- fc/arm64
+```
+
+On **x86_64** no override is needed — the `fc` platform already uses an ns16550 on COM1, which is
+the serial port libkrun exposes. Just list `fc/x86_64` as the target.
+
+**4. Build it.** The Unikraft build needs GNU make/sed and a Linux toolchain, so on macOS run it
+in a container (`kraft` itself works natively, but the Unikraft tree it drives does not):
+
+```sh
+# Linux
+kraft build --arch arm64 --plat fc          # or --arch x86_64
+
+# macOS — build inside Linux, the image is written to .unikraft/build/
+docker run --rm -v "$PWD":/w -w /w debian:bookworm sh -c '
+  apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+    build-essential libncurses-dev libyaml-dev flex bison git wget unzip \
+    uuid-runtime python3 curl ca-certificates bc >/dev/null
+  curl -sSfLo /tmp/k.deb https://github.com/unikraft/kraftkit/releases/download/v0.12.15/kraftkit_0.12.15_linux_arm64.deb
+  dpkg -i /tmp/k.deb
+  kraft build --arch arm64 --plat fc --log-type basic'
+```
+
+**5. Boot it:**
+
+```sh
+bsdkrun unikraft .
+```
+
+That's it:
+
+```
+Powered by
+o.   .o       _ _               __ _
+Oo   Oo  ___ (_) | __ __  __ _ ' _) :_
+oO   oO ' _ `| | |/ /  _)' _` | |_|  _)
+oOo oOO| | | | |   (| | | (_) |  _) :_
+ OoOoO ._, ._:_:_,\_._,  .__,_:_, \___)
+                          Ijiraq 0.21.0
+Hello from Unikraft!
+```
+
+#### Usage
+
+The argument is a **project directory** (bsdkrun finds the image under `.unikraft/build/`) or the
+**image itself**:
+
+```sh
+bsdkrun unikraft                                          # the current directory
+bsdkrun unikraft ~/catalog/library/helloworld             # a project directory
+bsdkrun unikraft .unikraft/build/helloworld_fc-arm64      # the image
+bsdkrun unikraft -d .                                     # detached; use logs/stop/rm
+bsdkrun unikraft . --cmdline "helloworld --port 8080"     # cmdline arrives as argv
+bsdkrun unikraft . --initramfs initrd.cpio                # for a --rootfs build
+```
+
+A unikernel has no shell and no agent, so `exec` and `shell` don't apply — `logs`, `ps`, `stop`,
+`start`, and `rm` all work as usual. When `main` returns, the guest powers the VM off.
+
+#### How it boots
+
+The `fc` platform links at `0x8000_0000` (arm64), which is exactly where libkrun's aarch64 loader
+places a raw image, and it boots via the Linux protocol with the device tree in `x0` — which is
+what libkrun sets up. Two things bsdkrun handles for you:
+
+- **The entry shim (arm64).** Unikraft reserves the first megabyte of RAM for the DTB, so its
+  `Image` header asks to be loaded at `0x8000_0000 + 0xf_ffc0`, and the build is not relocatable.
+  libkrun ignores `text_offset` and enters at `0x8000_0000` — inside the reserved hole. bsdkrun
+  front-pads the image so every byte lands at its link address and writes a single `b` instruction
+  at offset 0, so libkrun's fixed entry branches to the real one (a branch preserves `x0`). The
+  shimmed image is cached under `$XDG_CACHE_HOME/bsdkrun/unikraft`, keyed by content.
+- **The image format.** arm64 takes the raw `Image` (or the `.dbg` ELF beside it — same bytes once
+  flattened); x86_64 hands the ELF straight to libkrun's ELF loader, which enters at `e_entry`
+  (`_lxboot_entry`) in long mode with the zero page in `RSI` — exactly the 64-bit Linux protocol
+  Unikraft's `fc` platform expects, including the `HdrS` magic it checks before it will run.
+
+Booting on **arm64/macOS** is verified end to end; **x86_64** is covered by the
+[`e2e-unikraft`](.github/workflows/e2e-unikraft.yml) CI workflow, which builds a catalog unikernel
+with `kraft` and boots it under KVM.
+
+> **arm64 needs a patched libkrun.** Unikraft's PL011 driver writes its registers 16 bits at a
+> time (`strh`), and libkrun's HVF MMIO path only handled 1/4/8-byte writes — a halfword write
+> panicked the vCPU thread with `unsupported mmio len=2`. The read path already handled it; the
+> fix is the matching `2 =>` arm in the write path. Upstreaming is in progress; until it lands,
+> build libkrun from [`tsirysndr/libkrun`](https://github.com/tsirysndr/libkrun).
 
 ---
 

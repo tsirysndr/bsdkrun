@@ -139,8 +139,14 @@ its own — the CLI has no change feed, so this genuinely polls).
 ### Machines are always detached
 
 The daemon outlives any single RPC, so a foreground VM would have nowhere to
-live. `RunLinux` / `RunBsd` / `RunFlavor` return a machine id; use `Logs` to
-watch it boot and `Exec` to get a shell.
+live. `RunLinux` / `RunBsd` / `RunUnikraft` / `RunFlavor` return a machine id;
+use `Logs` to watch it boot and `Exec` to get a shell.
+
+`RunUnikraft` boots a [Unikraft](https://unikraft.org) unikernel — the
+application linked into the kernel. It takes neither a volume nor a command,
+because such a guest has no disk and no in-guest agent; `Exec` and `Commit`
+are rejected for the machines it creates, and `Logs` is how you read their
+output.
 
 ## How a remote interactive shell works
 

@@ -10,6 +10,8 @@ The public entrypoint is :func:`build_create_args`, keyed on ``os``:
 * ``netbsd``   — run NetBSD.
 * ``firmware`` — boot a raw disk through its UEFI loader (``firmware``, ``disk``).
 * ``kernel``   — boot a kernel directly (``kernel`` required).
+* ``unikraft`` — boot a Unikraft unikernel (``path``: a kraft project dir or an
+  image; defaults to ``.``).
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from .types import PortForward
 
 __all__ = ["build_create_args"]
 
-_VALID_OS = ("linux", "freebsd", "netbsd", "firmware", "kernel")
+_VALID_OS = ("linux", "freebsd", "netbsd", "firmware", "kernel", "unikraft")
 
 
 def _net_args(net: Mapping[str, Any] | None) -> list[str]:
@@ -150,6 +152,18 @@ def build_create_args(*, os: str, **opts: Any) -> list[str]:
         if opts.get("disk"):
             a += ["--disk", opts["disk"]]
         a += _disk_args(opts) + _net_args(net) + _name_args(opts) + _vm_args(opts)
+        return a
+
+    if os == "unikraft":
+        # No _disk_args: a unikernel has no disk, so there is nothing to
+        # persist, attach or clone.
+        a = ["unikraft", "-d"]
+        if opts.get("cmdline"):
+            a += ["--cmdline", opts["cmdline"]]
+        if opts.get("initramfs"):
+            a += ["--initramfs", opts["initramfs"]]
+        a += _net_args(net) + _name_args(opts) + _vm_args(opts)
+        a.append(opts.get("path") or ".")
         return a
 
     raise ValueError(f"unknown os {os!r}; expected one of {', '.join(_VALID_OS)}")

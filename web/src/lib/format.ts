@@ -78,7 +78,22 @@ const BADGE = {
     className: "bg-orange-500/15 text-orange-300 border-orange-500/25",
     dot: "bg-orange-400",
   },
+  unikraft: {
+    label: "Unikraft",
+    className: "bg-teal-500/15 text-teal-300 border-teal-500/25",
+    dot: "bg-teal-400",
+  },
 } as const;
+
+/**
+ * Whether this machine is a Unikraft unikernel — the application linked into
+ * the kernel. It has no disk and no in-guest agent, so snapshots and the
+ * terminal/exec do not apply and the CLI rejects them; the UI hides those
+ * actions rather than offering a button that always errors.
+ */
+export function isUnikraft(kind: string | null | undefined): boolean {
+  return kind === "unikraft";
+}
 
 /**
  * A themed badge per guest OS. bsdkrun records BSD machines by *boot mode*
@@ -96,6 +111,7 @@ export function kindColor(
   if (ref.startsWith("netbsd") || kind === "netbsd" || kind === "kernel") {
     return BADGE.netbsd;
   }
+  if (kind === "unikraft") return BADGE.unikraft;
   if (kind === "linux") return BADGE.linux;
   return {
     label: kind || "machine",

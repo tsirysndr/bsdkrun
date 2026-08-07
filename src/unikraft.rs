@@ -243,6 +243,15 @@ pub fn volume_tag(i: usize) -> String {
 ///     kernel library parameters, everything after becomes the application's
 ///     `argv`. Without it, nothing is treated as a parameter at all.
 ///
+/// The `--` also has to hold for what *libkrun* adds. On x86_64 there is no
+/// device tree, so the guest finds its virtio devices only through the
+/// `virtio_mmio.device=` parameters libkrun appends once they are attached —
+/// after this cmdline is set. Those have to land in the parameter half too, so
+/// this needs a libkrun that inserts them ahead of the stop sequence
+/// (`Cmdline::insert_before_stop`); with a plain append they become application
+/// `argv`, no virtio-fs device is ever registered, and the mount fails with
+/// `-ENOENT` before `main` runs.
+///
 /// The user's command line keeps its usual meaning throughout — its first word
 /// is the application's `argv[0]` — so it is split around the injected table.
 ///

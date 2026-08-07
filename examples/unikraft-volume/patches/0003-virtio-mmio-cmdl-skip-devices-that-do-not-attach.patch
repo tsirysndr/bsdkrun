@@ -1,0 +1,37 @@
+drivers/virtio/mmio: skip cmdline devices that do not attach
+
+The command-line probe gives up on the whole bus as soon as one device
+fails to attach, so a single device Unikraft has no driver for hides
+every device declared after it:
+
+    ERR:  [libvirtio_mmio] Failed to find the driver for the virtio
+          device (id:5)
+    ERR:  [libvirtio_mmio_cmdl] Could not add device (-14)
+
+That is how a VMM lays out its bus, not an error: libkrun always creates
+a virtio-balloon (id 5) and a virtio-entropy (id 4) ahead of the devices
+the caller asked for, and Unikraft has drivers for neither — so a
+virtio-fs volume behind them is never registered, and mounting it fails
+with -ENOENT long before the application runs.
+
+The FDT probe already treats this as expected (pf_probe_fdt frees the
+device and continues to the next node); this makes the command-line
+probe, the only discovery path on x86_64, behave the same. A device
+whose MMIO region holds no device at all reports the same failure, so
+declaring more slots than the VMM populated stays harmless too.
+
+Found against unikraft 0.21.0 (Ijiraq).
+--- a/drivers/virtio/mmio/virtio_mmio_cmdl.c
++++ b/drivers/virtio/mmio/virtio_mmio_cmdl.c
+@@ -100,9 +100,9 @@
+
+ 		rc = virtio_mmio_add_dev(dev);
+ 		if (unlikely(rc)) {
+-			uk_pr_err("Could not add device (%d)\n", rc);
++			uk_pr_info("Skipping device (%d)\n", rc);
+ 			free(dev);
+-			return rc;
++			continue;
+ 		}
+ 	}
+

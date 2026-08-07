@@ -16,6 +16,16 @@ unikraft:
     CONFIG_LIBVIRTIO_FS: 'y'
     CONFIG_LIBUKFS_VIRTIOFS: 'y'
 
+    # How the guest finds that virtio-fs device differs per arch: on arm64
+    # libkrun describes its virtio-mmio devices in the device tree, but on
+    # x86_64 there is no device tree and the only discovery path is the
+    # `virtio_mmio.device=` kernel parameters libkrun appends (which is why
+    # bsdkrun's mount table has to stay on the parameter side of `--`). The
+    # slots have to cover every device libkrun creates before the volume —
+    # balloon, entropy, and one more per volume — not just the ones we want.
+    CONFIG_LIBVIRTIO_MMIO: 'y'
+    CONFIG_VIRTIO_MMIO_MAX_DEV_CMDLINE: '8'
+
     # The virtiofs driver lives on the newer ukfs/posix-vfs stack, which is
     # mutually exclusive with vfscore (lib/posix-vfs/Config.uk: depends on
     # !LIBVFSCORE). Nothing here uses vfscore, so we select the new one.

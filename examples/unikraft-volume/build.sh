@@ -2,8 +2,8 @@
 # Build the unikernel for bsdkrun, with the upstream fixes it needs.
 #
 # Unlike the helloworld example this is a three-step build — fetch, patch,
-# build — because two bugs in unikraft 0.21.0 stop a virtio-fs guest working
-# at all. Both are one-liners; see patches/ for what and why. `kraft build`
+# build — because three bugs in unikraft 0.21.0 stop a virtio-fs guest working
+# at all. All are one-liners; see patches/ for what and why. `kraft build`
 # alone would pull the sources and compile them in one go, leaving nowhere to
 # patch, so the fetch is run explicitly first.
 #

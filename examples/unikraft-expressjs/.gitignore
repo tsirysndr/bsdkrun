@@ -1,3 +1,5 @@
 /node_modules
 /.unikraft/
 .config*
+.Kraftfile.*
+/.rootfs-*/

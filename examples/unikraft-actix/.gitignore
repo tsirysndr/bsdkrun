@@ -1,3 +1,5 @@
 /target
 /.unikraft/
 .config*
+.Kraftfile.*
+/.rootfs-*/

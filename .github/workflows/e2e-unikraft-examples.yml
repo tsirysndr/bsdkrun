@@ -75,7 +75,8 @@ jobs:
             build-essential git curl ca-certificates xz-utils python3 \
             python3-pyelftools pkg-config patchelf patch cpio kmod rsync zstd \
             flex bison bc libelf-dev libssl-dev libncurses-dev libyaml-dev \
-            uuid-runtime unzip wget clang libclang-dev llvm-dev
+            uuid-runtime unzip wget clang libclang-dev llvm-dev \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
       # Same cache key as e2e-linux.yml and e2e-unikraft.yml on purpose: a hit
       # from any of them saves the ~15-20 min libkrunfw kernel compile.
@@ -175,7 +176,7 @@ jobs:
           set -eux
           out=uk-${{ matrix.example }}.out
           grep -q "Powered by Unikraft" "$out"
-          grep -qv "Could not obtain randomness" "$out"
+          ! grep -q "Could not obtain randomness" "$out"
           grep -q "Set IPv4 address" "$out"
 
       # Expected to fail until the libc-startup fault is fixed; see the note at

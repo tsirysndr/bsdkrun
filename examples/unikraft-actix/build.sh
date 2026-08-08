@@ -61,11 +61,24 @@ echo "==> [$ARCH] building unikernel"
 # `kraft fetch` does not, and fails with "could not find: core/unikraft:stable"
 # on a clean machine. `kraft build` is NOT given --no-cache: that re-fetches the
 # sources and throws the patches away.
+# `kraft fetch` ignores --arch, --plat and --target: it always configures the
+# *first* target in the Kraftfile. With both arches listed that is fc/arm64, so
+# an x86_64 build would try to cross-compile and die for want of
+# aarch64-linux-gnu-gcc. Hand kraft a Kraftfile with only the wanted target
+# instead. (kraft fetch is also deprecated, but a separate fetch is what gives
+# us a tree to patch before the build.)
+OTHER=$([ "$ARCH" = arm64 ] && echo x86_64 || echo arm64)
+sed "/^- fc\/$OTHER\$/d" Kraftfile > ".Kraftfile.$ARCH"
+grep -q "^- fc/$ARCH\$" ".Kraftfile.$ARCH" || {
+	echo "Kraftfile has no fc/$ARCH target" >&2
+	exit 1
+}
+
 KRAFT_STEPS=$(cat <<EOF
 kraft pkg update
-kraft fetch --arch $ARCH --plat fc
+kraft fetch -K .Kraftfile.$ARCH
 "\$PATCHES_DIR/apply.sh" .unikraft/unikraft
-kraft build --arch $ARCH --plat fc --rootfs .rootfs-$ARCH \
+kraft build -K .Kraftfile.$ARCH --rootfs .rootfs-$ARCH \
 	--log-level info --log-type basic
 ls -l .unikraft/build/${APP}_fc-$ARCH
 EOF

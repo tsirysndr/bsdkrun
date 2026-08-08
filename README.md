@@ -48,6 +48,7 @@ image** (`bsdkrun linux alpine` pulls it from any registry, extracts the rootfs,
   - [`kernel`](#kernel--boot-a-kernel-directly-no-bootloader)
   - [`linux`](#linux--run-an-oci-image-as-a-microvm)
   - [`unikraft`](#unikraft--boot-a-unikraft-unikernel)
+  - [`nanos`](#nanos--boot-a-nanos-nanovms-unikernel)
 - [Managing machines](#managing-machines)
 - [Flavors — preconfigured environments & snapshots](#flavors--preconfigured-environments--snapshots)
 - [Networking](#networking)
@@ -596,6 +597,42 @@ with `kraft` and boots it under KVM.
 > panicked the vCPU thread with `unsupported mmio len=2`. The read path already handled it; the
 > fix is the matching `2 =>` arm in the write path. Upstreaming is in progress; until it lands,
 > build libkrun from [`tsirysndr/libkrun`](https://github.com/tsirysndr/libkrun).
+
+### `nanos` — boot a Nanos (NanoVMs) unikernel
+
+[Nanos](https://nanos.org) implements the Linux syscall ABI, so the guest starts as an ordinary
+**static Linux binary** and `ops` wraps it into a bootable image. `bsdkrun nanos` boots that image
+directly — pass either a path, or a bare name from `~/.ops/images/` (what `ops build -i <name>`
+produces):
+
+```sh
+curl https://ops.city/get.sh -sSfL | sh   # install ops
+./build.sh                                # builds ~/.ops/images/nanos-hello
+bsdkrun nanos nanos-hello --no-net
+```
+
+Like every unikernel, a Nanos guest has no shell and no agent: `exec`, `shell`, and `commit` do
+not apply; `logs`, `ps`, `stop`, `start`, and `rm` work as usual.
+
+#### Status
+
+- **Linux/x86_64** boots via direct kernel load — the same Firecracker-style contract Nanos
+  supports officially. `bsdkrun nanos` auto-finds the newest `~/.ops/<version>/kernel.img` that
+  `ops build` staged, or you can override it with `--kernel`.
+- **macOS/arm64** uses EFI boot with `KRUN_ACPI=1` and needs an image built with `"Uefi": true`,
+  but current upstream Nanos still hangs before userspace. The plumbing is in place on the bsdkrun
+  side; see [`examples/nanos-hello`](examples/nanos-hello/README.md) for the diagnosis.
+- **Linux/arm64** is not bootable today: the Nanos kernel links below libkrun's direct-kernel RAM
+  base, and Linux hosts have no EFI path for it.
+
+#### Usage
+
+```sh
+bsdkrun nanos nanos-hello                  # name in ~/.ops/images
+bsdkrun nanos ~/.ops/images/nanos-hello    # explicit image path
+bsdkrun nanos -d nanos-hello --no-net      # detached; use logs/stop/rm
+bsdkrun nanos nanos-hello --kernel ~/.ops/0.1.55/kernel.img
+```
 
 ---
 

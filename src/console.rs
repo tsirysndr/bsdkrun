@@ -167,6 +167,7 @@ fn broker_loop(
     }
     let mut guest = unsafe { std::fs::File::from_raw_fd(master_fd) };
     let mut clients: Vec<UnixStream> = Vec::new();
+    let mut paint = FirmwarePaintFilter::new();
 
     loop {
         let mut pfds: Vec<libc::pollfd> = Vec::with_capacity(3 + clients.len());
@@ -190,12 +191,13 @@ fn broker_loop(
             match guest.read(&mut buf) {
                 Ok(0) => break, // guest console closed: VM is going away
                 Ok(k) => {
-                    let _ = logfile.write_all(&buf[..k]);
+                    let out = paint.feed(&buf[..k]);
+                    let _ = logfile.write_all(&out);
                     let _ = logfile.flush();
                     // Mirror to clients best-effort: keep a client on a transient
                     // WouldBlock (a slow reader just misses those bytes); only
                     // drop it on a real disconnect.
-                    clients.retain_mut(|c| match c.write_all(&buf[..k]) {
+                    clients.retain_mut(|c| match c.write_all(&out) {
                         Ok(()) => true,
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => true,
                         Err(_) => false,
@@ -215,10 +217,18 @@ fn broker_loop(
                 if k == 0 {
                     break;
                 }
-                let _ = logfile.write_all(&buf[..k]);
+                let out = paint.feed(&buf[..k]);
+                let _ = logfile.write_all(&out);
                 for c in clients.iter_mut() {
-                    let _ = c.write_all(&buf[..k]);
+                    let _ = c.write_all(&out);
                 }
+            }
+            // The guest is gone for good, so a half-parsed escape will never be
+            // completed: emit it rather than swallowing the last bytes.
+            let rest = paint.flush();
+            let _ = logfile.write_all(&rest);
+            for c in clients.iter_mut() {
+                let _ = c.write_all(&rest);
             }
             let _ = logfile.flush();
             return;
@@ -267,6 +277,17 @@ fn broker_loop(
             clients.remove(i);
         }
     }
+
+    // Left the loop by a `break` (guest console closed / poll error): same as the
+    // drain path, don't let a held-back partial escape take bytes with it.
+    let rest = paint.flush();
+    if !rest.is_empty() {
+        let _ = logfile.write_all(&rest);
+        for c in clients.iter_mut() {
+            let _ = c.write_all(&rest);
+        }
+    }
+    let _ = logfile.flush();
 }
 
 /// Replay just the current console line (the live prompt) to a freshly-connected
@@ -405,6 +426,205 @@ pub fn attach_interactive(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// EDK2 paints over the console before handing off to the guest: it emits
+/// `ESC[2J` (erase display) + `ESC[01;01H` (cursor home) four times, then its
+/// two `BdsDxe:` lines — so whatever was on screen is erased and the handoff
+/// lines land on row 1, on top of anything written there. For a unikernel that
+/// prints and exits in milliseconds, that can bury the guest's entire output.
+///
+/// Stripping those sequences makes the console append-only, like a log. But the
+/// broker is shared by *every* machine kind, and a guest running `clear`, `vi`
+/// or `top` needs its cursor control intact — so the filter is pinned to the
+/// firmware and nothing else. It starts *disarmed* and only switches on when
+/// EDK2 introduces itself with [`FW_BANNER`], then retires for good at the
+/// [`HANDOFF_ANCHOR`]. A guest that direct-boots (Linux, NetBSD) never prints
+/// that banner, so the filter stays off for its whole life.
+///
+/// A budget backstops both ends: if the banner has not appeared within
+/// [`FW_PAINT_BUDGET`] bytes it never will, and a firmware that somehow never
+/// reaches its handoff line still cannot hold the filter open forever.
+///
+/// Bounding this by byte count *alone* is not enough, and the mistake is easy
+/// to make: a Debian guest reaches its init in ~3 KiB of kernel log, so a
+/// budget-only filter was still armed and ate the `clear` its entrypoint ran.
+const FW_PAINT_BUDGET: usize = 8192;
+
+/// EDK2's opening line — the filter arms only after seeing this, so a
+/// direct-booted guest is never touched.
+const FW_BANNER: &[u8] = b"UEFI firmware (version";
+
+/// Firmware handoff line: nothing EDK2 prints after this, so the filter can
+/// retire the moment it appears.
+const HANDOFF_ANCHOR: &[u8] = b"BdsDxe: starting";
+
+/// CSI final bytes worth stripping inside the preamble: erase-display (`J`),
+/// cursor positioning (`H`, `f`) and mode set/reset (`h`, `l`, as in EDK2's
+/// `ESC[=3h`). Notably *not* `m` — colour should survive.
+const FW_PAINT_FINALS: &[u8] = b"JHfhl";
+
+/// Where the filter is in the firmware's short life.
+#[derive(PartialEq)]
+enum Paint {
+    /// Watching for [`FW_BANNER`]. Bytes pass through untouched.
+    Disarmed,
+    /// Firmware is talking: strip its screen-painting until the handoff.
+    Armed,
+    /// Retired for the rest of the machine's life.
+    Off,
+}
+
+/// Strips EDK2's screen-painting escapes from the firmware preamble. See
+/// [`FW_PAINT_BUDGET`] for why this is deliberately short-lived.
+struct FirmwarePaintFilter {
+    state: Paint,
+    /// A CSI sequence split across two reads waits here for its tail.
+    carry: Vec<u8>,
+    /// Trailing emitted bytes, so a marker is still found when a read splits it.
+    probe: Vec<u8>,
+    seen: usize,
+}
+
+impl FirmwarePaintFilter {
+    fn new() -> Self {
+        FirmwarePaintFilter {
+            state: Paint::Disarmed,
+            carry: Vec::new(),
+            probe: Vec::new(),
+            seen: 0,
+        }
+    }
+
+    /// Offset in `chunk` just past `marker`, tolerating a read that splits it.
+    /// `None` if the marker has not appeared yet.
+    fn saw(&mut self, chunk: &[u8], marker: &[u8]) -> Option<usize> {
+        let carried = self.probe.len();
+        self.probe.extend_from_slice(chunk);
+        // Only a window the size of the marker (plus this chunk) can ever match,
+        // so trim the front and keep the probe bounded.
+        let cut = self
+            .probe
+            .len()
+            .saturating_sub(chunk.len() + marker.len())
+            .min(carried);
+        self.probe.drain(..cut);
+        let at = self.probe.windows(marker.len()).position(|w| w == marker)? + marker.len();
+        // Back out the carried-over prefix to land in `chunk`'s coordinates. The
+        // marker can end inside that prefix only if we already reported it.
+        Some(at.saturating_sub(carried - cut))
+    }
+
+    fn feed(&mut self, data: &[u8]) -> Vec<u8> {
+        self.seen += data.len();
+
+        if self.state == Paint::Off {
+            return data.to_vec();
+        }
+
+        // Not the firmware's console yet: pass bytes through, watching for EDK2
+        // to announce itself. It may do so part-way into this very chunk, so arm
+        // at that point and filter the remainder rather than the whole read.
+        let mut head: &[u8] = &[];
+        let mut body = data;
+        if self.state == Paint::Disarmed {
+            match self.saw(data, FW_BANNER) {
+                Some(at) => {
+                    self.state = Paint::Armed;
+                    self.probe = Vec::new();
+                    (head, body) = data.split_at(at.min(data.len()));
+                }
+                None => {
+                    if self.seen >= FW_PAINT_BUDGET {
+                        self.state = Paint::Off;
+                        self.probe = Vec::new();
+                    }
+                    return data.to_vec();
+                }
+            }
+        }
+
+        let mut buf = std::mem::take(&mut self.carry);
+        buf.extend_from_slice(body);
+
+        let mut out = Vec::with_capacity(head.len() + buf.len());
+        out.extend_from_slice(head);
+        let mut i = 0;
+        while i < buf.len() {
+            if buf[i] != 0x1b {
+                out.push(buf[i]);
+                i += 1;
+                continue;
+            }
+            match parse_csi(&buf[i..]) {
+                // Complete sequence: drop it if it paints, else pass it through.
+                CsiScan::Complete { len, final_byte } => {
+                    if !FW_PAINT_FINALS.contains(&final_byte) {
+                        out.extend_from_slice(&buf[i..i + len]);
+                    }
+                    i += len;
+                }
+                // Truncated by the read boundary — hold it for the next one.
+                CsiScan::Partial => {
+                    self.carry = buf[i..].to_vec();
+                    break;
+                }
+                // A lone ESC or some non-CSI escape: not ours, pass it on.
+                CsiScan::NotCsi => {
+                    out.push(buf[i]);
+                    i += 1;
+                }
+            }
+        }
+
+        // Retire at the handoff, or if this firmware never gets there — and let
+        // any half-parsed sequence through on the way out, so nothing is eaten.
+        if self.saw(&out, HANDOFF_ANCHOR).is_some() || self.seen >= FW_PAINT_BUDGET {
+            self.state = Paint::Off;
+            out.extend_from_slice(&std::mem::take(&mut self.carry));
+            self.probe = Vec::new();
+        }
+        out
+    }
+
+    /// Release anything still held back (the VM is going away).
+    fn flush(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.carry)
+    }
+}
+
+/// How a byte slice starting at ESC parses as a CSI sequence:
+/// `ESC [` params (0x30-0x3F) intermediates (0x20-0x2F) final (0x40-0x7E).
+enum CsiScan {
+    Complete { len: usize, final_byte: u8 },
+    Partial,
+    NotCsi,
+}
+
+fn parse_csi(s: &[u8]) -> CsiScan {
+    debug_assert_eq!(s.first(), Some(&0x1b));
+    match s.get(1) {
+        None => CsiScan::Partial,
+        Some(&b'[') => {
+            let mut i = 2;
+            while i < s.len() && (0x30..=0x3f).contains(&s[i]) {
+                i += 1;
+            }
+            while i < s.len() && (0x20..=0x2f).contains(&s[i]) {
+                i += 1;
+            }
+            match s.get(i) {
+                None => CsiScan::Partial,
+                Some(&f) if (0x40..=0x7e).contains(&f) => CsiScan::Complete {
+                    len: i + 1,
+                    final_byte: f,
+                },
+                // Out-of-range byte: not a well-formed CSI, don't touch it.
+                Some(_) => CsiScan::NotCsi,
+            }
+        }
+        Some(_) => CsiScan::NotCsi,
+    }
+}
+
 /// Streams bytes through, stripping any [`EXIT_MARKER`] occurrences (and holding
 /// back a trailing partial marker across reads), reporting how many it stripped.
 struct MarkerFilter {
@@ -458,12 +678,41 @@ fn partial_marker_suffix(buf: &[u8]) -> usize {
     0
 }
 
+/// How long [`connect_when_ready`] waits for a just-booted machine's broker.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const CONNECT_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Connect to a machine's `console.sock`, waiting for it to appear.
+///
+/// `run_detached` prints the machine id in the parent right after `fork()`, but
+/// the child only binds the socket once it reaches [`setup_detached`]. A client
+/// that acts on that id immediately (the daemon hands it straight to the
+/// desktop, which opens the console view) would otherwise lose the race and see
+/// a bare ENOENT. Retry the two errors that mean "not yet": no socket file, and
+/// a socket nobody is listening on.
+fn connect_when_ready(sock: &Path) -> Result<UnixStream> {
+    let deadline = std::time::Instant::now() + CONNECT_TIMEOUT;
+    loop {
+        match UnixStream::connect(sock) {
+            Ok(s) => return Ok(s),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(CONNECT_POLL);
+            }
+            Err(e) => return Err(e).with_context(|| format!("connecting to {}", sock.display())),
+        }
+    }
+}
+
 /// Stream a detached VM's console socket to stdout (for `logs -f`), read-only,
 /// until the guest closes it or the user interrupts.
 pub fn follow(dir: &Path) -> Result<()> {
     let sock = dir.join("console.sock");
-    let mut stream =
-        UnixStream::connect(&sock).with_context(|| format!("connecting to {}", sock.display()))?;
+    let mut stream = connect_when_ready(&sock)?;
     let mut buf = [0u8; 4096];
     let stdout = std::io::stdout();
     loop {
@@ -506,5 +755,94 @@ impl Drop for RawGuard {
         if let Some(term) = self.saved {
             unsafe { libc::tcsetattr(0, libc::TCSANOW, &term) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The real preamble libkrun's EDK2 emits, byte for byte.
+    const PREAMBLE: &[u8] = b"UEFI firmware (version edk2-13e8adac8a)\r\n\
+        \x1b[2J\x1b[01;01H\x1b[=3h\x1b[2J\x1b[01;01H\x1b[2J\x1b[01;01H\x1b[=3h\x1b[2J\x1b[01;01H\
+        BdsDxe: loading Boot0001\r\nBdsDxe: starting Boot0001\r\n";
+
+    #[test]
+    fn strips_the_firmware_paint_but_keeps_the_text() {
+        let mut f = FirmwarePaintFilter::new();
+        let out = f.feed(PREAMBLE);
+        assert!(!out.contains(&0x1b), "escapes survived: {:?}", out);
+        assert!(out.starts_with(b"UEFI firmware"));
+        assert!(out.ends_with(b"BdsDxe: starting Boot0001\r\n"));
+    }
+
+    /// A CSI split across reads must not leak its tail as visible text.
+    #[test]
+    fn handles_a_sequence_split_across_reads() {
+        for split in 1..PREAMBLE.len() {
+            let mut f = FirmwarePaintFilter::new();
+            let mut out = f.feed(&PREAMBLE[..split]);
+            out.extend_from_slice(&f.feed(&PREAMBLE[split..]));
+            out.extend_from_slice(&f.flush());
+            assert!(!out.contains(&0x1b), "split at {split} leaked an escape");
+            assert!(
+                out.ends_with(b"BdsDxe: starting Boot0001\r\n"),
+                "split at {split} mangled the tail: {:?}",
+                String::from_utf8_lossy(&out)
+            );
+        }
+    }
+
+    /// The whole point of the bound: once the guest is up, its cursor control is
+    /// none of our business — `clear`, `vi` and `top` must come through intact.
+    #[test]
+    fn retires_at_the_handoff_so_guest_escapes_survive() {
+        let mut f = FirmwarePaintFilter::new();
+        f.feed(PREAMBLE);
+        assert!(f.state == Paint::Off, "should retire at the BdsDxe handoff");
+        let guest = b"\x1b[2J\x1b[H$ vi\r\n";
+        assert_eq!(f.feed(guest), guest, "guest escapes must pass through");
+    }
+
+    /// Regression: a direct-booted guest prints no EDK2 banner, so the filter
+    /// must never arm — a Debian guest reaches init in ~3 KiB, well inside the
+    /// budget, and a budget-only filter ate the `clear` its entrypoint ran.
+    #[test]
+    fn never_arms_without_the_firmware_banner() {
+        let mut f = FirmwarePaintFilter::new();
+        f.feed(b"[    0.076848] Run /.bsdkrun-init as init process\r\n");
+        let guest = b"\x1b[2J\x1b[Hcleared\r\n";
+        assert_eq!(f.feed(guest), guest, "direct-boot guest must be untouched");
+        assert!(f.state != Paint::Armed);
+    }
+
+    /// A firmware that never reaches its handoff still cannot hold the filter
+    /// open for the life of the machine.
+    #[test]
+    fn retires_on_budget_when_no_handoff_appears() {
+        let mut f = FirmwarePaintFilter::new();
+        f.feed(FW_BANNER);
+        assert!(f.state == Paint::Armed);
+        f.feed(&vec![b'x'; FW_PAINT_BUDGET]);
+        assert!(f.state == Paint::Off, "budget should retire the filter");
+        let guest = b"\x1b[2Jclear";
+        assert_eq!(f.feed(guest), guest);
+    }
+
+    /// Colour is not screen-painting — SGR must survive even while armed.
+    #[test]
+    fn keeps_colour_while_armed() {
+        let mut f = FirmwarePaintFilter::new();
+        f.feed(FW_BANNER);
+        assert_eq!(f.feed(b"\x1b[31mred\x1b[0m"), b"\x1b[31mred\x1b[0m");
+    }
+
+    #[test]
+    fn passes_through_a_lone_escape() {
+        let mut f = FirmwarePaintFilter::new();
+        f.feed(FW_BANNER);
+        let mut out = f.feed(b"a\x1bZb");
+        out.extend_from_slice(&f.flush());
+        assert_eq!(out, b"a\x1bZb");
     }
 }

@@ -1,0 +1,6 @@
+node_modules/
+/.unikraft/
+/Dockerfile
+/Kraftfile
+/README.md
+/build.sh

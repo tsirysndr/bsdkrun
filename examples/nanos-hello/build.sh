@@ -15,6 +15,11 @@ case "$ARCH" in
 	*) echo "unsupported arch: $ARCH" >&2; exit 1 ;;
 esac
 
+# ops names architectures the Go way. `--arch x86_64` is rejected with a bare
+# "unknown architecture" and — worse — a zero exit status, so the build looks
+# like it worked right up until the image it never wrote is used.
+OPS_ARCH=$(echo "$ARCH" | sed s/x86_64/amd64/)
+
 OPS="${OPS:-$HOME/.ops/bin/ops}"
 [ -x "$OPS" ] || OPS=ops
 command -v "$OPS" >/dev/null || {
@@ -23,7 +28,7 @@ command -v "$OPS" >/dev/null || {
 }
 
 if [ "$(uname -s)" = Darwin ]; then
-	docker run --rm -v "$PWD":/w -w /w "--platform=linux/$(echo $ARCH | sed s/x86_64/amd64/)" debian:bookworm sh -c \
+	docker run --rm -v "$PWD":/w -w /w "--platform=linux/$OPS_ARCH" debian:bookworm sh -c \
 		'apt-get update -qq >/dev/null && apt-get install -y -qq gcc libc6-dev >/dev/null && gcc -static -O2 -o hello hello.c'
 else
 	gcc -static -O2 -o hello hello.c
@@ -33,8 +38,8 @@ fi
 # EFI System Partition at all. On x86_64 the default BIOS image is what the
 # direct-kernel boot path uses, so plain build there.
 if [ "$ARCH" = arm64 ]; then
-	"$OPS" build hello --arch "$ARCH" -c config.json -i nanos-hello
+	"$OPS" build hello --arch "$OPS_ARCH" -c config.json -i nanos-hello
 else
-	"$OPS" build hello --arch "$ARCH" -i nanos-hello
+	"$OPS" build hello --arch "$OPS_ARCH" -i nanos-hello
 fi
 echo "image: $HOME/.ops/images/nanos-hello"

@@ -1,3 +1,4 @@
 # Build outputs: the compiled app and capstan's staging directory.
 hello.so
 mpm-pkg/
+*.raw

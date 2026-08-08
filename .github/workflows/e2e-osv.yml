@@ -97,7 +97,13 @@ jobs:
       # libkrun links libkrunfw (the bundled kernel), whose build compiles a
       # Linux kernel from source (~15-20 min), so cache the built trees.
       # Restore and save separately so a failed build never poisons the cache.
-      # Bump the key to force a rebuild.
+      #
+      # BUMP THIS KEY whenever the libkrun fork branch moves. The clone below is
+      # a moving branch, not a pinned commit, so a cache entry made before a
+      # needed change silently wins over it: reusing e2e-linux's key here would
+      # restore a libkrun built before KRUN_NO_RNG existed, and OSv would abort
+      # in driver init with no hint that a stale build is the reason. The -rng-
+      # generation marks a build that has that opt-out.
       - name: Restore libkrun build
         id: libkrun-cache
         uses: actions/cache/restore@v4
@@ -105,7 +111,7 @@ jobs:
           path: |
             libkrunfw
             libkrun
-          key: libkrun-build-x86_64-pvh-v16
+          key: libkrun-build-x86_64-pvh-rng-v17
 
       # Build only on a cache miss. libkrun links libkrunfw, so libkrunfw must
       # be installed first. Use `cd`, NOT `make -C`: `-C` implies `-w`, which
@@ -135,7 +141,7 @@ jobs:
           path: |
             libkrunfw
             libkrun
-          key: libkrun-build-x86_64-pvh-v16
+          key: libkrun-build-x86_64-pvh-rng-v17
 
       # Install on every run — a cache hit restores the built trees but not the
       # system-installed libraries.

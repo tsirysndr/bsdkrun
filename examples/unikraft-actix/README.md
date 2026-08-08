@@ -10,13 +10,15 @@ to build for **arm64** and boot under bsdkrun.
 bsdkrun unikraft . --mem 1024 --cmdline "elfloader -- /server"
 ```
 
-## Status: never built
+## Status
 
-Unlike the sibling ExpressJS example, this one has **not been compiled or booted
-even once**. The files are a direct port and are believed correct, but nothing
-here is verified. Expect it to need the same treatment as its sibling, and at
-minimum to hit the same unresolved application-startup fault described in
-[../../library/unikraft-base/README.md](../../library/unikraft-base/README.md).
+**x86_64 works** — builds, boots, and serves over a forwarded port, covered by
+`.github/workflows/e2e-unikraft-examples.yml`.
+
+**arm64 builds and boots but the binary faults during libc startup**, tripping
+`Must not call schedcoop_schedule with IRQs disabled` about a second in. See
+[../../library/unikraft-base/README.md](../../library/unikraft-base/README.md)
+for what has been ruled out and what the next step is.
 
 ## Differences from upstream
 

@@ -23,8 +23,8 @@ be used under bsdkrun at all. app-elfloader itself is architecture-clean —
 nothing in its `Config.uk` gates on architecture and it ships a `qemu-aarch64`
 defconfig — so the gap is packaging, not portability.
 
-Four things were needed on top of a stock checkout. All are applied by
-`patches/apply.sh`, which is idempotent:
+Six things were needed on top of a stock checkout. All are applied by
+`patches/apply.sh`, which is idempotent, except the last which is kconfig:
 
 1. **`lib/syscall_shim/arch/arm64/syscall_handler.c` is missing an include.**
    It uses `struct ukarch_execenv` but only includes `<uk/arch/types.h>`, so any
@@ -48,27 +48,39 @@ Four things were needed on top of a stock checkout. All are applied by
    application receives `"--"` as its `argv[0]`. `rc >= 0` is the correct bound.
    This one is not arm64-specific.
 
-## Known issues
+5. **`virtio_mmio_cmdl_probe()` abandons every device after the first failure.**
+   It does `return rc` when a device cannot be added. libkrun attaches the memory
+   balloon first and Unikraft has no balloon driver, so entry one fails with -14
+   and the entropy and network devices behind it are never registered — the guest
+   boots with no interface at all. Only x86_64 is affected, because there the
+   command line is the sole discovery path; arm64 reads the device tree.
+6. **`CONFIG_LIBPOSIX_PROCESS_ARCH_PRCTL`** (kconfig, not a patch) implements
+   `arch_prctl(ARCH_SET_FS)`, which is how glibc installs the thread pointer on
+   x86_64. Without it no application can set up thread-local storage:
+   *"cannot set up thread-local storage: cannot set %fs base address"*. It is
+   `depends on ARCH_X86_64`, so it is an x86_64 fix only.
 
-**The default `/fallback` program crashes on arm64.** Run with no rootfs, the
-image gets as far as executing `/fallback` and then dies with
-`*** stack smashing detected ***` (`ESR_EL1` EC=0x3c, `BRK #1000`). A
-dynamically-linked musl binary fails differently — it branches to a null GOT
-entry (`br x17` with `x17 == 0`), i.e. an unresolved PLT relocation. Both faults
-are in libc startup, about a second into the boot.
+## Status
 
-Ruled out so far, with evidence: `AT_RANDOM` (fed correctly by the virtio-rng
-driver); FP/SIMD context sizing (`UK_PLAT_NATIVE_ECTX_SIZE` is 520, exactly the
-saved FP state); elfloader's entry selection (it does jump to `interp->entry`
-for dynamic binaries); and the ELF machine-type / `AT_PLATFORM` handling.
+**x86_64 works end to end** and is covered by
+`.github/workflows/e2e-unikraft-examples.yml`: the unikernel builds, boots, gets
+a DHCP address, runs the application, and answers HTTP over a forwarded port.
 
-The kernel side is sound — it boots, seeds entropy, brings up networking, parses
-`argv`, and loads ELF images. What is unresolved is application startup. The
-next step is Unikraft's GDB stub (`LIBUKDEBUG_GDBSTUB`, which supports arm64)
-against the `.dbg` image, to single-step the interpreter's self-relocation.
+**arm64 boots but applications still fault during libc startup**, about a second
+in. A static-pie glibc binary dies with `*** stack smashing detected ***`
+(`ESR_EL1` EC=0x3c, `BRK #1000`); a dynamically-linked musl binary branches to a
+null GOT entry (`br x17` with `x17 == 0`); a dynamically-linked glibc binary
+trips `Must not call schedcoop_schedule with IRQs disabled`. The kernel side is
+sound — it boots, seeds entropy from virtio-rng, brings up networking, parses
+`argv`, and loads ELF images.
 
-**x86_64 is built but never booted.** libkrun on macOS/arm64 cannot run x86_64
-guests, so that target has only ever been compiled here.
+Note the fix for x86_64 does not carry over: `arch_prctl` is an x86-only syscall,
+and arm64 installs the thread pointer via `TPIDR_EL0` instead. Ruled out with
+evidence: `AT_RANDOM` (fed by the virtio-rng driver); FP/SIMD context sizing
+(`UK_PLAT_NATIVE_ECTX_SIZE` is 520, exactly the saved FP state); elfloader's
+entry selection (it does jump to `interp->entry` for dynamic binaries); and the
+ELF machine-type / `AT_PLATFORM` handling. The next step is Unikraft's GDB stub
+(`LIBUKDEBUG_GDBSTUB` supports arm64) against the `.dbg` image.
 
 ## Notes
 

@@ -7,16 +7,15 @@ name: e2e (Unikraft examples / KVM)
 # x86_64 only: GitHub's arm64 runners do not expose /dev/kvm, and these examples
 # need a VMM. The arm64 side is exercised on a macOS/HVF host by hand.
 #
-# What is asserted: the patches applied, the unikernel builds, and it boots far
-# enough to print the Unikraft banner. On x86_64 the application also starts —
-# node reaches "Example app listening on port 3000".
+# Asserts the whole chain: the patches applied, the unikernel builds, it boots,
+# the guest gets a network interface, the application starts, and the server
+# answers over the forwarded port.
 #
-# What is only reported (as warnings, not failures): networking and the HTTP
-# check. On x86_64 there is no device tree, so the guest learns about its NIC
-# solely from the `virtio_mmio.device=` parameters libkrun appends, and that
-# path is not yet working — the guest comes up with no interface, so the
-# forwarded port has nothing to reach. Turn these back into assertions once it
-# does; a known gap should not read as a regression in the meantime.
+# On x86_64 there is no device tree, so the guest learns about its NIC solely
+# from the `virtio_mmio.device=` parameters libkrun appends. That path needs the
+# virtio-mmio probe fix in library/unikraft-base/patches: libkrun attaches the
+# memory balloon first, Unikraft has no driver for it, and unpatched the probe
+# loop gives up there — losing the entropy and network devices behind it.
 
 on:
   workflow_dispatch: {}
@@ -176,7 +175,6 @@ jobs:
         run: |
           set -eux
           ./target/release/bsdkrun unikraft -d \
-            --log-level 5 \
             --name ${{ matrix.example }} \
             --mem ${{ matrix.mem }} \
             --port ${{ matrix.port }}:${{ matrix.port }} \
@@ -207,7 +205,7 @@ jobs:
           echo "::endgroup::"
           grep -q "Powered by Unikraft" "$out"
 
-      - name: e2e — networking and entropy (report only)
+      - name: e2e — networking and entropy
         run: |
           set -eu
           out=uk-${{ matrix.example }}.out
@@ -218,16 +216,10 @@ jobs:
           # Reported, never asserted: the entropy grep is vacuous if lwip never
           # started, and x86_64 virtio discovery is still unverified. Neither
           # should read as a regression while that is true.
-          if grep -q "Could not obtain randomness" "$out"; then
-            echo "::warning::no entropy source — virtio-rng did not seed the CSPRNG"
-          else
-            echo "entropy: OK (or lwip never asked)"
-          fi
-          if grep -q "Set IPv4 address" "$out"; then
-            echo "networking: OK — DHCP completed"
-          else
-            echo "::warning::no network interface in the guest; the forwarded port cannot work"
-          fi
+          # Order matters: assert the interface first. Without it lwip never
+          # starts, so the entropy grep would pass vacuously.
+          grep -q "Set IPv4 address" "$out"
+          ! grep -q "Could not obtain randomness" "$out"
 
       # Expected to fail until the libc-startup fault is fixed; see the note at
       # the top of this file.
@@ -240,11 +232,8 @@ jobs:
             fi
             sleep 2
           done
-          if [ -s body.txt ] && grep -q "${{ matrix.expect }}" body.txt; then
-            echo "HTTP: OK"; cat body.txt
-          else
-            echo "::warning::no HTTP response on port ${{ matrix.port }}"
-          fi
+          cat body.txt
+          grep -q "${{ matrix.expect }}" body.txt
 
       - name: Tear down
         if: always()

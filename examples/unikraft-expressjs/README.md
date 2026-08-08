@@ -10,14 +10,16 @@ to build for **arm64** and boot under bsdkrun.
 bsdkrun unikraft . --mem 2048 --cmdline "elfloader -- /usr/bin/node /usr/src/server.js"
 ```
 
-## Status: does not run yet
+## Status
 
-The kernel boots, seeds entropy, brings up networking (DHCP), and loads the ELF —
-but `node` then faults during libc startup, branching to a null GOT entry
-(`br x17` with `x17 == 0`, an unresolved PLT relocation). See
+**x86_64 works** — the unikernel boots, DHCPs an address, node starts, and the
+server answers over a forwarded port. Covered end to end by
+`.github/workflows/e2e-unikraft-examples.yml`.
+
+**arm64 boots but node faults during libc startup**, branching to a null GOT
+entry (`br x17` with `x17 == 0`, an unresolved PLT relocation). See
 [../../library/unikraft-base/README.md](../../library/unikraft-base/README.md)
-for what has been ruled out and what the next debugging step is. Everything in
-this directory is otherwise complete and builds cleanly.
+for what has been ruled out and what the next step is.
 
 ## Differences from upstream
 

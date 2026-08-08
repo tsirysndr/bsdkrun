@@ -7,12 +7,16 @@ name: e2e (Unikraft examples / KVM)
 # x86_64 only: GitHub's arm64 runners do not expose /dev/kvm, and these examples
 # need a VMM. The arm64 side is exercised on a macOS/HVF host by hand.
 #
-# NOTE: these examples do not run to completion yet. Applications fault during
-# libc startup on the elfloader `base` runtime — see
-# library/unikraft-base/README.md. The HTTP checks below are therefore expected
-# to fail until that is fixed; `continue-on-error` on those steps keeps the
-# signal (build + boot, which do work) without a permanently red required
-# check. Remove it once the fault is fixed.
+# What is asserted: the patches applied, the unikernel builds, and it boots far
+# enough to print the Unikraft banner. On x86_64 the application also starts —
+# node reaches "Example app listening on port 3000".
+#
+# What is only reported (as warnings, not failures): networking and the HTTP
+# check. On x86_64 there is no device tree, so the guest learns about its NIC
+# solely from the `virtio_mmio.device=` parameters libkrun appends, and that
+# path is not yet working — the guest comes up with no interface, so the
+# forwarded port has nothing to reach. Turn these back into assertions once it
+# does; a known gap should not read as a regression in the meantime.
 
 on:
   workflow_dispatch: {}
@@ -178,6 +182,12 @@ jobs:
           sleep 20
           ./target/release/bsdkrun ps -a
           ./target/release/bsdkrun logs "$(cat id.txt)" | tee uk-${{ matrix.example }}.out
+          # bsdkrun's own log records the assembled kernel command line. On
+          # x86_64 that is the only place the NIC is advertised to the guest
+          # (`virtio_mmio.device=`), so it is what to read when no interface
+          # shows up.
+          cp -v "$HOME/.local/state/bsdkrun/machines/$(cat id.txt)/bsdkrun.log" \
+            uk-${{ matrix.example }}-boot.out || true
 
       # Boot milestones. Only the kernel banner is asserted: it is the one
       # thing verified on both architectures. Networking is reported but not
@@ -194,29 +204,44 @@ jobs:
           echo "::endgroup::"
           grep -q "Powered by Unikraft" "$out"
 
-      - name: e2e — networking and entropy (informational)
-        continue-on-error: true
+      - name: e2e — networking and entropy (report only)
         run: |
-          set -eux
+          set -eu
           out=uk-${{ matrix.example }}.out
-          # Vacuous if lwip never started, so it is reported, not asserted.
-          ! grep -q "Could not obtain randomness" "$out"
-          grep -q "Set IPv4 address" "$out"
+          boot=uk-${{ matrix.example }}-boot.out
+          echo "::group::bsdkrun boot log (kernel cmdline, device setup)"
+          cat "$boot" 2>/dev/null || echo "(no boot log)"
+          echo "::endgroup::"
+          # Reported, never asserted: the entropy grep is vacuous if lwip never
+          # started, and x86_64 virtio discovery is still unverified. Neither
+          # should read as a regression while that is true.
+          if grep -q "Could not obtain randomness" "$out"; then
+            echo "::warning::no entropy source — virtio-rng did not seed the CSPRNG"
+          else
+            echo "entropy: OK (or lwip never asked)"
+          fi
+          if grep -q "Set IPv4 address" "$out"; then
+            echo "networking: OK — DHCP completed"
+          else
+            echo "::warning::no network interface in the guest; the forwarded port cannot work"
+          fi
 
       # Expected to fail until the libc-startup fault is fixed; see the note at
       # the top of this file.
       - name: e2e — HTTP server answers
-        continue-on-error: true
         run: |
-          set -eux
+          set -eu
           for i in $(seq 1 30); do
             if curl -fsS --max-time 5 "http://127.0.0.1:${{ matrix.port }}/" -o body.txt; then
               break
             fi
             sleep 2
           done
-          cat body.txt
-          grep -q "${{ matrix.expect }}" body.txt
+          if [ -s body.txt ] && grep -q "${{ matrix.expect }}" body.txt; then
+            echo "HTTP: OK"; cat body.txt
+          else
+            echo "::warning::no HTTP response on port ${{ matrix.port }}"
+          fi
 
       - name: Tear down
         if: always()

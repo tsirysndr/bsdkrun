@@ -166,6 +166,8 @@ jobs:
           grep -q '^CONFIG_LIBVIRTIO_RNG=y' "$cfg"
           grep -q '^CONFIG_FPSIMD=y' "$cfg" || true # arm64-only symbol
           test -f examples/${{ matrix.example }}/.unikraft/unikraft/drivers/virtio/rng/virtio_rng.c
+          echo "--- virtio-mmio cmdline device budget ---"
+          grep -E '^CONFIG_(LIBVIRTIO_MMIO|VIRTIO_MMIO_MAX_DEV_CMDLINE|VIRTIO_MMIO_LINUX_COMPAT_CMDLINE)' "$cfg"
 
       # `<argv0> -- <application argv>`: everything before `--` is parsed as
       # kernel library parameters and the first word is skipped (Unikraft treats
@@ -174,6 +176,7 @@ jobs:
         run: |
           set -eux
           ./target/release/bsdkrun unikraft -d \
+            --log-level 5 \
             --name ${{ matrix.example }} \
             --mem ${{ matrix.mem }} \
             --port ${{ matrix.port }}:${{ matrix.port }} \

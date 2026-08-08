@@ -109,7 +109,57 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. virtio-rng driver (new).
+# 4. arm64 syscalls run with IRQs masked, so any blocking one crashes.
+#
+# arm64 takes exceptions with IRQs masked (plat/kvm/arm/exceptions.S does
+# `msr daifset, #2`), and lib/syscall_shim/arch/arm64/syscall_handler.c calls
+# ukplat_syscall_handler() without ever re-enabling them. Any syscall that
+# blocks therefore reaches the scheduler with interrupts off and takes the guest
+# down:
+#
+#   CRIT: [libukschedcoop] Must not call schedcoop_schedule with IRQs disabled
+#
+# x86_64 does not have this problem because its prologue is hand-written
+# assembly that issues `sti` immediately before dispatching
+# (lib/syscall_shim/arch/x86_64/include/arch/syscall_prologue.h). This mirrors
+# that: enable IRQs for the dispatch only, leaving the register-state save and
+# restore either side of it with IRQs masked as before.
+# ---------------------------------------------------------------------------
+SC="$UK/lib/syscall_shim/arch/arm64/syscall_handler.c"
+if [ -f "$SC" ] && ! grep -q 'mirroring x86_64' "$SC"; then
+	echo "patching $SC (dispatch syscalls with IRQs enabled)"
+	python3 - "$SC" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = r"""	ukplat_syscall_handler((struct uk_syscall_ctx *)execenv);
+"""
+new = r"""	/* Dispatch with IRQs enabled, mirroring x86_64's `sti` before its
+	 * call. Exceptions are entered with IRQs masked, and a syscall that
+	 * blocks (futex, poll, a socket read) ends up in the scheduler, which
+	 * refuses to run with interrupts off. The save/restore either side
+	 * stays masked, as it is on x86_64.
+	 */
+	uk_lcpu_enable_irq();
+
+	ukplat_syscall_handler((struct uk_syscall_ctx *)execenv);
+
+	uk_lcpu_disable_irq();
+"""
+assert old in s, "syscall_handler.c does not match the expected shape"
+s = s.replace(old, new, 1)
+# uk_lcpu_enable_irq()/disable_irq() live in <uk/lcpu/except.h>.
+if "uk/lcpu/except.h" not in s:
+    inc = "#include <uk/lcpu.h>" + chr(10)
+    s = s.replace(inc, inc + "#include <uk/lcpu/except.h>" + chr(10), 1)
+open(p, "w").write(s)
+PYEOF
+else
+	echo "syscall_handler.c IRQ fix: already patched or absent, skipping"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. virtio-rng driver (new).
 #
 # Unikraft has no virtio-rng driver at all. On arm64 that leaves no usable
 # entropy source under libkrun — LIBUKRANDOM_LCPU needs FEAT_RNG, which

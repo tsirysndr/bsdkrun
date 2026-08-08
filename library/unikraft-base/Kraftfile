@@ -41,6 +41,7 @@ unikraft:
     # --- everything below is library/base's config, verbatim ---
     CONFIG_HAVE_PAGING_DIRECTMAP: 'y'
     CONFIG_HAVE_PAGING: 'y'
+    CONFIG_I8042: 'y'
     CONFIG_LIBDEVFS_AUTOMOUNT: 'y'
     CONFIG_LIBDEVFS_DEV_NULL: 'y'
     CONFIG_LIBDEVFS_DEV_STDOUT: 'y'
@@ -115,6 +116,7 @@ unikraft:
     CONFIG_LIBVFSCORE_AUTOMOUNT: 'y'
     CONFIG_LIBVFSCORE_NONLARGEFILE: 'y'
     CONFIG_LIBVFSCORE: 'y'
+    CONFIG_LIBUK9P: 'y'
     CONFIG_OPTIMIZE_DEADELIM: 'y'
     CONFIG_OPTIMIZE_LTO: 'y'
     CONFIG_PAGING: 'y'
@@ -129,6 +131,12 @@ libraries:
     source: https://github.com/unikraft/app-elfloader.git
     version: staging
     kconfig:
+      # Implements arch_prctl(ARCH_SET_FS), which is how glibc installs the
+      # thread pointer on x86_64. Without it startup dies with
+      # "cannot set %fs base address for thread-local storage"; on arm64 the
+      # TCB is likewise never established, so the stack canary reads garbage
+      # and the dynamic loader cannot resolve TLS relocations.
+      CONFIG_LIBPOSIX_PROCESS_ARCH_PRCTL: 'y'
       CONFIG_APPELFLOADER_BRK: 'y'
       CONFIG_APPELFLOADER_CUSTOMAPPNAME: 'y'
       CONFIG_APPELFLOADER_STACK_NBPAGES: 128

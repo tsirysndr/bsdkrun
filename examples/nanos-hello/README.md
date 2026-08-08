@@ -7,18 +7,26 @@ rebuild against a library OS; `ops` wraps it into a bootable image.
 ```sh
 curl https://ops.city/get.sh -sSfL | sh   # install ops
 ./build.sh                                # builds ~/.ops/images/nanos-hello
+bsdkrun nanos nanos-hello --no-net         # boot it
 ```
+
+`bsdkrun nanos` takes an image path, or a bare name it looks up in
+`~/.ops/images/` (what `ops build -i <name>` produces). It picks the boot
+method for the host automatically — the direct-kernel and EFI details below
+are what it does under the hood, not something you invoke yourself.
+
+Like every unikernel, a Nanos machine has no shell or agent: `exec`, `shell`
+and `commit` are rejected; `logs`, `ps`, `stop`, `start` and `rm` work as
+usual.
 
 ## Status: x86_64 experimental, arm64 blocked upstream
 
 **x86_64 (Linux/KVM)** boots via direct kernel load — the same path
-Firecracker uses, which Nanos supports officially:
+Firecracker uses, which Nanos supports officially. `bsdkrun nanos` finds the
+kernel ops staged (`~/.ops/<version>/kernel.img`) on its own; equivalently:
 
 ```sh
-bsdkrun kernel \
-  --kernel ~/.ops/0.1.55/kernel.img --format elf \
-  --disk ~/.ops/images/nanos-hello \
-  --cpus 1 --mem 512 --no-net
+bsdkrun nanos nanos-hello --cpus 1 --mem 512 --no-net
 ```
 
 This is exercised by the `e2e-nanos` workflow on KVM runners; treat it as
@@ -40,13 +48,11 @@ established, so nobody re-digs it:
   `"Uefi": true` for local runs (it boots the BIOS-style image instead), so
   the arm64 UEFI path appears untested upstream at nanos 0.1.55 / ops 0.1.46.
 
-When upstream's arm64 UEFI loader works, the libkrun side is already in
-place:
+When upstream's arm64 UEFI loader works, the libkrun side is already in place
+— `bsdkrun nanos` sets `KRUN_ACPI=1` and boots the image via EFI on macOS:
 
 ```sh
-KRUN_ACPI=1 bsdkrun firmware \
-  --firmware ~/.cache/bsdkrun/KRUN_EFI.fd \
-  --disk ~/.ops/images/nanos-hello --cpus 1 --mem 1024
+bsdkrun nanos nanos-hello --cpus 1 --mem 1024
 ```
 
 (The arm64 image needs `"Uefi": true` — `config.json` here — or ops emits no

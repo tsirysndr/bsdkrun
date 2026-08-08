@@ -95,25 +95,31 @@ jobs:
       - name: Build bsdkrun
         run: cargo build --release
 
+      # Fetch the ops binary directly instead of running ops.city/get.sh: that
+      # installer shells out to `apt install qemu-system-x86` without sudo (so
+      # it dies on the dpkg lock) and then refuses to continue without QEMU —
+      # which only `ops run` needs. Here ops is a *builder* and bsdkrun is the
+      # VMM, so none of it applies. Same URL and install prefix the script uses.
       - name: Install ops and build the Nanos image
         working-directory: examples/nanos-hello
         run: |
           set -eux
-          curl https://ops.city/get.sh -sSfL | sh
+          mkdir -p "$HOME/.ops/bin"
+          curl -fsSLo "$HOME/.ops/bin/ops" https://storage.googleapis.com/cli/linux/ops
+          chmod +x "$HOME/.ops/bin/ops"
           export PATH="$HOME/.ops/bin:$PATH"
+          ops version
           ./build.sh x86_64
           ls -l "$HOME/.ops/images/nanos-hello"
-          # The kernel ops staged for this nanos release:
-          NANOS_DIR=$(ls -d "$HOME"/.ops/0.* | sort -V | tail -1)
-          echo "NANOS_KERNEL=$NANOS_DIR/kernel.img" >> "$GITHUB_ENV"
-          file "$NANOS_DIR/kernel.img"
 
-      - name: e2e — boot Nanos via direct kernel load
+      - name: e2e — boot Nanos with `bsdkrun nanos`
         run: |
           set -eux
-          timeout 120 ./target/release/bsdkrun --log-level 5 kernel \
-            --kernel "$NANOS_KERNEL" --format elf \
-            --disk "$HOME/.ops/images/nanos-hello" \
+          # The subcommand finds the ops-staged kernel and picks the x86_64
+          # direct-kernel boot method itself. A bare image name resolves
+          # against ~/.ops/images.
+          export PATH="$HOME/.ops/bin:$PATH"
+          timeout 120 ./target/release/bsdkrun --log-level 5 nanos nanos-hello \
             --cpus 1 --mem 512 --no-net | tee nanos.out || true
           if grep -aq "Hello from Nanos" nanos.out; then
             echo "🎉 Nanos BOOTED under libkrun/KVM (x86_64 direct kernel)"

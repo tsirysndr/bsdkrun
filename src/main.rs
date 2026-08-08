@@ -20,6 +20,7 @@ mod id;
 mod krun;
 mod linux;
 mod names;
+mod nanos;
 mod net;
 mod network;
 mod oci;
@@ -39,7 +40,7 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 use clap::builder::styling::{Color, RgbColor, Style, Styles};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use krun::Ctx;
@@ -114,6 +115,11 @@ enum Command {
 
     /// Boot a Unikraft unikernel (built with `kraft build --plat fc`).
     Unikraft(UnikraftArgs),
+
+    /// Boot a Nanos (NanoVMs) unikernel image (built with `ops build`).
+    /// Linux/x86_64 boots it Firecracker-style (experimental); macOS/arm64
+    /// needs an upstream Nanos fix — see examples/nanos-hello.
+    Nanos(NanosArgs),
 
     /// List machines.
     Ps(PsArgs),
@@ -831,6 +837,45 @@ struct KernelArgs {
     vm: VmConfig,
 }
 
+/// Options for the `nanos` command.
+#[derive(Parser)]
+struct NanosArgs {
+    /// The Nanos image to boot: a path, or a bare name looked up in
+    /// `~/.ops/images/` (what `ops build -i <name>` produces).
+    #[arg(value_name = "IMAGE")]
+    image: String,
+
+    /// Nanos kernel to load (Linux hosts; default: the newest
+    /// `~/.ops/<version>/kernel.img` ops has staged).
+    #[arg(long)]
+    kernel: Option<PathBuf>,
+
+    /// Kernel command line.
+    #[arg(long, default_value = "")]
+    cmdline: String,
+
+    /// UEFI firmware (macOS hosts; default: krunkit's KRUN_EFI, auto-located).
+    #[arg(long)]
+    firmware: Option<PathBuf>,
+
+    /// Run the machine in the background and print its id (like `docker run
+    /// -d`). Use `logs`/`stop` to interact with it afterwards — a unikernel
+    /// has no shell, so `shell`/`exec` don't apply.
+    #[arg(short = 'd', long)]
+    detach: bool,
+
+    /// Boot the image in place (writes persist to it) instead of the default
+    /// per-machine copy-on-write clone.
+    #[arg(long)]
+    persist: bool,
+
+    #[command(flatten)]
+    net: NetConfig,
+
+    #[command(flatten)]
+    vm: VmConfig,
+}
+
 /// Options for the `unikraft` command.
 #[derive(Parser)]
 struct UnikraftArgs {
@@ -1111,6 +1156,7 @@ fn main() -> Result<()> {
         Command::Freebsd(args) => boot_freebsd(args),
         Command::Netbsd(args) => boot_netbsd(args),
         Command::Unikraft(args) => boot_unikraft(args),
+        Command::Nanos(args) => boot_nanos(args),
         Command::Ps(args) => cmd_ps(args.all, args.json),
         Command::Images(args) => cmd_images(args.json),
         Command::Stop(args) => cmd_stop(&args.id),
@@ -1531,6 +1577,133 @@ fn boot_unikraft_image(
         false,
         build,
     )
+}
+
+/// Boot a Nanos image. See [`crate::nanos`] for the per-host boot method and
+/// the current support status of each.
+fn boot_nanos(args: NanosArgs) -> Result<()> {
+    let image = nanos::resolve_image(&args.image)?;
+    boot_nanos_image(
+        &image,
+        args.kernel.as_deref(),
+        &args.cmdline,
+        args.firmware.as_deref(),
+        args.detach,
+        args.persist,
+        args.net,
+        args.vm,
+        None,
+    )
+}
+
+/// Shared by `nanos` and `start` (which passes the machine's own cloned disk
+/// as `disk_override` so runtime state survives the restart).
+#[allow(clippy::too_many_arguments)]
+fn boot_nanos_image(
+    image: &std::path::Path,
+    kernel: Option<&std::path::Path>,
+    cmdline: &str,
+    firmware: Option<&std::path::Path>,
+    detach: bool,
+    persist: bool,
+    net: NetConfig,
+    vm: VmConfig,
+    disk_override: Option<PathBuf>,
+) -> Result<()> {
+    let arch = host::Arch::current()?;
+    // Nanos DHCPs its IP like the BSDs do.
+    let joined = prepare_network(&net, true)?;
+    let machine_id = id::next_machine_id();
+    let vdir = machine_dir_or_tmp(&machine_id);
+    let display = basename(image);
+
+    // Per-host boot method. Resolve everything fallible before the closure.
+    #[cfg(target_os = "macos")]
+    let (kernel_path, firmware_path) = {
+        if !matches!(arch, host::Arch::Aarch64) {
+            anyhow::bail!("nanos on macOS is arm64-only");
+        }
+        let fw = match firmware {
+            Some(f) => f.to_path_buf(),
+            None => locate_krun_efi()?,
+        };
+        // libkrun serves the ACPI tables Nanos requires (fork feature; a
+        // libkrun without it simply ignores the variable).
+        std::env::set_var("KRUN_ACPI", "1");
+        warn!(
+            "Nanos/arm64 does not reach userspace at nanos 0.1.55 — its UEFI \
+             loader hangs under QEMU + stock edk2 too (upstream issue). See \
+             examples/nanos-hello/README.md."
+        );
+        (kernel.map(|k| k.to_path_buf()), fw)
+    };
+    #[cfg(target_os = "linux")]
+    let kernel_path = {
+        if !matches!(arch, host::Arch::X86_64) {
+            anyhow::bail!(
+                "nanos on Linux is x86_64-only: the arm64 Nanos kernel links at \
+                 0x40400000, below libkrun's direct-kernel RAM base"
+            );
+        }
+        let _ = firmware; // EFI is the macOS path
+        Some(match kernel {
+            Some(k) => k.to_path_buf(),
+            None => nanos::default_kernel()?,
+        })
+    };
+
+    let disk_src = disk_override.unwrap_or_else(|| image.to_path_buf());
+    let root_disk = prepare_bsd_disk(&disk_src, &vdir, persist, None, None)?;
+
+    let spec = nanos::BootSpec {
+        image: image.to_path_buf(),
+        #[cfg(target_os = "macos")]
+        kernel: kernel_path.clone(),
+        #[cfg(target_os = "linux")]
+        kernel: kernel_path.clone(),
+        cmdline: cmdline.to_string(),
+    };
+
+    let build = || -> Result<(Ctx, Option<Gvproxy>)> {
+        let ctx = Ctx::new()?;
+        ctx.set_vm_config(vm.cpus, vm.mem)?;
+        ctx.attach_stdio_serial_console()
+            .context("wiring guest serial console to stdio")?;
+        db::record_disk(&image.to_string_lossy());
+        ctx.add_disk("root", &root_disk, false)
+            .with_context(|| format!("attaching root disk {}", root_disk.display()))?;
+        // No agent lives in a unikernel; this just gives it a NIC.
+        let gvproxy = setup_networking_with_agent(&ctx, &net, Some(&vdir))?;
+        #[cfg(target_os = "macos")]
+        ctx.set_firmware(&firmware_path)
+            .context("configuring EFI firmware")?;
+        #[cfg(target_os = "linux")]
+        if let Some(k) = &kernel_path {
+            ctx.set_kernel(k, krun::KRUN_KERNEL_FORMAT_ELF, None, cmdline)
+                .context("configuring the Nanos kernel")?;
+        }
+        spec.save(&vdir)?;
+        Ok((ctx, gvproxy))
+    };
+
+    let result = run_machine(
+        &machine_id,
+        &vdir,
+        "nanos",
+        &display,
+        "",
+        vm.cpus,
+        vm.mem,
+        detach,
+        true,
+        None,
+        &[],
+        false,
+        false,
+        build,
+    );
+    finalize_network(&machine_id, Some(&vdir), &net.ports, &joined);
+    result
 }
 
 fn boot_firmware(args: FirmwareArgs) -> Result<()> {
@@ -3481,6 +3654,23 @@ fn cmd_start(id: &str) -> Result<()> {
         } else {
             boot_linux(largs)
         }
+    } else if vm.kind == "nanos" {
+        // Re-boot the machine's own cloned disk in place when it survives (so
+        // TFS state persists across stop/start, like the BSDs); fall back to
+        // a fresh clone of the original image.
+        let spec = nanos::BootSpec::load(std::path::Path::new(&vm.state_dir))?;
+        let reuse = existing_disk.is_some();
+        boot_nanos_image(
+            &spec.image,
+            spec.kernel.as_deref(),
+            &spec.cmdline,
+            None,
+            true,
+            reuse,
+            net,
+            vmcfg,
+            existing_disk,
+        )
     } else if vm.kind == "unikraft" {
         // Nothing to resume — a unikernel has no disk — so this just boots the
         // same image again, from the spec saved beside its console log.
@@ -4443,7 +4633,13 @@ fn is_bsd(kind: &str) -> bool {
 /// how to boot a committed snapshot.
 fn guest_os_kind(kind: &str, image: &str) -> &'static str {
     let img = image.to_ascii_lowercase();
-    if kind == "freebsd" || kind == "firmware" || img.starts_with("freebsd") {
+    // Unikernel kinds are exact — checked before the image-name heuristics so
+    // an image named e.g. `freebsd-tools` can never mislabel one.
+    if kind == "unikraft" {
+        "unikraft"
+    } else if kind == "nanos" {
+        "nanos"
+    } else if kind == "freebsd" || kind == "firmware" || img.starts_with("freebsd") {
         "freebsd"
     } else if kind == "netbsd" || kind == "kernel" || img.starts_with("netbsd") {
         "netbsd"
@@ -4459,15 +4655,17 @@ fn guest_os_kind(kind: &str, image: &str) -> &'static str {
 /// Failing here with the reason beats letting the caller hang waiting for an
 /// agent that will never answer.
 fn reject_unikraft(vm: &db::MachineRow, what: &str) -> Result<()> {
-    if vm.kind == "unikraft" {
-        anyhow::bail!(
-            "cannot {what} {} — it is a Unikraft unikernel: the application *is* the kernel, \
-             so there is no disk to snapshot and no shell or agent to talk to. \
-             Use `logs` to see its output.",
-            vm.id
-        );
-    }
-    Ok(())
+    let flavor = match vm.kind.as_str() {
+        "unikraft" => "a Unikraft",
+        "nanos" => "a Nanos",
+        _ => return Ok(()),
+    };
+    anyhow::bail!(
+        "cannot {what} {} — it is {flavor} unikernel: the application *is* the kernel, \
+         so there is no shell or agent to talk to, and snapshots are unsupported. \
+         Use `logs` to see its output.",
+        vm.id
+    );
 }
 
 /// Add a guest-specific hint to an agent connection/exec failure.

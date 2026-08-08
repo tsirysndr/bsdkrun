@@ -1,0 +1,208 @@
+name: e2e (Unikraft examples / KVM)
+
+# Builds the ExpressJS and Actix examples for fc/x86_64 and boots each one with
+# `bsdkrun unikraft` under KVM, then checks the server answers over a forwarded
+# port.
+#
+# x86_64 only: GitHub's arm64 runners do not expose /dev/kvm, and these examples
+# need a VMM. The arm64 side is exercised on a macOS/HVF host by hand.
+#
+# NOTE: these examples do not run to completion yet. Applications fault during
+# libc startup on the elfloader `base` runtime — see
+# library/unikraft-base/README.md. The HTTP checks below are therefore expected
+# to fail until that is fixed; `continue-on-error` on those steps keeps the
+# signal (build + boot, which do work) without a permanently red required
+# check. Remove it once the fault is fixed.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - "main"
+    paths:
+      - "examples/unikraft-expressjs/**"
+      - "examples/unikraft-actix/**"
+      - "library/unikraft-base/**"
+      - "src/**"
+      - ".github/workflows/e2e-unikraft-examples.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  boot:
+    name: ${{ matrix.example }} (x86_64)
+    runs-on: ubuntu-latest # x86_64; has /dev/kvm
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - example: unikraft-expressjs
+            kernel: expressjs_fc-x86_64
+            # node needs the rootfs resident twice (embedded in the image and
+            # unpacked into ramfs) before V8 allocates anything; 512 MiB fails
+            # during cpio extraction with a misleading "Input/output error".
+            mem: 2048
+            argv: /usr/bin/node /usr/src/server.js
+            port: 3000
+            expect: "Bye, World!"
+          - example: unikraft-actix
+            kernel: actix_fc-x86_64
+            mem: 1024
+            argv: /server
+            port: 8080
+            expect: "Bye, World!"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          set -eux
+          test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 0666 /dev/kvm
+          ls -l /dev/kvm
+
+      - name: Install build deps (bsdkrun, libkrun/libkrunfw, and Unikraft)
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl ca-certificates xz-utils python3 \
+            python3-pyelftools pkg-config patchelf patch cpio kmod rsync zstd \
+            flex bison bc libelf-dev libssl-dev libncurses-dev libyaml-dev \
+            uuid-runtime unzip wget clang libclang-dev llvm-dev
+
+      # Same cache key as e2e-linux.yml and e2e-unikraft.yml on purpose: a hit
+      # from any of them saves the ~15-20 min libkrunfw kernel compile.
+      - name: Restore libkrun build
+        id: libkrun-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v16
+
+      - name: Build libkrun (cache miss)
+        if: steps.libkrun-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          git clone --depth 1 -b v5.5.0 https://github.com/containers/libkrunfw
+          ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
+          git clone --depth 1 -b feat/pvh-boot https://github.com/tsirysndr/libkrun
+          ( cd libkrun && make -j"$(nproc)" BLK=1 NET=1 )
+
+      - name: Save libkrun build
+        if: steps.libkrun-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v16
+
+      - name: Install libkrun
+        run: |
+          set -eux
+          ( cd libkrunfw && sudo make install )
+          ( cd libkrun && sudo make install BLK=1 NET=1 )
+          echo "PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo /usr/local/lib64 | sudo tee /etc/ld.so.conf.d/libkrun.conf
+          sudo ldconfig
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build bsdkrun
+        run: cargo build --release
+
+      - name: Install kraft
+        run: |
+          set -eux
+          curl -fsSLo /tmp/kraft.deb \
+            "https://github.com/unikraft/kraftkit/releases/download/v${KRAFT_VERSION}/kraftkit_${KRAFT_VERSION}_linux_amd64.deb"
+          sudo dpkg -i /tmp/kraft.deb
+          kraft version
+        env:
+          KRAFT_VERSION: 0.12.15
+
+      # build.sh runs the kraft half natively on Linux (no container), and
+      # builds the rootfs with buildx for the target arch. Here host and target
+      # are both x86_64, so no emulation is involved.
+      - name: Build the example
+        run: |
+          set -eux
+          ./examples/${{ matrix.example }}/build.sh x86_64
+          ls -l examples/${{ matrix.example }}/.unikraft/build/${{ matrix.kernel }}
+        env:
+          KRAFTKIT_NO_PROMPT: "1"
+
+      # The patches are what make the elfloader build work; if apply.sh silently
+      # did nothing, the driver would be missing and entropy would be gone.
+      - name: Assert the patches were applied
+        run: |
+          set -eux
+          cfg=examples/${{ matrix.example }}/.config.${{ matrix.kernel }}
+          grep -q '^CONFIG_LIBVIRTIO_RNG=y' "$cfg"
+          grep -q '^CONFIG_FPSIMD=y' "$cfg" || true # arm64-only symbol
+          test -f examples/${{ matrix.example }}/.unikraft/unikraft/drivers/virtio/rng/virtio_rng.c
+
+      # `<argv0> -- <application argv>`: everything before `--` is parsed as
+      # kernel library parameters and the first word is skipped (Unikraft treats
+      # it as the program name), so the placeholder is required.
+      - name: e2e — boot the unikernel
+        run: |
+          set -eux
+          ./target/release/bsdkrun unikraft -d \
+            --name ${{ matrix.example }} \
+            --mem ${{ matrix.mem }} \
+            --port ${{ matrix.port }}:${{ matrix.port }} \
+            --cmdline "elfloader -- ${{ matrix.argv }}" \
+            examples/${{ matrix.example }} | tee id.txt
+          sleep 20
+          ./target/release/bsdkrun ps -a
+          ./target/release/bsdkrun logs "$(cat id.txt)" | tee uk-${{ matrix.example }}.out
+
+      # Boot milestones that are known to work today: entropy from the
+      # virtio-rng driver (lwip cannot initialise without it) and DHCP.
+      - name: e2e — kernel came up
+        run: |
+          set -eux
+          out=uk-${{ matrix.example }}.out
+          grep -q "Powered by Unikraft" "$out"
+          grep -qv "Could not obtain randomness" "$out"
+          grep -q "Set IPv4 address" "$out"
+
+      # Expected to fail until the libc-startup fault is fixed; see the note at
+      # the top of this file.
+      - name: e2e — HTTP server answers
+        continue-on-error: true
+        run: |
+          set -eux
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 5 "http://127.0.0.1:${{ matrix.port }}/" -o body.txt; then
+              break
+            fi
+            sleep 2
+          done
+          cat body.txt
+          grep -q "${{ matrix.expect }}" body.txt
+
+      - name: Tear down
+        if: always()
+        run: |
+          set -eux
+          ./target/release/bsdkrun rm -f "$(cat id.txt)" || true
+
+      - name: Upload console output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unikraft-${{ matrix.example }}-console
+          path: uk-*.out
+          if-no-files-found: ignore

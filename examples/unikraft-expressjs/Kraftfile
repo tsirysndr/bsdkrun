@@ -37,6 +37,15 @@ unikraft:
     CONFIG_HAVE_PAGING_DIRECTMAP: 'y'
     CONFIG_HAVE_PAGING: 'y'
     CONFIG_I8042: 'y'
+
+    # x86_64 has no device tree, so the guest finds its virtio devices only
+    # through the `virtio_mmio.device=` parameters libkrun appends. The slot
+    # count has to cover *every* device libkrun creates — balloon, entropy,
+    # vsock, net — not just the ones we want; the default of 4 is one short and
+    # the NIC is the one dropped, with `virtio_mmio_cmdl.c: Could not add
+    # device (-14)` and no network interface in the guest.
+    CONFIG_LIBVIRTIO_MMIO: 'y'
+    CONFIG_VIRTIO_MMIO_MAX_DEV_CMDLINE: '8'
     CONFIG_LIBDEVFS_AUTOMOUNT: 'y'
     CONFIG_LIBDEVFS_DEV_NULL: 'y'
     CONFIG_LIBDEVFS_DEV_STDOUT: 'y'

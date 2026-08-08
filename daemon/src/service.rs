@@ -345,10 +345,7 @@ impl Bsdkrun for BsdkrunService {
         }))
     }
 
-    async fn run_osv(
-        &self,
-        req: Request<RunOsvRequest>,
-    ) -> Result<Response<RunResponse>, Status> {
+    async fn run_osv(&self, req: Request<RunOsvRequest>) -> Result<Response<RunResponse>, Status> {
         let r = req.into_inner();
         let (cpus, mem) = vm_opts(r.vm);
         let opts = ops::RunOsvOpts {

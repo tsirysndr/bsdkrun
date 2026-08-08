@@ -773,6 +773,8 @@ async fn run_osv_forwards_no_disk_and_extra_disks() {
 #[tokio::test]
 async fn run_osv_requires_an_image() {
     let h = Harness::new();
-    let errs = h.errors(r#"mutation { runOsv(input: { image: "" }) }"#).await;
+    let errs = h
+        .errors(r#"mutation { runOsv(input: { image: "" }) }"#)
+        .await;
     assert!(!errs.is_empty());
 }

@@ -609,7 +609,9 @@ mod tests {
 
     #[test]
     fn resolve_image_rejects_a_missing_path_with_guidance() {
-        let err = resolve_image("/definitely/not/there").unwrap_err().to_string();
+        let err = resolve_image("/definitely/not/there")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("capstan"), "{err}");
     }
 }

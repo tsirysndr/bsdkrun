@@ -59,7 +59,57 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. virtio-rng driver (new).
+# 3. virtio-mmio: one unsupported device must not hide the rest.
+#
+# drivers/virtio/mmio/virtio_mmio_cmdl.c walks the `virtio_mmio.device=`
+# parameters and `return rc` on the first device it cannot add — abandoning
+# every device after it. libkrun attaches the memory balloon first, and Unikraft
+# has no balloon driver, so the very first entry fails with -14 and the entropy
+# and network devices behind it are never registered:
+#
+#   ERR: [libvirtio_bus]  Failed to find the driver for the virtio device (id:5)
+#   ERR: [libvirtio_mmio] Could not add device (-14)
+#
+# The guest then boots with no NIC at all, so a forwarded port has nothing to
+# reach, and lwip never starts (which also makes any "no entropy" check vacuous).
+# A device with no driver is a normal condition, not a reason to stop probing —
+# Linux binds what it can and moves on. This only bites on x86_64, where the
+# command line is the sole discovery path; arm64 finds its devices in the device
+# tree and is unaffected.
+# ---------------------------------------------------------------------------
+CMDL="$UK/drivers/virtio/mmio/virtio_mmio_cmdl.c"
+if [ -f "$CMDL" ] && ! grep -q 'keep probing the remaining devices' "$CMDL"; then
+	echo "patching $CMDL (an unaddable device no longer aborts discovery)"
+	python3 - "$CMDL" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = r"""		rc = virtio_mmio_add_dev(dev);
+		if (unlikely(rc)) {
+			uk_pr_err("Could not add device (%d)\n", rc);
+			free(dev);
+			return rc;
+		}"""
+new = r"""		rc = virtio_mmio_add_dev(dev);
+		if (unlikely(rc)) {
+			/* Not fatal: a device we have no driver for is normal
+			 * (libkrun always attaches a memory balloon). Report it
+			 * and keep probing the remaining devices, otherwise
+			 * everything behind it - entropy, network - is lost.
+			 */
+			uk_pr_err("Could not add device (%d)\n", rc);
+			free(dev);
+			continue;
+		}"""
+assert old in s, "virtio_mmio_cmdl.c does not match the expected shape"
+open(p, "w").write(s.replace(old, new, 1))
+PYEOF
+else
+	echo "virtio_mmio_cmdl.c: already patched or absent, skipping"
+fi
+
+# ---------------------------------------------------------------------------
+# 4. virtio-rng driver (new).
 #
 # Unikraft has no virtio-rng driver at all. On arm64 that leaves no usable
 # entropy source under libkrun — LIBUKRANDOM_LCPU needs FEAT_RNG, which

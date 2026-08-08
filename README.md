@@ -620,8 +620,10 @@ not apply; `logs`, `ps`, `stop`, `start`, and `rm` work as usual.
   supports officially. `bsdkrun nanos` auto-finds the newest `~/.ops/<version>/kernel.img` that
   `ops build` staged, or you can override it with `--kernel`.
 - **macOS/arm64** uses EFI boot with `KRUN_ACPI=1` and needs an image built with `"Uefi": true`,
-  but current upstream Nanos still hangs before userspace. The plumbing is in place on the bsdkrun
-  side; see [`examples/nanos-hello`](examples/nanos-hello/README.md) for the diagnosis.
+  but current upstream Nanos hangs before userspace: it enumerates virtio only over PCI, and
+  libkrun has no PCI bus — so it never finds its root disk. Not an ACPI gap (those tables are
+  installed and verified); reproducible on plain QEMU by moving the disk to virtio-mmio. See
+  [`examples/nanos-hello`](examples/nanos-hello/README.md) for the diagnosis and repro.
 - **Linux/arm64** is not bootable today: the Nanos kernel links below libkrun's direct-kernel RAM
   base, and Linux hosts have no EFI path for it.
 

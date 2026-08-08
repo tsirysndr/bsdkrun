@@ -19,7 +19,7 @@ Like every unikernel, a Nanos machine has no shell or agent: `exec`, `shell`
 and `commit` are rejected; `logs`, `ps`, `stop`, `start` and `rm` work as
 usual.
 
-## Status: x86_64 experimental, arm64 blocked upstream
+## Status: x86_64 experimental, arm64 blocked on virtio-mmio support
 
 **x86_64 (Linux/KVM)** boots via direct kernel load — the same path
 Firecracker uses, which Nanos supports officially. `bsdkrun nanos` finds the
@@ -32,24 +32,49 @@ bsdkrun nanos nanos-hello --cpus 1 --mem 512 --no-net
 This is exercised by the `e2e-nanos` workflow on KVM runners; treat it as
 experimental until that workflow is green.
 
-**arm64 (macOS) does not boot yet, and the blocker is upstream.** What was
-established, so nobody re-digs it:
+**arm64 (macOS) does not boot yet: Nanos needs virtio-PCI, and libkrun has
+only virtio-mmio.**
 
-- Nanos/arm64 is ACPI-only: GIC via MADT, timer via GTDT, console via SPCR,
-  virtio-mmio via DSDT `LNRO0005` nodes. Its device tree code reads memory
-  ranges only — there are no DT interrupt-controller bindings at all.
-- libkrun's firmware published no ACPI. That half is **fixed**: with
-  `KRUN_ACPI=1`, the libkrun fork (branch `feat/pvh-boot`) serves
-  QEMU-shaped ACPI tables over an fw_cfg device, and the firmware installs
-  them (verified via an EFI-shell `memmap` probe: 16 pages of ACPI reclaim
-  memory, versus zero before).
-- Nanos still hangs — and it hangs **identically under QEMU + stock edk2**,
-  silently, right after BdsDxe starts its `bootaa64.efi`. `ops run` ignores
-  `"Uefi": true` for local runs (it boots the BIOS-style image instead), so
-  the arm64 UEFI path appears untested upstream at nanos 0.1.55 / ops 0.1.46.
+The whole failure reproduces with no libkrun involved. Same image, same QEMU,
+same stock edk2 — only the disk transport differs:
 
-When upstream's arm64 UEFI loader works, the libkrun side is already in place
-— `bsdkrun nanos` sets `KRUN_ACPI=1` and boots the image via EFI on macOS:
+```sh
+# boots, prints "Hello from Nanos on bsdkrun!"
+qemu-system-aarch64 -machine virt -cpu cortex-a72 -m 512 -nographic \
+  -bios /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
+  -drive file=$HOME/.ops/images/nanos-hello,format=raw,if=virtio -net none
+
+# hangs at `BdsDxe: starting ... VenHw(...)` — exactly what bsdkrun shows
+qemu-system-aarch64 -machine virt -cpu cortex-a72 -m 512 -nographic \
+  -bios /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
+  -drive file=$HOME/.ops/images/nanos-hello,format=raw,if=none,id=d0 \
+  -device virtio-blk-device,drive=d0 -net none
+```
+
+The Nanos kernel's own strings say why: it has **no devicetree support at all**
+on arm64 (`virtio,mmio`, `arm,gic`, `arm,pl011` are all absent) and discovers
+devices purely through ACPI (`SPCR`, `APIC`, `PNP0`) — but it knows nothing
+about `LNRO0005`, the ACPI HID that describes a virtio-mmio device. The mmio
+driver itself is there (`src/virtio/virtio_mmio.c`, `vtmmio:` messages); the
+devices are simply never enumerated, so it finds no storage. At the hang the
+vCPU sits at ~100% CPU with zero VM exits — a guest-internal spin, not a halt.
+
+Things measured and ruled out, so nobody re-digs them:
+
+- **ACPI is not the problem.** With `KRUN_ACPI=1` the libkrun fork (branch
+  `feat/pvh-boot`) serves QEMU-shaped tables over fw_cfg and the firmware
+  installs them — an EFI-shell `memmap` probe reports 16 pages of ACPI reclaim
+  memory (zero before), and a level-5 trace shows ~570 fw_cfg accesses.
+- **The PSCI conduit is consistent.** The FADT declares SMC and libkrun's HVF
+  layer services `EC_AA64_SMC` through `handle_psci_request()`.
+- **Nothing is wrong with the console path.** The guest emits no bytes at all.
+
+Unblocking it means upstream Nanos enumerating `LNRO0005` virtio-mmio devices
+from the DSDT; the two commands above are a self-contained bug report. The
+alternative — a virtio-PCI transport in libkrun — is a much larger job.
+
+The bsdkrun side is otherwise ready: `bsdkrun nanos` sets `KRUN_ACPI=1` and
+boots the image via EFI on macOS:
 
 ```sh
 bsdkrun nanos nanos-hello --cpus 1 --mem 1024

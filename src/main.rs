@@ -1631,9 +1631,11 @@ fn boot_nanos_image(
         // libkrun without it simply ignores the variable).
         std::env::set_var("KRUN_ACPI", "1");
         warn!(
-            "Nanos/arm64 does not reach userspace at nanos 0.1.55 — its UEFI \
-             loader hangs under QEMU + stock edk2 too (upstream issue). See \
-             examples/nanos-hello/README.md."
+            "Nanos/arm64 does not reach userspace at nanos 0.1.55: it enumerates \
+             virtio only over PCI, and libkrun provides virtio-mmio only, so the \
+             guest finds no storage and spins after the firmware hands off. \
+             Reproducible on plain QEMU by swapping the disk to virtio-mmio — \
+             see examples/nanos-hello/README.md."
         );
         (kernel.map(|k| k.to_path_buf()), fw)
     };

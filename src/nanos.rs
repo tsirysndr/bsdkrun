@@ -14,11 +14,14 @@
 //!     workflow is green.
 //!   * **macOS/arm64** — EFI boot of the image (built with `"Uefi": true`),
 //!     with `KRUN_ACPI=1` so libkrun serves the ACPI tables Nanos requires
-//!     (GIC via MADT, timer via GTDT, console via SPCR, virtio via DSDT).
-//!     Known **not** to reach userspace at nanos 0.1.55: the upstream UEFI
-//!     loader hangs identically under QEMU + stock edk2. The command exists
-//!     so it lights up when upstream fixes it — see
-//!     `examples/nanos-hello/README.md` for the full diagnosis.
+//!     (GIC via MADT, timer via GTDT, console via SPCR).
+//!     Known **not** to reach userspace at nanos 0.1.55, and the reason is not
+//!     ACPI (those tables do get installed): Nanos enumerates virtio only over
+//!     PCI, while libkrun has no PCI bus at all. It never finds its root disk
+//!     and spins with no output. Swapping a QEMU guest's disk from virtio-pci
+//!     to virtio-mmio reproduces it with no libkrun in the picture. The command
+//!     exists so it lights up when upstream grows DSDT `LNRO0005` enumeration —
+//!     see `examples/nanos-hello/README.md` for the full diagnosis.
 //!   * **Linux/aarch64** — not bootable: the Nanos kernel links at
 //!     `0x4040_0000`, below libkrun's direct-kernel RAM base (`0x8000_0000`),
 //!     and there is no EFI path on Linux hosts.

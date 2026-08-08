@@ -89,6 +89,53 @@ pub fn elf_to_image(elf: &[u8]) -> Result<Vec<u8>> {
     Ok(image)
 }
 
+/// Where libkrun's aarch64 loader writes a raw kernel image, and enters it.
+pub const AARCH64_LOAD_ADDR: u64 = 0x8000_0000;
+
+/// Range of an AArch64 `b` (26-bit signed word offset): ±128 MiB.
+const MAX_BRANCH: u64 = 128 << 20;
+
+/// Apply the arm64 `text_offset` shim to a raw `Image`.
+///
+/// libkrun writes a raw image at [`AARCH64_LOAD_ADDR`] and enters it *there*,
+/// ignoring the `text_offset` field in the arm64 `Image` header. A kernel that
+/// asks to be loaded at `AARCH64_LOAD_ADDR + text_offset` — Unikraft reserves
+/// the first megabyte for the DTB, OSv asks for the conventional `0x80000` —
+/// then finds every byte of itself at the wrong address.
+///
+/// The fix is to front-pad the image by `text_offset` so every byte lands where
+/// it was linked, and to write a single `b` at offset 0 so libkrun's fixed entry
+/// point jumps to the real one. A branch (rather than a jump through a register)
+/// is what keeps `x0` — the device tree pointer — intact.
+///
+/// Returns `None` when the image links at the load address already and needs no
+/// shim.
+pub fn shim_text_offset(image: &[u8]) -> Result<Option<Vec<u8>>> {
+    if image.len() < 16 {
+        bail!("too short to carry an arm64 Image header");
+    }
+    let text_offset = u64::from_le_bytes(image[8..16].try_into().unwrap());
+    if text_offset == 0 {
+        return Ok(None);
+    }
+    if text_offset % 4 != 0 {
+        bail!("text_offset {text_offset:#x} is not instruction-aligned");
+    }
+    if text_offset >= MAX_BRANCH {
+        bail!(
+            "image wants to load {text_offset:#x} past {AARCH64_LOAD_ADDR:#x}, which is \
+             out of range of the entry branch bsdkrun writes ({MAX_BRANCH:#x})"
+        );
+    }
+
+    let mut shimmed = vec![0u8; text_offset as usize];
+    // b <text_offset>: imm26 is the offset in words.
+    let branch = 0x1400_0000u32 | ((text_offset / 4) as u32 & 0x03FF_FFFF);
+    shimmed[..4].copy_from_slice(&branch.to_le_bytes());
+    shimmed.extend_from_slice(image);
+    Ok(Some(shimmed))
+}
+
 /// Whether `bytes` looks like an ELF that needs flattening.
 pub fn is_elf(bytes: &[u8]) -> bool {
     bytes.len() >= 4 && &bytes[..4] == b"\x7fELF"

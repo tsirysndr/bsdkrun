@@ -24,6 +24,7 @@ mod nanos;
 mod net;
 mod network;
 mod oci;
+mod osv;
 /// The case-sensitive store only exists to work around case-insensitive APFS;
 /// Linux filesystems are case-sensitive already, so nix guests work there
 /// out of the box and the module is not compiled.
@@ -120,6 +121,10 @@ enum Command {
     /// Linux/x86_64 boots it Firecracker-style (experimental); macOS/arm64
     /// needs an upstream Nanos fix — see examples/nanos-hello.
     Nanos(NanosArgs),
+
+    /// Boot an OSv unikernel image (an OSv release loader, or one composed by
+    /// `capstan`).
+    Osv(OsvArgs),
 
     /// List machines.
     Ps(PsArgs),
@@ -876,6 +881,66 @@ struct NanosArgs {
     vm: VmConfig,
 }
 
+/// Options for the `osv` command.
+#[derive(Parser)]
+struct OsvArgs {
+    /// The OSv image to boot: an aarch64 loader from an OSv release (e.g.
+    /// `osv-loader-microvm.qemu.aarch64`), or an image composed by `capstan`.
+    /// A composed image is both the kernel and the root disk.
+    #[arg(value_name = "IMAGE")]
+    image: PathBuf,
+
+    /// OSv command line — the application to run and its arguments, e.g.
+    /// `/hello.so`. This is what the guest is actually booted with (via the
+    /// device tree on aarch64, the PVH start_info on x86_64), so it overrides
+    /// the copy baked into the image. Defaults to that baked-in command line.
+    #[arg(long, default_value = "")]
+    cmdline: String,
+
+    /// Root disk image (raw), attached as virtio-blk. Required on x86_64, where
+    /// the loader ELF is kernel only; on aarch64 it overrides the filesystem
+    /// carried inside a composed image.
+    #[arg(long)]
+    disk: Option<PathBuf>,
+
+    /// Boot the kernel alone, without attaching a root disk. OSv will need
+    /// `--nomount` in its command line to get anywhere.
+    #[arg(long)]
+    no_disk: bool,
+
+    /// Additional disk to attach as virtio-blk (repeatable).
+    /// Format: PATH[:ro] — append `:ro` for a read-only attachment.
+    #[arg(long = "attach-disk", value_name = "PATH[:ro]")]
+    attach_disk: Vec<DiskSpec>,
+
+    /// Interrupt controller to ask libkrun for. OSv only grew a GICv3 driver
+    /// after v0.57.0, so its released aarch64 kernel needs `v2`; pass `v3` for
+    /// a kernel built from OSv master.
+    #[arg(long, default_value = "v2", value_name = "v2|v3")]
+    gic: osv::Gic,
+
+    /// Boot the disk in place (writes persist to it; only one machine at a
+    /// time) instead of the default per-machine copy-on-write clone.
+    #[arg(long)]
+    persist: bool,
+
+    /// Persist the guest's disk to a named volume that survives reboots.
+    #[arg(short = 'v', long = "volume", value_name = "NAME")]
+    volume: Option<String>,
+
+    /// Run the machine in the background and print its id (like `docker run -d`).
+    /// Use `logs`/`stop` to interact with it afterwards — a unikernel has no
+    /// shell, so `shell`/`exec` don't apply.
+    #[arg(short = 'd', long)]
+    detach: bool,
+
+    #[command(flatten)]
+    net: NetConfig,
+
+    #[command(flatten)]
+    vm: VmConfig,
+}
+
 /// Options for the `unikraft` command.
 #[derive(Parser)]
 struct UnikraftArgs {
@@ -1157,6 +1222,7 @@ fn main() -> Result<()> {
         Command::Netbsd(args) => boot_netbsd(args),
         Command::Unikraft(args) => boot_unikraft(args),
         Command::Nanos(args) => boot_nanos(args),
+        Command::Osv(args) => boot_osv(args),
         Command::Ps(args) => cmd_ps(args.all, args.json),
         Command::Images(args) => cmd_images(args.json),
         Command::Stop(args) => cmd_stop(&args.id),
@@ -1577,6 +1643,207 @@ fn boot_unikraft_image(
         false,
         build,
     )
+}
+
+/// Boot an OSv unikernel. See [`crate::osv`] for the image layout, why this
+/// can't go through `bsdkrun kernel`, and why the GIC version matters.
+fn boot_osv(args: OsvArgs) -> Result<()> {
+    let image = osv::resolve_image(&args.image.to_string_lossy())?;
+    boot_osv_image(
+        &image,
+        &args.cmdline,
+        args.gic,
+        args.disk.as_deref(),
+        args.no_disk,
+        args.persist,
+        args.volume.as_deref(),
+        &args.attach_disk,
+        args.detach,
+        args.net,
+        args.vm,
+        None,
+    )
+}
+
+/// Shared by `osv` and `start` (which passes the machine's own cloned disk as
+/// `disk_override` so filesystem writes survive the restart).
+#[allow(clippy::too_many_arguments)]
+fn boot_osv_image(
+    image: &std::path::Path,
+    cmdline: &str,
+    gic: osv::Gic,
+    disk: Option<&std::path::Path>,
+    no_disk: bool,
+    persist: bool,
+    volume: Option<&str>,
+    attach_disk: &[DiskSpec],
+    detach: bool,
+    net: NetConfig,
+    vm: VmConfig,
+    disk_override: Option<PathBuf>,
+) -> Result<()> {
+    // How the image boots is decided by what it is, not by the host arch — but
+    // the two must agree, since a hardware-virtualized guest runs the host's
+    // architecture.
+    let kind = osv::probe(image)?;
+    let host_arch = host::Arch::current()?;
+    match (&kind, host_arch) {
+        (osv::Image::Arm64 { .. }, host::Arch::Aarch64) => {}
+        (osv::Image::ElfPvh, host::Arch::X86_64) => {}
+        (osv::Image::Arm64 { .. }, _) => anyhow::bail!(
+            "this is an OSv aarch64 image, but the host is x86_64 — a guest runs \
+             the host's architecture, so use the x86_64 loader ELF instead"
+        ),
+        (osv::Image::ElfPvh, _) => anyhow::bail!(
+            "this is an OSv x86_64 image, but the host is aarch64 — use the \
+             aarch64 loader.img (e.g. osv-loader-microvm.qemu.aarch64) instead"
+        ),
+    }
+
+    // Everything libkrun is configured through by environment variable is set
+    // HERE, before anything below spawns a thread.
+    //
+    // setenv(3) is not thread-safe: it can reallocate the environment block
+    // while another thread is walking it, and POSIX gives no way to make that
+    // safe from the caller's side (Rust 2024 marks `set_var` unsafe for exactly
+    // this reason). Once `prepare_network` below starts gvproxy's supervision
+    // threads, a `set_var` is a data race that segfaults the process before the
+    // VM ever boots — intermittently, and never under a debugger.
+    //
+    //   * KRUN_NO_RNG — OSv's virtio-rng driver is PCI-only (it registers
+    //     itself but never fills in the MMIO interrupt factory), so probing the
+    //     device throws std::bad_function_call and aborts the guest partway
+    //     through driver init.
+    //   * KRUN_NO_BALLOON — OSv has no balloon driver at all, and being first
+    //     on the bus it owns the first SPI, so every interrupt it raises is
+    //     reported on the console as "unhandled InterruptID irq=0x20".
+    //   * KRUN_GIC — see the module docs: the released aarch64 kernel is
+    //     GICv2-only. Harmless on x86_64, which has no GIC.
+    //   * KRUN_PVH — enter an x86_64 loader ELF at its PHYS32_ENTRY note rather
+    //     than via e_entry and the Linux zero page, which would triple-fault.
+    //
+    // Neither rng nor balloon does anything for an OSv guest, so both are left
+    // off the bus.
+    std::env::set_var("KRUN_NO_RNG", "1");
+    std::env::set_var("KRUN_NO_BALLOON", "1");
+    std::env::set_var("KRUN_GIC", gic.krun_value());
+    if matches!(kind, osv::Image::ElfPvh) {
+        std::env::set_var("KRUN_PVH", "1");
+    }
+
+    // OSv DHCPs its IP like the BSDs do.
+    let joined = prepare_network(&net, true)?;
+    let machine_id = id::next_machine_id();
+    let vdir = machine_dir_or_tmp(&machine_id);
+    let image_name = basename(image);
+    std::fs::create_dir_all(&vdir)
+        .with_context(|| format!("creating machine dir {}", vdir.display()))?;
+
+    // Per-arch: what to hand libkrun as the kernel, in which format, and
+    // whether the image doubles as the root disk.
+    let (kernel, kernel_format, root_src, cmdline) = match &kind {
+        osv::Image::Arm64 { header } => {
+            // libkrun reads the whole kernel file into guest RAM, so a composed
+            // image has to be split: the leading arm64 Image becomes the
+            // kernel, and the image itself is the root disk.
+            let kernel = osv::extract_kernel(image, header, &vdir.join("kernel.img"))?;
+            let root = if osv::has_filesystem(image, header)? {
+                Some(image.to_path_buf())
+            } else {
+                None
+            };
+            (
+                kernel,
+                krun::KRUN_KERNEL_FORMAT_RAW,
+                root,
+                osv::effective_cmdline(cmdline, Some(header)),
+            )
+        }
+        osv::Image::ElfPvh => {
+            (
+                image.to_path_buf(),
+                krun::KRUN_KERNEL_FORMAT_ELF,
+                // The ELF is kernel only: a root filesystem must be attached
+                // explicitly with --disk.
+                None,
+                osv::effective_cmdline(cmdline, None),
+            )
+        }
+    };
+
+    let root_src = disk.map(|d| d.to_path_buf()).or(root_src);
+    let attach_root = !no_disk && root_src.is_some();
+    if !attach_root && !cmdline.contains("--nomount") {
+        warn!(
+            image = %image_name,
+            "no root filesystem attached, so OSv has nothing to mount — pass \
+             --disk, boot an image composed by capstan, or add --nomount to the \
+             command line"
+        );
+    }
+    let root_disk = if attach_root {
+        let voldir = volume.map(volume_dir).transpose()?;
+        let disk_src = disk_override.unwrap_or_else(|| root_src.unwrap());
+        Some(prepare_bsd_disk(
+            &disk_src,
+            &vdir,
+            persist,
+            voldir.as_deref(),
+            None,
+        )?)
+    } else {
+        None
+    };
+
+    let spec = osv::BootSpec {
+        image: image.to_path_buf(),
+        cmdline: cmdline.clone(),
+        gic,
+    };
+
+    let build = || -> Result<(Ctx, Option<Gvproxy>)> {
+        let ctx = Ctx::new()?;
+        ctx.set_vm_config(vm.cpus, vm.mem)?;
+        // OSv's aarch64 console is a PL011 — libkrun's explicit serial, not the
+        // implicit virtio-console the Linux path uses. Without this the guest
+        // boots correctly but writes into the void.
+        ctx.attach_stdio_serial_console()
+            .context("wiring guest serial console to stdio")?;
+        if let Some(disk) = &root_disk {
+            db::record_disk(&image.to_string_lossy());
+            ctx.add_disk("root", disk, false)
+                .with_context(|| format!("attaching root disk {}", disk.display()))?;
+        }
+        attach_extra_disks(&ctx, attach_disk)?;
+        // No agent lives in a unikernel; this just gives it a NIC (which it
+        // uses only if the kernel was built with a virtio-net driver).
+        let gvproxy = setup_networking_with_agent(&ctx, &net, Some(&vdir))?;
+        ctx.set_kernel(&kernel, kernel_format, None, &cmdline)
+            .context("configuring the OSv kernel")?;
+        spec.save(&vdir)?;
+        Ok((ctx, gvproxy))
+    };
+
+    let result = run_machine(
+        &machine_id,
+        &vdir,
+        "osv",
+        &image_name,
+        "",
+        vm.cpus,
+        vm.mem,
+        detach,
+        // OSv powers the VM off through PSCI when its application returns, the
+        // same path the watchdog covers for a BSD guest.
+        true,
+        volume,
+        &[],
+        false,
+        false,
+        build,
+    );
+    drop(joined);
+    result
 }
 
 /// Boot a Nanos image. See [`crate::nanos`] for the per-host boot method and
@@ -3673,6 +3940,26 @@ fn cmd_start(id: &str) -> Result<()> {
             vmcfg,
             existing_disk,
         )
+    } else if vm.kind == "osv" {
+        // Re-boot the machine's own cloned disk in place when it survives, so
+        // filesystem writes persist across stop/start like the BSDs; fall back
+        // to a fresh clone of the original image.
+        let spec = osv::BootSpec::load(std::path::Path::new(&vm.state_dir))?;
+        let reuse = existing_disk.is_some();
+        boot_osv_image(
+            &spec.image,
+            &spec.cmdline,
+            spec.gic,
+            None,
+            false,
+            reuse,
+            volume.as_deref(),
+            &[],
+            true,
+            net,
+            vmcfg,
+            existing_disk,
+        )
     } else if vm.kind == "unikraft" {
         // Nothing to resume — a unikernel has no disk — so this just boots the
         // same image again, from the spec saved beside its console log.
@@ -4660,6 +4947,7 @@ fn reject_unikraft(vm: &db::MachineRow, what: &str) -> Result<()> {
     let flavor = match vm.kind.as_str() {
         "unikraft" => "a Unikraft",
         "nanos" => "a Nanos",
+        "osv" => "an OSv",
         _ => return Ok(()),
     };
     anyhow::bail!(

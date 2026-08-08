@@ -1,0 +1,222 @@
+name: e2e (OSv / KVM)
+
+# Boots an OSv unikernel on x86_64/KVM via `bsdkrun osv`, running a real C
+# application composed into the image by capstan.
+#
+# On x86_64 OSv boots via PVH: its loader ELF carries the Xen PHYS32_ENTRY note,
+# the same ABI NetBSD MICROVM and FreeBSD FIRECRACKER use, so this exercises the
+# PVH path in our libkrun fork rather than the Linux 64-bit boot protocol.
+# `bsdkrun osv` sets KRUN_PVH itself once it recognises the ELF.
+#
+# The image is split in two here, unlike on aarch64:
+#   * the kernel is the standalone loader ELF from the OSv release, and
+#   * the root filesystem is the capstan-composed disk, attached with --disk.
+# capstan's x86_64 image starts with a legacy boot sector rather than something
+# libkrun can enter directly, so the separately-published PVH ELF is the kernel.
+#
+# EXPERIMENTAL: this is the first time OSv meets libkrun on x86_64 — the aarch64
+# side is what has been exercised by hand — so the job is continue-on-error. A
+# red here means "OSv/x86_64 isn't there yet" and must not block main. Flip it
+# to a hard test once it has gone green.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - "main"
+    paths:
+      - "src/osv.rs"
+      - "examples/osv-hello/**"
+      - ".github/workflows/e2e-osv.yml"
+
+permissions:
+  contents: read
+
+env:
+  # The OSv release the loader and the bootstrap package both come from. Both
+  # must be the same release: the app is linked against the kernel's exports.
+  OSV_RELEASE: v0.57.0
+
+jobs:
+  boot:
+    name: x86_64
+    runs-on: ubuntu-latest # x86_64; has /dev/kvm
+    timeout-minutes: 40 # never hang the runner if a guest doesn't power off
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          set -eux
+          test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
+          # Give the runner user access to /dev/kvm (default is root:kvm 0660).
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 0666 /dev/kvm
+          ls -l /dev/kvm
+
+      # PVH enters the guest with paging OFF. On Intel *without* VMX unrestricted
+      # guest (common under nested KVM) the host cannot virtualize CR0.PG=0 and
+      # the guest triple-faults, which looks exactly like "OSv is broken". Log
+      # the capability so a failure can be told apart from a real regression.
+      - name: KVM virtualization capabilities
+        run: |
+          set -eux
+          grep -m1 "model name" /proc/cpuinfo
+          grep -qm1 hypervisor /proc/cpuinfo && echo "nested (runs under a hypervisor)" || echo "bare metal"
+          echo -n "kvm_intel unrestricted_guest: "; cat /sys/module/kvm_intel/parameters/unrestricted_guest 2>/dev/null || echo "(kvm_intel not loaded)"
+
+      - name: Install build deps (incl. libkrun/libkrunfw build requirements)
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl ca-certificates xz-utils python3 \
+            python3-pyelftools pkg-config patchelf patch cpio kmod rsync zstd \
+            flex bison bc libelf-dev libssl-dev \
+            clang libclang-dev llvm-dev musl-tools \
+            qemu-utils
+
+      # bsdkrun's user-mode networking. The boot below runs --no-net, but the
+      # binary resolves gvproxy on startup, and having it installed keeps this
+      # job's environment identical to the other e2e jobs.
+      - name: Install gvproxy (user-mode networking)
+        run: |
+          set -eux
+          sudo curl -fL -o /usr/local/bin/gvproxy \
+            https://github.com/containers/gvisor-tap-vsock/releases/latest/download/gvproxy-linux-amd64
+          sudo chmod +x /usr/local/bin/gvproxy
+          gvproxy --help >/dev/null 2>&1 || which gvproxy
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # libkrun links libkrunfw (the bundled kernel), whose build compiles a
+      # Linux kernel from source (~15-20 min), so cache the built trees.
+      # Restore and save separately so a failed build never poisons the cache.
+      # Bump the key to force a rebuild.
+      - name: Restore libkrun build
+        id: libkrun-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v16
+
+      # Build only on a cache miss. libkrun links libkrunfw, so libkrunfw must
+      # be installed first. Use `cd`, NOT `make -C`: `-C` implies `-w`, which
+      # leaves a stray `w` in MAKEFLAGS that libkrunfw passes to the kernel
+      # sub-make as a bogus target ("No rule to make target 'w'").
+      - name: Build libkrun (cache miss)
+        if: steps.libkrun-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          git clone --depth 1 -b v5.5.0 https://github.com/containers/libkrunfw
+          ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
+          # The PVH fork: OSv/x86_64 is entered at its PHYS32_ENTRY note.
+          #
+          # This branch must also carry the KRUN_NO_RNG opt-out. OSv's virtio-rng
+          # driver is PCI-only — it registers itself but never fills in the MMIO
+          # interrupt factory — so if libkrun puts virtio-rng on the bus, probing
+          # it throws std::bad_function_call and kills the guest during driver
+          # init, long before the application runs. Without that support in the
+          # fork this job fails with a guest that aborts, not a boot failure.
+          git clone --depth 1 -b feat/pvh-boot https://github.com/tsirysndr/libkrun
+          ( cd libkrun && make -j"$(nproc)" BLK=1 NET=1 )
+
+      - name: Save libkrun build
+        if: steps.libkrun-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v16
+
+      # Install on every run — a cache hit restores the built trees but not the
+      # system-installed libraries.
+      - name: Install libkrun
+        run: |
+          set -eux
+          ( cd libkrunfw && sudo make install )
+          ( cd libkrun && sudo make install BLK=1 NET=1 )
+          # libkrun installs into /usr/local/lib64. Point pkg-config (used by
+          # build.rs) and the runtime loader at it.
+          echo "PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo /usr/local/lib64 | sudo tee /etc/ld.so.conf.d/libkrun.conf
+          sudo ldconfig
+          ls -l /usr/local/lib64/libkrun.so*
+
+      - name: Build bsdkrun
+        run: cargo build --release
+
+      # capstan composes the OSv loader and the application into one image. Only
+      # the *compose* half is needed here — the image is booted by bsdkrun — so
+      # upstream capstan is enough and no bsdkrun backend is required.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+
+      - name: Build capstan
+        run: |
+          set -eux
+          git clone --depth 1 https://github.com/cloudius-systems/capstan
+          ( cd capstan && go build -o /usr/local/bin/capstan . )
+          capstan --version || true
+
+      # A plain C shared object: OSv dlopen()s the application and calls main().
+      # -shared and -fPIC are the whole OSv contract; see examples/osv-hello.
+      - name: Build the OSv application and compose the image
+        working-directory: examples/osv-hello
+        run: |
+          set -eux
+          gcc -O2 -shared -fPIC -o hello.so hello.c
+          file hello.so
+          # ROFS is built entirely on the host; the zfs variant would boot a
+          # builder VM first.
+          capstan package compose --fs rofs --run "/hello.so" -p osv-hello
+          # libkrun cannot read QCOW2, which is how capstan stores images.
+          qemu-img convert -O raw \
+            "$HOME/.capstan/repository/osv-hello/osv-hello.qemu" "$GITHUB_WORKSPACE/osv-disk.raw"
+          ls -l "$GITHUB_WORKSPACE/osv-disk.raw"
+
+      # The kernel is the standalone PVH loader ELF, not the front of the disk.
+      - name: Fetch the OSv x86_64 loader (PVH)
+        run: |
+          set -eux
+          curl -fL -o loader.elf.gz \
+            "https://github.com/cloudius-systems/osv/releases/download/${OSV_RELEASE}/osv-loader-microvm.elf.x86_64.gz"
+          gunzip -f loader.elf.gz
+          file loader.elf
+          # Fail early and legibly if the release ever stops shipping the note
+          # that libkrun's PVH path keys off.
+          readelf -n loader.elf | grep -q "Xen" \
+            || { echo "loader ELF carries no Xen note — PVH boot cannot work"; exit 1; }
+
+      - name: e2e — boot OSv with `bsdkrun osv`
+        run: |
+          set -eux
+          # `bsdkrun osv` recognises the PVH ELF and sets KRUN_PVH itself; the
+          # composed image rides along as the root disk.
+          timeout 180 ./target/release/bsdkrun --log-level 5 osv ./loader.elf \
+            --disk ./osv-disk.raw \
+            --cmdline "/hello.so" \
+            --cpus 1 --mem 512 --no-net | tee osv.out || true
+          if grep -aq "Hello from OSv on libkrun" osv.out; then
+            echo "🎉 OSv BOOTED under libkrun/KVM (x86_64 PVH) and ran its application"
+          else
+            echo "OSv did not reach the application — console above is the artifact to read"
+            exit 1
+          fi
+
+      - name: Upload console output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: osv-console
+          path: osv.out
+          if-no-files-found: ignore

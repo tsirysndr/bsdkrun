@@ -67,6 +67,7 @@ module Bsdkrun
       when "kernel"   then kernel_args(opts)
       when "unikraft" then unikraft_args(opts)
       when "nanos"    then nanos_args(opts)
+      when "osv"      then osv_args(opts)
       else raise ArgumentError, "unknown os: #{opts[:os].inspect}"
       end
     end
@@ -132,6 +133,21 @@ module Bsdkrun
       a = ["nanos", "-d"]
       a.push("--kernel", opts[:kernel]) if opts[:kernel]
       a.push("--cmdline", opts[:cmdline]) if opts[:cmdline]
+      a.push("--persist") if opts[:persist]
+      a.concat(net_args(opts[:net])).concat(name_args(opts)).concat(vm_args(opts))
+      a.push(opts.fetch(:image).to_s)
+    end
+
+    # @!visibility private
+    #
+    # OSv: like nanos, no agent (no exec/shell/snapshot), but it does have a
+    # root filesystem, so +persist+ is honored. +:image+ is a loader.img, or on
+    # x86_64 the loader ELF plus a +:disk+.
+    def osv_args(opts)
+      a = ["osv", "-d"]
+      a.push("--cmdline", opts[:cmdline]) if opts[:cmdline]
+      a.push("--disk", opts[:disk]) if opts[:disk]
+      a.push("--gic", opts[:gic].to_s) if opts[:gic]
       a.push("--persist") if opts[:persist]
       a.concat(net_args(opts[:net])).concat(name_args(opts)).concat(vm_args(opts))
       a.push(opts.fetch(:image).to_s)

@@ -4928,6 +4928,8 @@ fn guest_os_kind(kind: &str, image: &str) -> &'static str {
         "unikraft"
     } else if kind == "nanos" {
         "nanos"
+    } else if kind == "osv" {
+        "osv"
     } else if kind == "freebsd" || kind == "firmware" || img.starts_with("freebsd") {
         "freebsd"
     } else if kind == "netbsd" || kind == "kernel" || img.starts_with("netbsd") {
@@ -5015,6 +5017,11 @@ fn cmd_exec(id: &str, command: &[String], env: &[String], tty: bool) -> Result<(
 /// next ssh/tailscale/exec then spawns the fresh binary. No restart needed.
 fn cmd_agent_update(id: &str) -> Result<()> {
     let (vm, port) = agent_target(id)?;
+    // A unikernel is the application linked into the kernel: there is no
+    // userland to install an agent into, and no filesystem to write it to.
+    // Without this the command picks a guest OS by heuristic and tries to
+    // push a binary into a guest that cannot run it.
+    reject_unikraft(&vm, "install an agent in")?;
     let arch = host::Arch::current()?;
 
     // (guest OS, install path, download command incl. its output flag, and the

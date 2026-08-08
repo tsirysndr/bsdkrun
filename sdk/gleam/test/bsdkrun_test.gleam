@@ -399,3 +399,31 @@ pub fn nanos_test() {
   )
   |> should.equal(["nanos", "-d", "--persist", "nanos-hello"])
 }
+
+pub fn osv_test() {
+  build(args.osv("disk.raw"))
+  |> should.equal(["osv", "-d", "disk.raw"])
+}
+
+pub fn osv_with_a_separate_disk_test() {
+  // The x86_64 shape: the loader ELF is kernel only, so the filesystem comes
+  // from --disk. persist rides with the guest args, like nanos.
+  build(
+    args.new(args.Osv(
+      image: "loader.elf",
+      cmdline: Some("/hello.so"),
+      disk: Some("d.raw"),
+      gic: None,
+    ))
+    |> args.with_persist(True),
+  )
+  |> should.equal([
+    "osv", "-d", "--cmdline", "/hello.so", "--disk", "d.raw", "--persist",
+    "loader.elf",
+  ])
+}
+
+pub fn osv_rejects_an_empty_image_test() {
+  args.build_create(args.osv(""))
+  |> should.be_error
+}

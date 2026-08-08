@@ -224,6 +224,39 @@ message RunUnikraftRequest {
   repeated string mounts = 6;
 }
 
+message RunOsvRequest {
+  // The OSv image to boot: an aarch64 loader.img (a capstan-composed image is
+  // both kernel and filesystem), or on x86_64 the loader ELF, which is kernel
+  // only and needs `disk`.
+  string image = 1;
+  VmConfig vm = 2;
+  NetConfig net = 3;
+  // The application to run and its arguments, e.g. "/hello.so". OSv boots the
+  // application as an ordinary Linux shared object.
+  optional string cmdline = 4;
+  // Root disk (raw), attached as virtio-blk. Required on x86_64.
+  optional string disk = 5;
+  // Boot the kernel alone, with no root filesystem to mount.
+  bool no_disk = 6;
+  // Extra disks to attach as virtio-blk, each "PATH" or "PATH:ro".
+  repeated string attach_disk = 7;
+  // Interrupt controller (aarch64 only; x86_64 has no GIC). OSv only grew a
+  // GICv3 driver after v0.57.0, so its released kernel needs V2.
+  OsvGic gic = 8;
+  // Boot the disk in place instead of a per-machine CoW clone.
+  bool persist = 9;
+  // Persist the disk to a named volume that survives reboots.
+  optional string volume = 10;
+}
+
+// Which interrupt controller libkrun should give an OSv guest.
+enum OsvGic {
+  // Let bsdkrun choose (v2 — what the released OSv kernel needs).
+  OSV_GIC_UNSPECIFIED = 0;
+  OSV_GIC_V2 = 1;
+  OSV_GIC_V3 = 2;
+}
+
 // ---------------------------------------------------------------------------
 // Images / fetching
 // ---------------------------------------------------------------------------
@@ -516,6 +549,7 @@ service Bsdkrun {
   rpc RunBsd(RunBsdRequest) returns (RunResponse);
   rpc RunUnikraft(RunUnikraftRequest) returns (RunResponse);
   rpc RunNanos(RunNanosRequest) returns (RunResponse);
+  rpc RunOsv(RunOsvRequest) returns (RunResponse);
   rpc RunFlavor(RunFlavorRequest) returns (RunResponse);
 
   // -- images ---------------------------------------------------------------

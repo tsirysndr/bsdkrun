@@ -22,7 +22,7 @@ import { useNetworks, useVersions } from "../lib/queries";
 import { useLaunchMachine } from "../hooks/useLaunchFlavor";
 import type { RunSpec } from "../lib/types";
 
-type Kind = "linux" | "freebsd" | "netbsd" | "unikraft" | "nanos";
+type Kind = "linux" | "freebsd" | "netbsd" | "unikraft" | "nanos" | "osv";
 
 const KIND_LABEL: Record<Kind, string> = {
   linux: "Linux (OCI)",
@@ -30,13 +30,14 @@ const KIND_LABEL: Record<Kind, string> = {
   netbsd: "NetBSD",
   unikraft: "Unikraft",
   nanos: "Nanos",
+  osv: "OSv",
 };
 
 // ---- zod schema ------------------------------------------------------------
 
 const schema = z
   .object({
-    kind: z.enum(["linux", "freebsd", "netbsd", "unikraft", "nanos"]),
+    kind: z.enum(["linux", "freebsd", "netbsd", "unikraft", "nanos", "osv"]),
     image: z.string(),
     path: z.string(),
     cmdline: z.string(),
@@ -89,6 +90,10 @@ const schema = z
   })
   .refine((d) => d.kind !== "nanos" || d.image.trim().length > 0, {
     message: "An ops image (path or ~/.ops/images name) is required",
+    path: ["image"],
+  })
+  .refine((d) => d.kind !== "osv" || d.image.trim().length > 0, {
+    message: "An OSv image (loader.img, or a capstan-composed image) is required",
     path: ["image"],
   });
 
@@ -149,8 +154,9 @@ export default function RunDialog() {
   // userland. Everything disk- or agent-shaped is hidden for it.
   const unikraft = kind === "unikraft";
   const nanosKind = kind === "nanos";
-  // Shared "no agent, no repo/command" handling for both unikernel kinds.
-  const unikernel = unikraft || nanosKind;
+  const osvKind = kind === "osv";
+  // Shared "no agent, no repo/command" handling for every unikernel kind.
+  const unikernel = unikraft || nanosKind || osvKind;
   const version = watch("version");
 
   const { data: allVersions = [] } = useVersions(kind, open && bsd);
@@ -195,7 +201,9 @@ export default function RunDialog() {
     const spec: RunSpec = {
       kind: data.kind,
       image:
-        data.kind === "linux" || data.kind === "nanos"
+        data.kind === "linux" ||
+        data.kind === "nanos" ||
+        data.kind === "osv"
           ? data.image.trim()
           : null,
       path: data.kind === "unikraft" ? data.path.trim() : null,
@@ -229,7 +237,9 @@ export default function RunDialog() {
     // Stream the launch (pull / download / boot) in the progress modal instead
     // of blocking the dialog on a silent spinner — close the dialog right away.
     const label =
-      data.kind === "linux" || data.kind === "nanos"
+      data.kind === "linux" ||
+      data.kind === "nanos" ||
+      data.kind === "osv"
         ? data.image.trim() || KIND_LABEL[data.kind]
         : data.kind === "unikraft"
           ? data.path.trim().split("/").filter(Boolean).pop() || "unikernel"
@@ -280,6 +290,7 @@ export default function RunDialog() {
                   <Tab key="netbsd" title="NetBSD" />
                   <Tab key="unikraft" title="Unikraft" />
                   <Tab key="nanos" title="Nanos" />
+                  <Tab key="osv" title="OSv" />
                 </Tabs>
               )}
             />
@@ -328,6 +339,34 @@ export default function RunDialog() {
                   snapshots don&apos;t apply. Linux/x86_64 is experimental;
                   macOS/arm64 needs an upstream Nanos fix. Use logs to read its
                   output.
+                </div>
+              </>
+            ) : osvKind ? (
+              <>
+                <Controller
+                  control={control}
+                  name="image"
+                  render={({ field }) => (
+                    <Input
+                      label="OSv image"
+                      labelPlacement="outside"
+                      placeholder="disk.raw  (a loader.img, or a capstan-composed image)"
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      isRequired
+                      variant="bordered"
+                      isInvalid={!!errors.image}
+                      errorMessage={errors.image?.message}
+                      description="Compose one with `capstan package compose --fs rofs`. See examples/osv-hello."
+                      classNames={{ input: "font-mono text-xs" }}
+                    />
+                  )}
+                />
+                <div className="rounded-xl border border-white/10 bg-content2/40 px-3 py-2 text-xs text-foreground-400">
+                  An OSv unikernel — no shell or agent, so the terminal and
+                  snapshots don&apos;t apply. The command line is the
+                  application to run, e.g. <code>/hello.so</code>. Use logs to
+                  read its output.
                 </div>
               </>
             ) : unikraft ? (

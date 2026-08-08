@@ -6,7 +6,7 @@ defmodule Bsdkrun.Args do
 
   Options are given as a keyword list or map, discriminated on `:os`
   (`:linux`, `:freebsd`, `:netbsd`, `:firmware`, `:kernel`, `:unikraft`,
-  `:nanos`). See
+  `:nanos`, `:osv`). See
   `Bsdkrun.Sandbox.create/1` for the full set of per-kind keys.
   """
 
@@ -24,6 +24,7 @@ defmodule Bsdkrun.Args do
         :kernel -> kernel(opts)
         :unikraft -> unikraft(opts)
         :nanos -> nanos(opts)
+        :osv -> osv(opts)
         other -> raise ArgumentError, "unknown os #{inspect(other)}"
       end
 
@@ -94,6 +95,21 @@ defmodule Bsdkrun.Args do
     ["nanos", "-d"]
     |> opt(o, :kernel, "--kernel")
     |> opt(o, :cmdline, "--cmdline")
+    |> concat(if o[:persist], do: ["--persist"], else: [])
+    |> concat(net_args(o[:net]))
+    |> concat(name_args(o))
+    |> concat(vm_args(o))
+    |> concat([fetch!(o, :image)])
+  end
+
+  # OSv: like nanos, no agent (no exec/shell/snapshot), but it does have a root
+  # filesystem, so :persist is honored. :image is a loader.img, or on x86_64 the
+  # loader ELF plus a :disk.
+  defp osv(o) do
+    ["osv", "-d"]
+    |> opt(o, :cmdline, "--cmdline")
+    |> opt(o, :disk, "--disk")
+    |> opt(o, :gic, "--gic")
     |> concat(if o[:persist], do: ["--persist"], else: [])
     |> concat(net_args(o[:net]))
     |> concat(name_args(o))

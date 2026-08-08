@@ -94,7 +94,7 @@ export default function CommandPalette() {
       {
         id: "run",
         title: "Run new machine",
-        subtitle: "Launch a Linux / FreeBSD / NetBSD microVM",
+        subtitle: "Launch a Linux, BSD or unikernel microVM",
         section: "Actions",
         icon: IconPlus,
         keywords: "start create new docker run",

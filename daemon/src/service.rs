@@ -345,6 +345,36 @@ impl Bsdkrun for BsdkrunService {
         }))
     }
 
+    async fn run_osv(
+        &self,
+        req: Request<RunOsvRequest>,
+    ) -> Result<Response<RunResponse>, Status> {
+        let r = req.into_inner();
+        let (cpus, mem) = vm_opts(r.vm);
+        let opts = ops::RunOsvOpts {
+            image: r.image,
+            cpus,
+            mem,
+            net: net_opts(r.net),
+            cmdline: r.cmdline,
+            disk: r.disk,
+            no_disk: r.no_disk,
+            attach_disk: r.attach_disk,
+            // UNSPECIFIED means "let the CLI decide", so it maps to no flag
+            // rather than to a guessed version.
+            gic: match OsvGic::try_from(r.gic).unwrap_or(OsvGic::Unspecified) {
+                OsvGic::Unspecified => None,
+                OsvGic::V2 => Some("v2".to_string()),
+                OsvGic::V3 => Some("v3".to_string()),
+            },
+            persist: r.persist,
+            volume: r.volume,
+        };
+        Ok(Response::new(RunResponse {
+            id: self.ops.run_osv(&opts).await?,
+        }))
+    }
+
     async fn run_flavor(
         &self,
         req: Request<RunFlavorRequest>,

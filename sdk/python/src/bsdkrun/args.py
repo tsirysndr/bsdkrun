@@ -13,6 +13,8 @@ The public entrypoint is :func:`build_create_args`, keyed on ``os``:
 * ``unikraft`` — boot a Unikraft unikernel (``path``: a kraft project dir or an
   image; defaults to ``.``).
 * ``nanos``    — boot a Nanos image (``image``: a path or a ~/.ops/images name).
+* ``osv``      — boot an OSv image (``image``: a loader.img, or on x86_64 the
+  loader ELF plus a ``disk``).
 """
 
 from __future__ import annotations
@@ -24,7 +26,16 @@ from .types import PortForward
 
 __all__ = ["build_create_args"]
 
-_VALID_OS = ("linux", "freebsd", "netbsd", "firmware", "kernel", "unikraft", "nanos")
+_VALID_OS = (
+    "linux",
+    "freebsd",
+    "netbsd",
+    "firmware",
+    "kernel",
+    "unikraft",
+    "nanos",
+    "osv",
+)
 
 
 def _net_args(net: Mapping[str, Any] | None) -> list[str]:
@@ -162,6 +173,23 @@ def build_create_args(*, os: str, **opts: Any) -> list[str]:
             a += ["--kernel", opts["kernel"]]
         if opts.get("cmdline"):
             a += ["--cmdline", opts["cmdline"]]
+        if opts.get("persist"):
+            a.append("--persist")
+        a += _net_args(net) + _name_args(opts) + _vm_args(opts)
+        a.append(image)
+        return a
+
+    if os == "osv":
+        # Like nanos: no agent, so no volume/repo/command. OSv does have a root
+        # filesystem, so --persist applies.
+        image = _require(opts, "image", os)
+        a = ["osv", "-d"]
+        if opts.get("cmdline"):
+            a += ["--cmdline", opts["cmdline"]]
+        if opts.get("disk"):
+            a += ["--disk", opts["disk"]]
+        if opts.get("gic"):
+            a += ["--gic", opts["gic"]]
         if opts.get("persist"):
             a.append("--persist")
         a += _net_args(net) + _name_args(opts) + _vm_args(opts)

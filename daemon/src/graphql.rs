@@ -438,6 +438,51 @@ pub struct RunUnikraftInput {
     pub mounts: Vec<String>,
 }
 
+/// OSv: like nanos there is no agent (no exec/shell/snapshot), but it does
+/// have a root filesystem, so the disk options apply.
+#[derive(InputObject)]
+pub struct RunOsvInput {
+    /// An aarch64 loader.img (a capstan-composed image is both kernel and
+    /// filesystem), or on x86_64 the loader ELF, which needs `disk`.
+    pub image: String,
+    pub cpus: Option<u32>,
+    pub mem: Option<u32>,
+    pub net: Option<NetInput>,
+    /// The application to run and its arguments, e.g. "/hello.so".
+    pub cmdline: Option<String>,
+    /// Root disk (raw). Required on x86_64.
+    pub disk: Option<String>,
+    /// Boot the kernel alone, with no root filesystem to mount.
+    #[graphql(default)]
+    pub no_disk: bool,
+    /// Extra disks as virtio-blk, each "PATH" or "PATH:ro".
+    #[graphql(default)]
+    pub attach_disk: Vec<String>,
+    /// "v2" (the default, what OSv v0.57.0 needs) or "v3". aarch64 only.
+    pub gic: Option<String>,
+    #[graphql(default)]
+    pub persist: bool,
+    pub volume: Option<String>,
+}
+
+impl From<RunOsvInput> for ops::RunOsvOpts {
+    fn from(i: RunOsvInput) -> Self {
+        Self {
+            image: i.image,
+            cpus: i.cpus,
+            mem: i.mem,
+            net: i.net.map(Into::into).unwrap_or_default(),
+            cmdline: i.cmdline,
+            disk: i.disk,
+            no_disk: i.no_disk,
+            attach_disk: i.attach_disk,
+            gic: i.gic,
+            persist: i.persist,
+            volume: i.volume,
+        }
+    }
+}
+
 #[derive(InputObject)]
 pub struct RunFlavorInput {
     pub name: String,
@@ -775,6 +820,15 @@ impl Mutation {
             mounts: input.mounts,
         };
         api(ctx)?.ops.run_unikraft(&opts).await.map_err(gql_err)
+    }
+
+    async fn run_osv(
+        &self,
+        ctx: &Context<'_>,
+        input: RunOsvInput,
+    ) -> async_graphql::Result<String> {
+        let opts: ops::RunOsvOpts = input.into();
+        api(ctx)?.ops.run_osv(&opts).await.map_err(gql_err)
     }
 
     async fn run_flavor(
@@ -1177,6 +1231,17 @@ impl Subscription_ {
             initramfs: input.initramfs,
             mounts: input.mounts,
         };
+        Ok(launch_stream(api.ops.clone(), opts.to_argv()))
+    }
+
+    /// Boot an OSv unikernel, streaming progress until its id is known.
+    async fn launch_osv(
+        &self,
+        ctx: &Context<'_>,
+        input: RunOsvInput,
+    ) -> async_graphql::Result<impl Stream<Item = LaunchEvent>> {
+        let api = api(ctx)?;
+        let opts: ops::RunOsvOpts = input.into();
         Ok(launch_stream(api.ops.clone(), opts.to_argv()))
     }
 

@@ -628,22 +628,30 @@ async fn system_stats(state: State<'_, AppState>) -> Result<system::SystemStats,
 /// always runs detached (`-d`).
 #[derive(Debug, Deserialize)]
 pub struct RunSpec {
-    pub kind: String, // "linux" | "freebsd" | "netbsd" | "unikraft" | "nanos"
+    pub kind: String, // "linux" | "freebsd" | "netbsd" | "unikraft" | "nanos" | "osv"
     #[serde(default)]
     pub image: Option<String>,
     /// Unikraft only: a `kraft` project directory (the image is found under its
     /// `.unikraft/build/`) or a built unikernel image.
     #[serde(default)]
     pub path: Option<String>,
-    /// Unikraft/Nanos: the kernel command line.
+    /// Unikraft/Nanos/OSv: the kernel command line. For OSv this is the
+    /// application to run and its arguments, e.g. "/hello.so".
     #[serde(default)]
     pub cmdline: Option<String>,
     /// Nanos only: kernel override (Linux hosts).
     #[serde(default)]
     pub kernel: Option<String>,
-    /// Nanos only: boot the image in place instead of a CoW clone.
+    /// Nanos/OSv: boot the image in place instead of a CoW clone.
     #[serde(default)]
     pub persist: bool,
+    /// OSv only: root disk (raw). Required on x86_64, where the loader ELF
+    /// carries no filesystem.
+    #[serde(default)]
+    pub disk: Option<String>,
+    /// OSv only: interrupt controller, "v2" (default) or "v3". aarch64 only.
+    #[serde(default)]
+    pub gic: Option<String>,
     #[serde(default)]
     pub version: Option<String>,
     #[serde(default)]
@@ -693,8 +701,9 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
     // persist and no agent to run a repo clone or a command through.
     let unikraft = spec.kind == "unikraft";
     let nanos = spec.kind == "nanos";
-    // Both unikernel kinds: no volume/repo/command.
-    let unikernel = unikraft || nanos;
+    let osv = spec.kind == "osv";
+    // Every unikernel kind: no volume/repo/command, since none has an agent.
+    let unikernel = unikraft || nanos || osv;
 
     if bsd {
         if let Some(v) = nonempty(&spec.version) {
@@ -788,6 +797,28 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
         // The image is positional and last.
         let image = nonempty(&spec.image)
             .ok_or_else(|| BkError::Parse("an image is required for nanos".into()))?;
+        a.push(image.into());
+    } else if osv {
+        if let Some(c) = nonempty(&spec.cmdline) {
+            a.push("--cmdline".into());
+            a.push(c.into());
+        }
+        // OSv has a root filesystem, unlike the other unikernels: an aarch64
+        // loader.img carries it, an x86_64 loader ELF needs one attached.
+        if let Some(d) = nonempty(&spec.disk) {
+            a.push("--disk".into());
+            a.push(d.into());
+        }
+        if let Some(g) = nonempty(&spec.gic) {
+            a.push("--gic".into());
+            a.push(g.into());
+        }
+        if spec.persist {
+            a.push("--persist".into());
+        }
+        // The image is positional and last.
+        let image = nonempty(&spec.image)
+            .ok_or_else(|| BkError::Parse("an image is required for osv".into()))?;
         a.push(image.into());
     } else {
         // BSD: grow the root disk + attach extra virtio-blk disks.

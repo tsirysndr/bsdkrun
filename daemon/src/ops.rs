@@ -255,6 +255,45 @@ impl RunUnikraftOpts {
     }
 }
 
+/// OSv: like nanos there is no agent (no exec/shell/snapshot), but it does
+/// have a root filesystem, so the disk options apply.
+#[derive(Debug, Default, Clone)]
+pub struct RunOsvOpts {
+    /// An aarch64 loader.img, or on x86_64 the loader ELF plus a `disk`.
+    pub image: String,
+    pub cpus: Option<u32>,
+    pub mem: Option<u32>,
+    pub net: NetOpts,
+    /// The application to run and its arguments, e.g. "/hello.so".
+    pub cmdline: Option<String>,
+    pub disk: Option<String>,
+    pub no_disk: bool,
+    pub attach_disk: Vec<String>,
+    /// "v2" or "v3"; None lets the CLI default it (v2).
+    pub gic: Option<String>,
+    pub persist: bool,
+    pub volume: Option<String>,
+}
+
+impl RunOsvOpts {
+    pub fn to_argv(&self) -> Vec<String> {
+        // No --repo/command: a unikernel has no agent to run anything through.
+        // Everything disk-shaped does apply, unlike unikraft.
+        Argv::new(&["osv", "-d"])
+            .vm(self.cpus, self.mem)
+            .net(&self.net)
+            .opt("--cmdline", &self.cmdline)
+            .opt("--disk", &self.disk)
+            .flag("--no-disk", self.no_disk)
+            .each("--attach-disk", &self.attach_disk)
+            .opt("--gic", &self.gic)
+            .flag("--persist", self.persist)
+            .opt("-v", &self.volume)
+            .arg(self.image.clone())
+            .take()
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct RunFlavorOpts {
     pub name: String,
@@ -650,6 +689,13 @@ impl Ops {
     }
 
     pub async fn run_nanos(&self, opts: &RunNanosOpts) -> OpResult<String> {
+        if opts.image.trim().is_empty() {
+            return Err(OpError::InvalidArgument("image must not be empty".into()));
+        }
+        Ok(self.cli.detached(&opts.to_argv()).await?)
+    }
+
+    pub async fn run_osv(&self, opts: &RunOsvOpts) -> OpResult<String> {
         if opts.image.trim().is_empty() {
             return Err(OpError::InvalidArgument("image must not be empty".into()));
         }

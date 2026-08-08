@@ -174,6 +174,42 @@ export interface NanosCreateOptions extends BaseCreateOptions {
   persist?: boolean;
 }
 
+/**
+ * Boot an OSv unikernel image (`bsdkrun osv`).
+ *
+ * Like the other unikernels there is no agent, so `exec`, `shell` and
+ * `snapshot` do not apply — read its output with `logs`. OSv does have a root
+ * filesystem, so `persist` is honored.
+ *
+ * The application is an ordinary Linux shared object that OSv `dlopen()`s and
+ * calls `main()` on, so `cmdline` is the path to it inside the image plus its
+ * arguments, e.g. `"/hello.so"`.
+ */
+export interface OsvCreateOptions extends BaseCreateOptions {
+  os: "osv";
+  /**
+   * The image to boot: an aarch64 `loader.img` (a capstan-composed image is
+   * both kernel and filesystem), or on x86_64 the loader ELF, which is kernel
+   * only and needs {@link disk}.
+   */
+  image: string;
+  /** The application to run and its arguments, e.g. `"/hello.so"`. */
+  cmdline?: string;
+  /**
+   * Root disk (raw), attached as virtio-blk. Required on x86_64, where the
+   * loader ELF carries no filesystem.
+   */
+  disk?: string;
+  /**
+   * Interrupt controller to ask libkrun for (aarch64 only). OSv only grew a
+   * GICv3 driver after v0.57.0, so its released kernel needs `"v2"`, which is
+   * the default; pass `"v3"` for a kernel built from OSv master.
+   */
+  gic?: "v2" | "v3";
+  /** Boot the disk in place instead of a per-machine CoW clone. */
+  persist?: boolean;
+}
+
 /** The full set of ways to boot a sandbox. Discriminated on `os`. */
 export type CreateOptions =
   | LinuxCreateOptions
@@ -182,7 +218,8 @@ export type CreateOptions =
   | FirmwareCreateOptions
   | KernelCreateOptions
   | UnikraftCreateOptions
-  | NanosCreateOptions;
+  | NanosCreateOptions
+  | OsvCreateOptions;
 
 /** Kind of guest a sandbox is running. */
 export type GuestKind =
@@ -192,7 +229,8 @@ export type GuestKind =
   | "firmware"
   | "kernel"
   | "unikraft"
-  | "nanos";
+  | "nanos"
+  | "osv";
 
 /** A machine as reported by `bsdkrun ps --json`. */
 export interface SandboxInfo {

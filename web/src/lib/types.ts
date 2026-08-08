@@ -113,12 +113,21 @@ export interface Settings {
 // The Run dialog payload. Field names are snake_case to match the Rust
 // `RunSpec` struct exactly (nested structs are not camelCase-converted).
 export interface RunSpec {
-  kind: "linux" | "freebsd" | "netbsd" | "unikraft" | "nanos";
+  kind: "linux" | "freebsd" | "netbsd" | "unikraft" | "nanos" | "osv";
   image?: string | null;
   /** Unikraft only: a kraft project directory or a built unikernel image. */
   path?: string | null;
-  /** Unikraft only: kernel cmdline, handed to the application as argv. */
+  /** Unikraft/Nanos/OSv: kernel cmdline. For OSv, the application to run. */
   cmdline?: string | null;
+  /** Nanos only: kernel override (Linux hosts). */
+  kernel?: string | null;
+  /** Nanos/OSv: boot the image in place instead of a CoW clone. */
+  persist?: boolean;
+  /** OSv only: root disk (raw). Required on x86_64, where the loader ELF
+   * carries no filesystem. */
+  disk?: string | null;
+  /** OSv only: interrupt controller, "v2" (default) or "v3". aarch64 only. */
+  gic?: "v2" | "v3" | null;
   version?: string | null;
   cpus?: number | null;
   mem?: number | null;

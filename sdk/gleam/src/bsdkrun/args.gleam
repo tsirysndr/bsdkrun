@@ -77,6 +77,25 @@ pub type Guest {
     /// share needs neither a disk nor an agent.
     mounts: List(String),
   )
+
+  /// Boot an OSv unikernel image.
+  ///
+  /// Like the other unikernels there is no agent, so neither `exec` nor
+  /// `shell` nor snapshots apply — read its output with `logs`. OSv does have
+  /// a root filesystem, so the shared `persist` option is honored.
+  Osv(
+    /// An aarch64 `loader.img` (a capstan-composed image is both kernel and
+    /// filesystem), or on x86_64 the loader ELF, which is kernel only and
+    /// needs `disk`.
+    image: String,
+    /// The application to run and its arguments, e.g. `"/hello.so"`.
+    cmdline: Option(String),
+    /// Root disk (raw). Required on x86_64.
+    disk: Option(String),
+    /// Interrupt controller, `"v2"` (default, what OSv v0.57.0 needs) or
+    /// `"v3"`. aarch64 only.
+    gic: Option(String),
+  )
 }
 
 /// Everything `sandbox.create` needs: the guest, plus the options every guest
@@ -169,6 +188,12 @@ pub fn nanos(image: String) -> CreateOptions {
 /// built image. Pass `"."` for the current directory.
 pub fn unikraft(path: String) -> CreateOptions {
   new(Unikraft(path: path, cmdline: None, initramfs: None, mounts: []))
+}
+
+/// Boot the OSv image `image` — a `loader.img`, or on x86_64 a loader ELF
+/// paired with `with_disk`.
+pub fn osv(image: String) -> CreateOptions {
+  new(Osv(image: image, cmdline: None, disk: None, gic: None))
 }
 
 // --- shared option setters --------------------------------------------------
@@ -403,6 +428,20 @@ fn try_guest(
           [path],
         ]),
       )
+
+    Osv(image: "", ..) ->
+      Error(InvalidOptions("osv guests need a non-empty image"))
+    Osv(image:, cmdline:, disk:, gic:) ->
+      next(
+        list.flatten([
+          ["osv", "-d"],
+          opt("--cmdline", cmdline),
+          opt("--disk", disk),
+          opt("--gic", gic),
+          flag("--persist", opts.persist),
+          [image],
+        ]),
+      )
   }
 }
 
@@ -415,6 +454,8 @@ fn disk_args(opts: CreateOptions) -> List(String) {
     Unikraft(..) -> []
     // Nanos: persist is emitted with the guest args; no volume/attach-disk.
     Nanos(..) -> []
+    // OSv: same as Nanos — persist rides with the guest args.
+    Osv(..) -> []
     _ ->
       list.flatten([
         flag("--persist", opts.persist),

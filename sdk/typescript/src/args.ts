@@ -111,5 +111,17 @@ export function buildCreateArgs(opts: CreateOptions): string[] {
       a.push(opts.path ?? ".");
       return a;
     }
+    case "osv": {
+      // Like nanos: no agent, so no volume/repo/command, but OSv does have a
+      // root filesystem, so --persist applies.
+      const a = ["osv", "-d"];
+      if (opts.cmdline) a.push("--cmdline", opts.cmdline);
+      if (opts.disk) a.push("--disk", opts.disk);
+      if (opts.gic) a.push("--gic", opts.gic);
+      if (opts.persist) a.push("--persist");
+      a.push(...netArgs(opts.net), ...nameArgs(opts), ...vmArgs(opts));
+      a.push(opts.image);
+      return a;
+    }
   }
 }

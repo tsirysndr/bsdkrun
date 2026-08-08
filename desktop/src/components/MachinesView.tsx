@@ -195,7 +195,7 @@ export default function MachinesView() {
         <EmptyState
           icon={<IconServer2 size={28} />}
           title="No machines yet"
-          hint="Launch a FreeBSD, NetBSD, or Linux (OCI) microVM to get started."
+          hint="Launch a Linux (OCI), FreeBSD, NetBSD or unikernel microVM to get started."
           action={
             <Button color="primary" variant="shadow" onPress={() => setRunOpen(true)}>
               Run a machine

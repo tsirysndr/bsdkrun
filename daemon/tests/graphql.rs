@@ -41,7 +41,7 @@ flavors)
   echo '[{"name":"node","source":"catalog","kind":"linux","base":"node:22","category":"language","method":"docker","description":"Node","ports":["3000:3000"],"nix":[],"created_at":null}]'
   exit 0 ;;
 versions) printf 'Available builds:\n  14.3\n  15.1  (latest)\n'; exit 0 ;;
-linux|freebsd|netbsd|unikraft|nanos) echo "m-$1-001"; exit 0 ;;
+linux|freebsd|netbsd|unikraft|nanos|osv) echo "m-$1-001"; exit 0 ;;
 exec)
   echo "EXEC_OK"
   cat
@@ -707,4 +707,72 @@ mod http {
             .unwrap();
         assert!(resp.headers().contains_key("access-control-allow-origin"));
     }
+}
+
+/// The image is positional and last, and OSv takes the disk options nanos and
+/// unikraft do not — it has a root filesystem.
+#[tokio::test]
+async fn run_osv_puts_the_image_last_and_takes_the_disk_options() {
+    let h = Harness::new();
+    let d = h
+        .query(
+            r#"mutation { runOsv(input: {
+                image: "loader.elf", mem: 512,
+                net: { noNet: true }, cmdline: "/hello.so",
+                disk: "d.raw", gic: "v3", persist: true
+            }) }"#,
+        )
+        .await;
+    assert_eq!(json(&d)["runOsv"], "m-osv-001");
+    assert_eq!(
+        h.last_argv(),
+        [
+            "osv",
+            "-d",
+            "--mem",
+            "512",
+            "--no-net",
+            "--cmdline",
+            "/hello.so",
+            "--disk",
+            "d.raw",
+            "--gic",
+            "v3",
+            "--persist",
+            "loader.elf",
+        ]
+    );
+}
+
+/// Booting the kernel alone: no disk to attach, so the guest needs --nomount
+/// in its command line. The flag has to reach the CLI either way.
+#[tokio::test]
+async fn run_osv_forwards_no_disk_and_extra_disks() {
+    let h = Harness::new();
+    h.query(
+        r#"mutation { runOsv(input: {
+            image: "loader.img", noDisk: true, attachDisk: ["a.raw", "b.raw:ro"]
+        }) }"#,
+    )
+    .await;
+    assert_eq!(
+        h.last_argv(),
+        [
+            "osv",
+            "-d",
+            "--no-disk",
+            "--attach-disk",
+            "a.raw",
+            "--attach-disk",
+            "b.raw:ro",
+            "loader.img",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn run_osv_requires_an_image() {
+    let h = Harness::new();
+    let errs = h.errors(r#"mutation { runOsv(input: { image: "" }) }"#).await;
+    assert!(!errs.is_empty());
 }

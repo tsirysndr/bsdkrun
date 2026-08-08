@@ -168,6 +168,30 @@ function unikraftInput(spec: RunSpec) {
   };
 }
 
+/**
+ * OSv: no agent (no repo/command), but it does have a root filesystem, so the
+ * disk options apply — `disk` in particular is how an x86_64 guest is given
+ * one, its loader ELF being kernel only.
+ */
+function osvInput(spec: RunSpec) {
+  return {
+    image: spec.image ?? "",
+    cpus: spec.cpus ?? null,
+    mem: spec.mem ?? null,
+    net: {
+      noNet: spec.no_net,
+      ports: clean(spec.ports),
+      network: orNull(spec.network),
+      name: orNull(spec.name),
+    },
+    cmdline: orNull(spec.cmdline),
+    disk: orNull(spec.disk),
+    gic: orNull(spec.gic),
+    persist: spec.persist ?? false,
+    volume: orNull(spec.volume),
+  };
+}
+
 /** Nanos: no agent (no volume/repo/command); image + cmdline only for now. */
 function nanosInput(spec: RunSpec) {
   return {
@@ -398,6 +422,27 @@ export const api = {
       );
       return d.runLinux;
     }
+    if (spec.kind === "osv") {
+      const d = await gql<{ runOsv: string }>(
+        `mutation($i:RunOsvInput!){ runOsv(input:$i) }`,
+        { i: osvInput(spec) },
+      );
+      return d.runOsv;
+    }
+    if (spec.kind === "nanos") {
+      const d = await gql<{ runNanos: string }>(
+        `mutation($i:RunNanosInput!){ runNanos(input:$i) }`,
+        { i: nanosInput(spec) },
+      );
+      return d.runNanos;
+    }
+    if (spec.kind === "unikraft") {
+      const d = await gql<{ runUnikraft: string }>(
+        `mutation($i:RunUnikraftInput!){ runUnikraft(input:$i) }`,
+        { i: unikraftInput(spec) },
+      );
+      return d.runUnikraft;
+    }
     const d = await gql<{ runBsd: string }>(`mutation($i:RunBsdInput!){ runBsd(input:$i) }`, {
       i: bsdInput(spec),
     });
@@ -425,6 +470,13 @@ export const api = {
         "launchUnikraft",
         `subscription($i:RunUnikraftInput!){ launchUnikraft(input:$i){ line machineId error } }`,
         { i: unikraftInput(spec) },
+      );
+    } else if (spec.kind === "osv") {
+      streamLaunch(
+        launchId,
+        "launchOsv",
+        `subscription($i:RunOsvInput!){ launchOsv(input:$i){ line machineId error } }`,
+        { i: osvInput(spec) },
       );
     } else {
       streamLaunch(

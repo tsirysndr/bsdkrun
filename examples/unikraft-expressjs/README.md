@@ -16,10 +16,12 @@ bsdkrun unikraft . --mem 2048 --cmdline "elfloader -- /usr/bin/node /usr/src/ser
 server answers over a forwarded port. Covered end to end by
 `.github/workflows/e2e-unikraft-examples.yml`.
 
-**arm64 boots but node faults during libc startup**, branching to a null GOT
-entry (`br x17` with `x17 == 0`, an unresolved PLT relocation). See
-[../../library/unikraft-base/README.md](../../library/unikraft-base/README.md)
-for what has been ruled out and what the next step is.
+**arm64 boots but node still faults during startup**, tripping a stack-protector
+check inside `libc.so.6`. The Dockerfile uses Debian's packaged node rather than
+Alpine or the official images — see the comment there for why the alternatives do
+not work — but that moves the failure onto the one open glibc issue rather than
+fixing it. See
+[../../library/unikraft-base/README.md](../../library/unikraft-base/README.md).
 
 ## Differences from upstream
 

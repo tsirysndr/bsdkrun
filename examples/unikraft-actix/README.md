@@ -15,10 +15,17 @@ bsdkrun unikraft . --mem 1024 --cmdline "elfloader -- /server"
 **x86_64 works** — builds, boots, and serves over a forwarded port, covered by
 `.github/workflows/e2e-unikraft-examples.yml`.
 
-**arm64 builds and boots but the binary faults during libc startup**, tripping
-`Must not call schedcoop_schedule with IRQs disabled` about a second in. See
-[../../library/unikraft-base/README.md](../../library/unikraft-base/README.md)
-for what has been ruled out and what the next step is.
+**arm64 works too** — verified on macOS/Hypervisor.framework:
+
+```console
+$ curl localhost:18080/              Bye, World!
+$ curl localhost:18080/hey           Buh bye!
+$ curl -d ping localhost:18080/echo  ping
+```
+
+Rust is currently the only language known to work on arm64 here; glibc C
+programs still trip a stack-protector check inside libc. See
+[../../library/unikraft-base/README.md](../../library/unikraft-base/README.md).
 
 ## Differences from upstream
 

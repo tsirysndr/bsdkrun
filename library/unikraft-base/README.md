@@ -66,21 +66,36 @@ Six things were needed on top of a stock checkout. All are applied by
 `.github/workflows/e2e-unikraft-examples.yml`: the unikernel builds, boots, gets
 a DHCP address, runs the application, and answers HTTP over a forwarded port.
 
-**arm64 boots but applications still fault during libc startup**, about a second
-in. A static-pie glibc binary dies with `*** stack smashing detected ***`
-(`ESR_EL1` EC=0x3c, `BRK #1000`); a dynamically-linked musl binary branches to a
-null GOT entry (`br x17` with `x17 == 0`); a dynamically-linked glibc binary
-trips `Must not call schedcoop_schedule with IRQs disabled`. The kernel side is
-sound — it boots, seeds entropy from virtio-rng, brings up networking, parses
-`argv`, and loads ELF images.
+**arm64 runs Rust services.** The actix example builds, boots, and answers HTTP
+on macOS/Hypervisor.framework — verified with GET, POST and a second route.
 
-Note the fix for x86_64 does not carry over: `arch_prctl` is an x86-only syscall,
-and arm64 installs the thread pointer via `TPIDR_EL0` instead. Ruled out with
-evidence: `AT_RANDOM` (fed by the virtio-rng driver); FP/SIMD context sizing
-(`UK_PLAT_NATIVE_ECTX_SIZE` is 520, exactly the saved FP state); elfloader's
-entry selection (it does jump to `interp->entry` for dynamic binaries); and the
-ELF machine-type / `AT_PLATFORM` handling. The next step is Unikraft's GDB stub
-(`LIBUKDEBUG_GDBSTUB` supports arm64) against the `.dbg` image.
+**arm64 does not yet run glibc C programs.** They abort during startup with
+
+    *** stack smashing detected ***: terminated
+    ESR_EL1 0xf20003e8 (BRK #1000)
+
+and the faulting address lies inside **libc.so.6**, above both the program and
+the interpreter. So the canary check that fails is glibc's own: rebuilding the
+application with `-fno-stack-protector` changes nothing (verified — an A/B pair
+of the same program fails identically). node fails the same way on Debian; on
+Alpine it fails earlier, for a reason of its own.
+
+Two things are ruled out with evidence rather than argument:
+
+  * **musl is fine.** Trivial musl binaries run, both dynamically linked through
+    `ld-musl-aarch64.so.1` and as static-PIE. An earlier claim here that musl's
+    loader was broken was wrong — it generalised from node alone.
+  * **The application's own compiler flags are irrelevant**, since the check
+    that fires belongs to libc.
+
+The open question is why actix survives glibc's canary checks when a trivial C
+program does not, given both link the same `libc.so.6`. That points at a
+specific libc code path rather than a wholesale TLS failure, and is the next
+thing to chase — with the GDB stub (`LIBUKDEBUG_GDBSTUB` supports arm64) rather
+than more print statements.
+
+**x86_64 is exercised in CI** and needs none of this: the elfloader `base`
+runtime, both examples, boot and serve there.
 
 ## Notes
 

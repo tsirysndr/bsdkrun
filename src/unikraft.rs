@@ -36,12 +36,6 @@ use tracing::debug;
 
 use crate::fetch::cache_dir;
 
-/// Where libkrun's aarch64 loader writes a raw kernel image, and enters it.
-const AARCH64_LOAD_ADDR: u64 = 0x8000_0000;
-
-/// Range of an AArch64 `b` (26-bit signed word offset): ±128 MiB.
-const MAX_BRANCH: u64 = 128 << 20;
-
 /// A unikernel image ready to hand to `krun_set_kernel`.
 pub struct Prepared {
     /// The image to boot — the input itself, or a shimmed copy in the cache.
@@ -73,37 +67,17 @@ pub fn prepare(kernel: &Path) -> Result<Prepared> {
     // aarch64: `read_as_image` takes either the raw `Image` or the `.dbg` ELF
     // beside it (same bytes once flattened) and gives us a raw image.
     let image = crate::elf::read_as_image(kernel)?;
-    let text_offset = u64::from_le_bytes(image[8..16].try_into().unwrap());
 
-    if text_offset == 0 {
+    let Some(shimmed) = crate::elf::shim_text_offset(&image).context("shimming unikernel entry")?
+    else {
         // Links at the load address already (a stock Linux Image, or a Unikraft
         // build with no reserved hole) — nothing to shim.
         return Ok(Prepared {
             path: kernel.to_path_buf(),
             format: crate::krun::KRUN_KERNEL_FORMAT_RAW,
         });
-    }
-    if text_offset % 4 != 0 {
-        bail!("unikernel text_offset {text_offset:#x} is not instruction-aligned");
-    }
-    if text_offset >= MAX_BRANCH {
-        bail!(
-            "unikernel wants to load {text_offset:#x} past {AARCH64_LOAD_ADDR:#x}, which is \
-             out of range of the entry branch bsdkrun writes ({MAX_BRANCH:#x})"
-        );
-    }
-
-    let mut shimmed = vec![0u8; text_offset as usize];
-    // b <text_offset>: imm26 is the offset in words, and the branch is the
-    // first thing libkrun's fixed entry point executes.
-    let branch = 0x1400_0000u32 | ((text_offset / 4) as u32 & 0x03FF_FFFF);
-    shimmed[..4].copy_from_slice(&branch.to_le_bytes());
-    shimmed.extend_from_slice(&image);
-    debug!(
-        text_offset,
-        branch = format!("{branch:#010x}"),
-        "shimming unikernel entry"
-    );
+    };
+    debug!(len = shimmed.len(), "shimming unikernel entry");
 
     let out = cache_dir()?.join("unikraft").join(format!(
         "{}-{:016x}.img",

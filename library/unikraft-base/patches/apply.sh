@@ -159,7 +159,64 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. virtio-rng driver (new).
+# 5. struct epoll_event is packed on every architecture; Linux packs only x86_64.
+#
+# lib/nolibc/include/sys/epoll.h declares
+#
+#     struct epoll_event { uint32_t events; epoll_data_t data; } __packed;
+#
+# which is 12 bytes everywhere. That matches the Linux ABI on x86_64, where
+# include/uapi/linux/eventpoll.h applies EPOLL_PACKED, but nowhere else: on
+# aarch64 the struct is unpacked and 16 bytes (4 for events, 4 of padding, 8 for
+# data). The guest kernel therefore fills the caller's array with a 12-byte
+# stride while the application's libc reads it with a 16-byte stride, so every
+# `data` field is read from the wrong offset.
+#
+# The symptom is an application that runs happily until the first I/O event and
+# then takes a read data abort on a garbage pointer. With actix, whose tokio
+# runtime turns each epoll event's token straight into a pointer:
+#
+#   ESR_EL1 0x96000006 (data abort, translation fault, read)
+#   ELR     -> tokio::runtime::io::driver::Driver::turn + 0x140
+#
+# Match Linux: pack on x86_64 only.
+# ---------------------------------------------------------------------------
+EP="$UK/lib/nolibc/include/sys/epoll.h"
+if [ -f "$EP" ] && ! grep -q 'UK_EPOLL_PACKED' "$EP"; then
+	echo "patching $EP (pack epoll_event on x86_64 only, as Linux does)"
+	python3 - "$EP" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+old = """struct epoll_event {
+	uint32_t events;	/* Epoll events */
+	epoll_data_t data;	/* User data variable */
+} __packed;"""
+new = """/* Linux packs this on x86_64 only (include/uapi/linux/eventpoll.h), where it
+ * is 12 bytes. Everywhere else it is unpacked - on aarch64, 16 bytes with four
+ * bytes of padding after `events`. Packing unconditionally makes the kernel
+ * write the caller's array with the wrong stride, and every `data` field comes
+ * back from the wrong offset.
+ */
+#if defined(__X86_64__) || defined(CONFIG_ARCH_X86_64)
+#define UK_EPOLL_PACKED __packed
+#else
+#define UK_EPOLL_PACKED
+#endif
+
+struct epoll_event {
+	uint32_t events;	/* Epoll events */
+	epoll_data_t data;	/* User data variable */
+} UK_EPOLL_PACKED;"""
+assert old in s, "epoll.h does not match the expected shape"
+open(p, "w").write(s.replace(old, new, 1))
+PYEOF
+else
+	echo "epoll.h: already patched or absent, skipping"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. virtio-rng driver (new).
 #
 # Unikraft has no virtio-rng driver at all. On arm64 that leaves no usable
 # entropy source under libkrun — LIBUKRANDOM_LCPU needs FEAT_RNG, which

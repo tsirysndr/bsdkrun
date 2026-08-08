@@ -404,6 +404,22 @@ pub struct RunBsdInput {
     pub command: Vec<String>,
 }
 
+/// Nanos has no agent (no exec/shell), but it does have a root disk, so
+/// `persist` is the one disk option it takes.
+#[derive(InputObject)]
+pub struct RunNanosInput {
+    /// A path, or a bare name in ~/.ops/images (what `ops build -i` makes).
+    pub image: String,
+    pub cpus: Option<u32>,
+    pub mem: Option<u32>,
+    pub net: Option<NetInput>,
+    /// Nanos kernel override (Linux hosts).
+    pub kernel: Option<String>,
+    pub cmdline: Option<String>,
+    #[graphql(default)]
+    pub persist: bool,
+}
+
 /// A unikernel has no disk and no agent, so this carries none of the
 /// volume/persist/repo/command fields the other guests take.
 #[derive(InputObject)]
@@ -725,6 +741,23 @@ impl Mutation {
             command: input.command,
         };
         api(ctx)?.ops.run_bsd(&opts).await.map_err(gql_err)
+    }
+
+    async fn run_nanos(
+        &self,
+        ctx: &Context<'_>,
+        input: RunNanosInput,
+    ) -> async_graphql::Result<String> {
+        let opts = ops::RunNanosOpts {
+            image: input.image,
+            cpus: input.cpus,
+            mem: input.mem,
+            net: input.net.map(Into::into).unwrap_or_default(),
+            kernel: input.kernel,
+            cmdline: input.cmdline,
+            persist: input.persist,
+        };
+        api(ctx)?.ops.run_nanos(&opts).await.map_err(gql_err)
     }
 
     async fn run_unikraft(
@@ -1105,6 +1138,25 @@ impl Subscription_ {
             disk_size: input.disk_size,
             repo: input.repo,
             command: input.command,
+        };
+        Ok(launch_stream(api.ops.clone(), opts.to_argv()))
+    }
+
+    /// Boot a Nanos unikernel, streaming progress until its id is known.
+    async fn launch_nanos(
+        &self,
+        ctx: &Context<'_>,
+        input: RunNanosInput,
+    ) -> async_graphql::Result<impl Stream<Item = LaunchEvent>> {
+        let api = api(ctx)?;
+        let opts = ops::RunNanosOpts {
+            image: input.image,
+            cpus: input.cpus,
+            mem: input.mem,
+            net: input.net.map(Into::into).unwrap_or_default(),
+            kernel: input.kernel,
+            cmdline: input.cmdline,
+            persist: input.persist,
         };
         Ok(launch_stream(api.ops.clone(), opts.to_argv()))
     }

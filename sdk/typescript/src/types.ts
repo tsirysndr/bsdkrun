@@ -156,6 +156,24 @@ export interface UnikraftCreateOptions extends BaseCreateOptions {
   mounts?: string[];
 }
 
+/**
+ * Boot a Nanos (NanoVMs) unikernel image (`bsdkrun nanos`).
+ *
+ * Like unikraft, there is no agent — `exec`, `shell` and `snapshot` do not
+ * apply. Nanos does have a root disk, so `persist` is honored.
+ */
+export interface NanosCreateOptions extends BaseCreateOptions {
+  os: "nanos";
+  /** A path, or a bare name in `~/.ops/images` (what `ops build -i` makes). */
+  image: string;
+  /** Nanos kernel override (Linux hosts). */
+  kernel?: string;
+  /** Kernel command line. */
+  cmdline?: string;
+  /** Boot the image in place instead of a per-machine CoW clone. */
+  persist?: boolean;
+}
+
 /** The full set of ways to boot a sandbox. Discriminated on `os`. */
 export type CreateOptions =
   | LinuxCreateOptions
@@ -163,7 +181,8 @@ export type CreateOptions =
   | NetbsdCreateOptions
   | FirmwareCreateOptions
   | KernelCreateOptions
-  | UnikraftCreateOptions;
+  | UnikraftCreateOptions
+  | NanosCreateOptions;
 
 /** Kind of guest a sandbox is running. */
 export type GuestKind =
@@ -172,7 +191,8 @@ export type GuestKind =
   | "netbsd"
   | "firmware"
   | "kernel"
-  | "unikraft";
+  | "unikraft"
+  | "nanos";
 
 /** A machine as reported by `bsdkrun ps --json`. */
 export interface SandboxInfo {

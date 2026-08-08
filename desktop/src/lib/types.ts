@@ -5,7 +5,7 @@ export interface Machine {
   id: string;
   name: string | null;
   image: string;
-  kind: string; // "linux" | "freebsd" | "netbsd" | "firmware" | "kernel"
+  kind: string; // "linux" | "freebsd" | "netbsd" | "firmware" | "kernel" | "unikraft" | "nanos"
   command: string;
   status: string; // "running" | "exited"
   running: boolean;
@@ -112,12 +112,16 @@ export interface Settings {
 // The Run dialog payload. Field names are snake_case to match the Rust
 // `RunSpec` struct exactly (nested structs are not camelCase-converted).
 export interface RunSpec {
-  kind: "linux" | "freebsd" | "netbsd" | "unikraft";
+  kind: "linux" | "freebsd" | "netbsd" | "unikraft" | "nanos";
   image?: string | null;
   /** Unikraft only: a kraft project directory or a built unikernel image. */
   path?: string | null;
-  /** Unikraft only: kernel cmdline, handed to the application as argv. */
+  /** Unikraft/Nanos: kernel cmdline. */
   cmdline?: string | null;
+  /** Nanos only: kernel override (Linux hosts). */
+  kernel?: string | null;
+  /** Nanos only: boot the image in place instead of a CoW clone. */
+  persist?: boolean;
   version?: string | null;
   cpus?: number | null;
   mem?: number | null;

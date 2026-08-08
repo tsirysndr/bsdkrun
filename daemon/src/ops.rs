@@ -199,6 +199,34 @@ impl RunBsdOpts {
 }
 
 #[derive(Debug, Default, Clone)]
+pub struct RunNanosOpts {
+    /// A path, or a bare name in ~/.ops/images.
+    pub image: String,
+    pub cpus: Option<u32>,
+    pub mem: Option<u32>,
+    pub net: NetOpts,
+    pub kernel: Option<String>,
+    pub cmdline: Option<String>,
+    pub persist: bool,
+}
+
+impl RunNanosOpts {
+    pub fn to_argv(&self) -> Vec<String> {
+        // Like unikraft: no -v/--repo/command — a unikernel has no agent to
+        // run anything through. Nanos does have a root disk, so --persist
+        // (in-place boot) is the one disk option it takes.
+        Argv::new(&["nanos", "-d"])
+            .vm(self.cpus, self.mem)
+            .net(&self.net)
+            .opt("--kernel", &self.kernel)
+            .opt("--cmdline", &self.cmdline)
+            .flag("--persist", self.persist)
+            .arg(self.image.clone())
+            .take()
+    }
+}
+
+#[derive(Debug, Default, Clone)]
 pub struct RunUnikraftOpts {
     /// A `kraft` project directory or a built unikernel image. Empty = ".".
     pub path: Option<String>,
@@ -618,6 +646,13 @@ impl Ops {
     }
 
     pub async fn run_unikraft(&self, opts: &RunUnikraftOpts) -> OpResult<String> {
+        Ok(self.cli.detached(&opts.to_argv()).await?)
+    }
+
+    pub async fn run_nanos(&self, opts: &RunNanosOpts) -> OpResult<String> {
+        if opts.image.trim().is_empty() {
+            return Err(OpError::InvalidArgument("image must not be empty".into()));
+        }
         Ok(self.cli.detached(&opts.to_argv()).await?)
     }
 

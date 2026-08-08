@@ -22,20 +22,21 @@ import { useNetworks, useVersions } from "../lib/queries";
 import { useLaunchMachine } from "../hooks/useLaunchFlavor";
 import type { RunSpec } from "../lib/types";
 
-type Kind = "linux" | "freebsd" | "netbsd" | "unikraft";
+type Kind = "linux" | "freebsd" | "netbsd" | "unikraft" | "nanos";
 
 const KIND_LABEL: Record<Kind, string> = {
   linux: "Linux (OCI)",
   freebsd: "FreeBSD",
   netbsd: "NetBSD",
   unikraft: "Unikraft",
+  nanos: "Nanos",
 };
 
 // ---- zod schema ------------------------------------------------------------
 
 const schema = z
   .object({
-    kind: z.enum(["linux", "freebsd", "netbsd", "unikraft"]),
+    kind: z.enum(["linux", "freebsd", "netbsd", "unikraft", "nanos"]),
     image: z.string(),
     path: z.string(),
     cmdline: z.string(),
@@ -85,6 +86,10 @@ const schema = z
   .refine((d) => d.kind !== "unikraft" || d.path.trim().length > 0, {
     message: "A kraft project directory or unikernel image is required",
     path: ["path"],
+  })
+  .refine((d) => d.kind !== "nanos" || d.image.trim().length > 0, {
+    message: "An ops image (path or ~/.ops/images name) is required",
+    path: ["image"],
   });
 
 type FormValues = z.infer<typeof schema>;
@@ -143,6 +148,9 @@ export default function RunDialog() {
   // A unikernel is the application linked into the kernel: no disk, no
   // userland. Everything disk- or agent-shaped is hidden for it.
   const unikraft = kind === "unikraft";
+  const nanosKind = kind === "nanos";
+  // Shared "no agent, no repo/command" handling for both unikernel kinds.
+  const unikernel = unikraft || nanosKind;
   const version = watch("version");
 
   const { data: allVersions = [] } = useVersions(kind, open && bsd);
@@ -186,19 +194,20 @@ export default function RunDialog() {
   const onSubmit = async (data: FormValues) => {
     const spec: RunSpec = {
       kind: data.kind,
-      image: data.kind === "linux" ? data.image.trim() : null,
+      image:
+        data.kind === "linux" || data.kind === "nanos"
+          ? data.image.trim()
+          : null,
       path: data.kind === "unikraft" ? data.path.trim() : null,
       cmdline:
-        data.kind === "unikraft" && data.cmdline.trim()
-          ? data.cmdline.trim()
-          : null,
+        unikernel && data.cmdline.trim() ? data.cmdline.trim() : null,
       // Only NetBSD takes a --version (it selects the bundled kernel). A FreeBSD
       // --version makes the CLI DOWNLOAD the official (agent-less) image, which
       // the GUI can't exec/terminal into — always use the bundled arm64 image.
       version: data.kind === "netbsd" && data.version ? data.version : null,
       cpus: data.cpus,
       mem: data.mem,
-      volume: unikraft ? null : data.volume.trim() || null,
+      volume: unikernel ? null : data.volume.trim() || null,
       no_net: data.noNet,
       initramfs: data.kind === "linux" ? data.initramfs : false,
       entrypoint:
@@ -212,16 +221,16 @@ export default function RunDialog() {
       ports: lines(data.ports),
       attach_disks: bsd ? lines(data.attachDisks) : [],
       disk_size: bsd && data.diskSize.trim() ? data.diskSize.trim() : null,
-      repo: unikraft || !data.repo.trim() ? null : data.repo.trim(),
+      repo: unikernel || !data.repo.trim() ? null : data.repo.trim(),
       network: data.network.trim() ? data.network.trim() : null,
       name: data.machineName.trim() ? data.machineName.trim() : null,
-      command: unikraft ? [] : splitArgs(data.command),
+      command: unikernel ? [] : splitArgs(data.command),
     };
     // Stream the launch (pull / download / boot) in the progress modal instead
     // of blocking the dialog on a silent spinner — close the dialog right away.
     const label =
-      data.kind === "linux"
-        ? data.image.trim() || "machine"
+      data.kind === "linux" || data.kind === "nanos"
+        ? data.image.trim() || KIND_LABEL[data.kind]
         : data.kind === "unikraft"
           ? data.path.trim().split("/").filter(Boolean).pop() || "unikernel"
           : KIND_LABEL[data.kind];
@@ -270,6 +279,7 @@ export default function RunDialog() {
                   <Tab key="freebsd" title="FreeBSD" />
                   <Tab key="netbsd" title="NetBSD" />
                   <Tab key="unikraft" title="Unikraft" />
+                  <Tab key="nanos" title="Nanos" />
                 </Tabs>
               )}
             />
@@ -292,6 +302,34 @@ export default function RunDialog() {
                   />
                 )}
               />
+            ) : nanosKind ? (
+              <>
+                <Controller
+                  control={control}
+                  name="image"
+                  render={({ field }) => (
+                    <Input
+                      label="Nanos image"
+                      labelPlacement="outside"
+                      placeholder="nanos-hello  (a path, or a name in ~/.ops/images)"
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      isRequired
+                      variant="bordered"
+                      isInvalid={!!errors.image}
+                      errorMessage={errors.image?.message}
+                      description="Build it first with `ops build <elf> -i <name>`. See examples/nanos-hello."
+                      classNames={{ input: "font-mono text-xs" }}
+                    />
+                  )}
+                />
+                <div className="rounded-xl border border-white/10 bg-content2/40 px-3 py-2 text-xs text-foreground-400">
+                  A Nanos unikernel — no shell or agent, so the terminal and
+                  snapshots don&apos;t apply. Linux/x86_64 is experimental;
+                  macOS/arm64 needs an upstream Nanos fix. Use logs to read its
+                  output.
+                </div>
+              </>
             ) : unikraft ? (
               <>
                 <Controller
@@ -387,7 +425,7 @@ export default function RunDialog() {
               />
             )}
 
-            <div className={unikraft ? "grid grid-cols-2 gap-3" : "grid grid-cols-3 gap-3"}>
+            <div className={unikernel ? "grid grid-cols-2 gap-3" : "grid grid-cols-3 gap-3"}>
               <Controller
                 control={control}
                 name="cpus"
@@ -424,7 +462,7 @@ export default function RunDialog() {
                 )}
               />
               {/* No volume for a unikernel: there is no disk to persist. */}
-              {!unikraft && (
+              {!unikernel && (
                 <Controller
                   control={control}
                   name="volume"
@@ -446,7 +484,7 @@ export default function RunDialog() {
 
             {/* A unikernel takes a kernel cmdline (which Unikraft hands the
                 application as argv) rather than an agent-run command. */}
-            {unikraft ? (
+            {unikernel ? (
               <Controller
                 control={control}
                 name="cmdline"
@@ -575,7 +613,7 @@ export default function RunDialog() {
                       <div>
                         <div className="text-sm font-medium">Disable networking</div>
                         <div className="text-xs text-foreground-500">
-                          {unikraft
+                          {unikernel
                             ? "Isolated guest (no gvproxy, no NIC)."
                             : "Isolated guest (no gvproxy; exec/shell unavailable)."}
                         </div>

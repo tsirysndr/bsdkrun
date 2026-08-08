@@ -168,6 +168,22 @@ function unikraftInput(spec: RunSpec) {
   };
 }
 
+/** Nanos: no agent (no volume/repo/command); image + cmdline only for now. */
+function nanosInput(spec: RunSpec) {
+  return {
+    image: spec.image ?? "",
+    cpus: spec.cpus ?? null,
+    mem: spec.mem ?? null,
+    net: {
+      noNet: spec.no_net,
+      ports: clean(spec.ports),
+      network: orNull(spec.network),
+      name: orNull(spec.name),
+    },
+    cmdline: orNull(spec.cmdline),
+  };
+}
+
 const termUnsubs = new Map<string, UnlistenFn>();
 const logUnsubs = new Map<string, UnlistenFn>();
 const launchUnsubs = new Map<string, UnlistenFn>();
@@ -395,6 +411,13 @@ export const api = {
         "launchLinux",
         `subscription($i:RunLinuxInput!){ launchLinux(input:$i){ line machineId error } }`,
         { i: linuxInput(spec) },
+      );
+    } else if (spec.kind === "nanos") {
+      streamLaunch(
+        launchId,
+        "launchNanos",
+        `subscription($i:RunNanosInput!){ launchNanos(input:$i){ line machineId error } }`,
+        { i: nanosInput(spec) },
       );
     } else if (spec.kind === "unikraft") {
       streamLaunch(

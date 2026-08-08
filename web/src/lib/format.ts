@@ -83,16 +83,21 @@ const BADGE = {
     className: "bg-teal-500/15 text-teal-300 border-teal-500/25",
     dot: "bg-teal-400",
   },
+  nanos: {
+    label: "Nanos",
+    className: "bg-amber-500/15 text-amber-300 border-amber-500/25",
+    dot: "bg-amber-400",
+  },
 } as const;
 
 /**
- * Whether this machine is a Unikraft unikernel — the application linked into
- * the kernel. It has no disk and no in-guest agent, so snapshots and the
+ * Whether this machine is a unikernel (Unikraft or Nanos) — the application
+ * linked into the kernel. There is no in-guest agent, so snapshots and the
  * terminal/exec do not apply and the CLI rejects them; the UI hides those
  * actions rather than offering a button that always errors.
  */
 export function isUnikraft(kind: string | null | undefined): boolean {
-  return kind === "unikraft";
+  return kind === "unikraft" || kind === "nanos";
 }
 
 /**
@@ -112,6 +117,7 @@ export function kindColor(
     return BADGE.netbsd;
   }
   if (kind === "unikraft") return BADGE.unikraft;
+  if (kind === "nanos" || ref.startsWith("nanos")) return BADGE.nanos;
   if (kind === "linux") return BADGE.linux;
   return {
     label: kind || "machine",

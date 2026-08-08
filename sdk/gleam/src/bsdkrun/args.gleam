@@ -52,6 +52,15 @@ pub type Guest {
     cmdline: Option(String),
     disk: Option(String),
   )
+  /// Boot a Nanos (NanoVMs) unikernel image. No agent (no exec/shell), but
+  /// it does have a root disk, so the shared `persist` option is honored.
+  Nanos(
+    /// A path, or a bare name in `~/.ops/images` (what `ops build -i` makes).
+    image: String,
+    /// Nanos kernel override (Linux hosts).
+    kernel: Option(String),
+    cmdline: Option(String),
+  )
   /// Boot a Unikraft unikernel — the application linked into the kernel.
   ///
   /// There is no disk and no userland, so the persist / volume / attach-disk
@@ -149,6 +158,11 @@ pub fn kernel(kernel: String) -> CreateOptions {
     cmdline: None,
     disk: None,
   ))
+}
+
+/// Boot the Nanos image `image` — a path or a `~/.ops/images` name.
+pub fn nanos(image: String) -> CreateOptions {
+  new(Nanos(image: image, kernel: None, cmdline: None))
 }
 
 /// Boot the Unikraft unikernel at `path` — a `kraft` project directory or a
@@ -362,6 +376,19 @@ fn try_guest(
         ]),
       )
 
+    Nanos(image: "", ..) ->
+      Error(InvalidOptions("nanos guests need a non-empty image"))
+    Nanos(image:, kernel:, cmdline:) ->
+      next(
+        list.flatten([
+          ["nanos", "-d"],
+          opt("--kernel", kernel),
+          opt("--cmdline", cmdline),
+          flag("--persist", opts.persist),
+          [image],
+        ]),
+      )
+
     Unikraft(path: "", ..) ->
       Error(InvalidOptions(
         "unikraft guests need a non-empty path (\".\" for the current directory)",
@@ -386,6 +413,8 @@ fn disk_args(opts: CreateOptions) -> List(String) {
     Linux(..) -> opt("-v", opts.volume)
     // A unikernel has no disk, so there is nothing to persist or attach.
     Unikraft(..) -> []
+    // Nanos: persist is emitted with the guest args; no volume/attach-disk.
+    Nanos(..) -> []
     _ ->
       list.flatten([
         flag("--persist", opts.persist),

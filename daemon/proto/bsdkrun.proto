@@ -194,6 +194,20 @@ message RunBsdRequest {
   repeated string command = 12;
 }
 
+message RunNanosRequest {
+  // The Nanos image to boot: a path, or a bare name in ~/.ops/images
+  // (what `ops build -i <name>` produces).
+  string image = 1;
+  VmConfig vm = 2;
+  NetConfig net = 3;
+  // Nanos kernel override (Linux hosts; default: newest ops-staged kernel).
+  optional string kernel = 4;
+  // Kernel command line.
+  optional string cmdline = 5;
+  // Boot the image in place instead of a per-machine CoW clone.
+  bool persist = 6;
+}
+
 message RunUnikraftRequest {
   // The unikernel to boot: a `kraft` project directory (the image is found
   // under its .unikraft/build/) or the image itself. Defaults to ".".
@@ -501,6 +515,7 @@ service Bsdkrun {
   rpc RunLinux(RunLinuxRequest) returns (RunResponse);
   rpc RunBsd(RunBsdRequest) returns (RunResponse);
   rpc RunUnikraft(RunUnikraftRequest) returns (RunResponse);
+  rpc RunNanos(RunNanosRequest) returns (RunResponse);
   rpc RunFlavor(RunFlavorRequest) returns (RunResponse);
 
   // -- images ---------------------------------------------------------------

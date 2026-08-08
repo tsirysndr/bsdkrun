@@ -5,7 +5,8 @@ defmodule Bsdkrun.Args do
   path ends with `-d` so `create` yields a handle.
 
   Options are given as a keyword list or map, discriminated on `:os`
-  (`:linux`, `:freebsd`, `:netbsd`, `:firmware`, `:kernel`, `:unikraft`). See
+  (`:linux`, `:freebsd`, `:netbsd`, `:firmware`, `:kernel`, `:unikraft`,
+  `:nanos`). See
   `Bsdkrun.Sandbox.create/1` for the full set of per-kind keys.
   """
 
@@ -22,6 +23,7 @@ defmodule Bsdkrun.Args do
         :firmware -> firmware(opts)
         :kernel -> kernel(opts)
         :unikraft -> unikraft(opts)
+        :nanos -> nanos(opts)
         other -> raise ArgumentError, "unknown os #{inspect(other)}"
       end
 
@@ -84,6 +86,19 @@ defmodule Bsdkrun.Args do
     |> concat(net_args(o[:net]))
     |> concat(name_args(o))
     |> concat(vm_args(o))
+  end
+
+  # Nanos: no agent (like unikraft), but it has a root disk, so :persist is
+  # honored. :image is a path or a ~/.ops/images name.
+  defp nanos(o) do
+    ["nanos", "-d"]
+    |> opt(o, :kernel, "--kernel")
+    |> opt(o, :cmdline, "--cmdline")
+    |> concat(if o[:persist], do: ["--persist"], else: [])
+    |> concat(net_args(o[:net]))
+    |> concat(name_args(o))
+    |> concat(vm_args(o))
+    |> concat([fetch!(o, :image)])
   end
 
   # No `disk_args`: a unikernel has no disk, so there is nothing to persist,

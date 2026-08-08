@@ -41,7 +41,7 @@ flavors)
   echo '[{"name":"node","source":"catalog","kind":"linux","base":"node:22","category":"language","method":"docker","description":"Node","ports":["3000:3000"],"nix":[],"created_at":null}]'
   exit 0 ;;
 versions) printf 'Available builds:\n  14.3\n  15.1  (latest)\n'; exit 0 ;;
-linux|freebsd|netbsd|unikraft) echo "m-$1-001"; exit 0 ;;
+linux|freebsd|netbsd|unikraft|nanos) echo "m-$1-001"; exit 0 ;;
 exec)
   echo "EXEC_OK"
   cat
@@ -352,6 +352,45 @@ async fn run_unikraft_passes_each_volume_as_its_own_mount() {
             "~/hello",
         ]
     );
+}
+
+/// Nanos: flags stay before the positional image, and persist is the one
+/// disk option a unikernel with a real root disk takes.
+#[tokio::test]
+async fn run_nanos_puts_the_image_last() {
+    let h = Harness::new();
+    let d = h
+        .query(
+            r#"mutation { runNanos(input: {
+                image: "nanos-hello", mem: 512,
+                net: { noNet: true }, cmdline: "x=1", persist: true
+            }) }"#,
+        )
+        .await;
+    assert_eq!(json(&d)["runNanos"], "m-nanos-001");
+    assert_eq!(
+        h.last_argv(),
+        [
+            "nanos",
+            "-d",
+            "--mem",
+            "512",
+            "--no-net",
+            "--cmdline",
+            "x=1",
+            "--persist",
+            "nanos-hello",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn run_nanos_requires_an_image() {
+    let h = Harness::new();
+    let errs = h
+        .errors(r#"mutation { runNanos(input: { image: "" }) }"#)
+        .await;
+    assert!(!errs.is_empty());
 }
 
 /// The path defaults to the current directory, exactly as the CLI does.

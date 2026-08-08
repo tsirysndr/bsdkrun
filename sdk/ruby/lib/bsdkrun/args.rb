@@ -66,6 +66,7 @@ module Bsdkrun
       when "firmware" then firmware_args(opts)
       when "kernel"   then kernel_args(opts)
       when "unikraft" then unikraft_args(opts)
+      when "nanos"    then nanos_args(opts)
       else raise ArgumentError, "unknown os: #{opts[:os].inspect}"
       end
     end
@@ -121,6 +122,19 @@ module Bsdkrun
       a.push("--disk", opts[:disk]) if opts[:disk]
       a.concat(disk_args(opts)).concat(net_args(opts[:net]))
        .concat(name_args(opts)).concat(vm_args(opts))
+    end
+
+    # @!visibility private
+    #
+    # Nanos: no agent (like unikraft), but it has a root disk, so +persist+
+    # is honored. +:image+ is a path or a ~/.ops/images name.
+    def nanos_args(opts)
+      a = ["nanos", "-d"]
+      a.push("--kernel", opts[:kernel]) if opts[:kernel]
+      a.push("--cmdline", opts[:cmdline]) if opts[:cmdline]
+      a.push("--persist") if opts[:persist]
+      a.concat(net_args(opts[:net])).concat(name_args(opts)).concat(vm_args(opts))
+      a.push(opts.fetch(:image).to_s)
     end
 
     # @!visibility private

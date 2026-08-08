@@ -305,6 +305,26 @@ impl Bsdkrun for BsdkrunService {
         }))
     }
 
+    async fn run_nanos(
+        &self,
+        req: Request<RunNanosRequest>,
+    ) -> Result<Response<RunResponse>, Status> {
+        let r = req.into_inner();
+        let (cpus, mem) = vm_opts(r.vm);
+        let opts = ops::RunNanosOpts {
+            image: r.image,
+            cpus,
+            mem,
+            net: net_opts(r.net),
+            kernel: r.kernel,
+            cmdline: r.cmdline,
+            persist: r.persist,
+        };
+        Ok(Response::new(RunResponse {
+            id: self.ops.run_nanos(&opts).await?,
+        }))
+    }
+
     async fn run_unikraft(
         &self,
         req: Request<RunUnikraftRequest>,

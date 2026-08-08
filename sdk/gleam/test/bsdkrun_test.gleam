@@ -391,3 +391,11 @@ pub fn unikraft_without_volumes_test() {
   build(args.unikraft("."))
   |> should.equal(["unikraft", "-d", "."])
 }
+
+pub fn nanos_test() {
+  build(
+    args.nanos("nanos-hello")
+    |> args.with_persist(True),
+  )
+  |> should.equal(["nanos", "-d", "--persist", "nanos-hello"])
+}

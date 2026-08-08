@@ -12,6 +12,7 @@ The public entrypoint is :func:`build_create_args`, keyed on ``os``:
 * ``kernel``   — boot a kernel directly (``kernel`` required).
 * ``unikraft`` — boot a Unikraft unikernel (``path``: a kraft project dir or an
   image; defaults to ``.``).
+* ``nanos``    — boot a Nanos image (``image``: a path or a ~/.ops/images name).
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from .types import PortForward
 
 __all__ = ["build_create_args"]
 
-_VALID_OS = ("linux", "freebsd", "netbsd", "firmware", "kernel", "unikraft")
+_VALID_OS = ("linux", "freebsd", "netbsd", "firmware", "kernel", "unikraft", "nanos")
 
 
 def _net_args(net: Mapping[str, Any] | None) -> list[str]:
@@ -152,6 +153,19 @@ def build_create_args(*, os: str, **opts: Any) -> list[str]:
         if opts.get("disk"):
             a += ["--disk", opts["disk"]]
         a += _disk_args(opts) + _net_args(net) + _name_args(opts) + _vm_args(opts)
+        return a
+
+    if os == "nanos":
+        image = _require(opts, "image", os)
+        a = ["nanos", "-d"]
+        if opts.get("kernel"):
+            a += ["--kernel", opts["kernel"]]
+        if opts.get("cmdline"):
+            a += ["--cmdline", opts["cmdline"]]
+        if opts.get("persist"):
+            a.append("--persist")
+        a += _net_args(net) + _name_args(opts) + _vm_args(opts)
+        a.append(image)
         return a
 
     if os == "unikraft":

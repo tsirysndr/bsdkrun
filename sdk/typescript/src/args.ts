@@ -91,6 +91,15 @@ export function buildCreateArgs(opts: CreateOptions): string[] {
       a.push(...diskArgs(opts), ...netArgs(opts.net), ...nameArgs(opts), ...vmArgs(opts));
       return a;
     }
+    case "nanos": {
+      const a = ["nanos", "-d"];
+      if (opts.kernel) a.push("--kernel", opts.kernel);
+      if (opts.cmdline) a.push("--cmdline", opts.cmdline);
+      if (opts.persist) a.push("--persist");
+      a.push(...netArgs(opts.net), ...nameArgs(opts), ...vmArgs(opts));
+      a.push(opts.image);
+      return a;
+    }
     case "unikraft": {
       // No diskArgs: a unikernel has nothing to persist. Volumes are the
       // exception — virtio-fs shares, which need no disk.

@@ -628,17 +628,22 @@ async fn system_stats(state: State<'_, AppState>) -> Result<system::SystemStats,
 /// always runs detached (`-d`).
 #[derive(Debug, Deserialize)]
 pub struct RunSpec {
-    pub kind: String, // "linux" | "freebsd" | "netbsd" | "unikraft"
+    pub kind: String, // "linux" | "freebsd" | "netbsd" | "unikraft" | "nanos"
     #[serde(default)]
     pub image: Option<String>,
     /// Unikraft only: a `kraft` project directory (the image is found under its
     /// `.unikraft/build/`) or a built unikernel image.
     #[serde(default)]
     pub path: Option<String>,
-    /// Unikraft only: the kernel command line, which Unikraft hands to the
-    /// application as `argv`.
+    /// Unikraft/Nanos: the kernel command line.
     #[serde(default)]
     pub cmdline: Option<String>,
+    /// Nanos only: kernel override (Linux hosts).
+    #[serde(default)]
+    pub kernel: Option<String>,
+    /// Nanos only: boot the image in place instead of a CoW clone.
+    #[serde(default)]
+    pub persist: bool,
     #[serde(default)]
     pub version: Option<String>,
     #[serde(default)]
@@ -687,6 +692,9 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
     // A unikernel is the application linked into the kernel: no disk to
     // persist and no agent to run a repo clone or a command through.
     let unikraft = spec.kind == "unikraft";
+    let nanos = spec.kind == "nanos";
+    // Both unikernel kinds: no volume/repo/command.
+    let unikernel = unikraft || nanos;
 
     if bsd {
         if let Some(v) = nonempty(&spec.version) {
@@ -702,7 +710,7 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
         a.push("--mem".into());
         a.push(m.to_string());
     }
-    if !unikraft {
+    if !unikernel {
         if let Some(v) = nonempty(&spec.volume) {
             a.push("-v".into());
             a.push(v.into());
@@ -718,7 +726,7 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
         }
     }
     // `--repo` clones a git repo after boot (both Linux and BSD support it).
-    if !unikraft {
+    if !unikernel {
         if let Some(r) = nonempty(&spec.repo) {
             a.push("--repo".into());
             a.push(r.into());
@@ -765,6 +773,22 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
         }
         // The path is positional and last; default to "." like the CLI.
         a.push(nonempty(&spec.path).unwrap_or(".").into());
+    } else if nanos {
+        if let Some(k) = nonempty(&spec.kernel) {
+            a.push("--kernel".into());
+            a.push(k.into());
+        }
+        if let Some(c) = nonempty(&spec.cmdline) {
+            a.push("--cmdline".into());
+            a.push(c.into());
+        }
+        if spec.persist {
+            a.push("--persist".into());
+        }
+        // The image is positional and last.
+        let image = nonempty(&spec.image)
+            .ok_or_else(|| BkError::Parse("an image is required for nanos".into()))?;
+        a.push(image.into());
     } else {
         // BSD: grow the root disk + attach extra virtio-blk disks.
         if let Some(sz) = nonempty(&spec.disk_size) {
@@ -778,7 +802,7 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
             }
         }
     }
-    if !unikraft && !spec.command.is_empty() {
+    if !unikernel && !spec.command.is_empty() {
         a.push("--".into());
         a.extend(spec.command.iter().cloned());
     }

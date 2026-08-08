@@ -78,6 +78,16 @@ jobs:
             uuid-runtime unzip wget clang libclang-dev llvm-dev \
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
+      # --port forwards a host port into the guest, which is user-mode
+      # networking; without gvproxy on PATH the machine refuses to start.
+      - name: Install gvproxy (user-mode networking)
+        run: |
+          set -eux
+          sudo curl -fL -o /usr/local/bin/gvproxy \
+            https://github.com/containers/gvisor-tap-vsock/releases/latest/download/gvproxy-linux-amd64
+          sudo chmod +x /usr/local/bin/gvproxy
+          gvproxy --help >/dev/null 2>&1 || which gvproxy
+
       # Same cache key as e2e-linux.yml and e2e-unikraft.yml on purpose: a hit
       # from any of them saves the ~15-20 min libkrunfw kernel compile.
       - name: Restore libkrun build

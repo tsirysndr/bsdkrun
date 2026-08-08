@@ -101,6 +101,7 @@ pub fn setup_detached(dir: &Path) -> Result<RawFd> {
                 unsafe {
                     libc::setsid();
                     libc::close(live[1]);
+                    detach_stdio();
                 }
                 broker_loop(master, live[0], listener, logfile, log_path);
             }
@@ -120,6 +121,29 @@ pub fn setup_detached(dir: &Path) -> Result<RawFd> {
         }
     }
     Ok(slave)
+}
+
+/// Point the broker's stdin/stdout/stderr at `/dev/null`.
+///
+/// It forks before the guest console is wired up, so it starts life holding
+/// whatever stdio bsdkrun was launched with — and it outlives the machine by
+/// design. A caller that runs `bsdkrun ... -d` on a pipe and waits for that
+/// pipe to close (as the SDK's `runCli` does, awaiting Node's `close` event)
+/// would wait for the whole machine instead of for the id it just printed.
+///
+/// # Safety
+/// Async-signal-safe calls only; must be called in the freshly forked child.
+unsafe fn detach_stdio() {
+    let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
+    if devnull < 0 {
+        return;
+    }
+    libc::dup2(devnull, libc::STDIN_FILENO);
+    libc::dup2(devnull, libc::STDOUT_FILENO);
+    libc::dup2(devnull, libc::STDERR_FILENO);
+    if devnull > libc::STDERR_FILENO {
+        libc::close(devnull);
+    }
 }
 
 /// Window (from the end of the log) searched for the current line to replay to

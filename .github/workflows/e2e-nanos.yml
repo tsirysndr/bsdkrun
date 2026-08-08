@@ -1,0 +1,131 @@
+name: e2e (Nanos / KVM)
+
+# Builds a Nanos unikernel with ops and boots it on x86_64/KVM via bsdkrun's
+# direct-kernel path — the same boot contract Firecracker uses, which Nanos
+# supports officially.
+#
+# EXPERIMENTAL: this is the first time Nanos meets libkrun on x86_64, so the
+# job is continue-on-error — a red here means "nanos support isn't there yet",
+# and must not block main. Flip it to a hard test once it has gone green.
+# (The arm64 side is blocked on an upstream Nanos UEFI-loader hang; see
+# examples/nanos-hello/README.md for the full story.)
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - "main"
+    paths:
+      - "examples/nanos-hello/**"
+      - ".github/workflows/e2e-nanos.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  boot:
+    name: x86_64
+    runs-on: ubuntu-latest # x86_64; has /dev/kvm
+    timeout-minutes: 40
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          set -eux
+          test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 0666 /dev/kvm
+
+      - name: Install build deps
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl ca-certificates xz-utils python3 \
+            python3-pyelftools pkg-config patchelf patch cpio kmod rsync zstd \
+            flex bison bc libelf-dev libssl-dev clang libclang-dev llvm-dev
+
+      # Same cache key as the other e2e workflows. NB: a cache hit restores a
+      # libkrun built from feat/pvh-boot at bump time; the x86_64 direct-kernel
+      # path needs nothing newer.
+      - name: Restore libkrun build
+        id: libkrun-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v15
+
+      - name: Build libkrun (cache miss)
+        if: steps.libkrun-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          git clone --depth 1 -b v5.5.0 https://github.com/containers/libkrunfw
+          ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
+          git clone --depth 1 -b feat/pvh-boot https://github.com/tsirysndr/libkrun
+          ( cd libkrun && make -j"$(nproc)" BLK=1 NET=1 )
+
+      - name: Save libkrun build
+        if: steps.libkrun-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v15
+
+      - name: Install libkrun
+        run: |
+          set -eux
+          ( cd libkrunfw && sudo make install )
+          ( cd libkrun && sudo make install BLK=1 NET=1 )
+          echo "PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo /usr/local/lib64 | sudo tee /etc/ld.so.conf.d/libkrun.conf
+          sudo ldconfig
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build bsdkrun
+        run: cargo build --release
+
+      - name: Install ops and build the Nanos image
+        working-directory: examples/nanos-hello
+        run: |
+          set -eux
+          curl https://ops.city/get.sh -sSfL | sh
+          export PATH="$HOME/.ops/bin:$PATH"
+          ./build.sh x86_64
+          ls -l "$HOME/.ops/images/nanos-hello"
+          # The kernel ops staged for this nanos release:
+          NANOS_DIR=$(ls -d "$HOME"/.ops/0.* | sort -V | tail -1)
+          echo "NANOS_KERNEL=$NANOS_DIR/kernel.img" >> "$GITHUB_ENV"
+          file "$NANOS_DIR/kernel.img"
+
+      - name: e2e — boot Nanos via direct kernel load
+        run: |
+          set -eux
+          timeout 120 ./target/release/bsdkrun --log-level 5 kernel \
+            --kernel "$NANOS_KERNEL" --format elf \
+            --disk "$HOME/.ops/images/nanos-hello" \
+            --cpus 1 --mem 512 --no-net | tee nanos.out || true
+          if grep -aq "Hello from Nanos" nanos.out; then
+            echo "🎉 Nanos BOOTED under libkrun/KVM (x86_64 direct kernel)"
+          else
+            echo "Nanos did not boot — console above is the artifact to read"
+            exit 1
+          fi
+
+      - name: Upload console output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nanos-console
+          path: nanos.out
+          if-no-files-found: ignore

@@ -20,7 +20,7 @@ capstan run -e /hello.so osv-hello
 
 ```
 OSv v0.57.0
-Booted up in 6.85 ms
+Booted up in 1.50 ms
 Hello from OSv on libkrun!
   running on Linux 3.7.0 (aarch64)
 ```
@@ -82,9 +82,19 @@ at 35). IRQ 32 is therefore the **PL011 serial**, which OSv writes its console
 through but never registers an interrupt handler for. It is one line at boot and
 nothing depends on it.
 
-**A nonsensical `Booted up in ...` on some hosts.** OSv derives it from the ARM
-generic timer, whose frequency libkrun does not always present the way OSv
-expects.
+## Building libkrun yourself
+
+Build it with **`make BLK=1 NET=1`**. virtio-blk is behind a feature flag, and a
+libkrun built without it has no `krun_add_disk` — which bsdkrun calls through a
+now-NULL stub, so the process dies with a bare SIGSEGV the moment a disk is
+attached, with nothing on the console to say why. On macOS the build also wants
+`LIBCLANG_PATH=/opt/homebrew/opt/llvm/lib` and GNU make (`gmake`), and both the
+dylib and any binary relinked against it need re-signing:
+
+```sh
+codesign --force -s - target/release/libkrun.*.dylib
+codesign --entitlements bsdkrun.entitlements --force -s - target/release/bsdkrun
+```
 
 ## Why bsdkrun needs a fork of libkrun for this
 

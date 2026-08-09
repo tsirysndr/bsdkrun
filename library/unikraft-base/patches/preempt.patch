@@ -111,12 +111,10 @@
  extern struct _gic_dev *gic;
  
  __uk_pcpuvar __u8 uk_plat_native_except_switch_stack;
-@@ -229,7 +240,100 @@
- 	 * the above conditional.
- 	 */
+@@ -231,6 +242,106 @@
  	uk_arch_arm64_halt();
-+}
-+
+ }
+ 
 +#if CONFIG_UKPLAT_PREEMPT
 +/* Resume the interrupted context. Defined in the platform's exceptions.S,
 + * where the register-restore sequence already lives: it sets SP to the saved
@@ -140,6 +138,13 @@
 +void uk_plat_native_preempt_trampoline(struct uk_plat_native_regs *frame,
 +				       struct uk_plat_native_ectx *ectx)
 +{
++	/* The buffer is a fresh slice of the thread's stack, so its XSAVE
++	 * header is whatever was there before. Both calls are required by
++	 * contract: "must be called on newly allocated memory before any
++	 * save/restore", and a store into an unsanitized area is what
++	 * makes the later restore #GP.
++	 */
++	uk_plat_native_ectx_sanitize(ectx);
 +	uk_plat_native_ectx_store(ectx);
 +	uk_sched_yield();
 +	uk_plat_native_ectx_load(ectx);
@@ -207,12 +212,13 @@
 +	regs->sp = (__u64)sp;
 +	regs->x0 = (__u64)frame;
 +	regs->x1 = (__u64)ectx;
- }
++}
 +#endif /* CONFIG_UKPLAT_PREEMPT */
- 
++
  void uk_plat_native_except_irq_handler(struct uk_plat_native_regs *regs)
  {
-@@ -245,6 +349,10 @@
+ 	struct uk_plat_native_except_irq_ctx ctx;
+@@ -245,6 +356,10 @@
  	rc = uk_raise_event(UK_PLAT_NATIVE_EXCEPT_EVENT_IRQ, &ctx);
  	if (unlikely(rc < 0))
  		UK_CRASH("IRQ event handler returned error: %d\n", rc);
@@ -289,10 +295,11 @@
  	depends on LIBUKPAGING && ARCH_ARM_64
 --- a/plat/native/arch/x86_64/except.c
 +++ b/plat/native/arch/x86_64/except.c
-@@ -23,6 +23,20 @@
+@@ -22,6 +22,20 @@
+ #include <uk/assert.h>
  #include <x86/traps.h>
  #include <uk/pm.h>
- 
++
 +#if CONFIG_UKPLAT_PREEMPT
 +#include <uk/plat/common/sections.h>
 +#include <uk/plat/native/arch/ectx.h>
@@ -306,11 +313,10 @@
 + */
 +#define X86_ABI_RED_ZONE_SIZE		128
 +#endif /* CONFIG_UKPLAT_PREEMPT */
-+
+ 
  /*
   * CPUs should get dedicated IRQ and exception stacks. We use the interrupt
-  * stack table (IST) feature for switching to the stack. This means when an
-@@ -307,7 +321,113 @@
+@@ -307,7 +321,120 @@
  }
  
  UK_EVENT(UK_PLAT_NATIVE_EXCEPT_EVENT_IRQ);
@@ -321,7 +327,7 @@
 + */
 +void uk_plat_native_preempt_return(struct uk_plat_native_regs *frame)
 +	__noreturn;
-+
+ 
 +/* Runs on the *interrupted thread's* stack, with interrupts enabled, having
 + * been entered by the iretq at the end of the interrupt we are returning from.
 + *
@@ -337,6 +343,13 @@
 +void uk_plat_native_preempt_trampoline(struct uk_plat_native_regs *frame,
 +				       struct uk_plat_native_ectx *ectx)
 +{
++	/* The buffer is a fresh slice of the thread's stack, so its XSAVE
++	 * header is whatever was there before. Both calls are required by
++	 * contract: "must be called on newly allocated memory before any
++	 * save/restore", and a store into an unsanitized area is what
++	 * makes the later restore #GP.
++	 */
++	uk_plat_native_ectx_sanitize(ectx);
 +	uk_plat_native_ectx_store(ectx);
 +	uk_sched_yield();
 +	uk_plat_native_ectx_load(ectx);
@@ -366,7 +379,7 @@
 +	struct uk_plat_native_ectx *ectx;
 +	struct uk_plat_native_regs *frame;
 +	__uptr sp;
- 
++
 +	if (++preempt_irqs == 100)
 +		uk_pr_err("preempt: %u irqs, %u switches, last rip %lx (text %lx-%lx)\n",
 +			  preempt_irqs, preempt_switches,
@@ -424,7 +437,7 @@
  void uk_plat_native_except_irq_handler(struct uk_plat_native_regs *regs,
  				       __u32 irq)
  {
-@@ -331,6 +451,10 @@
+@@ -331,6 +458,10 @@
  #if CONFIG_LIBUKPLAT_NATIVE_ECTX_ISR_ASSERTIONS
  	uk_plat_native_ectx_assert_equal(ectx);
  #endif /* CONFIG_LIBUKPLAT_NATIVE_ECTX_ISR_ASSERTIONS */

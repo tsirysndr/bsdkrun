@@ -1,0 +1,7 @@
+# The Dockerfile only ever COPYs mix.exs, mix.lock and lib/. Everything else
+# here is build output -- and .unikraft/ is a full Unikraft source tree plus
+# object files -- so without this the build context alone is gigabytes.
+*
+!mix.exs
+!mix.lock
+!lib

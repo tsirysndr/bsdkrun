@@ -557,7 +557,13 @@ impl Ops {
         Ok(Info {
             daemon_version: env!("CARGO_PKG_VERSION").to_string(),
             engine_version: bsdkrun_core::VERSION.to_string(),
-            exe_path: self.supervisor.exe().display().to_string(),
+            exe_path: self
+                .supervisor
+                .exe()
+                .map(|p| p.display().to_string())
+                // Reported rather than hidden: a UI showing this is exactly
+                // where an operator would look for why a boot failed.
+                .unwrap_or_else(|| format!("{} (not found)", crate::supervisor::SUPERVISOR_BIN)),
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
         })
@@ -841,7 +847,7 @@ impl Ops {
     ) -> Result<tokio::sync::mpsc::Receiver<Result<crate::pb::OutputChunk, tonic::Status>>, OpError>
     {
         let argv = self.supervisor.argv(cmd)?;
-        Ok(self.supervisor.stream(&argv))
+        Ok(self.supervisor.stream(&argv)?)
     }
 
     // -- commands for the streaming operations --------------------------------

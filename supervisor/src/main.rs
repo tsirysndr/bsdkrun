@@ -78,9 +78,7 @@ fn main() -> Result<()> {
             bsdkrun_core::dispatch(cmd)
         }
         Mode::Cli { args } => {
-            let cli = Cli::try_parse_from(
-                std::iter::once("bsdkrun".to_string()).chain(args.into_iter()),
-            )?;
+            let cli = Cli::try_parse_from(std::iter::once("bsdkrun".to_string()).chain(args))?;
             bsdkrun_core::krun::Ctx::set_log_level(cli.log_level).ok();
             bsdkrun_core::dispatch(cli.cmd)
         }

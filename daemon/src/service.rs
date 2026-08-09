@@ -614,7 +614,7 @@ impl Bsdkrun for BsdkrunService {
 
         let stream = if tty {
             let (session, stream) =
-                PtySession::spawn(sup.exe(), &argv, sup.env_path(), rows, cols)?;
+                PtySession::spawn(sup.require()?, &argv, sup.env_path(), rows, cols)?;
             tokio::spawn(pump_exec_input(input, Session::Pty(session)));
             Box::pin(stream) as ChunkStream
         } else {
@@ -681,7 +681,7 @@ impl Bsdkrun for BsdkrunService {
             let sup = self.ops.supervisor();
             let argv = sup.argv_raw(&start.args);
             let (session, stream) =
-                PtySession::spawn(sup.exe(), &argv, sup.env_path(), rows, cols)?;
+                PtySession::spawn(sup.require()?, &argv, sup.env_path(), rows, cols)?;
             tokio::spawn(pump_run_input(input, Session::Pty(session)));
             Box::pin(stream) as ChunkStream
         } else {

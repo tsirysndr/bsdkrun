@@ -39,7 +39,10 @@ pub fn setup_detached(dir: &Path) -> Result<RawFd> {
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut winsize,
+            // A raw pointer, not `&mut`: apple types this parameter `*mut
+            // winsize` and linux types it `*const`, and only a pointer suits
+            // both — `&mut` trips clippy on linux, `&` fails to compile on mac.
+            &mut winsize as *mut libc::winsize,
         )
     } != 0
     {

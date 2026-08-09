@@ -512,7 +512,7 @@ mod tests {
         let mut bytes = header_bytes(kernel_size, "/app.so");
         bytes.resize(kernel_size as usize, 0xAA);
         // A "filesystem" after the kernel.
-        bytes.extend(std::iter::repeat(0xBB).take(0x4000));
+        bytes.extend(std::iter::repeat_n(0xBB, 0x4000));
         std::fs::write(&img, &bytes).unwrap();
 
         let Image::Arm64 { header: h } = probe(&img).unwrap() else {

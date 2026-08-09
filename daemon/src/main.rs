@@ -88,14 +88,23 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    // Resolve this binary up front: it is what a booted machine is supervised
-    // by, and failing at startup beats failing on the first boot.
-    let supervisor = Supervisor::resolve(args.supervisor)?;
-    info!(
-        engine = bsdkrun_core::VERSION,
-        supervisor = %supervisor.exe().display(),
-        "bsdkrun engine linked in"
-    );
+    // Look for the supervisor up front so its absence is visible in the log at
+    // startup — but do not refuse to start over it. Everything that does not
+    // boot a machine works without one, and the operations that need it say so
+    // themselves.
+    let supervisor = Supervisor::resolve(args.supervisor);
+    match supervisor.exe() {
+        Some(exe) => info!(
+            engine = bsdkrun_core::VERSION,
+            supervisor = %exe.display(),
+            "bsdkrun engine linked in"
+        ),
+        None => warn!(
+            engine = bsdkrun_core::VERSION,
+            "no bsdkrun-supervisor found beside this binary or on PATH — this daemon cannot \
+             start machines until one is installed, though everything else works"
+        ),
+    }
 
     let (token, generated) = match args.token {
         Some(t) if !t.trim().is_empty() => (t.trim().to_string(), false),

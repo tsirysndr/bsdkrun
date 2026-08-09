@@ -26,7 +26,6 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
 use bsdkrun_core::cli::Command as CoreCommand;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -80,23 +79,30 @@ const CHANNEL_DEPTH: usize = 64;
 
 #[derive(Clone, Debug)]
 pub struct Supervisor {
-    exe: PathBuf,
+    /// `None` when no supervisor could be found. Not fatal: a daemon with no
+    /// supervisor can still do everything that does not start a machine, which
+    /// is most of what it does, so the failure is reported by the operations
+    /// that actually need one rather than by refusing to start.
+    exe: Option<PathBuf>,
     path: String,
 }
 
 impl Supervisor {
     /// Find `bsdkrun-supervisor`: beside this binary first, then on PATH.
     ///
-    /// Resolved at startup rather than per-request, because a daemon that
-    /// cannot find it can boot nothing, and saying so once at startup beats
-    /// failing on the first boot someone attempts.
-    pub fn resolve(override_path: Option<PathBuf>) -> Result<Self> {
+    /// Never fails. A missing supervisor only stops the operations that boot a
+    /// machine, and a daemon that refused to start over it would take listing,
+    /// stopping, exec and logs down with it. The caller logs what was found (or
+    /// not) at startup; [`Supervisor::require`] is what reports it per-request.
+    pub fn resolve(override_path: Option<PathBuf>) -> Self {
         let path = augmented_path();
         if let Some(p) = override_path {
-            if !p.exists() {
-                anyhow::bail!("no supervisor at {}", p.display());
-            }
-            return Ok(Self { exe: p, path });
+            // An explicit path that does not exist is still recorded: the error
+            // it produces names the path the operator asked for.
+            return Self {
+                exe: p.exists().then_some(p),
+                path,
+            };
         }
         // Beside the daemon is where a package puts it, and where a `cargo
         // build` leaves it, so it is worth preferring over whatever PATH says.
@@ -104,20 +110,12 @@ impl Supervisor {
             .ok()
             .and_then(|exe| exe.parent().map(|d| d.join(SUPERVISOR_BIN)))
             .filter(|p| p.exists());
-        let exe = beside
-            .or_else(|| {
-                path.split(':')
-                    .map(|d| std::path::Path::new(d).join(SUPERVISOR_BIN))
-                    .find(|p| p.exists())
-            })
-            .with_context(|| {
-                format!(
-                    "{SUPERVISOR_BIN} not found beside this binary or on PATH. It ships with \
-                     bsdkrund and is what actually boots machines; install it, or point the \
-                     daemon at it with --supervisor /path/to/{SUPERVISOR_BIN}"
-                )
-            })?;
-        Ok(Self { exe, path })
+        let exe = beside.or_else(|| {
+            path.split(':')
+                .map(|d| std::path::Path::new(d).join(SUPERVISOR_BIN))
+                .find(|p| p.exists())
+        });
+        Self { exe, path }
     }
 
     /// Point the supervisor at a specific binary instead of this process.
@@ -126,13 +124,28 @@ impl Supervisor {
     /// assert what the daemon asked for without booting a machine.
     pub fn with_exe(exe: PathBuf) -> Self {
         Self {
-            exe,
+            exe: Some(exe),
             path: augmented_path(),
         }
     }
 
-    pub fn exe(&self) -> &PathBuf {
-        &self.exe
+    /// The supervisor's path, if there is one.
+    pub fn exe(&self) -> Option<&PathBuf> {
+        self.exe.as_ref()
+    }
+
+    /// The supervisor's path, or the error to hand back to a caller that needs
+    /// it. Says what is missing and how to fix it, since by the time this fires
+    /// the operator is looking at one failed request rather than a startup log.
+    pub fn require(&self) -> Result<&PathBuf, Status> {
+        self.exe.as_ref().ok_or_else(|| {
+            Status::failed_precondition(format!(
+                "{SUPERVISOR_BIN} was not found beside this daemon or on PATH, so this daemon \
+                 cannot start machines. It ships with bsdkrun; install it, or point the daemon \
+                 at it with --supervisor /path/to/{SUPERVISOR_BIN}. Everything that does not \
+                 boot a machine works without it."
+            ))
+        })
     }
 
     /// The PATH handed to every supervised process.
@@ -156,12 +169,12 @@ impl Supervisor {
         Ok(vec![RUN_SUBCOMMAND.to_string(), spec])
     }
 
-    fn command(&self, args: &[String]) -> Command {
-        let mut cmd = Command::new(&self.exe);
+    fn command(&self, args: &[String]) -> Result<Command, Status> {
+        let mut cmd = Command::new(self.require()?);
         cmd.env("PATH", &self.path);
         cmd.args(args);
         cmd.stdin(Stdio::null());
-        cmd
+        Ok(cmd)
     }
 
     /// Run a command to completion and collect its output. A non-zero exit is
@@ -169,7 +182,7 @@ impl Supervisor {
     /// non-zero exit is a legitimate state the caller should see, not a
     /// transport error.
     pub async fn output(&self, args: &[String]) -> Result<CommandResult, Status> {
-        let mut cmd = self.command(args);
+        let mut cmd = self.command(args)?;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.kill_on_drop(true);
         let out = tokio::time::timeout(Duration::from_secs(300), cmd.output())
@@ -213,9 +226,12 @@ impl Supervisor {
 
     /// Run a command and stream its output as it appears, ending with one
     /// `exit_code` frame.
-    pub fn stream(&self, args: &[String]) -> mpsc::Receiver<Result<OutputChunk, Status>> {
+    pub fn stream(
+        &self,
+        args: &[String],
+    ) -> Result<mpsc::Receiver<Result<OutputChunk, Status>>, Status> {
         let (tx, rx) = mpsc::channel(CHANNEL_DEPTH);
-        let mut cmd = self.command(args);
+        let mut cmd = self.command(args)?;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.kill_on_drop(true);
 
@@ -252,7 +268,7 @@ impl Supervisor {
                 }))
                 .await;
         });
-        rx
+        Ok(rx)
     }
 
     /// Run a command with stdin attached, for a non-tty interactive session.
@@ -260,7 +276,7 @@ impl Supervisor {
         &self,
         args: &[String],
     ) -> Result<(PipedSession, mpsc::Receiver<Result<OutputChunk, Status>>), Status> {
-        let mut cmd = self.command(args);
+        let mut cmd = self.command(args)?;
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -392,7 +408,7 @@ mod tests {
     #[test]
     fn the_argv_is_the_run_subcommand_plus_one_json_argument() {
         let sup = Supervisor {
-            exe: PathBuf::from("/usr/bin/bsdkrun-supervisor"),
+            exe: Some(PathBuf::from("/usr/bin/bsdkrun-supervisor")),
             path: String::new(),
         };
         let cmd = CoreCommand::Ps(bsdkrun_core::cli::PsArgs {
@@ -413,5 +429,18 @@ mod tests {
         for extra in EXTRA_PATHS {
             assert!(path.split(':').any(|p| p == *extra), "missing {extra}");
         }
+    }
+
+    #[test]
+    fn a_missing_supervisor_is_reported_per_request_not_at_startup() {
+        // Resolution never fails, so the daemon still starts and serves
+        // everything that does not boot a machine.
+        let sup = Supervisor::resolve(Some(PathBuf::from("/nonexistent/bsdkrun-supervisor")));
+        assert!(sup.exe().is_none());
+
+        let err = sup.require().unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert!(err.message().contains(SUPERVISOR_BIN));
+        assert!(err.message().contains("--supervisor"));
     }
 }

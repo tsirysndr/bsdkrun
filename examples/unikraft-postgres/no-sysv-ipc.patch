@@ -1,0 +1,85 @@
+Share PostgreSQL's shared memory without System V IPC.
+
+Unikraft implements no SysV IPC at all, so shmget() returns ENOSYS and the
+server dies before it opens the database:
+
+  FATAL:  could not create shared memory segment: Function not implemented
+  DETAIL:  Failed system call was shmget(key=749, size=56, 03600).
+
+The replacement is anonymous memory, and it is not a downgrade here: Unikraft
+is a single-address-space kernel, so the postmaster and every process it
+spawns share one page table. A plain anonymous mapping is therefore shared
+between them by construction, at the same address, which is exactly what the
+System V segment was for.
+
+Two hunks, one per side of that: the postmaster allocates it, and the child --
+which reaches this code after an execve(), so with its own globals but the same
+address space -- finds it already mapped.
+
+--- a/src/backend/port/sysv_shmem.c
++++ b/src/backend/port/sysv_shmem.c
+@@ -159,6 +159,43 @@
+ 		int			shmget_errno = errno;
+ 
+ 		/*
++		 * There is no System V IPC in the guest kernel, so shmget() answers
++		 * ENOSYS.  The segment PostgreSQL is asking for is shared between the
++		 * postmaster and its children -- and on a single-address-space kernel
++		 * every process already shares one page table, so an ordinary
++		 * anonymous mapping is shared by construction.  Hand one back: the
++		 * postmaster's children find it at the same address (see
++		 * PGSharedMemoryReAttach below), which is what a System V segment
++		 * would have bought.
++		 *
++		 * The interlock this segment doubles as -- a second postmaster
++		 * attaching to the same data directory finds it and refuses to start
++		 * -- is vacuous rather than broken: there is one kernel and one data
++		 * directory.
++		 */
++		if (shmget_errno == ENOSYS)
++		{
++			memAddress = mmap(NULL, size, PROT_READ | PROT_WRITE,
++							  PG_MMAP_FLAGS, -1, 0);
++			if (memAddress == MAP_FAILED)
++				elog(FATAL, "mmap(%zu) failed for the shared memory segment: %m",
++					 size);
++
++			/*
++			 * Keep the lockfile well-formed; the ID is meaningless without a
++			 * segment to name, so record zero.
++			 */
++			{
++				char		line[64];
++
++				sprintf(line, "%9lu %9lu", (unsigned long) memKey, 0UL);
++				AddToDataDirLockFile(LOCK_FILE_LINE_SHMEM_KEY, line);
++			}
++
++			return memAddress;
++		}
++
++		/*
+ 		 * Fail quietly if error indicates a collision with existing segment.
+ 		 * One would expect EEXIST, given that we said IPC_EXCL, but perhaps
+ 		 * we could get a permission violation instead?  Also, EIDRM might
+@@ -890,6 +927,20 @@
+ 
+ 	elog(DEBUG3, "attaching to %p", UsedShmemSegAddr);
+ 	shmid = shmget(UsedShmemSegID, sizeof(PGShmemHeader), 0);
++
++	/*
++	 * With no System V IPC there is nothing to re-attach to -- and nothing to
++	 * do.  This kernel has a single address space shared by every process, so
++	 * the segment the postmaster allocated above is already mapped here, at
++	 * the very address it passed down in UsedShmemSegAddr.
++	 */
++	if (shmid < 0 && errno == ENOSYS)
++	{
++		hdr = (PGShmemHeader *) UsedShmemSegAddr;
++		dsm_set_control_handle(hdr->dsm_control);
++		return;
++	}
++
+ 	if (shmid < 0)
+ 		state = SHMSTATE_FOREIGN;
+ 	else

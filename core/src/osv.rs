@@ -91,8 +91,10 @@ const CMDLINE_MAX: usize = 0x400 - CMDLINE_OFFSET;
 const HEADER_LEN: usize = 0x400;
 
 /// Which interrupt controller to ask libkrun for.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Gic {
+    /// The default: OSv only grew a GICv3 driver after v0.57.0.
+    #[default]
     V2,
     V3,
 }

@@ -21,8 +21,11 @@ use tracing::info;
 /// `build.rs` guarantees this directory exists — with a placeholder page when
 /// the UI has not been built — so `cargo build` never depends on having run
 /// node first.
+///
+/// The bundle lives at the repo root rather than inside this crate: it is a
+/// property of the product, and `web/` is built by `make web`, not by cargo.
 #[derive(RustEmbed)]
-#[folder = "web/dist"]
+#[folder = "../web/dist"]
 struct Assets;
 
 /// Serve an embedded file, or fall back to `index.html`.

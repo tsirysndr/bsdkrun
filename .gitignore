@@ -10,4 +10,4 @@
 node_modules/
 
 # Cross-compiled guest agent binaries — regenerate with `make agent`.
-/src/agent-bin/bsdkrun-agent.*
+/core/src/agent-bin/bsdkrun-agent.*

@@ -148,18 +148,20 @@ impl ShellRegistry {
         }
 
         // Always a tty: this exists to back an interactive terminal.
-        let (argv, _) = ExecOpts {
+        let (cmd, _) = ExecOpts {
             id: machine_id.to_string(),
             command,
             env,
             tty: true,
         }
-        .to_argv();
+        .to_command();
+        let sup = ops.supervisor();
+        let argv = sup.argv(&cmd).map_err(OpError::from)?;
 
         let rows = if rows == 0 { DEFAULT_ROWS } else { rows };
         let cols = if cols == 0 { DEFAULT_COLS } else { cols };
         let (handle, mut stream) =
-            PtySession::spawn(ops.cli().bin(), &argv, ops.cli().env_path(), rows, cols)
+            PtySession::spawn(sup.exe(), &argv, sup.env_path(), rows, cols)
                 .map_err(OpError::from)?;
 
         let id = crate::auth::random_hex(16)

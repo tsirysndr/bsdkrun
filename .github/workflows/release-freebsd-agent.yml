@@ -68,7 +68,7 @@ jobs:
           set -eux
           mkdir -p dist
           for slug in aarch64 x86_64; do
-            bin="src/agent-bin/bsdkrun-agent.freebsd-$slug"
+            bin="core/src/agent-bin/bsdkrun-agent.freebsd-$slug"
             test -s "$bin"
             file "$bin"
             file "$bin" | grep -q FreeBSD

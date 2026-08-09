@@ -136,3 +136,35 @@ belongs in the guest kernel, and there are two shapes:
 Either one is a change to the shared `library/unikraft-base` patch set that
 every other Unikraft example here is built against, so it wants its own
 before/after run across them.
+
+## `spin/` — the deadlock in twenty lines
+
+`spin/spin.c` is InnoDB's `IB_thread::start()` pattern with everything else
+removed: two threads, both busy-waiting on a state word with no yield and no
+system call in either loop. Without preemption whichever thread runs first
+holds the CPU forever; with it, the program prints and exits.
+
+It builds into a 1 MiB static binary rather than a 152 MiB MySQL image, so the
+whole cycle is a couple of minutes instead of most of an hour, and the answer
+is one line of output instead of a syscall trace.
+
+```sh
+docker run --rm --platform linux/amd64 -v "$PWD":/w -w /w gcc:13 \
+    gcc -O1 -static -pthread -o spin spin.c
+
+mkdir -p ../../.rootfs-spin/usr/bin && cp spin ../../.rootfs-spin/usr/bin/
+# build a qemu/<arch> target with --rootfs .rootfs-spin, then:
+qemu-system-x86_64 -machine q35 -cpu max -m 512 -nographic \
+  -kernel .unikraft/build/mysql_qemu-x86_64 -append "elfloader -- /usr/bin/spin"
+```
+
+```console
+spin: creating child
+spin: PREEMPTION WORKS (child reached STARTED)
+```
+
+Two things to know. `-cpu max` is not optional: the default `qemu64` model has
+no 1 GiB pages and Unikraft's x86_64 paging code crashes on the spot. And the
+`fc` image cannot be booted this way at all -- QEMU rejects it for want of a PVH
+ELF note, since it is a raw image libkrun loads specially -- so this tests the
+`qemu` target, which shares every line of the preemption path with `fc`.

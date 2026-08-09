@@ -1536,4 +1536,200 @@ else
 	echo "preemption: already patched or absent, skipping"
 fi
 
+# ---------------------------------------------------------------------------
+# 19. arm64 execve() enters the new program at the wrong register: it has never
+#     worked.
+#
+# lib/posix-process/arch/arm64/execve.c builds the execution environment the
+# new program is resumed with, and sets the entry point like this:
+#
+#     uk_lcpu_regs_set(execenv_new->regs, LR, ip);
+#     uk_lcpu_regs_set(execenv_new->regs, SP, sp);
+#     /* Leave gpregs and ectx uninitialized for the new
+#      * execution context.
+#      */
+#
+# But nothing returns to LR. arch/arm/arm64/execenv.S restores ELR_EL1 from the
+# PC slot and leaves through `eret`:
+#
+#     /* Restore LR and exception PC */
+#     ldp     x30, x21, [sp, #16 * 15]
+#     msr     elr_el1, x21
+#     ...
+#     eret
+#
+# So the entry point is written to a register the CPU never jumps to, and the
+# one it does jump to is left "uninitialized" -- which in practice is whatever
+# is in the freshly allocated stack the execenv was carved out of. That is
+# usually zero, so the new program starts executing at address 0:
+#
+#   CRIT: [libposix_process] Cannot deliver SIGSEGV for pf at 0x0
+#   (with the fault taken at pc=0x0, sp=<the new stack>)
+#
+# The x86_64 version of the same function sets RIP, which is why this was never
+# noticed: upstream's base image is x86_64-only. On arm64 it means execve() has
+# never worked at all -- and with it, every multiprocess application, since
+# Unikraft creates processes with vfork() + execve().
+#
+# LR is set to 0 rather than to `ip`: the AArch64 process-entry ABI leaves it
+# undefined, and 0 turns a stray `ret` in _start into an immediate, obvious
+# fault instead of a jump back into the loader.
+# ---------------------------------------------------------------------------
+AEXECVE="$UK/lib/posix-process/arch/arm64/execve.c"
+if [ -f "$AEXECVE" ] && ! grep -q 'regs, PC, ip' "$AEXECVE"; then
+	echo "patching $AEXECVE (enter the new program at PC, not LR)"
+	python3 - "$AEXECVE" <<'PYEOF'
+import sys
+
+p = sys.argv[1]
+s = open(p).read()
+
+old = """	uk_lcpu_regs_set(execenv_new->regs, LR, ip);
+	uk_lcpu_regs_set(execenv_new->regs, SP, sp);
+"""
+new = """	/* PC, not LR: ukarch_execenv_load() restores ELR_EL1 from the PC slot
+	 * and returns to the application with `eret`. Nothing ever branches to
+	 * LR, so setting it here left the new program's entry point in a
+	 * register the CPU does not use, and ELR_EL1 holding whatever was in
+	 * the freshly allocated stack -- normally zero.
+	 */
+	uk_lcpu_regs_set(execenv_new->regs, PC, ip);
+	uk_lcpu_regs_set(execenv_new->regs, LR, 0x0);
+	uk_lcpu_regs_set(execenv_new->regs, SP, sp);
+"""
+assert old in s, "arm64 execve.c does not match the expected shape"
+open(p, "w").write(s.replace(old, new, 1))
+PYEOF
+else
+	echo "arm64 execve.c: already patched or absent, skipping"
+fi
+
+# ---------------------------------------------------------------------------
+# 20. A signal blocked by the current thread is run in it anyway.
+#
+# lib/posix-process/signal/deliver.c delivers process-directed signals like
+# this: for each pending signal, walk the process's threads, find one that does
+# not block it, and deliver.
+#
+#     uk_pprocess_foreach_pthread(proc, thread, threadn) {
+#             if (thread->tid == this_thread->tid)
+#                     continue;
+#             if (IS_MASKED(thread, signum))
+#                     continue;
+#             while ((sig = pprocess_signal_dequeue(proc, __NULL, signum))) {
+#                     do_deliver(thread, sig, execenv);
+#
+# But `do_deliver()` cannot deliver to another thread. It calls `handle_self()`,
+# which -- as the name says -- builds the signal frame on the *current* context:
+# the execenv passed down is this thread's, and the handler runs on this
+# thread's stack. The chosen `thread` is used only to look the handler up.
+#
+# The result is the exact inverse of what the check intends: a signal is run in
+# the one thread that asked not to receive it, because some *other* thread did
+# not block it.
+#
+# PostgreSQL trips over this immediately. Its postmaster blocks every signal
+# while it installs handlers, and only afterwards initialises the latch those
+# handlers use:
+#
+#     pqinitmask();
+#     PG_SETMASK(&BlockSig);
+#     pqsignal(SIGCHLD, handle_pm_child_exit_signal);   /* ... */
+#     InitializeLatchSupport();
+#     MyLatch = &MyLatchData;                           /* NULL until here */
+#
+# A child exits during that window (the postmaster popen()s `postgres -V` to
+# version-check itself), SIGCHLD is delivered despite the mask, and the handler
+# runs with MyLatch still NULL:
+#
+#   handle_pm_child_exit_signal -> SetLatch(NULL)
+#   CRIT: [libposix_process] Cannot deliver SIGSEGV for pf at 0x0
+#
+# The fix is to leave the signal queued when the current thread blocks it.
+# Delivery is not lost: it stays pending on the process queue and the thread
+# that has it unblocked picks it up at its own next syscall exit, which is where
+# it can actually be run. That is also what Linux does -- the handler runs in
+# the thread that accepts the signal, not in one that blocked it.
+# ---------------------------------------------------------------------------
+DELIVER="$UK/lib/posix-process/signal/deliver.c"
+if [ -f "$DELIVER" ] && ! grep -q 'leave it queued' "$DELIVER"; then
+	echo "patching $DELIVER (do not run a signal the current thread blocks)"
+	python3 - "$DELIVER" <<'PYEOF'
+import sys
+
+p = sys.argv[1]
+s = open(p).read()
+
+old = """		/* POSIX specifies that if a signal targets the
+		 * current process / thread, then at least one
+		 * signal for this process /thread must be
+		 * delivered before the syscall returns, as long as:
+		 *
+		 * 1. No other thread has that signal unblocked
+		 * 2. No other thread is in sigwait() for that signal (TODO)
+		 */
+		uk_pprocess_foreach_pthread(proc, thread, threadn) {
+			if (thread->tid == this_thread->tid)
+				continue;
+
+			if (IS_MASKED(thread, signum))
+				continue;
+
+			while ((sig = pprocess_signal_dequeue(proc, __NULL,
+							      signum))) {
+				do_deliver(thread, sig, execenv);
+				uk_signal_free(proc->_a, sig);
+				handled = true;
+				handled_cnt++;
+			}
+			break;
+		}
+
+		/* Try to deliver to this thread */
+		if (!handled) {
+			if (IS_MASKED(this_thread, signum))
+				continue;
+"""
+new = """		/* Deliver on this thread, or not at all.
+		 *
+		 * There used to be a loop here that looked for any thread of
+		 * the process that did not block this signal and delivered on
+		 * its behalf. That cannot work: do_deliver() -> handle_self()
+		 * builds the signal frame on the *current* context, so the
+		 * handler ran in this thread even when this thread was the one
+		 * that had blocked the signal.
+		 *
+		 * If this thread blocks it, leave it queued. The thread that
+		 * has it unblocked will take it at its own next syscall exit,
+		 * which is the only place it can actually be run.
+		 */
+		if (!handled) {
+			if (IS_MASKED(this_thread, signum))
+				continue;
+"""
+assert old in s, "deliver_pending_proc does not match the expected shape"
+s = s.replace(old, new, 1)
+
+# `thread` / `threadn` were only used by the loop just removed.
+old_decl = """	struct posix_thread *thread, *threadn;
+	struct posix_thread *this_thread;
+	struct uk_signal *sig;
+	int handled_cnt = 0;
+	bool handled;
+	int signum;
+"""
+new_decl = """	struct posix_thread *this_thread;
+	struct uk_signal *sig;
+	int handled_cnt = 0;
+	bool handled;
+	int signum;
+"""
+assert old_decl in s, "deliver_pending_proc declarations do not match"
+s = s.replace(old_decl, new_decl, 1)
+open(p, "w").write(s)
+PYEOF
+else
+	echo "deliver.c cross-thread delivery: already patched or absent, skipping"
+fi
+
 echo "patches applied."

@@ -310,7 +310,7 @@
  /*
   * CPUs should get dedicated IRQ and exception stacks. We use the interrupt
   * stack table (IST) feature for switching to the stack. This means when an
-@@ -307,6 +321,98 @@
+@@ -307,7 +321,113 @@
  }
  
  UK_EVENT(UK_PLAT_NATIVE_EXCEPT_EVENT_IRQ);
@@ -353,11 +353,24 @@
 + * interrupted thread's own stack and the return is redirected to a trampoline
 + * that runs there, which can yield like any other thread.
 + */
++/* Diagnostic: interrupts seen, and how many of them actually rescheduled.
++ * Reported once, because the two numbers answer different questions -- zero
++ * interrupts means no tick reaches the guest at all, while interrupts without
++ * switches means the checks below are rejecting them.
++ */
++static __u32 preempt_irqs;
++static __u32 preempt_switches;
++
 +static void native_preempt_check(struct uk_plat_native_regs *regs)
 +{
 +	struct uk_plat_native_ectx *ectx;
 +	struct uk_plat_native_regs *frame;
 +	__uptr sp;
+ 
++	if (++preempt_irqs == 100)
++		uk_pr_err("preempt: %u irqs, %u switches, last rip %lx (text %lx-%lx)\n",
++			  preempt_irqs, preempt_switches,
++			  (unsigned long)regs->rip, __TEXT, __ETEXT);
 +
 +	/* Preempt application code only. Anything inside the kernel image may
 +	 * hold a lock or be halfway through the scheduler; none of that is safe
@@ -400,16 +413,18 @@
 +	 * nothing, so bias the stack pointer to match what the trampoline's
 +	 * prologue expects.
 +	 */
++	preempt_switches++;
 +	regs->rip = (__u64)uk_plat_native_preempt_trampoline;
 +	regs->rsp = (__u64)ALIGN_DOWN(sp, 16) - 8;
 +	regs->rdi = (__u64)frame;
 +	regs->rsi = (__u64)ectx;
 +}
 +#endif /* CONFIG_UKPLAT_PREEMPT */
- 
++
  void uk_plat_native_except_irq_handler(struct uk_plat_native_regs *regs,
  				       __u32 irq)
-@@ -331,6 +437,10 @@
+ {
+@@ -331,6 +451,10 @@
  #if CONFIG_LIBUKPLAT_NATIVE_ECTX_ISR_ASSERTIONS
  	uk_plat_native_ectx_assert_equal(ectx);
  #endif /* CONFIG_LIBUKPLAT_NATIVE_ECTX_ISR_ASSERTIONS */
@@ -459,3 +474,75 @@
  .macro IRQ_ENTRY irqno
  ENTRY(cpu_irq_\irqno)
  	.cfi_startproc simple
+--- a/plat/kvm/x86/tscclock.c
++++ b/plat/kvm/x86/tscclock.c
+@@ -215,6 +215,37 @@
+ 	return time_base;
+ }
+ 
++#if CONFIG_UKPLAT_PREEMPT
++/* Reprogram channel 0 as a rate generator at the preemption tick.
++ *
++ * tscclock_init() already leaves the PIT in this mode at CONFIG_HZ, and a
++ * sleep only rewrites the divisor -- so in principle the tick is always there.
++ * In practice "in principle" is how this went wrong once already: arm64's
++ * timer turned out to be armed only by time_block_until(), and a guest whose
++ * threads all spin took no interrupts at all. Programming it explicitly costs
++ * two port writes at boot and removes the question.
++ *
++ * A sleep longer than the tick will stretch the period until the next tick
++ * fires and this is called again; that is a latency question, not a
++ * correctness one, since time_block_until() re-checks the clock in a loop.
++ */
++void tscclock_arm_preempt_tick(void)
++{
++	unsigned long div = (unsigned long)TIMER_HZ
++			    * CONFIG_UKPLAT_PREEMPT_TICK_US / 1000000UL;
++
++	if (div < 2)
++		div = 2;
++	if (div > 65535)
++		div = 65535;
++
++	uk_arch_x86_64_outb(TIMER_MODE,
++			    TIMER_SEL0 | TIMER_RATEGEN | TIMER_16BIT);
++	uk_arch_x86_64_outb(TIMER_CNTR, div & 0xff);
++	uk_arch_x86_64_outb(TIMER_CNTR, div >> 8);
++}
++#endif /* CONFIG_UKPLAT_PREEMPT */
++
+ /*
+  * Calibrate TSC and initialise TSC clock.
+  */
+--- a/plat/kvm/x86/time.c
++++ b/plat/kvm/x86/time.c
+@@ -78,6 +78,14 @@
+ 	rc = tscclock_init();
+ 	if (rc < 0)
+ 		UK_CRASH("Failed to initialize TSCCLOCK\n");
++
++#if CONFIG_UKPLAT_PREEMPT
++	/* Give the guest a tick to be preempted on, rather than relying on
++	 * whatever divisor the last sleep happened to leave in the PIT. The
++	 * handler above needs no work: a rate generator reloads itself.
++	 */
++	tscclock_arm_preempt_tick();
++#endif /* CONFIG_UKPLAT_PREEMPT */
+ }
+ 
+ void ukplat_time_fini(void)
+--- a/plat/kvm/include/kvm/tscclock.h
++++ b/plat/kvm/include/kvm/tscclock.h
+@@ -34,6 +34,12 @@
+ #define __KVM_TSCCLOCK_H__
+ 
+ int tscclock_init(void);
++#if CONFIG_UKPLAT_PREEMPT
++/* Program the PIT as a rate generator at the preemption tick, so that
++ * a guest whose threads never block still takes interrupts.
++ */
++void tscclock_arm_preempt_tick(void);
++#endif /* CONFIG_UKPLAT_PREEMPT */
+ __u64 tscclock_monotonic(void);
+ __u64 tscclock_epochoffset(void);
+ 

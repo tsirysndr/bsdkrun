@@ -288,6 +288,14 @@ jobs:
           test -f examples/${{ matrix.example }}/.unikraft/unikraft/drivers/virtio/rng/virtio_rng.c
           echo "--- virtio-mmio cmdline device budget ---"
           grep -E '^CONFIG_(LIBVIRTIO_MMIO|VIRTIO_MMIO_MAX_DEV_CMDLINE|VIRTIO_MMIO_LINUX_COMPAT_CMDLINE)' "$cfg"
+          # Preemption is not optional for this example: mysqld busy-waits for
+          # a thread during InnoDB startup and a cooperative scheduler can
+          # never run it. A Kraftfile kconfig line that silently fails to
+          # apply would look exactly like the original hang, so assert it.
+          if [ "${{ matrix.probe }}" = mysql ]; then
+            grep -q '^CONFIG_UKPLAT_PREEMPT=y' "$cfg"
+            grep -q '^CONFIG_LIBPOSIX_PROCESS_MAX_PID=1024' "$cfg"
+          fi
 
       - name: Install a MySQL client
         if: ${{ matrix.probe == 'mysql' }}

@@ -1,3 +1,21 @@
+# `default-members` keeps `cargo build --release` meaning what it always has —
+# just the CLI. The daemon is still built on demand (`cargo build -p
+# bsdkrun-daemon`), so the CLI's release flow never pays for tonic, axum and a
+# GraphQL engine; being workspace members only buys them a shared lockfile and
+# one `target/` dir, which matters now that they share `bsdkrun-core`.
+#
+# `agent/` stays out: it is cross-compiled for the guest, not the host.
+[workspace]
+# The root package is a member implicitly. Listing it as `"."` as well makes
+# cargo stop honouring `exclude` for nested manifests, which quietly adopts the
+# Tauri app and the examples below.
+members = ["core", "daemon"]
+default-members = ["."]
+# Everything else in the tree that carries a Cargo.toml but is built on its own
+# terms: the guest agent (cross-compiled), the Tauri app, and the unikraft
+# examples with their vendored sources.
+exclude = ["agent", "desktop", "examples", "library"]
+
 [package]
 name = "bsdkrun"
 version = "0.6.0"
@@ -5,19 +23,11 @@ edition = "2021"
 description = "A Firecracker-style microVM launcher for BSD and Linux (OCI) guests on macOS, built on libkrun (Hypervisor.framework)"
 
 [dependencies]
+# The engine. This crate is the command-line front end over it and nothing more.
+bsdkrun-core = { path = "core", features = ["ui"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
-libc = "0.2"
-tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "0.8"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
-tokio = { version = "1", features = ["rt", "time"] }
-actix-web = "4"
-rust-embed = "8"
-mime_guess = "2"
 
 [dev-dependencies]
 tempfile = "3"

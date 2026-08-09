@@ -1,0 +1,79 @@
+Create PostgreSQL's child processes with posix_spawn().
+
+This is what makes a real postmaster possible on Unikraft. Together with
+building `-DEXEC_BACKEND` (see the Dockerfile) it removes the last bare fork()
+from the server: with EXEC_BACKEND every child -- the checkpointer, the
+background writer, the WAL writer, the syslogger, autovacuum and one backend
+per connection -- is created by `internal_forkexec()`, which forks and then
+immediately execs. That is precisely the pattern Unikraft supports, and
+posix_spawn() is the safe way to express it. See lib/posix-process/README.md
+upstream:
+
+  Being a single-address-space operating system, instead of the traditional
+  fork() that creates a new address space for the child, Unikraft implements
+  multiprocess with vfork() only. [...] Fortunately it is common that
+  applications spawn new processes by calling fork() immediately followed by an
+  execve() [...] Applications can use the posix_spawn() libc function that
+  spawns a process using vfork() in a safe way.
+
+--- a/src/backend/postmaster/postmaster.c
++++ b/src/backend/postmaster/postmaster.c
+@@ -70,6 +70,7 @@
+ #include <time.h>
+ #include <sys/wait.h>
+ #include <ctype.h>
++#include <spawn.h>
+ #include <sys/stat.h>
+ #include <sys/socket.h>
+ #include <fcntl.h>
+@@ -4587,20 +4588,43 @@
+ 	/* Insert temp file name after --fork argument */
+ 	argv[2] = tmpfilename;
+ 
+-	/* Fire off execv in child */
+-	if ((pid = fork_process()) == 0)
++	/*
++	 * Spawn the child with posix_spawn() rather than fork() + execv().
++	 *
++	 * This is the same fork-then-immediately-exec sequence, expressed as the
++	 * one call a single-address-space kernel can implement.  Unikraft has no
++	 * fork(): it creates processes with vfork() only (CLONE_VM | CLONE_VFORK),
++	 * where the child shares the parent's address space and the parent is
++	 * suspended until the child execs or exits.  Hand-writing that is
++	 * undefined behaviour -- between vfork() and execve() the child may touch
++	 * nothing but the exec, and fork_process() assigns to globals
++	 * (MyStartTime, the stack base, the PRNG seed) that would land in the
++	 * *parent's* memory.  posix_spawn() is exactly this sequence done safely:
++	 * musl implements it with clone(CLONE_VM | CLONE_VFORK) and does the exec
++	 * on its own stack.
++	 *
++	 * Nothing is lost by skipping fork_process(): everything it sets up in the
++	 * child is redone by main() after the exec, which is the whole point of an
++	 * EXEC_BACKEND build.
++	 */
+ 	{
+-		if (execv(postgres_exec_path, argv) < 0)
++		int			rc;
++
++		/* fork_process() flushed these; posix_spawn() will not. */
++		fflush(NULL);
++
++		rc = posix_spawn(&pid, postgres_exec_path, NULL, NULL, argv, environ);
++		if (rc != 0)
+ 		{
++			errno = rc;
+ 			ereport(LOG,
+-					(errmsg("could not execute server process \"%s\": %m",
++					(errmsg("could not spawn server process \"%s\": %m",
+ 							postgres_exec_path)));
+-			/* We're already in the child process here, can't return */
+-			exit(1);
++			return -1;
+ 		}
+ 	}
+ 
+-	return pid;					/* Parent returns pid, or -1 on fork failure */
++	return pid;					/* Parent returns pid, or -1 on failure */
+ }
+ #else							/* WIN32 */
+ 

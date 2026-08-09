@@ -1,15 +1,19 @@
-//! bsdkrun daemon: a token-authenticated gRPC front end over the `bsdkrun` CLI.
+//! bsdkrun daemon: a token-authenticated gRPC front end over the bsdkrun engine.
 //!
 //! The daemon exists so a machine that can actually run VMs — a Linux KVM box,
-//! a bare-metal server, a VPS — can be driven from somewhere else. It owns no
-//! VM logic: it resolves the `bsdkrun` binary installed beside it and runs it,
-//! so it always exposes exactly that binary's feature set.
+//! a bare-metal server, a VPS — can be driven from somewhere else. It links
+//! `bsdkrun-core` directly, so it *is* bsdkrun rather than a wrapper around the
+//! CLI: there need not be a `bsdkrun` binary on the host at all, and the daemon
+//! and the CLI cannot drift because there is one implementation.
 //!
 //! Running the CLI directly on the host is unaffected and remains the default
 //! everywhere; pointing a client at a daemon is opt-in.
 //!
-//! * [`service`] — every RPC, mapped to a CLI invocation.
+//! * [`ops`] — every operation, against the engine, independent of transport.
+//! * [`service`] — every RPC, mapped to an operation.
 //! * [`graphql`] — the web frontend's API, over the same operations.
+//! * [`supervisor`] — the few operations that need their own process, run as
+//!   this daemon's own binary rather than the CLI.
 //! * [`pty`] — interactive sessions (remote shells) over a real pty.
 //! * [`auth`] — bearer-token authentication.
 //! * [`client`] — the client half, for the CLI and desktop app.
@@ -24,7 +28,7 @@ pub mod client;
 #[cfg(feature = "server")]
 pub mod auth;
 #[cfg(feature = "server")]
-pub mod cli;
+pub mod supervisor;
 #[cfg(feature = "server")]
 pub mod graphql;
 #[cfg(feature = "server")]

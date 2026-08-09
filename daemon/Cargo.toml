@@ -4,10 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Token-authenticated gRPC daemon that drives the bsdkrun CLI (for remote VPS / bare-metal KVM hosts)"
 
-# Standalone crate — built on demand, deliberately not part of the root bsdkrun
-# build so the CLI's release flow keeps its small dependency tree. Mirrors how
-# `agent/` opts out.
-[workspace]
+# A workspace member, but not a `default-members` one: built on demand
+# (`cargo build -p bsdkrun-daemon`) so the CLI's release flow keeps its small
+# dependency tree, while both crates share one lockfile and one `target/` dir.
 
 # The generated client is exported as a library so the CLI and the desktop app
 # can link it and talk to a remote daemon instead of forking a local CLI.
@@ -27,6 +26,7 @@ default = ["server"]
 # — which is all a *consumer* like the desktop app needs, and saves it pulling
 # in a web server, a GraphQL engine and a pty implementation it will never use.
 server = [
+    "dep:bsdkrun-core",
     "dep:async-graphql",
     "dep:async-graphql-axum",
     "dep:async-stream",
@@ -39,13 +39,15 @@ server = [
     "dep:tonic-reflection",
     "dep:tower-http",
     "dep:tracing-subscriber",
-    "dep:which",
 ]
 
 [build-dependencies]
 tonic-prost-build = "0.14"
 
 [dependencies]
+# The engine. Optional so the desktop app, which builds this crate with
+# `default-features = false` for its client half alone, never links libkrun.
+bsdkrun-core = { path = "../core", optional = true }
 tonic = { version = "0.14", features = ["router", "transport", "tls-ring", "tls-native-roots", "gzip"] }
 tonic-prost = "0.14"
 tonic-health = { version = "0.14", optional = true }
@@ -71,7 +73,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
-which = { version = "6", optional = true }
 async-graphql = { version = "7", optional = true }
 async-graphql-axum = { version = "7", optional = true }
 axum = { version = "0.8", features = ["ws"], optional = true }
@@ -84,7 +85,6 @@ sysinfo = { version = "0.33", optional = true }
 tempfile = "3"
 tower = "0.5"
 
-[profile.release]
-opt-level = 2
-lto = "thin"
-strip = true
+# No `[profile.release]` here: cargo only honours profiles from the workspace
+# root, and the root deliberately leaves the defaults alone so the CLI's release
+# binary is unchanged by this crate joining the workspace.

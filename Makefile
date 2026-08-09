@@ -10,6 +10,10 @@ BIN_RELEASE  := target/release/bsdkrun
 # so it needs the hypervisor entitlement exactly as the CLI does.
 DAEMON_DEBUG   := target/debug/bsdkrund
 DAEMON_RELEASE := target/release/bsdkrund
+# The supervisor is the half that links libkrun, so it is the one that actually
+# needs the entitlement; the daemon is signed alongside it for consistency.
+SUPERVISOR_DEBUG   := target/debug/bsdkrun-supervisor
+SUPERVISOR_RELEASE := target/release/bsdkrun-supervisor
 ENTITLEMENTS := bsdkrun.entitlements
 UNAME_S      := $(shell uname -s)
 
@@ -36,18 +40,21 @@ sign:
 ifeq ($(UNAME_S),Darwin)
 	codesign --entitlements $(ENTITLEMENTS) --force -s - $(BIN_DEBUG)
 	@[ -f $(DAEMON_DEBUG) ] && codesign --entitlements $(ENTITLEMENTS) --force -s - $(DAEMON_DEBUG) || true
+	@[ -f $(SUPERVISOR_DEBUG) ] && codesign --entitlements $(ENTITLEMENTS) --force -s - $(SUPERVISOR_DEBUG) || true
 endif
 
 sign-release:
 ifeq ($(UNAME_S),Darwin)
 	codesign --entitlements $(ENTITLEMENTS) --force -s - $(BIN_RELEASE)
 	@[ -f $(DAEMON_RELEASE) ] && codesign --entitlements $(ENTITLEMENTS) --force -s - $(DAEMON_RELEASE) || true
+	@[ -f $(SUPERVISOR_RELEASE) ] && codesign --entitlements $(ENTITLEMENTS) --force -s - $(SUPERVISOR_RELEASE) || true
 endif
 
 # Sign just the daemon (macOS only; a no-op elsewhere).
 sign-daemon:
 ifeq ($(UNAME_S),Darwin)
 	codesign --entitlements $(ENTITLEMENTS) --force -s - $(DAEMON_RELEASE)
+	codesign --entitlements $(ENTITLEMENTS) --force -s - $(SUPERVISOR_RELEASE)
 endif
 
 # --- web UI ----------------------------------------------------------------
@@ -63,8 +70,12 @@ web:
 # --- daemon ----------------------------------------------------------------
 #
 # Standalone crate (own workspace): the gRPC + GraphQL server.
+# `-p` per package, deliberately: cargo unifies features across a single build,
+# so `--workspace` would compile bsdkrun-core once with `boot` on and link
+# libkrun into the daemon — the one thing this split exists to avoid.
 daemon:
 	cargo build --release -p bsdkrun-daemon
+	cargo build --release -p bsdkrun-supervisor
 	@$(MAKE) sign-daemon
 
 # --- guest agents (release assets) -----------------------------------------

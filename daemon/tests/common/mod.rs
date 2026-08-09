@@ -49,8 +49,8 @@ case "$SPEC" in
   echo "boom" >&2; exit 3 ;;
 esac
 
-# `__cli -- <args…>`: the passthrough RPC.
-if [ "$1" = "__cli" ]; then
+# `cli -- <args…>`: the passthrough RPC.
+if [ "$1" = "cli" ]; then
   shift
   [ "$1" = "--" ] && shift
   case "$1" in
@@ -256,8 +256,8 @@ pub fn invocations(log: &Path) -> Vec<Vec<String>> {
 pub fn decode(argv: &[String]) -> serde_json::Value {
     assert_eq!(
         argv.first().map(String::as_str),
-        Some("__run"),
-        "not a __run invocation: {argv:?}"
+        Some("run"),
+        "not a `run` invocation: {argv:?}"
     );
     serde_json::from_str(&argv[1]).expect("the supervisor was handed valid JSON")
 }

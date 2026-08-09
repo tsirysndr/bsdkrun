@@ -2,10 +2,12 @@ name: release (bsdkrund)
 
 # Builds the gRPC daemon for macOS and Linux on both architectures.
 #
-# Unlike the CLI, the daemon links no libkrun: it drives the `bsdkrun` binary
-# already installed on the host as a subprocess. That makes this a plain Rust
-# build with no hypervisor dependency, so no libkrunfw kernel compile and no
-# per-arch native library juggling.
+# Unlike the CLI, the daemon links no libkrun: it takes `bsdkrun-core` without
+# its `boot` feature, so it reads and manages machines itself but hands anything
+# that has to *start* one to `bsdkrun-supervisor`, which ships with the CLI.
+# That keeps this a plain Rust build with no hypervisor dependency — no libkrunfw
+# kernel compile, no per-arch native library juggling, and a genuinely static
+# artifact.
 #
 # Linux targets are musl, so the artifacts are statically linked and run on any
 # distro a user might have on a VPS or bare-metal box — glibc builds from a
@@ -64,8 +66,7 @@ jobs:
           ref: ${{ inputs.ref != '' && inputs.ref || github.ref }}
 
       # Fail here, with a reason, rather than several steps later as an opaque
-      # "cannot start /bin/bash: No such file or directory" from the first step
-      # that sets working-directory: daemon.
+      # cargo error about an unknown package.
       - name: Check out contains the daemon
         run: |
           set -eu
@@ -81,7 +82,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: daemon
           key: ${{ matrix.target }}
 
       # tonic-prost-build shells out to protoc to compile the .proto.
@@ -93,15 +93,17 @@ jobs:
         if: matrix.os == 'darwin'
         run: brew install protobuf
 
+      # `-p`, not `--workspace`: cargo unifies features across one build, so
+      # building the supervisor here too would compile bsdkrun-core with `boot`
+      # on and link libkrun into the daemon — exactly what the static check
+      # below exists to catch.
       - name: Build
-        working-directory: daemon
-        run: cargo build --release --bin bsdkrund --target ${{ matrix.target }}
+        run: cargo build --release -p bsdkrun-daemon --target ${{ matrix.target }}
 
       # A statically linked binary must not have an interpreter or NEEDED
       # entries; catching that here beats discovering it on someone's server.
       - name: Verify the Linux binary is static
         if: matrix.os == 'linux'
-        working-directory: daemon
         run: |
           set -eux
           bin=target/${{ matrix.target }}/release/bsdkrund
@@ -128,11 +130,9 @@ jobs:
       # Every target is built on a runner of its own architecture, so the
       # artifact can simply be run.
       - name: Smoke-test the binary
-        working-directory: daemon
         run: ./target/${{ matrix.target }}/release/bsdkrund --version
 
       - name: Package
-        working-directory: daemon
         run: |
           set -eux
           mkdir -p dist
@@ -149,13 +149,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bsdkrund-${{ matrix.target }}
-          path: daemon/dist/*
+          path: dist/*
 
       - name: Publish release assets
         if: ${{ startsWith(github.ref, 'refs/tags/') || inputs.tag != '' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
-          files: daemon/dist/*
+          files: dist/*
           fail_on_unmatched_files: true
           generate_release_notes: true

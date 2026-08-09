@@ -45,9 +45,14 @@ server = [
 tonic-prost-build = "0.14"
 
 [dependencies]
-# The engine. Optional so the desktop app, which builds this crate with
-# `default-features = false` for its client half alone, never links libkrun.
-bsdkrun-core = { path = "../core", optional = true }
+# The engine, WITHOUT `boot`. That is what keeps this binary free of libkrun —
+# and therefore statically linkable and runnable on any distro — while still
+# being bsdkrun rather than a wrapper around it: it reads and manages machines
+# in-process, and hands anything that has to start one to `bsdkrun-supervisor`.
+#
+# Optional as well, so the desktop app's client-only build (`default-features =
+# false`) pulls in none of it.
+bsdkrun-core = { path = "../core", default-features = false, optional = true }
 tonic = { version = "0.14", features = ["router", "transport", "tls-ring", "tls-native-roots", "gzip"] }
 tonic-prost = "0.14"
 tonic-health = { version = "0.14", optional = true }

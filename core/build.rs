@@ -16,9 +16,17 @@ fn main() {
         ensure_web_assets();
     }
 
-    println!("cargo:rustc-link-lib=dylib=krun");
     println!("cargo:rerun-if-env-changed=LIBKRUN_PREFIX");
     println!("cargo:rerun-if-changed=build.rs");
+
+    // Without `boot` there is no FFI compiled, so there is nothing to link and
+    // nothing to tell dependents about: the crate builds on a host that has
+    // never heard of libkrun.
+    if std::env::var_os("CARGO_FEATURE_BOOT").is_none() {
+        return;
+    }
+
+    println!("cargo:rustc-link-lib=dylib=krun");
 
     // Explicit override wins on any OS.
     if let Ok(prefix) = std::env::var("LIBKRUN_PREFIX") {

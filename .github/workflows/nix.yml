@@ -53,18 +53,25 @@ jobs:
           BSDKRUN_IMPURE: "1"
         run: nix build -L ${{ matrix.flags }} .#bsdkrun
 
-      # The daemon links the bsdkrun engine, and therefore libkrun, so it is
-      # built exactly like the CLI: with ${{ matrix.flags }}, which is --impure
-      # on darwin so the flake can reach Homebrew's libkrun. It used to be built
-      # without those flags as an assertion that it had no Homebrew dependency;
-      # that assertion stopped being true when it stopped driving the CLI.
+      # The daemon takes the engine without its `boot` feature, so it still
+      # links no libkrun and builds purely everywhere. Deliberately built
+      # WITHOUT ${{ matrix.flags }}: on darwin that omits --impure, which keeps
+      # this step an assertion that the daemon has no Homebrew dependency.
       - name: nix build (bsdkrund)
+        run: nix build -L --out-link result-bsdkrund .#bsdkrund
+
+      # The supervisor is the half that does link libkrun, so it is built like
+      # the CLI — impurely on darwin.
+      - name: nix build (bsdkrun-supervisor)
         env:
           BSDKRUN_IMPURE: "1"
-        run: nix build -L ${{ matrix.flags }} --out-link result-bsdkrund .#bsdkrund
+        run: nix build -L ${{ matrix.flags }} --out-link result-supervisor .#bsdkrun-supervisor
 
       - name: Smoke-test bsdkrund
         run: ./result-bsdkrund/bin/bsdkrund --version
+
+      - name: Smoke-test bsdkrun-supervisor
+        run: ./result-supervisor/bin/bsdkrun-supervisor --version
 
       - name: nix flake check
         env:

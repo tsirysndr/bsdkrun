@@ -30,6 +30,9 @@ pub mod fetch;
 pub mod flavors;
 pub mod host;
 pub mod id;
+/// The libkrun FFI. Its constants are always available — other modules pick a
+/// kernel format with them — but the parts that call into the library are only
+/// compiled when this crate can actually start a machine.
 pub mod krun;
 pub mod linux;
 pub mod names;
@@ -49,8 +52,9 @@ pub mod ui;
 pub mod unikraft;
 pub mod watchdog;
 
+#[cfg(feature = "boot")]
 use anyhow::Result;
-
+#[cfg(feature = "boot")]
 use cli::Command;
 
 /// This engine's version, which is also the version the CLI and the daemon
@@ -79,9 +83,10 @@ pub fn init_host() {
 
 /// Run one subcommand, exactly as `bsdkrun` would.
 ///
-/// The daemon uses this for the handful of operations that are genuinely a
-/// command line — the passthrough RPC, and the boot supervisor it re-execs —
-/// while everything else goes through [`api`] instead.
+/// Only compiled with `boot`, since most of what it dispatches to starts a
+/// machine. A caller that links this crate without it — the daemon — drives
+/// [`api`] directly and hands anything boot-shaped to `bsdkrun-supervisor`.
+#[cfg(feature = "boot")]
 pub fn dispatch(cmd: Command) -> Result<()> {
     use cli::*;
 
@@ -105,7 +110,7 @@ pub fn dispatch(cmd: Command) -> Result<()> {
         Command::Ps(args) => commands::machines::cmd_ps(args.all, args.json),
         Command::Images(args) => commands::images::cmd_images(args.json),
         Command::Stop(args) => commands::machines::cmd_stop(&args.id),
-        Command::Start(args) => commands::machines::cmd_start(&args.id),
+        Command::Start(args) => commands::boot::cmd_start(&args.id),
         Command::Update(args) => commands::machines::cmd_update(&args.id, args.cpus, args.mem),
         Command::Rm(args) => commands::machines::cmd_rm(&args.ids, args.force),
         Command::Agent(args) => match args.cmd {
@@ -138,14 +143,14 @@ pub fn dispatch(cmd: Command) -> Result<()> {
         }
         Command::Flavors(args) => commands::flavor::cmd_flavors(args.json),
         Command::Flavor(args) => match args.cmd {
-            FlavorCmd::Run(a) => commands::flavor::cmd_flavor_run(a),
+            FlavorCmd::Run(a) => commands::boot::cmd_flavor_run(a),
             FlavorCmd::Add(a) => commands::flavor::cmd_flavor_add(a),
             FlavorCmd::Rm(a) => commands::flavor::cmd_flavor_rm(&a.names, a.force),
             FlavorCmd::Build(a) => {
-                commands::flavor::cmd_flavor_prebuild(&a.name, a.vm.cpus, a.vm.mem, a.force)
+                commands::boot::cmd_flavor_prebuild(&a.name, a.vm.cpus, a.vm.mem, a.force)
             }
             FlavorCmd::BuildInternal(a) => {
-                commands::flavor::cmd_flavor_build(&a.name, &a.key, a.vm.cpus, a.vm.mem)
+                commands::boot::cmd_flavor_build(&a.name, &a.key, a.vm.cpus, a.vm.mem)
             }
         },
         Command::Ui(args) => serve_ui(args),
@@ -162,14 +167,17 @@ pub fn dispatch(cmd: Command) -> Result<()> {
 
 /// `bsdkrun ui`, when this build has the SPA compiled in.
 ///
+/// Reachable only from [`dispatch`], hence the `boot` gate alongside the `ui`
+/// one: a build that cannot start a machine has no dispatch to reach it from.
+///
 /// The bundle is behind a feature so the daemon — which serves its own API and
 /// has no use for a second web server — does not link one.
-#[cfg(feature = "ui")]
+#[cfg(all(feature = "boot", feature = "ui"))]
 fn serve_ui(args: cli::UiArgs) -> Result<()> {
     ui::serve_ui(args.bind, !args.no_open)
 }
 
-#[cfg(not(feature = "ui"))]
+#[cfg(all(feature = "boot", not(feature = "ui")))]
 fn serve_ui(_args: cli::UiArgs) -> Result<()> {
     anyhow::bail!("this build has no web UI compiled in")
 }

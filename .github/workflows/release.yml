@@ -82,6 +82,16 @@ jobs:
       - name: Build + sign bsdkrun (release)
         run: make release
 
+      # `bsdkrun-supervisor` is what bsdkrund uses to boot a machine. It has the
+      # CLI's dependency profile — it links libkrun — so it ships here rather
+      # than with the daemon, whose whole point is being static and portable.
+      - name: Build + sign bsdkrun-supervisor
+        run: |
+          set -eux
+          cargo build --release -p bsdkrun-supervisor
+          codesign --entitlements bsdkrun.entitlements --force -s - \
+            target/release/bsdkrun-supervisor
+
       - name: Package artifacts
         run: |
           set -eux
@@ -91,6 +101,11 @@ jobs:
           # Per-tarball checksum sidecar (the @bsdkrun/cli postinstall verifies it).
           ( cd dist && shasum -a 256 bsdkrun-aarch64-apple-darwin.tar.gz \
               > bsdkrun-aarch64-apple-darwin.tar.gz.sha256 )
+          # The supervisor, packaged the same way, for a host running bsdkrund.
+          tar -C target/release \
+            -czf dist/bsdkrun-supervisor-aarch64-apple-darwin.tar.gz bsdkrun-supervisor
+          ( cd dist && shasum -a 256 bsdkrun-supervisor-aarch64-apple-darwin.tar.gz \
+              > bsdkrun-supervisor-aarch64-apple-darwin.tar.gz.sha256 )
           # All cross-built guest agents (linux/freebsd × aarch64/x86_64). BSD
           # ones are for manual injection into a running VM.
           cp core/src/agent-bin/bsdkrun-agent.* dist/
@@ -212,6 +227,11 @@ jobs:
       - name: Build bsdkrun (release)
         run: cargo build --release
 
+      # Same libkrun dependency as the CLI, so it is bundled the same way below
+      # rather than shipped with the (deliberately static) daemon.
+      - name: Build bsdkrun-supervisor
+        run: cargo build --release -p bsdkrun-supervisor
+
       # Bundle libkrun so the npm package is self-contained: ship bsdkrun next to
       # the libkrun/libkrunfw shared objects it links, and rewrite every object's
       # rpath to $ORIGIN so the loader finds its siblings in the same dir. The
@@ -222,6 +242,7 @@ jobs:
           set -eux
           rm -rf dist pkg && mkdir -p dist pkg
           cp target/release/bsdkrun pkg/bsdkrun
+          cp target/release/bsdkrun-supervisor pkg/bsdkrun-supervisor
 
           # Copy every non-system shared lib bsdkrun (transitively) needs — the
           # ones we built into /usr/local — into pkg/ under their SONAME. ldd
@@ -238,6 +259,7 @@ jobs:
             done
           }
           copy_local_deps pkg/bsdkrun
+          copy_local_deps pkg/bsdkrun-supervisor
 
           # Point bsdkrun and each bundled lib at their siblings ($ORIGIN = the
           # dir the object is loaded from). Single quotes: the linker, not the
@@ -246,8 +268,10 @@ jobs:
 
           echo "----- bundle contents -----"; ls -l pkg
           echo "----- bsdkrun deps after rpath rewrite -----"; ldd pkg/bsdkrun || true
+          echo "----- supervisor deps -----"; ldd pkg/bsdkrun-supervisor || true
 
-          # Pack the whole bundle (bsdkrun + *.so.*). Postinstall extracts it all.
+          # Pack the whole bundle (bsdkrun + bsdkrun-supervisor + *.so.*).
+          # Postinstall extracts it all.
           tar -C pkg -czf "dist/bsdkrun-${{ matrix.triple }}.tar.gz" .
           ( cd dist && shasum -a 256 "bsdkrun-${{ matrix.triple }}.tar.gz" \
               > "bsdkrun-${{ matrix.triple }}.tar.gz.sha256" )

@@ -1,21 +1,26 @@
-//! Running a command in a *separate* process — this daemon's own binary.
+//! Running a command in a *separate* process — `bsdkrun-supervisor`.
 //!
-//! Almost everything the daemon does now happens in-process, against
-//! `bsdkrun-core`. Two things cannot:
+//! Almost everything the daemon does happens in-process, against
+//! `bsdkrun-core`. Two things cannot, and both go through here:
 //!
-//!   * **Booting.** `core`'s detached boot `fork()`s and the child *becomes* the
+//!   * **Booting.** The detached boot `fork()`s and the child *becomes* the
 //!     machine. Forking a multithreaded tokio process and then doing libkrun
 //!     init, sqlite and tracing in the child risks deadlocking on a lock some
 //!     other thread held at fork time — and it would tie every VM's life to the
-//!     daemon's. A fresh single-threaded process has neither problem, and a
-//!     machine booted this way survives `systemctl restart bsdkrund`.
+//!     daemon's. The supervisor has one thread and no server in it, and a
+//!     machine it boots survives `systemctl restart bsdkrund`.
 //!   * **Long jobs that report progress on stdout** — `fetch`, `flavor build` —
 //!     and the passthrough RPC, whose whole point is to run a command line.
 //!
-//! The process it starts is `current_exe()`: this daemon, re-entered through the
-//! hidden `__run` subcommand, which deserializes a [`core::cli::Command`] and
-//! hands it to the same engine the CLI uses. It never looks for a `bsdkrun`
-//! binary — there need not be one on the host at all.
+//! It is a separate binary rather than this one re-exec'd, because it is where
+//! libkrun is linked: keeping it out of `bsdkrund` is what lets the daemon stay
+//! a static binary that runs on any distro. It is emphatically *not* the
+//! `bsdkrun` CLI — the daemon looks for no such thing, and a host need not have
+//! one at all.
+//!
+//! What crosses the process boundary is a typed
+//! [`bsdkrun_core::cli::Command`], JSON-encoded, so there is still no argv
+//! between the daemon and the engine to get wrong.
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -30,12 +35,14 @@ use tonic::Status;
 
 use crate::pb::{output_chunk, CommandResult, OutputChunk};
 
-/// The hidden subcommand this daemon re-enters itself through, carrying one
-/// JSON-encoded [`CoreCommand`].
-pub const RUN_SUBCOMMAND: &str = "__run";
+/// The binary this daemon hands boot-shaped work to. Shipped beside it.
+pub const SUPERVISOR_BIN: &str = "bsdkrun-supervisor";
 
-/// The same, for a raw command line rather than a typed command.
-pub const CLI_SUBCOMMAND: &str = "__cli";
+/// Its subcommand for a typed [`CoreCommand`], carried as JSON.
+pub const RUN_SUBCOMMAND: &str = "run";
+
+/// Its subcommand for a raw command line, used only by the passthrough RPC.
+pub const CLI_SUBCOMMAND: &str = "cli";
 
 /// Input from the client for an interactive RPC, shared by the pty and piped
 /// session types so [`crate::service`] can drive either through one enum.
@@ -45,9 +52,10 @@ pub enum SessionInput {
     Eof,
 }
 
-/// Directories where the runtime tools a machine needs (gvproxy, curl, tar)
-/// commonly live. A daemon started by systemd/launchd inherits a minimal PATH,
-/// so we prepend these the same way the desktop app does for GUI launches.
+/// Directories where the supervisor and the runtime tools a machine needs
+/// (gvproxy, curl, tar) commonly live. A daemon started by systemd/launchd
+/// inherits a minimal PATH, so we append these the same way the desktop app
+/// does for GUI launches.
 const EXTRA_PATHS: &[&str] = &[
     "/opt/homebrew/bin",
     "/opt/homebrew/sbin",
@@ -77,15 +85,39 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
-    /// Resolve this daemon's own binary. Fails fast at startup: a daemon that
-    /// cannot re-exec itself can boot nothing.
-    pub fn resolve() -> Result<Self> {
-        let exe = std::env::current_exe()
-            .context("locating this daemon's own binary (needed to supervise machines it boots)")?;
-        Ok(Self {
-            exe,
-            path: augmented_path(),
-        })
+    /// Find `bsdkrun-supervisor`: beside this binary first, then on PATH.
+    ///
+    /// Resolved at startup rather than per-request, because a daemon that
+    /// cannot find it can boot nothing, and saying so once at startup beats
+    /// failing on the first boot someone attempts.
+    pub fn resolve(override_path: Option<PathBuf>) -> Result<Self> {
+        let path = augmented_path();
+        if let Some(p) = override_path {
+            if !p.exists() {
+                anyhow::bail!("no supervisor at {}", p.display());
+            }
+            return Ok(Self { exe: p, path });
+        }
+        // Beside the daemon is where a package puts it, and where a `cargo
+        // build` leaves it, so it is worth preferring over whatever PATH says.
+        let beside = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|d| d.join(SUPERVISOR_BIN)))
+            .filter(|p| p.exists());
+        let exe = beside
+            .or_else(|| {
+                path.split(':')
+                    .map(|d| std::path::Path::new(d).join(SUPERVISOR_BIN))
+                    .find(|p| p.exists())
+            })
+            .with_context(|| {
+                format!(
+                    "{SUPERVISOR_BIN} not found beside this binary or on PATH. It ships with \
+                     bsdkrund and is what actually boots machines; install it, or point the \
+                     daemon at it with --supervisor /path/to/{SUPERVISOR_BIN}"
+                )
+            })?;
+        Ok(Self { exe, path })
     }
 
     /// Point the supervisor at a specific binary instead of this process.
@@ -108,8 +140,8 @@ impl Supervisor {
         &self.path
     }
 
-    /// `bsdkrund __cli -- <args…>`: a bsdkrun command line, parsed by the same
-    /// clap definition the CLI uses. Only the passthrough RPC needs this —
+    /// `bsdkrun-supervisor cli -- <args…>`: a bsdkrun command line, parsed by
+    /// the engine's own clap definition. Only the passthrough RPC needs this —
     /// everything else hands over a typed command instead.
     pub fn argv_raw(&self, args: &[String]) -> Vec<String> {
         let mut argv = vec![CLI_SUBCOMMAND.to_string(), "--".to_string()];
@@ -117,7 +149,7 @@ impl Supervisor {
         argv
     }
 
-    /// `bsdkrund __run <json>` for a parsed command.
+    /// `bsdkrun-supervisor run <json>` for a parsed command.
     pub fn argv(&self, cmd: &CoreCommand) -> Result<Vec<String>, Status> {
         let spec = serde_json::to_string(cmd)
             .map_err(|e| Status::internal(format!("encoding the command: {e}")))?;
@@ -358,9 +390,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_argv_is_the_hidden_subcommand_plus_one_json_argument() {
+    fn the_argv_is_the_run_subcommand_plus_one_json_argument() {
         let sup = Supervisor {
-            exe: PathBuf::from("/usr/bin/bsdkrund"),
+            exe: PathBuf::from("/usr/bin/bsdkrun-supervisor"),
             path: String::new(),
         };
         let cmd = CoreCommand::Ps(bsdkrun_core::cli::PsArgs {

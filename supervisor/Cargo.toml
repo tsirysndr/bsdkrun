@@ -1,0 +1,18 @@
+[package]
+name = "bsdkrun-supervisor"
+version = "0.6.0"
+edition = "2021"
+description = "Runs one bsdkrun command in its own process, and hosts the machine it boots"
+
+[[bin]]
+name = "bsdkrun-supervisor"
+path = "src/main.rs"
+
+[dependencies]
+# The engine, with `boot`: this binary exists precisely to be the thing that
+# links libkrun, so that `bsdkrund` does not have to.
+bsdkrun-core = { path = "../core" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

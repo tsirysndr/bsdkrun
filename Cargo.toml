@@ -1,15 +1,15 @@
 # `default-members` keeps `cargo build --release` meaning what it always has —
-# just the CLI. The daemon is still built on demand (`cargo build -p
-# bsdkrun-daemon`), so the CLI's release flow never pays for tonic, axum and a
-# GraphQL engine; being workspace members only buys them a shared lockfile and
-# one `target/` dir, which matters now that they share `bsdkrun-core`.
+# just the CLI. The daemon and its supervisor are built on demand (`cargo build
+# -p bsdkrun-daemon`), so the CLI's release flow never pays for tonic, axum and
+# a GraphQL engine; being workspace members only buys them a shared lockfile and
+# one `target/` dir, which matters now that they all share `bsdkrun-core`.
 #
 # `agent/` stays out: it is cross-compiled for the guest, not the host.
 [workspace]
 # The root package is a member implicitly. Listing it as `"."` as well makes
 # cargo stop honouring `exclude` for nested manifests, which quietly adopts the
 # Tauri app and the examples below.
-members = ["core", "daemon"]
+members = ["core", "daemon", "supervisor"]
 default-members = ["."]
 # Everything else in the tree that carries a Cargo.toml but is built on its own
 # terms: the guest agent (cross-compiled), the Tauri app, and the unikraft

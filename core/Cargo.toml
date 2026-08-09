@@ -11,11 +11,21 @@ description = "The bsdkrun engine: microVM boot, images, networking, volumes and
 #
 # `links` claims libkrun for the whole build graph, and lets `build.rs` publish
 # the library directory to dependents as `DEP_KRUN_LIBDIR` — see build.rs for why
-# the binary crates need it.
+# the binary crates need it. With `boot` off, build.rs emits nothing and there is
+# no libkrun in the link at all.
 links = "krun"
 
 [features]
-default = []
+default = ["boot"]
+# Actually starting machines: the libkrun FFI and every boot path over it.
+#
+# Off, this crate links no hypervisor and builds anywhere — which is what lets
+# `bsdkrund` stay a static, dependency-free binary while still being bsdkrun
+# rather than a wrapper around it. It keeps the whole read and management
+# surface (`api`, `ps`, `commit`, volumes, networks, flavors) and the command
+# definitions it needs to *describe* a boot; `bsdkrun-supervisor` is the crate
+# that turns one into a running machine.
+boot = []
 # `bsdkrun ui` — the embedded web SPA. Off by default so a consumer that only
 # wants the engine (the daemon) does not pull in a web server.
 ui = ["dep:actix-web", "dep:rust-embed", "dep:mime_guess"]

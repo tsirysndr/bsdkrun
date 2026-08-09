@@ -3,9 +3,16 @@
 //! libkrun is itself written in Rust but exposes a stable C API. On macOS it
 //! drives Hypervisor.framework. We only bind the subset needed to launch a
 //! microVM from an external kernel or firmware plus virtio-blk disks.
+//!
+//! Only the kernel-format constants survive without the `boot` feature: other
+//! modules pick a format when they *describe* a machine, which a build that
+//! cannot start one still does.
 
+#[cfg(feature = "boot")]
 use std::ffi::CString;
+#[cfg(feature = "boot")]
 use std::os::raw::c_char;
+#[cfg(feature = "boot")]
 use std::path::Path;
 
 // Kernel image formats accepted by krun_set_kernel.
@@ -23,12 +30,19 @@ pub const KRUN_KERNEL_FORMAT_IMAGE_ZSTD: u32 = 5;
 // virtio-net feature bits (see libkrun.h). `COMPAT_NET_FEATURES` is the set
 // libkrun's own passt/gvproxy helpers enable — the safe baseline (checksum
 // offload + TSO/UFO) that a userspace proxy like gvproxy negotiates.
+#[cfg(feature = "boot")]
 const NET_FEATURE_CSUM: u32 = 1 << 0;
+#[cfg(feature = "boot")]
 const NET_FEATURE_GUEST_CSUM: u32 = 1 << 1;
+#[cfg(feature = "boot")]
 const NET_FEATURE_GUEST_TSO4: u32 = 1 << 7;
+#[cfg(feature = "boot")]
 const NET_FEATURE_GUEST_UFO: u32 = 1 << 10;
+#[cfg(feature = "boot")]
 const NET_FEATURE_HOST_TSO4: u32 = 1 << 11;
+#[cfg(feature = "boot")]
 const NET_FEATURE_HOST_UFO: u32 = 1 << 14;
+#[cfg(feature = "boot")]
 const COMPAT_NET_FEATURES: u32 = NET_FEATURE_CSUM
     | NET_FEATURE_GUEST_CSUM
     | NET_FEATURE_GUEST_TSO4
@@ -38,9 +52,11 @@ const COMPAT_NET_FEATURES: u32 = NET_FEATURE_CSUM
 
 // Per-interface flags. `NET_FLAG_VFKIT` tells libkrun the unixgram peer speaks
 // gvproxy's "vfkit" framing (the mode gvproxy's `-listen-vfkit` socket uses).
+#[cfg(feature = "boot")]
 const NET_FLAG_VFKIT: u32 = 1 << 0;
 
 #[link(name = "krun")]
+#[cfg(feature = "boot")]
 extern "C" {
     fn krun_set_log_level(level: u32) -> i32;
     fn krun_create_ctx() -> i32;
@@ -83,6 +99,7 @@ extern "C" {
 }
 
 /// Turn a negative libkrun return (a `-errno`) into a readable error.
+#[cfg(feature = "boot")]
 fn check(ret: i32, what: &str) -> anyhow::Result<i32> {
     if ret < 0 {
         let errno = -ret;
@@ -92,10 +109,12 @@ fn check(ret: i32, what: &str) -> anyhow::Result<i32> {
     Ok(ret)
 }
 
+#[cfg(feature = "boot")]
 fn cstr(p: &str) -> anyhow::Result<CString> {
     Ok(CString::new(p)?)
 }
 
+#[cfg(feature = "boot")]
 fn path_cstr(p: &Path) -> anyhow::Result<CString> {
     let s = p
         .to_str()
@@ -106,6 +125,7 @@ fn path_cstr(p: &Path) -> anyhow::Result<CString> {
 /// Verify a libkrun symbol is actually resolvable in the loaded dylib before we
 /// call it. Guards against DYLD loading an old libkrun that lacks newer symbols
 /// (calling a missing symbol jumps through a NULL stub → SIGSEGV).
+#[cfg(feature = "boot")]
 fn require_symbol(name: &str) -> anyhow::Result<()> {
     let c = CString::new(name)?;
     // RTLD_DEFAULT searches all loaded images; NULL => symbol not present.
@@ -127,6 +147,7 @@ fn require_symbol(name: &str) -> anyhow::Result<()> {
 /// guest. Otherwise we return the read end of a fresh pipe: kqueue can poll it,
 /// but it never yields data (nobody holds the write end open to send any). This
 /// keeps non-interactive/captured runs from aborting inside libkrun.
+#[cfg(feature = "boot")]
 fn console_input_fd() -> anyhow::Result<i32> {
     // STDIN_FILENO == 0.
     if unsafe { libc::isatty(0) } == 1 {
@@ -150,11 +171,13 @@ fn console_input_fd() -> anyhow::Result<i32> {
 }
 
 /// A libkrun configuration context. Freed on drop unless consumed by `start_enter`.
+#[cfg(feature = "boot")]
 pub struct Ctx {
     id: u32,
     entered: bool,
 }
 
+#[cfg(feature = "boot")]
 impl Ctx {
     pub fn new() -> anyhow::Result<Self> {
         // Every boot path funnels through here, so this is where a host without
@@ -389,6 +412,7 @@ impl Ctx {
     }
 }
 
+#[cfg(feature = "boot")]
 impl Drop for Ctx {
     fn drop(&mut self) {
         if !self.entered {

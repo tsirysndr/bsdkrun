@@ -10,14 +10,19 @@ use tracing::{info, warn};
 use crate::cli::*;
 use crate::krun::Ctx;
 use crate::net::{Gvproxy, PortForward};
-#[cfg(target_os = "macos")]
-use crate::store;
 use crate::{
-    agent, console, db, fetch, host, id, krun, linux, names, nanos, net, network, oci, osv, tty,
-    unikraft, watchdog,
+    agent, console, db, fetch, flavors, host, id, krun, linux, names, nanos, net, network, oci,
+    osv, tty, unikraft, watchdog,
 };
 
-use super::guest::{agent_error, agent_target, interactive_shell_argv, interactive_shell_env};
+use super::flavor::{
+    flavor_build_key, flavor_build_volume, flavor_provision_argv, resolve_linux_flavor,
+    LinuxFlavorSpec,
+};
+use super::guest::{
+    agent_error, agent_target, guest_os_kind, interactive_shell_argv, interactive_shell_env,
+};
+use super::{basename, machine_dir_or_tmp, machine_rootfs_dir, volume_dir};
 
 /// Attach any `--attach-disk` images after the root disk. Block ids are
 /// `data0`, `data1`, … — libkrun only requires them to be unique.
@@ -1164,35 +1169,6 @@ pub(crate) fn find_krunkit_firmware() -> Result<PathBuf> {
     )
 }
 
-/// Per-machine state dir (`<state>/machines/<id>`), falling back to a temp dir.
-pub(crate) fn machine_dir_or_tmp(id: &str) -> std::path::PathBuf {
-    let dir = db::machine_dir(id).unwrap_or_else(|_| std::env::temp_dir().join(id));
-    std::fs::create_dir_all(&dir).ok();
-    dir
-}
-
-/// Directory that will hold a machine's writable rootfs clone. On macOS with a
-/// case-sensitive store set up this lives on the store (nix guests need that,
-/// and the clone stays CoW because source and destination share a volume);
-/// everywhere else it is the machine's own state dir, as before.
-pub(crate) fn machine_rootfs_dir(id: &str, vdir: &std::path::Path) -> std::path::PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(d) = store::machine_rootfs_dir(id) {
-            return d;
-        }
-    }
-    let _ = id;
-    vdir.to_path_buf()
-}
-
-/// The last path component, for display.
-pub(crate) fn basename(p: &std::path::Path) -> String {
-    p.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| p.to_string_lossy().into_owned())
-}
-
 /// Prepare a BSD machine's root disk. With `volume`, the disk lives at a stable
 /// path under `<state>/volumes` and is reused across runs (changes persist);
 /// with `persist`, the base disk is booted in place; otherwise it's cloned into
@@ -1266,21 +1242,6 @@ pub(crate) fn parse_mount(spec: &str) -> Result<linux::BindMount> {
         guest: guest.to_string(),
         ro,
     })
-}
-
-/// Resolve a `--volume NAME` to its directory under `<state>/volumes`, rejecting
-/// names that could escape it.
-pub(crate) fn volume_dir(name: &str) -> Result<PathBuf> {
-    let ok = !name.is_empty()
-        && name != "."
-        && name != ".."
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
-    if !ok {
-        anyhow::bail!("invalid volume name {name:?} — use letters, digits, '-', '_' or '.'");
-    }
-    Ok(db::volumes_dir()?.join(name))
 }
 
 /// Copy `src` to `dst` as a copy-on-write clone where the filesystem supports it
@@ -2101,4 +2062,510 @@ pub(crate) fn run_guest_command(
         db::update_machine_status(id, "exited", Some(128 + libc::SIGTERM as i64));
     }
     std::process::exit(code);
+}
+
+// ---------------------------------------------------------------------------
+// restarting a machine
+// ---------------------------------------------------------------------------
+
+/// Restart a stopped machine *in place*: re-boot the recorded image / resources
+/// / volume under the SAME id (like `docker start`), rather than minting a new
+/// machine. Detached. The guest OS is inferred from the recorded image ref.
+pub(crate) fn cmd_start(id: &str) -> Result<()> {
+    let db = db::Db::open()?;
+    let vm = db.find_machine(id)?;
+
+    // Already up? Nothing to do.
+    if vm.status == "running" && vm.pid.map(db::pid_alive).unwrap_or(false) {
+        println!("{}", vm.id);
+        return Ok(());
+    }
+
+    let cpus = vm.cpus.clamp(1, 255) as u8;
+    let mem = vm.mem.max(64) as u32;
+    let volume = vm.volume.clone();
+
+    // Resume a BSD machine from ITS OWN root disk, not a re-fetched base. The
+    // per-machine working disk (a CoW clone of the original base — a fetched
+    // image OR a committed snapshot) lives in the state dir as `root.<ext>`.
+    // Re-cloning a base here would silently replace the disk: for a snapshot
+    // flavor that means booting the DEFAULT image over the user's snapshot data
+    // (data loss). So when that disk exists, boot it IN PLACE (persist) — which
+    // also preserves runtime changes across stop/start, like `docker start`.
+    // Volume-backed machines already resume their volume disk, so skip those.
+    let existing_disk = if vm.volume.is_none() {
+        let vdir = machine_dir_or_tmp(&vm.id);
+        ["root.raw", "root.img", "root.qcow2"]
+            .iter()
+            .map(|n| vdir.join(n))
+            .find(|p| p.exists())
+    } else {
+        None
+    };
+
+    // The DB row is left in place (the boot re-records it via INSERT OR REPLACE),
+    // so it flips exited→running rather than vanishing from `ps`. NB: don't wipe
+    // the whole state dir here — that means an `rm -rf` of the old read-only nix
+    // rootfs, which is slow enough to make Play "spin forever". The Linux boot
+    // path (prepare_linux_root) renames the stale rootfs aside and GC's it in the
+    // background, so the restart returns promptly. Old sockets/logs/port files
+    // are simply overwritten on the new boot.
+
+    // The next boot picks up this id + name instead of generating fresh ones.
+    id::set_override(&vm.id);
+    if let Some(name) = &vm.name {
+        names::set_override(name);
+    }
+
+    // Re-join the recorded global network on restart (its membership is stored
+    // in the DB and edited via `network connect/disconnect`). Reuse the member
+    // name so the derived MAC — and thus the BSD DHCP lease — stays stable; hint
+    // the previously-assigned IP so a plain restart keeps its address.
+    if let Some(ip) = vm.net_ip.as_deref().filter(|s| !s.is_empty()) {
+        std::env::set_var("BSDKRUN_NET_PREF_IP", ip);
+    }
+    let net = NetConfig {
+        no_net: false,
+        ports: vec![],
+        mac: None,
+        network: vm.network.clone(),
+        name: vm.name.clone(),
+    };
+    let vmcfg = VmConfig { cpus, mem };
+
+    // Detect the guest from the recorded kind first (the image ref is unreliable
+    // for a snapshot machine — its image is `disk.img`/`disk.raw`, not a
+    // `netbsd-*`/`freebsd-*` name). FreeBSD records `firmware` (macOS EFI) or
+    // `freebsd` (Linux PVH); NetBSD records `netbsd` (or legacy `kernel`).
+    let reference = vm.image.to_lowercase();
+    let is_freebsd =
+        matches!(vm.kind.as_str(), "firmware" | "freebsd") || reference.starts_with("freebsd");
+    let is_netbsd =
+        matches!(vm.kind.as_str(), "kernel" | "netbsd") || reference.starts_with("netbsd");
+
+    if vm.kind == "linux" {
+        let largs = LinuxArgs {
+            image: vm.image.clone(),
+            kernel: None,
+            kernel_version: linux::DEFAULT_KERNEL_VERSION.to_string(),
+            detach: true,
+            initramfs: false,
+            volume: volume.clone(),
+            mounts: vec![],
+            entrypoint: None,
+            env: vec![],
+            console: "hvc0".to_string(),
+            net,
+            vm: vmcfg,
+            repo: None,
+            command: vec![], // persistent restart — keep a console shell alive
+        };
+        // Resume the machine's OWN rootfs (which holds its snapshot + runtime
+        // changes) by passing it as the boot source, so restart never re-clones
+        // the base OCI image and loses data. Reuse any intact, non-empty rootfs —
+        // NOT gated on /bin|/nix, so images without those top-level dirs still
+        // resume. Volume machines resume their volume rootfs already; a missing or
+        // broken (nested) dir falls back to the base image.
+        let own_rootfs = machine_dir_or_tmp(&vm.id).join("rootfs");
+        let intact = own_rootfs.symlink_metadata().is_ok()
+            && !own_rootfs.join("rootfs").exists()
+            && std::fs::read_dir(&own_rootfs)
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(false);
+        if volume.is_none() && intact {
+            boot_linux_from(largs, Some(own_rootfs), &[])
+        } else {
+            boot_linux(largs)
+        }
+    } else if vm.kind == "nanos" {
+        // Re-boot the machine's own cloned disk in place when it survives (so
+        // TFS state persists across stop/start, like the BSDs); fall back to
+        // a fresh clone of the original image.
+        let spec = nanos::BootSpec::load(std::path::Path::new(&vm.state_dir))?;
+        let reuse = existing_disk.is_some();
+        boot_nanos_image(
+            &spec.image,
+            spec.kernel.as_deref(),
+            &spec.cmdline,
+            None,
+            true,
+            reuse,
+            net,
+            vmcfg,
+            existing_disk,
+        )
+    } else if vm.kind == "osv" {
+        // Re-boot the machine's own cloned disk in place when it survives, so
+        // filesystem writes persist across stop/start like the BSDs; fall back
+        // to a fresh clone of the original image.
+        let spec = osv::BootSpec::load(std::path::Path::new(&vm.state_dir))?;
+        let reuse = existing_disk.is_some();
+        boot_osv_image(
+            &spec.image,
+            &spec.cmdline,
+            spec.gic,
+            None,
+            false,
+            reuse,
+            volume.as_deref(),
+            &[],
+            true,
+            net,
+            vmcfg,
+            existing_disk,
+        )
+    } else if vm.kind == "unikraft" {
+        // Nothing to resume — a unikernel has no disk — so this just boots the
+        // same image again, from the spec saved beside its console log.
+        let spec = unikraft::BootSpec::load(std::path::Path::new(&vm.state_dir))?;
+        boot_unikraft_image(
+            &spec.kernel,
+            &spec.cmdline,
+            spec.initramfs.as_deref(),
+            true,
+            net,
+            vmcfg,
+            &spec.volumes,
+        )
+    } else if is_freebsd || is_netbsd {
+        // Boot the machine's own disk in place when it exists (see above), so a
+        // snapshot machine keeps its data; otherwise fall back to the base image.
+        let reuse = existing_disk.is_some();
+        let args = BsdArgs {
+            version: None, // bundled image (as originally booted)
+            firmware: None,
+            force: false,
+            attach_disk: vec![],
+            disk_size: None,
+            run: RunConfig {
+                detach: true,
+                persist: reuse, // in-place boot of the existing disk (no re-clone)
+                volume,
+            },
+            net,
+            vm: vmcfg,
+            verbose: false,
+            repo: None,
+            command: vec![],
+        };
+        let result = match (is_freebsd, existing_disk) {
+            (true, Some(d)) => boot_freebsd_disk(args, Some(d)),
+            (true, None) => boot_freebsd(args),
+            (false, Some(d)) => boot_netbsd_disk(args, Some(d)),
+            (false, None) => boot_netbsd(args),
+        };
+        // Booting the in-place disk relabels the row's image to `root.<ext>`;
+        // restore the original label so `ps` still shows what it was booted from.
+        if reuse && result.is_ok() {
+            db.set_machine_image(&vm.id, &vm.image).ok();
+        }
+        result
+    } else {
+        // Put the id back for any future attempt and report clearly.
+        anyhow::bail!(
+            "don't know how to restart a {:?} machine ({}); start it with `run` instead",
+            vm.kind,
+            vm.image
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// booting a flavor
+// ---------------------------------------------------------------------------
+//
+// These live here rather than beside the rest of the flavor commands because
+// they end in a boot: the listing and editing half of `flavor` has to stay
+// available to a build that links no hypervisor.
+
+pub(crate) fn flavor_linux_args(
+    image: String,
+    detach: bool,
+    cpus: u8,
+    mem: u32,
+    volume: Option<String>,
+    ports: Vec<PortForward>,
+    env: Vec<String>,
+) -> LinuxArgs {
+    LinuxArgs {
+        image,
+        kernel: None,
+        kernel_version: linux::DEFAULT_KERNEL_VERSION.to_string(),
+        detach,
+        initramfs: false,
+        volume,
+        mounts: vec![],
+        entrypoint: None,
+        env,
+        console: "hvc0".to_string(),
+        net: NetConfig {
+            no_net: false,
+            ports,
+            mac: None,
+            network: None,
+            name: None,
+        },
+        vm: VmConfig { cpus, mem },
+        repo: None,
+        command: vec![],
+    }
+}
+
+/// Ensure a flavor's provisioned rootfs is built and cached, returning its path.
+/// Cache hit → returns immediately (instant, no re-provisioning). Miss → runs
+/// the provisioning build in a child `bsdkrun` process (streaming its progress)
+/// and records the result so every later launch just clones it.
+pub(crate) fn ensure_flavor_built(
+    spec: &LinuxFlavorSpec,
+    name: &str,
+    cpus: u8,
+    mem: u32,
+) -> Result<PathBuf> {
+    let key = flavor_build_key(&spec.image, &spec.nix, &spec.provision);
+    let vol = flavor_build_volume(&key);
+    let voldir = volume_dir(&vol)?;
+    let rootfs = voldir.join("rootfs");
+    let marker = voldir.join(".provisioned");
+    if marker.exists() && rootfs.exists() {
+        info!(flavor = name, key = %key, "using cached flavor build");
+        return Ok(rootfs);
+    }
+    // Cache miss: build in a CHILD process. Provisioning ends in `process::exit`
+    // (see `run_guest_command`), so it must not run in this process — we need to
+    // survive it to clone + boot the real machine afterwards.
+    info!(flavor = name, key = %key, "building flavor (first launch)…");
+    host::force_remove_dir_all(&voldir); // clear any half-built remnant
+    let exe = std::env::current_exe().context("locating bsdkrun for the flavor build")?;
+    let status = std::process::Command::new(exe)
+        .args([
+            "flavor",
+            "__build",
+            name,
+            "--key",
+            &key,
+            "--cpus",
+            &cpus.to_string(),
+            "--mem",
+            &mem.to_string(),
+        ])
+        .status()
+        .context("spawning the flavor build")?;
+    if !status.success() {
+        host::force_remove_dir_all(&voldir);
+        anyhow::bail!("provisioning {name} failed (see the output above)");
+    }
+    if !rootfs.exists() {
+        host::force_remove_dir_all(&voldir);
+        anyhow::bail!("the flavor build produced no rootfs for {name}");
+    }
+    std::fs::write(&marker, key.as_bytes()).ok();
+    Ok(rootfs)
+}
+
+/// Hidden `bsdkrun flavor __build` — the child that provisions a flavor into its
+/// build volume, then powers the builder off. Not for direct use.
+pub(crate) fn cmd_flavor_build(name: &str, key: &str, cpus: u8, mem: u32) -> Result<()> {
+    let spec = resolve_linux_flavor(name)
+        .ok_or_else(|| anyhow::anyhow!("no such Linux flavor to build: {name}"))?;
+    let argv = flavor_provision_argv(name, &spec.nix, &spec.provision)
+        .ok_or_else(|| anyhow::anyhow!("{name} has nothing to provision"))?;
+    let vol = flavor_build_volume(key);
+
+    // Boot a builder whose root is the persistent build volume. A trivial
+    // keep-alive is the main process so the VM (and its agent) stay up on any
+    // base image while provisioning runs; `run_machine` powers it off when the
+    // provisioning command finishes (detach=false ⇒ keep_running=false).
+    let largs = LinuxArgs {
+        image: spec.image.clone(),
+        kernel: None,
+        kernel_version: linux::DEFAULT_KERNEL_VERSION.to_string(),
+        detach: false,
+        initramfs: false,
+        volume: Some(vol),
+        mounts: vec![],
+        entrypoint: None,
+        env: spec.env.clone(),
+        console: "hvc0".to_string(),
+        net: NetConfig {
+            no_net: false,
+            ports: vec![],
+            mac: None,
+            network: None,
+            name: None,
+        },
+        vm: VmConfig { cpus, mem },
+        repo: None,
+        command: vec![
+            "sh".into(),
+            "-c".into(),
+            "while :; do sleep 86400; done".into(),
+        ],
+    };
+    boot_linux_from(largs, None, &argv)
+}
+
+/// `bsdkrun flavor build <name>` — pre-build a flavor's provisioned rootfs into
+/// the cache so a later `run` is instant. Streams provisioning output.
+pub(crate) fn cmd_flavor_prebuild(name: &str, cpus: u8, mem: u32, force: bool) -> Result<()> {
+    let Some(spec) = resolve_linux_flavor(name) else {
+        anyhow::bail!("no such Linux flavor to build: {name} (see `bsdkrun flavors`)");
+    };
+    if spec.nix.is_empty() && spec.provision.is_empty() {
+        println!("{name}: nothing to build (no provisioning steps)");
+        return Ok(());
+    }
+    if force {
+        // Drop the cached build so it's rebuilt from scratch.
+        let key = flavor_build_key(&spec.image, &spec.nix, &spec.provision);
+        if let Ok(dir) = volume_dir(&flavor_build_volume(&key)) {
+            host::force_remove_dir_all(&dir);
+        }
+    }
+    let built = ensure_flavor_built(&spec, name, cpus, mem)?;
+    info!(flavor = name, rootfs = %built.display(), "flavor built");
+    println!("{name}");
+    Ok(())
+}
+
+/// `bsdkrun flavor run <name>` — boot a machine from a catalog/user flavor or a
+/// saved snapshot. Provisioned flavors are built once (cached) then cloned.
+pub(crate) fn cmd_flavor_run(args: FlavorRunArgs) -> Result<()> {
+    let db = db::Db::open()?;
+
+    // Optional `--repo` clones a repo into the machine after boot (cd on shell).
+    let repo_argv = args
+        .repo
+        .as_deref()
+        .and_then(repo_clone_argv)
+        .unwrap_or_default();
+
+    // A saved snapshot (from `commit`) wins over any catalog/user name.
+    if let Some(f) = db.find_flavor(&args.name)? {
+        // Normalize (old snapshots stored the boot mode: firmware/kernel).
+        let osk = guest_os_kind(&f.kind, &f.base);
+        if osk == "linux" {
+            let rootfs = std::path::PathBuf::from(&f.path).join("rootfs");
+            if !rootfs.exists() {
+                anyhow::bail!("snapshot {:?} is missing its rootfs data", f.name);
+            }
+            let largs = flavor_linux_args(
+                f.base.clone(),
+                args.detach,
+                args.vm.cpus,
+                args.vm.mem,
+                args.volume,
+                args.ports,
+                vec![],
+            );
+            return boot_linux_from(largs, Some(rootfs), &repo_argv);
+        }
+
+        // BSD snapshot: boot from its saved root disk (`disk.raw` / `disk.img`).
+        let disk = ["disk.raw", "disk.img"]
+            .iter()
+            .map(|n| std::path::PathBuf::from(&f.path).join(n))
+            .find(|p| p.exists())
+            .ok_or_else(|| anyhow::anyhow!("snapshot {:?} is missing its disk data", f.name))?;
+        let bargs = BsdArgs {
+            version: None,
+            firmware: None,
+            force: false,
+            attach_disk: vec![],
+            disk_size: None,
+            run: RunConfig {
+                detach: args.detach,
+                persist: false,
+                volume: args.volume,
+            },
+            net: NetConfig {
+                no_net: false,
+                ports: args.ports,
+                mac: None,
+                network: None,
+                name: None,
+            },
+            vm: VmConfig {
+                cpus: args.vm.cpus,
+                mem: args.vm.mem,
+            },
+            verbose: false,
+            repo: None,
+            command: repo_argv,
+        };
+        return if osk == "netbsd" {
+            boot_netbsd_disk(bargs, Some(disk))
+        } else {
+            boot_freebsd_disk(bargs, Some(disk))
+        };
+    }
+
+    // A Linux flavor (catalog or user): build-once-then-clone.
+    if let Some(spec) = resolve_linux_flavor(&args.name) {
+        let mut ports: Vec<PortForward> = args.ports;
+        for p in &spec.ports {
+            if let Ok(pf) = p.parse::<PortForward>() {
+                ports.push(pf);
+            }
+        }
+        let largs = flavor_linux_args(
+            spec.image.clone(),
+            args.detach,
+            args.vm.cpus,
+            args.vm.mem,
+            args.volume,
+            ports,
+            spec.env.clone(),
+        );
+        // Provisioned flavors boot from a cached, pre-provisioned rootfs; plain
+        // ones boot the base image directly.
+        let has_provisioning = !spec.nix.is_empty() || !spec.provision.is_empty();
+        if has_provisioning {
+            let built = ensure_flavor_built(&spec, &args.name, args.vm.cpus, args.vm.mem)?;
+            return boot_linux_from(largs, Some(built), &repo_argv);
+        }
+        return boot_linux_from(largs, None, &repo_argv);
+    }
+
+    // A BSD catalog flavor (no provisioning/cache — boots the bundled image).
+    let Some(c) = flavors::find(&args.name) else {
+        anyhow::bail!("no such flavor: {} (see `bsdkrun flavors`)", args.name);
+    };
+    let mut ports: Vec<PortForward> = args.ports;
+    for p in c.ports {
+        if let Ok(pf) = p.parse::<PortForward>() {
+            ports.push(pf);
+        }
+    }
+    let bargs = BsdArgs {
+        version: None,
+        firmware: None,
+        force: false,
+        attach_disk: vec![],
+        disk_size: None,
+        run: RunConfig {
+            detach: args.detach,
+            persist: false,
+            volume: args.volume,
+        },
+        net: NetConfig {
+            no_net: false,
+            ports,
+            mac: None,
+            network: None,
+            name: None,
+        },
+        vm: VmConfig {
+            cpus: args.vm.cpus,
+            mem: args.vm.mem,
+        },
+        verbose: false,
+        repo: None,
+        // On BSD the post-boot command IS the repo clone (if any).
+        command: repo_argv,
+    };
+    match c.base {
+        flavors::Base::Freebsd => boot_freebsd(bargs),
+        flavors::Base::Netbsd => boot_netbsd(bargs),
+        flavors::Base::Oci(_) => unreachable!("OCI flavors handled above"),
+    }
 }

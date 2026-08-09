@@ -22,7 +22,7 @@ use bsdkrun_daemon::ops::Ops;
 use bsdkrun_daemon::pb::bsdkrun_server::BsdkrunServer;
 use bsdkrun_daemon::service::BsdkrunService;
 use bsdkrun_daemon::shell::ShellRegistry;
-use bsdkrun_daemon::supervisor::{Supervisor, CLI_SUBCOMMAND, RUN_SUBCOMMAND};
+use bsdkrun_daemon::supervisor::Supervisor;
 use clap::Parser;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing::{info, warn};
@@ -57,6 +57,12 @@ struct Args {
     #[arg(long, env = "BSDKRUN_TOKEN", hide_env_values = true)]
     token: Option<String>,
 
+    /// Path to `bsdkrun-supervisor` (default: beside this binary, else PATH).
+    /// It is what actually boots machines; see the supervisor module for why it
+    /// is a separate process.
+    #[arg(long, env = "BSDKRUN_SUPERVISOR")]
+    supervisor: Option<PathBuf>,
+
     /// PEM certificate chain, to serve over TLS.
     #[arg(long, requires = "tls_key")]
     tls_cert: Option<PathBuf>,
@@ -70,63 +76,8 @@ struct Args {
     log_level: String,
 }
 
-fn main() -> Result<()> {
-    // Before clap: the two hidden subcommands are this binary re-entering
-    // itself as a machine supervisor, and they are not a daemon at all — they
-    // must not start a runtime, bind a port or mint a token. See
-    // [`bsdkrun_daemon::supervisor`] for why they exist.
-    let argv: Vec<String> = std::env::args().collect();
-    match argv.get(1).map(String::as_str) {
-        Some(RUN_SUBCOMMAND) => return run_supervised(&argv[2..]),
-        Some(CLI_SUBCOMMAND) => return run_command_line(&argv[2..]),
-        _ => {}
-    }
-    serve()
-}
-
-/// `bsdkrund __run <json>` — run one JSON-encoded command against the engine.
-fn run_supervised(args: &[String]) -> Result<()> {
-    let spec = args
-        .first()
-        .context("__run takes one JSON-encoded command")?;
-    let cmd: bsdkrun_core::cli::Command =
-        serde_json::from_str(spec).context("decoding the command")?;
-    supervisor_setup();
-    bsdkrun_core::dispatch(cmd)
-}
-
-/// `bsdkrund __cli -- <args…>` — run a bsdkrun command line, parsed by the
-/// engine's own clap definition. Backs the passthrough RPC.
-fn run_command_line(args: &[String]) -> Result<()> {
-    let args = args
-        .strip_prefix(std::slice::from_ref(&"--".to_string()))
-        .unwrap_or(args);
-    let cli = bsdkrun_core::cli::Cli::try_parse_from(
-        std::iter::once("bsdkrun".to_string()).chain(args.iter().cloned()),
-    )?;
-    supervisor_setup();
-    bsdkrun_core::krun::Ctx::set_log_level(cli.log_level).ok();
-    bsdkrun_core::dispatch(cli.cmd)
-}
-
-/// Logging and host setup for a supervisor process.
-///
-/// Its stdout belongs to the machine (an id, a console, a command's output),
-/// so diagnostics go to stderr — which is what the daemon reads back as the
-/// progress half of a launch stream.
-fn supervisor_setup() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .with_target(false)
-        .with_writer(std::io::stderr)
-        .init();
-    bsdkrun_core::init_host();
-}
-
 #[tokio::main]
-async fn serve() -> Result<()> {
+async fn main() -> Result<()> {
     let args = Args::parse();
 
     tracing_subscriber::fmt()
@@ -139,7 +90,7 @@ async fn serve() -> Result<()> {
 
     // Resolve this binary up front: it is what a booted machine is supervised
     // by, and failing at startup beats failing on the first boot.
-    let supervisor = Supervisor::resolve()?;
+    let supervisor = Supervisor::resolve(args.supervisor)?;
     info!(
         engine = bsdkrun_core::VERSION,
         supervisor = %supervisor.exe().display(),

@@ -79,7 +79,7 @@ impl Harness {
             if let Some(cmd) = self
                 .invocations()
                 .into_iter()
-                .filter(|a| a.first().map(|s| s == "__run").unwrap_or(false))
+                .filter(|a| a.first().map(|s| s == "run").unwrap_or(false))
                 .map(|a| decode(&a))
                 .rfind(|c| c.get(variant).is_some())
             {

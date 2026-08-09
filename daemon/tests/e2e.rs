@@ -529,9 +529,9 @@ async fn a_half_closed_request_stream_does_not_cancel_the_command() {
     let (out, _, code) = drain(out_stream).await;
     assert!(out.contains("ran: probe"), "{out}");
     assert_eq!(code, Some(0));
-    // The passthrough goes through the `__cli` entry point, which parses the
-    // command line with the engine's own clap definition.
-    assert_eq!(h.last_argv(), ["__cli", "--", "probe"]);
+    // The passthrough goes through the supervisor's `cli` entry point, which
+    // parses the command line with the engine's own clap definition.
+    assert_eq!(h.last_argv(), ["cli", "--", "probe"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -731,36 +731,50 @@ fn the_binary_generates_and_prints_a_token() {
 }
 
 /// Locate the `bsdkrund` binary next to the test executable.
-fn daemon_binary() -> PathBuf {
+fn built_binary(name: &str) -> Option<PathBuf> {
     let mut dir = std::env::current_exe().expect("test exe");
     dir.pop(); // deps/
     if dir.ends_with("deps") {
         dir.pop();
     }
-    let exe = dir.join("bsdkrund");
-    assert!(
-        Path::new(&exe).exists(),
-        "bsdkrund not built at {}; run `cargo build --bins` first",
-        exe.display()
-    );
-    exe
+    let exe = dir.join(name);
+    Path::new(&exe).exists().then_some(exe)
 }
 
-/// The supervisor entry point is real: `bsdkrund __run <json>` runs the engine
-/// in this binary, with no `bsdkrun` anywhere on PATH.
+fn daemon_binary() -> PathBuf {
+    built_binary("bsdkrund")
+        .expect("bsdkrund not built; run `cargo build --release -p bsdkrun-daemon` first")
+}
+
+/// The real supervisor, if this checkout could build one.
+///
+/// It links libkrun, so a host without one cannot have built it — and the
+/// daemon's own test suite deliberately runs on such hosts. The two tests that
+/// need the real binary skip rather than fail there; every other test uses the
+/// stub, which is the point of having one.
+fn supervisor_binary() -> Option<PathBuf> {
+    built_binary("bsdkrun-supervisor")
+}
+
+/// The supervisor is real: `bsdkrun-supervisor run <json>` runs the engine with
+/// no `bsdkrun` anywhere on PATH.
 ///
 /// This is the property the whole change exists for, so it is asserted against
-/// the actual daemon binary rather than a stub.
+/// the actual shipped binary rather than a stub.
 #[test]
-fn the_daemon_binary_runs_engine_commands_itself() {
+fn the_supervisor_binary_runs_engine_commands() {
     let state = fixture_state().to_path_buf();
     let spec = serde_json::to_string(&serde_json::json!({
         "Ps": { "all": true, "json": true }
     }))
     .unwrap();
 
-    let out = std::process::Command::new(daemon_binary())
-        .arg("__run")
+    let Some(exe) = supervisor_binary() else {
+        eprintln!("skipping: bsdkrun-supervisor is not built (no libkrun on this host)");
+        return;
+    };
+    let out = std::process::Command::new(exe)
+        .arg("run")
         .arg(&spec)
         .env("BSDKRUN_STATE", &state)
         // Nothing on PATH at all: there is no CLI to fall back to.
@@ -788,8 +802,12 @@ fn the_daemon_binary_runs_engine_commands_itself() {
 /// An unparseable spec fails loudly rather than booting something unintended.
 #[test]
 fn the_supervisor_rejects_a_spec_it_cannot_decode() {
-    let out = std::process::Command::new(daemon_binary())
-        .arg("__run")
+    let Some(exe) = supervisor_binary() else {
+        eprintln!("skipping: bsdkrun-supervisor is not built (no libkrun on this host)");
+        return;
+    };
+    let out = std::process::Command::new(exe)
+        .arg("run")
         .arg("{\"NoSuchCommand\":{}}")
         .output()
         .expect("running the supervisor");

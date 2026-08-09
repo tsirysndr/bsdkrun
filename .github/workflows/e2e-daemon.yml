@@ -1,34 +1,39 @@
 name: e2e (daemon / gRPC)
 
-# The daemon is a gRPC front end over the `bsdkrun` CLI — it links no
-# hypervisor and boots nothing itself, so its tests need neither /dev/kvm nor
-# libkrun and run on ordinary runners. The Rust suite drives a real server over
-# a real socket against a stub CLI, which keeps it hermetic while still
-# asserting the exact command lines the service produces.
+# The daemon links the bsdkrun engine but not its `boot` half, so it still needs
+# neither /dev/kvm nor libkrun and still runs on ordinary runners. What it reads
+# — machines, images, volumes, networks — it reads in-process, so the tests seed
+# a real database under a temp BSDKRUN_STATE; what it cannot do in-process it
+# hands to `bsdkrun-supervisor`, which a stub stands in for so the suite can
+# assert the command it was given without booting anything.
 #
 # Both hosts are covered because the interactive path differs between them:
-# remote shells run the CLI under a pty, and pty behaviour is where macOS and
-# Linux diverge most.
+# remote shells run under a pty, and pty behaviour is where macOS and Linux
+# diverge most.
 
 on:
   workflow_dispatch: {}
   pull_request:
     paths:
       - "daemon/**"
+      - "core/**"
+      - "supervisor/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/e2e-daemon.yml"
   push:
     branches:
       - "main"
     paths:
       - "daemon/**"
+      - "core/**"
+      - "supervisor/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/e2e-daemon.yml"
 
 permissions:
   contents: read
-
-defaults:
-  run:
-    working-directory: daemon
 
 jobs:
   test:
@@ -47,8 +52,6 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: daemon
 
       # tonic-prost-build shells out to protoc to compile the .proto.
       - name: Install protoc (Linux)
@@ -64,17 +67,20 @@ jobs:
       - name: Formatting
         run: cargo fmt --check
 
+      # `-p`, not `--workspace`: cargo unifies features across one build, so
+      # pulling the CLI or the supervisor in would compile bsdkrun-core with
+      # `boot` on and demand libkrun on a runner that has none.
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy -p bsdkrun-daemon --all-targets -- -D warnings
 
       - name: Unit tests
-        run: cargo test --lib
+        run: cargo test -p bsdkrun-daemon --lib
 
       - name: End-to-end tests (gRPC)
-        run: cargo test --test e2e
+        run: cargo test -p bsdkrun-daemon --test e2e
 
       - name: End-to-end tests (GraphQL)
-        run: cargo test --test graphql
+        run: cargo test -p bsdkrun-daemon --test graphql
 
   # Exercises the actual shipped binary over the wire with a third-party client,
   # which is the only way to prove the parts no Rust test touches: that
@@ -95,8 +101,6 @@ jobs:
           node-version: "22"
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: daemon
 
       - name: Install protoc and grpcurl
         run: |
@@ -111,30 +115,41 @@ jobs:
           grpcurl --version
 
       - name: Build the daemon
-        run: cargo build --release --bins
+        run: cargo build --release -p bsdkrun-daemon
 
-      - name: Start the daemon against a stub CLI
+      - name: Start the daemon
         run: |
           set -eux
-          # A stub stands in for the real CLI: this job is about the wire
-          # protocol, not about booting VMs.
-          cat > /tmp/bsdkrun <<'EOF'
+          # A stub stands in for bsdkrun-supervisor: this job is about the wire
+          # protocol, not about booting VMs, and the supervisor is the only half
+          # that needs a hypervisor.
+          cat > /tmp/bsdkrun-supervisor <<'EOF'
           #!/bin/sh
-          case "$1" in
-            --version) echo "bsdkrun 9.9.9-stub" ;;
-            ps) echo '[]' ;;
-            probe) echo "probe ok" ;;
+          case "$2" in
+            *'"Probe"'*) echo "probe ok"; exit 0 ;;
             # Backs the interactive-shell test: echo a marker, then read stdin
             # so keystrokes sent over GraphQL have something to reach.
-            exec) echo "EXEC_OK"; cat ;;
-            *) echo "unknown: $1" >&2; exit 2 ;;
+            *'"Exec"'*|*'"Shell"'*) echo "EXEC_OK"; cat; exit 0 ;;
           esac
+          if [ "$1" = cli ]; then
+            shift; [ "$1" = -- ] && shift
+            case "$1" in
+              probe) echo "probe ok"; exit 0 ;;
+              *) echo "unknown: $1" >&2; exit 2 ;;
+            esac
+          fi
+          echo "unknown: $2" >&2; exit 2
           EOF
-          chmod +x /tmp/bsdkrun
+          chmod +x /tmp/bsdkrun-supervisor
+
+          # A state directory of its own, so the daemon reads a database this
+          # job owns rather than whatever the runner happens to have.
+          export BSDKRUN_STATE=/tmp/bsdkrun-state
+          mkdir -p "$BSDKRUN_STATE"
 
           BSDKRUN_TOKEN=ci-secret-token \
             ./target/release/bsdkrund --bind 127.0.0.1:50077 \
-            --graphql-bind 127.0.0.1:50078 --bsdkrun /tmp/bsdkrun \
+            --graphql-bind 127.0.0.1:50078 --supervisor /tmp/bsdkrun-supervisor \
             > /tmp/daemon.log 2>&1 &
           echo $! > /tmp/daemon.pid
 
@@ -184,7 +199,10 @@ jobs:
           set -eux
           grpcurl -plaintext -H 'authorization: Bearer ci-secret-token' -d '{}' \
             127.0.0.1:50077 bsdkrun.v1.Bsdkrun/Info | tee /tmp/info.json
-          grep -q "9.9.9-stub" /tmp/info.json
+          # The engine is linked in, so its version is reported directly rather
+          # than read back out of another binary.
+          grep -q '"cliVersion"' /tmp/info.json
+          grep -q '"daemonVersion"' /tmp/info.json
 
       - name: The x-bsdkrun-token header works too
         run: |

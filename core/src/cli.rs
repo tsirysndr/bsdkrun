@@ -17,6 +17,7 @@ use clap::builder::styling::{Color, RgbColor, Style, Styles};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "boot")]
 use crate::krun;
 use crate::net::PortForward;
 #[cfg(target_os = "macos")]
@@ -732,6 +733,7 @@ pub struct LinuxArgs {
 
 impl LinuxArgs {
     /// virtio-fs is the default; `--initramfs` opts out of it.
+    #[cfg(feature = "boot")]
     pub(crate) fn virtiofs(&self) -> bool {
         !self.initramfs
     }
@@ -782,6 +784,7 @@ pub enum KernelFormat {
 }
 
 impl KernelFormat {
+    #[cfg(feature = "boot")]
     pub(crate) fn to_krun(self) -> u32 {
         match self {
             KernelFormat::Raw => krun::KRUN_KERNEL_FORMAT_RAW,

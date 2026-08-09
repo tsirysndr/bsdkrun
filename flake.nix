@@ -213,10 +213,10 @@
         # (`../core` has to exist) and `-p bsdkrun-daemon` is what narrows the
         # build back down to it.
         #
-        # It links the engine, and therefore libkrun, so it is no longer the
-        # pure everywhere-buildable package it was while it merely spawned the
-        # `bsdkrun` binary: on darwin it needs Homebrew's libkrun and
-        # `--impure`, exactly like bsdkrun itself.
+        # It links the engine WITHOUT its `boot` feature, so it stays the pure,
+        # hypervisor-free package it has always been: booting lives in
+        # `bsdkrun-supervisor`, which ships beside it and is the only half that
+        # needs libkrun.
         daemonArgs = {
           # NOT `cleanCargoSource`: that keeps only Rust and Cargo files, which
           # drops proto/bsdkrun.proto and leaves the build script failing with
@@ -235,9 +235,10 @@
           # daemon build would build bsdkrun instead — and want the web bundle.
           cargoExtraArgs = "-p bsdkrun-daemon";
 
-          # Same libkrun wiring as bsdkrun: `bsdkrun-core` links it, and
-          # LIBKRUN_PREFIX short-circuits its build script's brew/pkg-config
-          # search.
+          # libkrun is wired in for `bsdkrun-supervisor`, which overrides these
+          # args below. `bsdkrund` itself takes `bsdkrun-core` without its
+          # `boot` feature, so it links no hypervisor at all — but the two share
+          # this attrset, and an unused LIBKRUN_PREFIX costs nothing.
           nativeBuildInputs = [ pkgs.pkg-config pkgs.llvmPackages.llvm pkgs.protobuf ];
           buildInputs = lib.optionals (!isDarwin) [ libkrun ];
           LIBKRUN_PREFIX = libkrunPrefix;
@@ -252,6 +253,37 @@
         };
 
         daemonArtifacts = craneLib.buildDepsOnly daemonArgs;
+
+        # ---- bsdkrun-supervisor -------------------------------------------
+        # The half of the daemon that links libkrun, split out so `bsdkrund`
+        # itself does not have to. Same source tree, different package.
+        supervisorArgs = daemonArgs // {
+          pname = "bsdkrun-supervisor";
+          version = "0.6.0";
+          cargoExtraArgs = "-p bsdkrun-supervisor";
+        };
+
+        supervisorArtifacts = craneLib.buildDepsOnly supervisorArgs;
+
+        bsdkrun-supervisor = craneLib.buildPackage (supervisorArgs // {
+          cargoArtifacts = supervisorArtifacts;
+
+          nativeBuildInputs = supervisorArgs.nativeBuildInputs
+            ++ lib.optionals (!isDarwin) [ pkgs.makeWrapper ];
+          postInstall = lib.optionalString (!isDarwin) ''
+            wrapProgram $out/bin/bsdkrun-supervisor \
+              --prefix PATH : ${lib.makeBinPath runtimeDeps}
+          '';
+
+          meta = with lib; {
+            description =
+              "Runs one bsdkrun command in its own process, for bsdkrund (not a user-facing tool)";
+            homepage = "https://github.com/tsirysndr/bsdkrun";
+            license = licenses.mit;
+            mainProgram = "bsdkrun-supervisor";
+            platforms = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
+          };
+        });
 
         bsdkrund = craneLib.buildPackage (daemonArgs // {
           cargoArtifacts = daemonArtifacts;
@@ -306,7 +338,7 @@
       in
       {
         checks = {
-          inherit bsdkrun bsdkrund;
+          inherit bsdkrun bsdkrund bsdkrun-supervisor;
 
           bsdkrun-clippy = craneLib.cargoClippy (commonArgs // {
             inherit cargoArtifacts;
@@ -325,6 +357,7 @@
         packages.default = bsdkrun;
         packages.bsdkrun = bsdkrun;
         packages.bsdkrund = bsdkrund;
+        packages.bsdkrun-supervisor = bsdkrun-supervisor;
         # The SPA on its own, for serving from something other than `bsdkrun ui`.
         packages.web = webUi;
 

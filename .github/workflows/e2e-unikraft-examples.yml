@@ -119,10 +119,11 @@ jobs:
             # carries the server version as a NUL-terminated string.
             probe: mysql
             expect: "8.0.46"
-            # mysqld wedges on arm64 the moment it creates its second thread
-            # (see examples/unikraft-mysql/README.md). Whether x86_64 is
-            # affected has never been tested, so this job is the test --
-            # exactly as it was for unikraft-bun. Non-strict until it passes.
+            # mysqld wedges the moment it creates its second thread (see
+            # examples/unikraft-mysql/README.md). This job is what established
+            # that it happens on x86_64 too, at the same last line -- so the
+            # steps above still assert the build, the boot, the interface and
+            # entropy, and this one stays non-strict until the hang is fixed.
             strict: false
     steps:
       - uses: actions/checkout@v4

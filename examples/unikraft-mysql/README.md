@@ -76,6 +76,21 @@ far as the `rt_sigprocmask` that glibc's `start_thread` does before calling the
 thread function, and from that point no thread in the guest issues another
 system call.
 
+### Both architectures stall identically
+
+This is not an arm64 problem. The e2e workflow boots this example on x86_64
+under KVM, and it stops at the same place, after the same last line:
+
+```
+1999-12-31T00:00:01.079148Z 0 [System] [MY-010116] [Server] /usr/sbin/mysqld (mysqld 8.0.46) starting as process 1
+1999-12-31T00:00:01.108370Z 1 [System] [MY-013576] [InnoDB] InnoDB initialization has started.
+```
+
+and nothing follows. That matters for where to look next: it rules out the
+arm64-specific `clone`/TLS handling that would otherwise be the first suspect,
+and leaves the architecture-independent explanation below. It also means this
+can be debugged on either host.
+
 ### It is the *second* thread, not threading in general
 
 Threads work. The trace contains exactly two `clone` calls, and the first one
@@ -87,6 +102,7 @@ wedges the guest.
 
 | hypothesis                            | test                                                                       | result                        |
 |---------------------------------------|----------------------------------------------------------------------------|-------------------------------|
+| Something arm64-specific               | the e2e workflow, on x86_64 under KVM                                       | same stall, same last line    |
 | One vCPU starves a spinning thread     | `--cpus 4`                                                                  | wedges identically            |
 | Slow demand paging, not a hang         | left running 9 minutes                                                      | no further output at all      |
 | InnoDB's spin-wait loops               | `--innodb-spin-wait-delay=0 --innodb-sync-spin-loops=0`                     | wedges identically            |
@@ -104,16 +120,18 @@ the new thread spins on a lock the other thread holds, nothing can ever run
 again: 100% CPU, no syscalls, forever. That also explains why `--cpus 4` makes
 no difference, since the guest does not use the extra vCPUs.
 
-This is consistent with the evidence but not proven; the alternative is a bug in
-`clone`/TLS setup that only shows on a second concurrent thread.
+This is consistent with the evidence but not proven. The obvious alternative —
+a bug in arm64's `clone`/TLS setup that only shows on a second concurrent
+thread — is ruled out by x86_64 failing the same way, so whatever it is, it is
+common to both.
 
 ### CI
 
 `.github/workflows/e2e-unikraft-examples.yml` builds and boots this example on
 x86_64 alongside the others, with `strict: false` — the payoff check runs and is
-reported but does not fail the job. That is how it gets established whether the
-second-thread hang is architecture-independent, the same way the bun entry
-established that bun's abort is.
+reported but does not fail the job. Its first run is what established that the
+hang is architecture-independent, exactly as the bun entry did for bun's abort.
+Clear the flag when the hang is fixed.
 
 Its check is not HTTP. A MySQL server sends its handshake packet unprompted on
 connect, so the step reads the first bytes off port 3306 with bash's `/dev/tcp`

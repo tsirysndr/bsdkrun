@@ -35,6 +35,7 @@ on:
       - "examples/unikraft-clojure/**"
       - "examples/unikraft-mysql/**"
       - "examples/unikraft-elixir/**"
+      - "examples/unikraft-gleam/**"
       - "library/unikraft-base/**"
       - "src/**"
       - ".github/workflows/e2e-unikraft-examples.yml"
@@ -147,6 +148,27 @@ jobs:
               -- -extra
             port: 3000
             expect: "Hello from Elixir on Unikraft!"
+            # Verified end to end on arm64/macOS; x86_64 has never been run, so
+            # this job is the test. Non-strict until it passes.
+            strict: false
+          - example: unikraft-gleam
+            kernel: gleam_fc-x86_64
+            # 50 MiB of root filesystem (beam.smp, six OTP applications and a
+            # 2 MiB shipment), resident twice at boot.
+            mem: 1024
+            # Gleam's generated entrypoint.sh passes `-pa "$BASE"/*/ebin`, which
+            # expands to 21 arguments; ERL_LIBS in the Kraftfile replaces them.
+            # The trailing `--` is load-bearing: libkrun appends its own hints
+            # to the command line and they arrive as argv. See
+            # examples/unikraft-gleam/README.md.
+            argv: >-
+              /erl/erts/bin/beam.smp -fnu --
+              -root /erl -bindir /erl/erts/bin -progname erl --
+              -home /root --
+              -noshell -eval wisp_demo@@main:run(wisp_demo)
+              --
+            port: 3000
+            expect: "Hello from Gleam on Unikraft!"
             # Verified end to end on arm64/macOS; x86_64 has never been run, so
             # this job is the test. Non-strict until it passes.
             strict: false

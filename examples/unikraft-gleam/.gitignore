@@ -1,0 +1,12 @@
+# Gleam
+/build/
+erl_crash.dump
+
+# Unikraft build output (see build.sh)
+/.unikraft/
+.config*
+.Kraftfile.*
+/.rootfs-*/
+
+# Rust toolchain cache for the containerised build (see build.sh)
+.rust-cache/

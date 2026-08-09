@@ -17,6 +17,10 @@ use tokio::runtime::Runtime;
 
 // (Runtime is created via Builder::new_current_thread — see Db::open.)
 
+/// One network member as `sync_hosts` needs it: (display name, ip, state_dir,
+/// kind, pid).
+pub type NetworkMemberHost = (String, String, String, String, Option<i64>);
+
 /// State directory: `$BSDKRUN_STATE`, else `$XDG_STATE_HOME/bsdkrun`, else
 /// `$HOME/.local/state/bsdkrun`. Holds the database and per-machine runtime dirs.
 pub fn state_dir() -> Result<PathBuf> {
@@ -866,10 +870,7 @@ impl Db {
 
     /// Members of a network with the extra bits needed to push `/etc/hosts` to
     /// each: (display name, ip, state_dir, kind, pid).
-    pub fn network_member_hosts(
-        &self,
-        network: &str,
-    ) -> Result<Vec<(String, String, String, String, Option<i64>)>> {
+    pub fn network_member_hosts(&self, network: &str) -> Result<Vec<NetworkMemberHost>> {
         self.rt
             .block_on(async {
                 let rows = sqlx::query(

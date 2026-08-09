@@ -62,6 +62,15 @@ RUN set -eux; \
     # safe to make. Every fork_process() call site in the tree is inside
     # `#else /* !EXEC_BACKEND */`, so this leaves none behind.
     export CPPFLAGS="-DEXEC_BACKEND"; \
+    # ac_cv_func_setsid=no below tells configure the function is absent.
+    # PostgreSQL calls setsid() in every child it spawns, to put it in its own
+    # session, and Unikraft answers EPERM:
+    #
+    #   FATAL:  setsid() failed: Operation not permitted
+    #
+    # Sessions and controlling terminals mean nothing in a unikernel, so the
+    # call has nothing to accomplish here. All three uses are guarded by
+    # HAVE_SETSID, so this compiles them out rather than patching them.
     ./configure \
         --enable-option-checking=fatal \
         --prefix=/usr/local \
@@ -72,6 +81,7 @@ RUN set -eux; \
         --without-zlib \
         --without-lz4 \
         --without-zstd \
+        ac_cv_func_setsid=no \
     ; \
     make -j "$(nproc)"; \
     make install
@@ -129,7 +139,14 @@ RUN set -eux; \
         echo "dynamic_shared_memory_type = mmap"; \
         echo "fsync = off"; \
         echo "listen_addresses = '0.0.0.0'"; \
-        echo "unix_socket_directories = '/tmp'"; \
+        # No Unix-domain socket: binding one ends in chmod(), which the guest
+        # does not implement --
+        #   LOG:  could not set permissions of file "/tmp/.s.PGSQL.5432":
+        #         Function not implemented
+        #   FATAL:  could not create any Unix-domain sockets
+        # Nothing in the guest can connect over one anyway; clients arrive over
+        # the forwarded TCP port.
+        echo "unix_socket_directories = ''"; \
     } >> "$PGDATA/postgresql.conf"
 
 # Assemble the root filesystem: the server, its data, and nothing else.

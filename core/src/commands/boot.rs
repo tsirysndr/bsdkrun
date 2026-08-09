@@ -687,7 +687,6 @@ pub(crate) fn boot_firmware(args: FirmwareArgs) -> Result<()> {
 /// Boot a machine via UEFI firmware + a root disk (shared by `firmware` and the
 /// `freebsd`/`netbsd` shortcuts). The root disk is CoW-cloned per machine.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn firmware_machine(
     firmware: &std::path::Path,
     disk: &std::path::Path,
@@ -786,13 +785,6 @@ pub(crate) fn bsd_exec_after(
     }
 }
 
-/// `freebsd` / `netbsd`: fetch the image if needed, auto-locate the firmware,
-/// then boot it. How it boots depends on the host OS:
-///
-/// - **macOS** boots through FreeBSD's `loader.efi`, which needs libkrun's EDK2
-///   firmware (the `libkrun-efi` flavor, macOS-only) — see [`boot_freebsd_efi`].
-/// - **Linux/amd64** direct-boots the GENERIC kernel via **PVH** (no firmware),
-///   like `netbsd` — see [`boot_freebsd_pvh`]. Needs the PVH libkrun fork.
 /// If `--repo` was given and there's no explicit command, make the post-boot
 /// command the repo clone (installs git + records the cwd marker).
 pub(crate) fn bsd_inject_repo(args: &mut BsdArgs) {
@@ -803,6 +795,13 @@ pub(crate) fn bsd_inject_repo(args: &mut BsdArgs) {
     }
 }
 
+/// `freebsd` / `netbsd`: fetch the image if needed, auto-locate the firmware,
+/// then boot it. How it boots depends on the host OS:
+///
+/// - **macOS** boots through FreeBSD's `loader.efi`, which needs libkrun's EDK2
+///   firmware (the `libkrun-efi` flavor, macOS-only) — see [`boot_freebsd_efi`].
+/// - **Linux/amd64** direct-boots the GENERIC kernel via **PVH** (no firmware),
+///   like `netbsd` — see [`boot_freebsd_pvh`]. Needs the PVH libkrun fork.
 pub(crate) fn boot_freebsd(args: BsdArgs) -> Result<()> {
     boot_freebsd_disk(args, None)
 }

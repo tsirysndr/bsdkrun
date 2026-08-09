@@ -8,11 +8,11 @@
 //!
 //! Boot modes:
 //!   * kernel   — direct kernel + cmdline, using libkrun's generated FDT
-//!                (target: NetBSD evbarm / bare kernel+FDT boot)
+//!     (target: NetBSD evbarm / bare kernel+FDT boot)
 //!   * firmware — a UEFI firmware image that boots a normal BSD disk via its
-//!                EFI loader (target: FreeBSD / NetBSD arm64)
+//!     EFI loader (target: FreeBSD / NetBSD arm64)
 //!   * linux    — run an OCI image (Docker Hub / any registry) as a Linux
-//!                machine: fetch a kernel, extract the rootfs, boot it
+//!     machine: fetch a kernel, extract the rootfs, boot it
 //!
 //! Two layers sit on top of those modules:
 //!   * [`commands`] — the subcommands as the CLI runs them, printing as they go.

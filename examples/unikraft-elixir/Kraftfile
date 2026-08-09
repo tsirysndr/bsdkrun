@@ -1,0 +1,264 @@
+spec: v0.6
+
+name: elixir
+
+# Unikraft's prebuilt `base:latest` runtime is published for x86_64 only, and
+# libkrun on Apple Silicon runs arm64 guests only, so this Kraftfile builds that
+# same runtime (library/base in unikraft/catalog) from source. The kconfig block
+# below is therefore large: it is library/base's configuration plus the arm64
+# fixes described in ../../library/unikraft-base/README.md.
+#
+# It is the one from ../unikraft-expressjs plus the four environment variables
+# `erlexec` would have exported (below); the BEAM needs nothing else beyond
+# what running any dynamically linked runtime needs.
+unikraft:
+  version: staging
+  kconfig:
+    # libkrun's aarch64 console is a PL011 (see ../unikraft-helloworld).
+    CONFIG_LIBPL011: 'y'
+    CONFIG_LIBPL011_EARLY_CONSOLE: 'y'
+
+    # Let the application use FP/SIMD. This is arm64-only (`depends on
+    # ARCH_ARM_64`) and `default n`, which is exactly why upstream's x86_64
+    # base never sets it: on x86_64 the FPU is always there, but on arm64
+    # nothing clears CPACR_EL1.FPEN unless this is on. Without it the emulator
+    # traps on its first NEON instruction — ESR_EL1 EC=0x07, "SVE/AdvSIMD/FP
+    # access trapped" — long before it reaches Elixir. Ignored on x86_64.
+    CONFIG_FPSIMD: 'y'
+
+    # Entropy from the host over virtio-rng. libkrun always creates this
+    # device, but Unikraft has no in-tree driver for it, so the build needs
+    # the one installed by ../../library/unikraft-base/patches. Without an
+    # entropy source, arm64 has none at all — LIBUKRANDOM_LCPU needs FEAT_RNG
+    # (armv8.5 RNDR), which Hypervisor.framework guests do not get — and lwip
+    # aborts the boot with "Could not obtain randomness (-19)".
+    CONFIG_LIBVIRTIO_RNG: 'y'
+
+    # --- everything below is library/base's config, verbatim ---
+    CONFIG_HAVE_PAGING_DIRECTMAP: 'y'
+    CONFIG_HAVE_PAGING: 'y'
+    CONFIG_I8042: 'y'
+
+    # x86_64 has no device tree, so the guest finds its virtio devices only
+    # through the `virtio_mmio.device=` parameters libkrun appends. The slot
+    # count has to cover *every* device libkrun creates — balloon, entropy,
+    # vsock, net — not just the ones we want; the default of 4 is one short and
+    # the NIC is the one dropped, with `virtio_mmio_cmdl.c: Could not add
+    # device (-14)` and no network interface in the guest.
+    CONFIG_LIBVIRTIO_MMIO: 'y'
+    CONFIG_VIRTIO_MMIO_MAX_DEV_CMDLINE: '8'
+    CONFIG_LIBDEVFS_AUTOMOUNT: 'y'
+    CONFIG_LIBDEVFS_DEV_NULL: 'y'
+    CONFIG_LIBDEVFS_DEV_STDOUT: 'y'
+    CONFIG_LIBDEVFS_DEV_ZERO: 'y'
+    CONFIG_LIBDEVFS: 'y'
+    CONFIG_LIBPOSIX_ENVIRON: 'y'
+    CONFIG_LIBPOSIX_ENVIRON_ENVP0: "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    CONFIG_LIBPOSIX_ENVIRON_ENVP1: "LD_LIBRARY_PATH=/usr/local/lib:/usr/lib:/lib"
+    CONFIG_LIBPOSIX_ENVIRON_ENVP2: "HOME=/"
+    CONFIG_LIBPOSIX_ENVIRON_ENVP3: "PWD=/"
+    # `erlexec` is the program that would normally exec the emulator, and it
+    # exports these four before doing so. beam.smp does not merely prefer them
+    # to its own -root/-bindir arguments, it *requires* BINDIR: with the
+    # variable unset it prints "Environment variable BINDIR is not set" and
+    # exits before opening anything. The environment is fixed at build time
+    # because a unikernel has no shell to export it -- upstream's `wrapper.sh`
+    # is the piece this replaces (see the README).
+    CONFIG_LIBPOSIX_ENVIRON_ENVP4: "ROOTDIR=/erl"
+    CONFIG_LIBPOSIX_ENVIRON_ENVP5: "BINDIR=/erl/erts/bin"
+    CONFIG_LIBPOSIX_ENVIRON_ENVP6: "EMU=beam"
+    CONFIG_LIBPOSIX_ENVIRON_ENVP7: "PROGNAME=erl"
+    CONFIG_LIBPOSIX_ENVIRON_LIBPARAM: 'y'
+    CONFIG_LIBPOSIX_EVENTFD: 'y'
+    CONFIG_LIBPOSIX_FDIO: 'y'
+    CONFIG_LIBPOSIX_FDTAB: 'y'
+    CONFIG_LIBPOSIX_FUTEX: 'y'
+    CONFIG_LIBPOSIX_MMAP: 'y'
+    CONFIG_LIBPOSIX_NETLINK: 'y'
+    CONFIG_LIBPOSIX_PIPE: 'y'
+    CONFIG_LIBPOSIX_POLL: 'y'
+    CONFIG_LIBPOSIX_PROCESS: 'y'
+    CONFIG_LIBPOSIX_PROCESS_MULTITHREADING: 'y'
+    # Deliver CPU faults to the application as signals. Runtimes that bundle
+    # OpenSSL probe for CPU extensions by *executing* an instruction under
+    # sigsetjmp and expecting SIGILL when it is unimplemented; without signal
+    # delivery that probe is a fatal trap rather than a recoverable one. See
+    # ../unikraft-expressjs/repro/README.md.
+    CONFIG_LIBPOSIX_PROCESS_SIGNAL: 'y'
+    CONFIG_LIBPOSIX_PROCESS_BRK: 'y'
+    CONFIG_LIBPOSIX_SOCKET: 'y'
+    CONFIG_LIBPOSIX_SYSINFO: 'y'
+    CONFIG_LIBPOSIX_TIME: 'y'
+    CONFIG_LIBPOSIX_TIMERFD: 'y'
+    CONFIG_LIBPOSIX_UNIXSOCKET: 'y'
+    CONFIG_LIBPOSIX_USER_GID: 0
+    CONFIG_LIBPOSIX_USER_GROUPNAME: "root"
+    CONFIG_LIBPOSIX_USER_UID: 0
+    CONFIG_LIBPOSIX_USER_USERNAME: "root"
+    CONFIG_LIBPOSIX_USER: 'y'
+    CONFIG_LIBRAMFS: 'y'
+    CONFIG_LIBSYSCALL_SHIM_HANDLER_ULTLS: 'y'
+    CONFIG_LIBSYSCALL_SHIM_HANDLER: 'y'
+    CONFIG_LIBSYSCALL_SHIM_LEGACY_VERBOSE: 'y'
+    # Syscall tracing. 'y' is invaluable for debugging the guest (it prints via
+    # uk_printk(UK_PRINT_RAW), so the KLVL_ERR default does not swallow it) but
+    # it is very noisy and slows the boot down. Stated explicitly because kraft
+    # does not remove a symbol from an already-generated .config.
+    CONFIG_LIBSYSCALL_SHIM_STRACE: 'n'
+    CONFIG_LIBSYSCALL_SHIM: 'y'
+    CONFIG_LIBUKALLOCPOOL: 'y'
+    CONFIG_LIBUKBLKDEV_SYNC_IO_BLOCKED_WAITING: 'y'
+    CONFIG_LIBUKBLKDEV: 'y'
+    CONFIG_LIBUKBOOT_BANNER_MINIMAL: 'y'
+    CONFIG_LIBUKBOOT_HEAP_BASE: '0x400000000'
+    CONFIG_LIBUKBOOT_MAINTHREAD: 'y'
+    CONFIG_LIBUKBOOT_SHUTDOWNREQ_HANDLER: 'y'
+    CONFIG_LIBUKLIBPARAM: 'y'
+    CONFIG_LIBUKCPIO: 'y'
+    CONFIG_LIBUKDEBUG_CRASH_SCREEN: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'y'
+    CONFIG_LIBUKDEBUG_PRINT_SRCNAME: 'n'
+    CONFIG_LIBUKDEBUG_PRINT_TIME: 'y'
+    CONFIG_LIBUKDEBUG_PRINTK_ERR: 'y'
+    CONFIG_LIBUKDEBUG_PRINTK: 'y'
+    CONFIG_LIBUKDEBUG: 'y'
+    CONFIG_LIBUKFALLOC: 'y'
+    CONFIG_LIBUKMPI: 'n'
+    CONFIG_LIBUKSIGNAL: 'y'
+    CONFIG_LIBUKRANDOM_DEVFS: 'y'
+    CONFIG_LIBUKRANDOM: 'y'
+    CONFIG_LIBUKRANDOM_GETRANDOM: 'y'
+    CONFIG_LIBUKRANDOM_CMDLINE_SEED: 'y'
+    CONFIG_LIBUKRANDOM_LCPU: 'y'
+    CONFIG_LIBUKVMEM_DEFAULT_BASE: '0x0000001000000000'
+    CONFIG_LIBUKVMEM_DEMAND_PAGE_IN_SIZE: 12
+    CONFIG_LIBUKVMEM_PAGEFAULT_HANDLER_PRIO: 4
+    CONFIG_LIBUKVMEM: 'y'
+    CONFIG_LIBVFSCORE_AUTOMOUNT_CI_EINITRD: 'y'
+    CONFIG_LIBVFSCORE_AUTOMOUNT_CI: 'y'
+    CONFIG_LIBVFSCORE_AUTOMOUNT_FB: 'y'
+    CONFIG_LIBVFSCORE_AUTOMOUNT_FB0_DEV: "embedded"
+    CONFIG_LIBVFSCORE_AUTOMOUNT_FB0_DRIVER: "extract"
+    CONFIG_LIBVFSCORE_AUTOMOUNT_FB0_MP: "/"
+    CONFIG_LIBVFSCORE_AUTOMOUNT_UP: 'y'
+    CONFIG_LIBVFSCORE_AUTOMOUNT: 'y'
+    CONFIG_LIBVFSCORE_NONLARGEFILE: 'y'
+    CONFIG_LIBVFSCORE: 'y'
+    CONFIG_LIBUK9P: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_OPTIMIZE_LTO: 'y'
+    CONFIG_PAGING: 'y'
+    CONFIG_STACK_SIZE_PAGE_ORDER: 4 # 128 * 4K = 512K
+    CONFIG_UKPLAT_KSP_SIZE: 32768
+    CONFIG_UKPLAT_MEMREGION_MAX_COUNT: 64
+    CONFIG_LIBUKNETDEV: 'y'
+    CONFIG_LIBUKNETDEV_EINFO_LIBPARAM: 'y'
+
+libraries:
+  # A Rust rewrite of upstream app-elfloader. It keeps upstream's Kconfig
+  # surface exactly, which is why every symbol below is unchanged from the
+  # stock elfloader configuration.
+  #
+  # To build against a local checkout instead, run build.sh with
+  # ELFLOADER_RS=/path/to/app-elfloader-rs; it will install that tree over
+  # whatever kraft fetched.
+  app-elfloader:
+    source: https://github.com/tsirysndr/app-elfloader.git
+    version: main
+    kconfig:
+      # Implements arch_prctl(ARCH_SET_FS), which is how glibc installs the
+      # thread pointer on x86_64. Without it startup dies with
+      # "cannot set %fs base address for thread-local storage"; on arm64 the
+      # TCB is likewise never established, so the stack canary reads garbage
+      # and the dynamic loader cannot resolve TLS relocations.
+      CONFIG_LIBPOSIX_PROCESS_ARCH_PRCTL: 'y'
+      CONFIG_APPELFLOADER_CUSTOMAPPNAME: 'y'
+      # Loader diagnostics. Off by default; turn it on to get the placement
+      # trace in the arm64 notes below. The messages are forced to error level
+      # (see app-elfloader-rs's glue/shim.c) because the kernel log level is a
+      # Kconfig `choice`, which a Kraftfile cannot set, so it stays at
+      # KLVL_ERR and would otherwise swallow all of them.
+      CONFIG_APPELFLOADER_DEBUG: 'n'
+      CONFIG_APPELFLOADER_STACK_NBPAGES: 128
+      CONFIG_APPELFLOADER_VFSEXEC: 'y'
+      CONFIG_APPELFLOADER_VFSEXEC_EXECBIT: 'y'
+      CONFIG_APPELFLOADER_VFSEXEC_ENVPWD: 'y'
+      CONFIG_APPELFLOADER_VFSEXEC_ENVPATH: 'y'
+      CONFIG_APPELFLOADER_AUTOGEN: 'y'
+      CONFIG_APPELFLOADER_AUTOGEN_ETCRESOLVCONF: 'y'
+      CONFIG_APPELFLOADER_AUTOGEN_ETCHOSTS: 'y'
+      CONFIG_APPELFLOADER_AUTOGEN_ETCHOSTS_LOCALHOST4: 'y'
+      CONFIG_APPELFLOADER_AUTOGEN_ETCHOSTNAME: 'y'
+      CONFIG_APPELFLOADER_AUTOGEN_REPLACEEXIST: 'y'
+  lwip:
+    source: https://github.com/unikraft/lib-lwip.git
+    version: staging
+    kconfig:
+      CONFIG_LWIP_LOOPIF: 'y'
+      CONFIG_LWIP_UKNETDEV: 'y'
+      CONFIG_LWIP_LOOPBACK: 'y'
+      CONFIG_LWIP_TCP: 'y'
+      CONFIG_LWIP_UDP: 'y'
+      CONFIG_LWIP_RAW: 'y'
+      CONFIG_LWIP_WND_SCALE: 'y'
+      CONFIG_LWIP_TCP_KEEPALIVE: 'y'
+      CONFIG_LWIP_THREADS: 'y'
+      CONFIG_LWIP_HEAP: 'y'
+      CONFIG_LWIP_SOCKET: 'y'
+      CONFIG_LWIP_AUTOIFACE: 'y'
+      CONFIG_LWIP_IPV4: 'y'
+      CONFIG_LWIP_DHCP: 'y'
+      CONFIG_LWIP_WAITIFACE: 'y'
+      CONFIG_LWIP_DNS: 'n'
+      CONFIG_LWIP_NUM_TCPCON: 64
+      CONFIG_LWIP_NUM_TCPLISTENERS: 64
+      CONFIG_LWIP_ICMP: 'y'
+  # No lib-libelf: app-elfloader-rs parses ELF itself, with bounds checks
+  # against the actual file size rather than libelf's trust in the headers.
+
+targets:
+- fc/arm64
+- fc/x86_64
+
+rootfs: ./Dockerfile
+
+# The emulator is started directly, with the argument vector `erlexec` would
+# have built for it. Upstream runs `wrapper.sh -> bin/server start`, a chain of
+# four shell scripts ending in an exec of `erl`; none of that survives in a
+# unikernel, which has no shell and runs exactly one program. Everything after
+# the third `--` is what the release's own start script passes, minus `-sname`
+# and `-setcookie`: distribution would make the VM spawn `epmd` as a child
+# process. See the README for how this vector was obtained.
+cmd:
+- /erl/erts/bin/beam.smp
+# `+fnu` as erlexec rewrites it: force UTF-8 filename handling. The image ships
+# no locale data, so setlocale() fails and the VM would otherwise settle on
+# latin1 and warn that Elixir may malfunction.
+- -fnu
+- "--"
+- -root
+- /erl
+- -bindir
+- /erl/erts/bin
+- -progname
+- erl
+- "--"
+- -home
+- /root
+- "--"
+- -noshell
+- -s
+- elixir
+- start_cli
+- -mode
+- embedded
+- -config
+- /srv/releases/0.1.0/sys
+- -boot
+- /srv/releases/0.1.0/start
+- -boot_var
+- RELEASE_LIB
+- /srv/lib
+- "--"
+- -extra
+- --no-halt

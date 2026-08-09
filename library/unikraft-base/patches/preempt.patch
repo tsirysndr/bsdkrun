@@ -413,7 +413,7 @@
  static struct uk_arch_x86_64_desc_table_ptr64 idtptr;
 --- a/plat/kvm/x86/cpu_vectors_x86_64.S
 +++ b/plat/kvm/x86/cpu_vectors_x86_64.S
-@@ -122,6 +122,27 @@
+@@ -122,6 +122,36 @@
  	.cfi_endproc
  .endm
  
@@ -431,11 +431,20 @@
 + * Must stay in step with the tail of IRQ_ENTRY below.
 + */
 +ENTRY(uk_plat_native_preempt_return)
++	/* POP_CALLER_SAVE emits .cfi_adjust_cfa_offset/.cfi_restore, which need
++	 * an open FDE, so this needs its own even though it never returns to a
++	 * caller. `simple` keeps the assembler from assuming the usual entry
++	 * rules -- there is no return address here, the frame is one the
++	 * interrupt left behind.
++	 */
++	.cfi_startproc simple
++	.cfi_def_cfa rsp, 0
 +	movq	%rdi, %rsp
 +	addq	$UK_LCPU_X86_64_REGS_OFFSETOF_R15, %rsp
 +	POP_CALLER_SAVE
 +	addq	$8, %rsp                    /* discard the pushed error code */
 +	iretq
++	.cfi_endproc
 +#endif /* CONFIG_UKPLAT_PREEMPT */
 +
  .macro IRQ_ENTRY irqno

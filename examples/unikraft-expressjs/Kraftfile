@@ -67,6 +67,13 @@ unikraft:
     CONFIG_LIBPOSIX_POLL: 'y'
     CONFIG_LIBPOSIX_PROCESS: 'y'
     CONFIG_LIBPOSIX_PROCESS_MULTITHREADING: 'y'
+    # Deliver CPU faults to the application as signals. node needs this on
+    # arm64: OpenSSL probes for the SM3 extension by *executing* an SM3
+    # instruction under sigsetjmp and expecting SIGILL when the CPU (Apple
+    # silicon, here) does not implement it. Without this the probe is a fatal
+    # trap instead of a recoverable one.
+    CONFIG_LIBPOSIX_PROCESS_SIGNAL: 'y'
+    CONFIG_LIBPOSIX_PROCESS_BRK: 'y'
     CONFIG_LIBPOSIX_SOCKET: 'y'
     CONFIG_LIBPOSIX_SYSINFO: 'y'
     CONFIG_LIBPOSIX_TIME: 'y'
@@ -81,6 +88,11 @@ unikraft:
     CONFIG_LIBSYSCALL_SHIM_HANDLER_ULTLS: 'y'
     CONFIG_LIBSYSCALL_SHIM_HANDLER: 'y'
     CONFIG_LIBSYSCALL_SHIM_LEGACY_VERBOSE: 'y'
+    # Syscall tracing. 'y' is invaluable for debugging the guest (it prints via
+    # uk_printk(UK_PRINT_RAW), so the KLVL_ERR default does not swallow it) but
+    # it is very noisy and slows the boot down. Stated explicitly because kraft
+    # does not remove a symbol from an already-generated .config.
+    CONFIG_LIBSYSCALL_SHIM_STRACE: 'n'
     CONFIG_LIBSYSCALL_SHIM: 'y'
     CONFIG_LIBUKALLOCPOOL: 'y'
     CONFIG_LIBUKBLKDEV_SYNC_IO_BLOCKED_WAITING: 'y'
@@ -131,9 +143,16 @@ unikraft:
     CONFIG_LIBUKNETDEV_EINFO_LIBPARAM: 'y'
 
 libraries:
+  # A Rust rewrite of upstream app-elfloader. It keeps upstream's Kconfig
+  # surface exactly, which is why every symbol below is unchanged from the
+  # stock elfloader configuration.
+  #
+  # To build against a local checkout instead, run build.sh with
+  # ELFLOADER_RS=/path/to/app-elfloader-rs; it will install that tree over
+  # whatever kraft fetched.
   app-elfloader:
-    source: https://github.com/unikraft/app-elfloader.git
-    version: staging
+    source: https://github.com/tsirysndr/app-elfloader.git
+    version: main
     kconfig:
       # Implements arch_prctl(ARCH_SET_FS), which is how glibc installs the
       # thread pointer on x86_64. Without it startup dies with
@@ -141,8 +160,13 @@ libraries:
       # TCB is likewise never established, so the stack canary reads garbage
       # and the dynamic loader cannot resolve TLS relocations.
       CONFIG_LIBPOSIX_PROCESS_ARCH_PRCTL: 'y'
-      CONFIG_APPELFLOADER_BRK: 'y'
       CONFIG_APPELFLOADER_CUSTOMAPPNAME: 'y'
+      # Loader diagnostics. Off by default; turn it on to get the placement
+      # trace in the arm64 notes below. The messages are forced to error level
+      # (see app-elfloader-rs's glue/shim.c) because the kernel log level is a
+      # Kconfig `choice`, which a Kraftfile cannot set, so it stays at
+      # KLVL_ERR and would otherwise swallow all of them.
+      CONFIG_APPELFLOADER_DEBUG: 'n'
       CONFIG_APPELFLOADER_STACK_NBPAGES: 128
       CONFIG_APPELFLOADER_VFSEXEC: 'y'
       CONFIG_APPELFLOADER_VFSEXEC_EXECBIT: 'y'
@@ -177,9 +201,8 @@ libraries:
       CONFIG_LWIP_NUM_TCPCON: 64
       CONFIG_LWIP_NUM_TCPLISTENERS: 64
       CONFIG_LWIP_ICMP: 'y'
-  libelf:
-    source: https://github.com/unikraft/lib-libelf.git
-    version: staging
+  # No lib-libelf: app-elfloader-rs parses ELF itself, with bounds checks
+  # against the actual file size rather than libelf's trust in the headers.
 
 targets:
 - fc/arm64

@@ -111,10 +111,12 @@
  extern struct _gic_dev *gic;
  
  __uk_pcpuvar __u8 uk_plat_native_except_switch_stack;
-@@ -231,6 +242,94 @@
+@@ -229,7 +240,100 @@
+ 	 * the above conditional.
+ 	 */
  	uk_arch_arm64_halt();
- }
- 
++}
++
 +#if CONFIG_UKPLAT_PREEMPT
 +/* Resume the interrupted context. Defined in the platform's exceptions.S,
 + * where the register-restore sequence already lives: it sets SP to the saved
@@ -186,7 +188,12 @@
 +	/* Carve the frame and the extended context out of the interrupted
 +	 * thread's stack, below its stack pointer.
 +	 */
-+	sp = ALIGN_DOWN(regs->sp - sizeof(*ectx), UK_PLAT_NATIVE_ECTX_ALIGN);
++	/* The size comes from the macro, not sizeof: x86_64 keeps
++	 * struct uk_plat_native_ectx opaque and only publishes its size,
++	 * so this stays the same shape on both architectures.
++	 */
++	sp = ALIGN_DOWN(regs->sp - UK_PLAT_NATIVE_ECTX_SIZE,
++			UK_PLAT_NATIVE_ECTX_ALIGN);
 +	ectx = (struct uk_plat_native_ectx *)sp;
 +
 +	sp = ALIGN_DOWN(sp - sizeof(*frame), UKARCH_SP_ALIGN);
@@ -200,13 +207,12 @@
 +	regs->sp = (__u64)sp;
 +	regs->x0 = (__u64)frame;
 +	regs->x1 = (__u64)ectx;
-+}
+ }
 +#endif /* CONFIG_UKPLAT_PREEMPT */
-+
+ 
  void uk_plat_native_except_irq_handler(struct uk_plat_native_regs *regs)
  {
- 	struct uk_plat_native_except_irq_ctx ctx;
-@@ -245,6 +344,10 @@
+@@ -245,6 +349,10 @@
  	rc = uk_raise_event(UK_PLAT_NATIVE_EXCEPT_EVENT_IRQ, &ctx);
  	if (unlikely(rc < 0))
  		UK_CRASH("IRQ event handler returned error: %d\n", rc);
@@ -283,11 +289,10 @@
  	depends on LIBUKPAGING && ARCH_ARM_64
 --- a/plat/native/arch/x86_64/except.c
 +++ b/plat/native/arch/x86_64/except.c
-@@ -22,6 +22,20 @@
- #include <uk/assert.h>
+@@ -23,6 +23,20 @@
  #include <x86/traps.h>
  #include <uk/pm.h>
-+
+ 
 +#if CONFIG_UKPLAT_PREEMPT
 +#include <uk/plat/common/sections.h>
 +#include <uk/plat/native/arch/ectx.h>
@@ -301,10 +306,11 @@
 + */
 +#define X86_ABI_RED_ZONE_SIZE		128
 +#endif /* CONFIG_UKPLAT_PREEMPT */
- 
++
  /*
   * CPUs should get dedicated IRQ and exception stacks. We use the interrupt
-@@ -307,7 +321,95 @@
+  * stack table (IST) feature for switching to the stack. This means when an
+@@ -307,6 +321,98 @@
  }
  
  UK_EVENT(UK_PLAT_NATIVE_EXCEPT_EVENT_IRQ);
@@ -375,9 +381,13 @@
 +	 */
 +	sp = regs->rsp - X86_ABI_RED_ZONE_SIZE;
 +
-+	sp = ALIGN_DOWN(sp - sizeof(*ectx), UK_PLAT_NATIVE_ECTX_ALIGN);
++	/* The size comes from the macro, not sizeof: x86_64 keeps
++	 * struct uk_plat_native_ectx opaque and only publishes its size.
++	 */
++	sp = ALIGN_DOWN(sp - UK_PLAT_NATIVE_ECTX_SIZE,
++			UK_PLAT_NATIVE_ECTX_ALIGN);
 +	ectx = (struct uk_plat_native_ectx *)sp;
- 
++
 +	sp = ALIGN_DOWN(sp - sizeof(*frame), 16);
 +	frame = (struct uk_plat_native_regs *)sp;
 +	*frame = *regs;
@@ -396,11 +406,10 @@
 +	regs->rsi = (__u64)ectx;
 +}
 +#endif /* CONFIG_UKPLAT_PREEMPT */
-+
+ 
  void uk_plat_native_except_irq_handler(struct uk_plat_native_regs *regs,
  				       __u32 irq)
- {
-@@ -331,6 +433,10 @@
+@@ -331,6 +437,10 @@
  #if CONFIG_LIBUKPLAT_NATIVE_ECTX_ISR_ASSERTIONS
  	uk_plat_native_ectx_assert_equal(ectx);
  #endif /* CONFIG_LIBUKPLAT_NATIVE_ECTX_ISR_ASSERTIONS */

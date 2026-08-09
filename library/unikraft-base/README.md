@@ -23,12 +23,12 @@ be used under bsdkrun at all. app-elfloader itself is architecture-clean —
 nothing in its `Config.uk` gates on architecture and it ships a `qemu-aarch64`
 defconfig — so the gap is packaging, not portability.
 
-Fifteen things were needed on top of a stock checkout. All are applied by
+Sixteen things were needed on top of a stock checkout. All are applied by
 `patches/apply.sh`, which is idempotent, except number 6 which is kconfig.
 Entries 10-14 came out of getting node to run on arm64 and are described in
-`../../examples/unikraft-expressjs/README.md`; entry 15 (`mremap`) came out of
-Bun and is described in `../../examples/unikraft-bun/README.md`, with a test in
-`tests/`:
+`../../examples/unikraft-expressjs/README.md`; entries 15 (`mremap`) and 16
+(`epoll_pwait`'s signal mask) came out of Bun and are described in
+`../../examples/unikraft-bun/README.md`, with a test for the first in `tests/`:
 
 1. **`lib/syscall_shim/arch/arm64/syscall_handler.c` is missing an include.**
    It uses `struct ukarch_execenv` but only includes `<uk/arch/types.h>`, so any

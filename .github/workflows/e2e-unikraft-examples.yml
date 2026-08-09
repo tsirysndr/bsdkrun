@@ -85,10 +85,13 @@ jobs:
             argv: /usr/bin/bun run /usr/src/server.js
             port: 3000
             expect: "Hello from Bun on Unikraft!"
-            # Bun aborts inside JavaScriptCore's heap setup on arm64 (see
-            # examples/unikraft-bun/README.md). Whether x86_64 is affected has
-            # never been tested -- there is no x86_64 host to hand -- so this
-            # job is the test. Non-strict until it is known to pass.
+            # Bun serves on arm64 now. It needed two syscalls Unikraft was
+            # missing -- mremap, and epoll_pwait with a signal mask -- both in
+            # library/unikraft-base/patches; see examples/unikraft-bun/README.md.
+            # Neither fix is architecture-specific, so this should pass here
+            # too, but this job is the only x86_64 host available and it has
+            # not run since. Left non-strict for one green run; the step
+            # summary says to flip it.
             strict: false
           - example: unikraft-clojure
             kernel: clojure_fc-x86_64

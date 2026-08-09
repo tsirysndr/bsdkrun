@@ -56,6 +56,15 @@ unikraft:
     CONFIG_LIBPOSIX_ENVIRON_ENVP1: "LD_LIBRARY_PATH=/usr/local/lib:/usr/lib:/lib"
     CONFIG_LIBPOSIX_ENVIRON_ENVP2: "HOME=/"
     CONFIG_LIBPOSIX_ENVIRON_ENVP3: "PWD=/"
+    # JavaScriptCore's concurrent collector suspends every other thread by
+    # signalling it and waiting for the handler to record its registers.
+    # Unikraft only delivers a signal when the target crosses a syscall
+    # boundary, so a thread in JIT-ed code never takes it: the queue fills,
+    # tkill starts returning EAGAIN, and Bun reports
+    # "embedder failed to suspend thread" before dying. Turning the concurrent
+    # collector off leaves nothing to suspend. Remove this once Unikraft can
+    # deliver signals asynchronously.
+    CONFIG_LIBPOSIX_ENVIRON_ENVP4: "BUN_JSC_useConcurrentGC=0"
     CONFIG_LIBPOSIX_ENVIRON_LIBPARAM: 'y'
     CONFIG_LIBPOSIX_EVENTFD: 'y'
     CONFIG_LIBPOSIX_FDIO: 'y'

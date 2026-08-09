@@ -1217,4 +1217,225 @@ else
 	echo "posix-socket/socket.c: already patched or absent, skipping"
 fi
 
+# ---------------------------------------------------------------------------
+# 16. epoll_pwait() refuses any request that carries a signal mask.
+#
+# lib/posix-poll implements the wait but gives up as soon as a mask is present:
+#
+#     if (unlikely(sigmask)) {
+#             uk_pr_warn_once("STUB: epoll_pwait no sigmask support\n");
+#             return -ENOSYS;
+#     }
+#
+# On arm64 there is no epoll_wait syscall at all -- musl's epoll_wait() is
+# epoll_pwait() with a NULL mask -- so this only bites callers that actually
+# pass one. node and Deno do not; Bun does, and its event loop spins on ENOSYS
+# forever (29,000 calls while a single request sat unanswered), so the server
+# listens but never replies.
+#
+# The mask is applied around the wait rather than inside it: uk_sys_epoll_pwait
+# returns from several places in its polling loop, and wrapping at the syscall
+# entry point keeps the save/restore on one path. That is also where Linux's
+# semantics are easiest to read -- set the mask, wait, put the old one back.
+#
+# The swap is not atomic with the start of the wait, unlike Linux. Closing that
+# window needs the wait itself to take the mask, which means touching the loop.
+# It matters only if a signal arrives between the two, and it is strictly
+# better than refusing the call.
+#
+# With CONFIG_LIBPOSIX_PROCESS_SIGNAL off there is no signal delivery for the
+# mask to affect, so the request is simply honoured with the mask ignored --
+# still better than ENOSYS.
+# ---------------------------------------------------------------------------
+EPOLLC="$UK/lib/posix-poll/epoll.c"
+if [ -f "$EPOLLC" ] && ! grep -q "epoll_pwait_sigmask_enter" "$EPOLLC"; then
+	echo "patching $EPOLLC (honour the epoll_pwait signal mask)"
+	python3 - "$EPOLLC" <<'PYEOF3'
+import sys
+
+p = sys.argv[1]
+s = open(p).read()
+
+# 1. Drop the ENOSYS bail-out; the mask is handled by the callers below.
+stub = """	if (unlikely(sigmask)) {
+		uk_pr_warn_once("STUB: epoll_pwait no sigmask support\\n");
+		return -ENOSYS;
+	}
+
+"""
+assert stub in s, "epoll.c does not contain the expected sigmask stub"
+s = s.replace(stub, "", 1)
+
+# 2. Helpers that swap the thread's signal mask around the wait.
+# Insert ahead of epoll_pwait2, which is the first of the two users.
+anchor = """UK_SYSCALL_R_DEFINE(int, epoll_pwait2, int, epfd, struct epoll_event *, events,"""
+assert anchor in s, "epoll.c does not contain the expected epoll_pwait2 definition"
+
+# SIG_SETMASK comes from <signal.h>, which epoll.c does not include.
+inc_old = """#include <errno.h>
+"""
+inc_new = """#include <errno.h>
+#include <signal.h>
+"""
+assert inc_old in s, "epoll.c include block does not match"
+s = s.replace(inc_old, inc_new, 1)
+
+helpers = """/* Apply the caller's signal mask for the duration of the wait, returning the
+ * previous one so it can be restored. rt_sigprocmask is reached through the
+ * syscall shim because the mask lives in posix-process's private per-thread
+ * state, and posix-poll does not depend on that library.
+ */
+static int epoll_pwait_sigmask_enter(const sigset_t *sigmask, size_t sigsetsize,
+				     sigset_t *oldmask)
+{
+#if CONFIG_LIBPOSIX_PROCESS_SIGNAL
+	if (!sigmask)
+		return 0;
+
+	return uk_syscall_r_rt_sigprocmask(SIG_SETMASK, (long)sigmask,
+					   (long)oldmask, (long)sigsetsize);
+#else /* !CONFIG_LIBPOSIX_PROCESS_SIGNAL */
+	/* Nothing delivers signals in this build, so the mask cannot change
+	 * what the wait observes. Honour the call and ignore it.
+	 */
+	(void)sigmask;
+	(void)sigsetsize;
+	(void)oldmask;
+	return 0;
+#endif /* !CONFIG_LIBPOSIX_PROCESS_SIGNAL */
+}
+
+static void epoll_pwait_sigmask_leave(const sigset_t *sigmask,
+				      size_t sigsetsize, sigset_t *oldmask)
+{
+#if CONFIG_LIBPOSIX_PROCESS_SIGNAL
+	if (!sigmask)
+		return;
+
+	uk_syscall_r_rt_sigprocmask(SIG_SETMASK, (long)oldmask, 0,
+				    (long)sigsetsize);
+#else /* !CONFIG_LIBPOSIX_PROCESS_SIGNAL */
+	(void)sigmask;
+	(void)sigsetsize;
+	(void)oldmask;
+#endif /* !CONFIG_LIBPOSIX_PROCESS_SIGNAL */
+}
+
+"""
+s = s.replace(anchor, helpers + anchor, 1)
+
+# 3. Wrap both entry points.
+old_pwait = """	r = uk_sys_epoll_pwait(of->file, events, maxevents,
+			       timeout, sigmask, sigsetsize);
+	uk_ofile_release(of);
+	return r;"""
+new_pwait = """	if (unlikely(epoll_pwait_sigmask_enter(sigmask, sigsetsize, &oldmask))) {
+		uk_ofile_release(of);
+		return -EINVAL;
+	}
+	r = uk_sys_epoll_pwait(of->file, events, maxevents,
+			       timeout, __NULL, sigsetsize);
+	epoll_pwait_sigmask_leave(sigmask, sigsetsize, &oldmask);
+	uk_ofile_release(of);
+	return r;"""
+assert old_pwait in s, "epoll_pwait body does not match"
+s = s.replace(old_pwait, new_pwait, 1)
+
+old_pwait2 = """	r = uk_sys_epoll_pwait2(of->file, events, maxevents,
+				timeout, sigmask, sigsetsize);
+	uk_ofile_release(of);
+	return r;"""
+new_pwait2 = """	if (unlikely(epoll_pwait_sigmask_enter(sigmask, sigsetsize, &oldmask))) {
+		uk_ofile_release(of);
+		return -EINVAL;
+	}
+	r = uk_sys_epoll_pwait2(of->file, events, maxevents,
+				timeout, __NULL, sigsetsize);
+	epoll_pwait_sigmask_leave(sigmask, sigsetsize, &oldmask);
+	uk_ofile_release(of);
+	return r;"""
+assert old_pwait2 in s, "epoll_pwait2 body does not match"
+s = s.replace(old_pwait2, new_pwait2, 1)
+
+# 4. Both wrappers need the oldmask local.
+for sig in ("""		      int, maxevents, int, timeout,
+		      const sigset_t *, sigmask, size_t, sigsetsize)
+{
+	int r;""",
+            """		    int, maxevents, struct timespec *, timeout,
+		    const sigset_t *, sigmask, size_t, sigsetsize)
+{
+	int r;"""):
+    assert sig in s, "wrapper prologue does not match"
+    s = s.replace(sig, sig + "\n\tsigset_t oldmask;", 1)
+
+open(p, "w").write(s)
+PYEOF3
+else
+	echo "epoll_pwait sigmask: already patched or absent, skipping"
+fi
+
+# ---------------------------------------------------------------------------
+# 18. execve() never fills in argc/envc, so the loader reads garbage counts.
+#
+# lib/posix-process/execve.c declares `struct uk_binfmt_loader_args loader_args`
+# as a plain stack local and then sets every field of it -- pathname, progname,
+# argv, envp, alloc, ctx, stack_size, loader, user -- except the two counts:
+#
+#     loader_args.argv = (const char **)argv;
+#     loader_args.envp = (const char **)envp;
+#
+# `argc` and `envc` keep whatever was on the stack. A loader that trusts them
+# walks off the end of the vectors and dereferences whatever it finds:
+#
+#   CRIT: Unikraft Crash - Ijiraq (0.21.0)
+#   ESR_EL1: 0x0000000096000006     (data abort, translation fault, EL1)
+#   ELR_EL1: 0x000000008015e6b8     -> elfloader_rs::sys::cstr
+#   LR:      0x000000008015ea34     -> elfloader_rs::binfmt::vec_from_c
+#
+# Nothing in-tree caught this because nothing in-tree reads the counts:
+# lib/ukbinfmt never mentions argc, and the C app-elfloader walks argv to its
+# NULL terminator instead. The struct offers the counts, though, and a loader is
+# entitled to believe them -- app-elfloader-rs does.
+#
+# The fix is to count the vectors, which the caller has already NULL-terminated
+# (Linux's execve(2) contract). Both may be NULL: Linux treats a NULL argv or
+# envp as an empty list, which the loop below produces as a count of zero.
+# ---------------------------------------------------------------------------
+EXECVE="$UK/lib/posix-process/execve.c"
+if [ -f "$EXECVE" ] && ! grep -q 'loader_args.argc' "$EXECVE"; then
+	echo "patching $EXECVE (count argv/envp for the binfmt loader)"
+	python3 - "$EXECVE" <<'PYEOF'
+import sys
+
+p = sys.argv[1]
+s = open(p).read()
+
+old = """	loader_args.argv = (const char **)argv;
+	loader_args.envp = (const char **)envp;
+"""
+new = """	loader_args.argv = (const char **)argv;
+	loader_args.envp = (const char **)envp;
+
+	/* Count both vectors. They are NULL-terminated per execve(2), and a
+	 * NULL vector is an empty list. Without this, argc/envc keep whatever
+	 * was on the stack and a loader that trusts them reads past the end.
+	 */
+	loader_args.argc = 0;
+	if (argv)
+		while (argv[loader_args.argc])
+			loader_args.argc++;
+
+	loader_args.envc = 0;
+	if (envp)
+		while (envp[loader_args.envc])
+			loader_args.envc++;
+"""
+assert old in s, "execve.c does not match the expected shape"
+open(p, "w").write(s.replace(old, new, 1))
+PYEOF
+else
+	echo "execve.c argc/envc: already patched or absent, skipping"
+fi
+
 echo "patches applied."

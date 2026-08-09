@@ -23,8 +23,10 @@ be used under bsdkrun at all. app-elfloader itself is architecture-clean —
 nothing in its `Config.uk` gates on architecture and it ships a `qemu-aarch64`
 defconfig — so the gap is packaging, not portability.
 
-Six things were needed on top of a stock checkout. All are applied by
-`patches/apply.sh`, which is idempotent, except the last which is kconfig:
+Fourteen things were needed on top of a stock checkout. All are applied by
+`patches/apply.sh`, which is idempotent, except number 6 which is kconfig.
+Entries 10-14 came out of getting node to run on arm64 and are described in
+`../../examples/unikraft-expressjs/README.md`:
 
 1. **`lib/syscall_shim/arch/arm64/syscall_handler.c` is missing an include.**
    It uses `struct ukarch_execenv` but only includes `<uk/arch/types.h>`, so any
@@ -63,39 +65,22 @@ Six things were needed on top of a stock checkout. All are applied by
 ## Status
 
 **x86_64 works end to end** and is covered by
-`.github/workflows/e2e-unikraft-examples.yml`: the unikernel builds, boots, gets
-a DHCP address, runs the application, and answers HTTP over a forwarded port.
+`.github/workflows/e2e-unikraft-examples.yml`.
 
-**arm64 runs Rust services.** The actix example builds, boots, and answers HTTP
-on macOS/Hypervisor.framework — verified with GET, POST and a second route.
+**arm64 works too, as of the patches below.** node/ExpressJS boots, gets a DHCP
+address, and answers HTTP on macOS/Hypervisor.framework; the actix example
+does too.
 
-**arm64 does not yet run glibc C programs.** They abort during startup with
-
-    *** stack smashing detected ***: terminated
-    ESR_EL1 0xf20003e8 (BRK #1000)
-
-and the faulting address lies inside **libc.so.6**, above both the program and
-the interpreter. So the canary check that fails is glibc's own: rebuilding the
-application with `-fno-stack-protector` changes nothing (verified — an A/B pair
-of the same program fails identically). node fails the same way on Debian; on
-Alpine it fails earlier, for a reason of its own.
-
-Two things are ruled out with evidence rather than argument:
-
-  * **musl is fine.** Trivial musl binaries run, both dynamically linked through
-    `ld-musl-aarch64.so.1` and as static-PIE. An earlier claim here that musl's
-    loader was broken was wrong — it generalised from node alone.
-  * **The application's own compiler flags are irrelevant**, since the check
-    that fires belongs to libc.
-
-The open question is why actix survives glibc's canary checks when a trivial C
-program does not, given both link the same `libc.so.6`. That points at a
-specific libc code path rather than a wholesale TLS failure, and is the next
-thing to chase — with the GDB stub (`LIBUKDEBUG_GDBSTUB` supports arm64) rather
-than more print statements.
-
-**x86_64 is exercised in CI** and needs none of this: the elfloader `base`
-runtime, both examples, boot and serve there.
+The earlier note here said arm64 could not run glibc C programs and blamed a
+stack-protector failure inside `libc.so.6`. That was a misreading. The real
+cause was patch 12: `struct stat` was the x86_64 layout on every architecture,
+and vfscore's `vn_stat()` `memset`s `sizeof(struct stat)` into the
+application's buffer, so every `stat()` overwrote 16 bytes past its end. In
+musl's `load_library()` that is the saved return address; wherever it landed in
+glibc it looked like memory corruption, which is exactly what it was — just not
+the canary's doing. Five further patches were needed on top (10, 11, 13, 14 and
+the loader rewrite); see `../../examples/unikraft-expressjs/repro/` for how
+each was pinned down.
 
 ## Notes
 

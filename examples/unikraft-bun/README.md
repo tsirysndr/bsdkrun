@@ -77,6 +77,19 @@ when the image is built. It would be wrong on a multi-process system and is
 exactly right here. Unikraft's cpio extractor creates symlinks and ramfs stores
 them, so it survives into the guest.
 
+## CI
+
+`.github/workflows/e2e-unikraft-examples.yml` builds and boots this example on
+x86_64 alongside the others. Its matrix entry is marked `strict: false`, so the
+HTTP check runs and is reported but does not fail the job: the abort above was
+only ever observed on arm64, and there is no x86_64 host here to test on, so
+that job is how the x86_64 status gets established. If it passes, the run
+summary says so and asks for `strict: true`.
+
+Everything before the HTTP check — the build, the boot, the kernel banner, the
+network interface, entropy — is asserted for this example exactly as for the
+working ones.
+
 ## Next step
 
 The gdb stub, the same way `../unikraft-expressjs/repro/` pinned down the node

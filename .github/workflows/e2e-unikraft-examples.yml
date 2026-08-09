@@ -1,11 +1,16 @@
 name: e2e (Unikraft examples / KVM)
 
-# Builds the ExpressJS and Actix examples for fc/x86_64 and boots each one with
-# `bsdkrun unikraft` under KVM, then checks the server answers over a forwarded
-# port.
+# Builds each Unikraft example for fc/x86_64 and boots it with `bsdkrun
+# unikraft` under KVM, then checks the server answers over a forwarded port.
 #
 # x86_64 only: GitHub's arm64 runners do not expose /dev/kvm, and these examples
 # need a VMM. The arm64 side is exercised on a macOS/HVF host by hand.
+#
+# `strict: false` marks an example whose HTTP check is allowed to fail without
+# failing the job. It means the runtime is not known to work on x86_64 yet, not
+# that a failure is acceptable -- the step still runs and its result is printed,
+# so this workflow is how that status gets established. Flip it to true the
+# first time it passes, so a later regression is caught.
 #
 # Asserts the whole chain: the patches applied, the unikernel builds, it boots,
 # the guest gets a network interface, the application starts, and the server
@@ -25,6 +30,8 @@ on:
     paths:
       - "examples/unikraft-expressjs/**"
       - "examples/unikraft-actix/**"
+      - "examples/unikraft-deno/**"
+      - "examples/unikraft-bun/**"
       - "library/unikraft-base/**"
       - "src/**"
       - ".github/workflows/e2e-unikraft-examples.yml"
@@ -50,12 +57,37 @@ jobs:
             argv: /usr/bin/node /usr/src/server.js
             port: 3000
             expect: "Bye, World!"
+            strict: true
           - example: unikraft-actix
             kernel: actix_fc-x86_64
             mem: 1024
             argv: /server
             port: 8080
             expect: "Bye, World!"
+            strict: true
+          - example: unikraft-deno
+            kernel: deno_fc-x86_64
+            # As with node: the rootfs is resident twice (embedded in the image
+            # and unpacked into ramfs) before V8 allocates anything.
+            mem: 2048
+            # --quiet is required, not cosmetic. Deno's progress bar otherwise
+            # redraws in a tight loop and starves the thread doing the real
+            # work; see examples/unikraft-deno/README.md.
+            argv: /usr/bin/deno run --quiet --allow-net /usr/src/server.js
+            port: 3000
+            expect: "Hello from Deno on Unikraft!"
+            strict: true
+          - example: unikraft-bun
+            kernel: bun_fc-x86_64
+            mem: 2048
+            argv: /usr/bin/bun run /usr/src/server.js
+            port: 3000
+            expect: "Hello from Bun on Unikraft!"
+            # Bun aborts inside JavaScriptCore's heap setup on arm64 (see
+            # examples/unikraft-bun/README.md). Whether x86_64 is affected has
+            # never been tested -- there is no x86_64 host to hand -- so this
+            # job is the test. Non-strict until it is known to pass.
+            strict: false
     steps:
       - uses: actions/checkout@v4
 
@@ -190,12 +222,8 @@ jobs:
           cp -v "$HOME/.local/state/bsdkrun/machines/$(cat id.txt)/bsdkrun.log" \
             uk-${{ matrix.example }}-boot.out || true
 
-      # Boot milestones. Only the kernel banner is asserted: it is the one
-      # thing verified on both architectures. Networking is reported but not
-      # asserted — on x86_64 there is no device tree, so the guest finds its
-      # virtio devices solely through the `virtio_mmio.device=` parameters
-      # libkrun appends, and that path has not been verified for this runtime.
-      # Promote the DHCP check to an assertion once it has been.
+      # Boot milestones, asserted in order so a failure names the earliest
+      # stage that broke rather than a symptom further down.
       - name: e2e — kernel came up
         run: |
           set -eux
@@ -213,27 +241,52 @@ jobs:
           echo "::group::bsdkrun boot log (kernel cmdline, device setup)"
           cat "$boot" 2>/dev/null || echo "(no boot log)"
           echo "::endgroup::"
-          # Reported, never asserted: the entropy grep is vacuous if lwip never
-          # started, and x86_64 virtio discovery is still unverified. Neither
-          # should read as a regression while that is true.
           # Order matters: assert the interface first. Without it lwip never
           # starts, so the entropy grep would pass vacuously.
+          #
+          # On x86_64 there is no device tree, so the guest learns about its
+          # NIC solely from the `virtio_mmio.device=` parameters libkrun
+          # appends. Getting an address here is therefore also a test of the
+          # virtio-mmio probe fix in library/unikraft-base/patches.
           grep -q "Set IPv4 address" "$out"
           ! grep -q "Could not obtain randomness" "$out"
 
-      # Expected to fail until the libc-startup fault is fixed; see the note at
-      # the top of this file.
+      # The payoff assertion: the guest ran the application and it served a
+      # request over the forwarded port. `continue-on-error` applies only to
+      # examples marked `strict: false` in the matrix -- see the top of this
+      # file for what that means and when to clear it.
       - name: e2e — HTTP server answers
+        id: http
+        continue-on-error: ${{ !matrix.strict }}
         run: |
           set -eu
-          for i in $(seq 1 30); do
+          for i in $(seq 1 45); do
             if curl -fsS --max-time 5 "http://127.0.0.1:${{ matrix.port }}/" -o body.txt; then
               break
             fi
             sleep 2
           done
+          test -s body.txt || { echo "no response from the guest"; exit 1; }
           cat body.txt
           grep -q "${{ matrix.expect }}" body.txt
+
+      # Make a non-strict result visible in the job summary rather than leaving
+      # it buried in a green tick.
+      - name: Report non-strict outcome
+        if: ${{ !matrix.strict }}
+        run: |
+          set -eu
+          if [ "${{ steps.http.outcome }}" = success ]; then
+            echo "### ${{ matrix.example }}: HTTP check PASSED on x86_64" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "It is no longer known-failing here. Set \`strict: true\` for this" \
+                 "matrix entry so a regression fails the job." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### ${{ matrix.example }}: HTTP check failed (known, not fatal)" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "See examples/${{ matrix.example }}/README.md. The console log is" \
+                 "attached as an artifact." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Tear down
         if: always()

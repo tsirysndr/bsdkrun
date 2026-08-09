@@ -1,0 +1,226 @@
+Make dynamic shared memory work in a single address space.
+
+`dynamic_shared_memory_type` cannot be turned off -- PostgreSQL 12 removed the
+`none` setting, and every EXEC_BACKEND child attaches the control segment
+during startup -- so it has to work before a postmaster can run at all.
+
+Upstream backs each segment with a file and maps it MAP_SHARED. Unikraft
+supports MAP_SHARED for anonymous mappings only, so that fails; mapping the
+file MAP_PRIVATE instead appears to work and then hands each process its own
+private copy, which shows up one step later as
+
+  FATAL:  dynamic shared memory control segment is not valid
+
+Since every process shares one page table, an anonymous mapping is already
+visible to all of them at the same address. This rewrite demotes the file from
+storage to a name: it records the address and length of an anonymous mapping,
+and attaching becomes a lookup.
+
+--- a/src/backend/storage/ipc/dsm_impl.c
++++ b/src/backend/storage/ipc/dsm_impl.c
+@@ -793,6 +793,46 @@
+ 			  void **impl_private, void **mapped_address, Size *mapped_size,
+ 			  int elevel)
+ {
++	/*
++	 * Single-address-space implementation.
++	 *
++	 * Upstream backs each segment with a file under PG_DYNSHMEM_DIR and maps
++	 * it MAP_SHARED, which is how two processes with separate address spaces
++	 * come to see the same bytes.  Neither half of that works on Unikraft:
++	 * mmap() supports MAP_SHARED for anonymous mappings only, so mapping the
++	 * file fails outright --
++	 *
++	 *   ERR: [libposix_mmap] mmap(..., flags=1, fd=5, ...) failed: -95
++	 *   FATAL:  could not map shared memory segment "pg_dynshmem/mmap.NNN"
++	 *
++	 * -- and mapping it MAP_PRIVATE instead "works" but gives every process a
++	 * private copy, so the postmaster's control segment reads back as garbage
++	 * in the child:
++	 *
++	 *   FATAL:  dynamic shared memory control segment is not valid
++	 *
++	 * But a single address space makes the whole exercise unnecessary. Every
++	 * process here shares one page table, so an anonymous mapping made by the
++	 * postmaster is already visible, at the same address, to every process it
++	 * spawns. The file is therefore demoted from storage to a *name*: it holds
++	 * the address and length of an anonymous mapping, and attaching is a
++	 * lookup rather than a mapping.
++	 *
++	 * Consequences worth stating:
++	 *
++	 *  - DSM_OP_DETACH does not unmap. There is one mapping shared by
++	 *    everyone, so a detaching process must not pull it out from under the
++	 *    others; only DSM_OP_DESTROY unmaps.
++	 *  - The contents do not survive a reboot, which is correct: dynamic
++	 *    shared memory is never expected to.
++	 */
++	struct dsm_uk_desc
++	{
++		uint64		magic;
++		uint64		addr;
++		uint64		size;
++	}			desc;
++	const uint64 DSM_UK_MAGIC = UINT64CONST(0x554b44534d303031);	/* "UKDSM001" */
+ 	char		name[64];
+ 	int			flags;
+ 	int			fd;
+@@ -804,7 +844,7 @@
+ 	/* Handle teardown cases. */
+ 	if (op == DSM_OP_DETACH || op == DSM_OP_DESTROY)
+ 	{
+-		if (*mapped_address != NULL
++		if (op == DSM_OP_DESTROY && *mapped_address != NULL
+ 			&& munmap(*mapped_address, *mapped_size) != 0)
+ 		{
+ 			ereport(elevel,
+@@ -838,94 +878,36 @@
+ 		return false;
+ 	}
+ 
+-	/*
+-	 * If we're attaching the segment, determine the current size; if we are
+-	 * creating the segment, set the size to the requested value.
+-	 */
+ 	if (op == DSM_OP_ATTACH)
+ 	{
+-		struct stat st;
+-
+-		if (fstat(fd, &st) != 0)
++		/* The segment is already mapped; the file only says where. */
++		if (read(fd, &desc, sizeof(desc)) != (int) sizeof(desc)
++			|| desc.magic != DSM_UK_MAGIC)
+ 		{
+-			int			save_errno;
+-
+-			/* Back out what's already been done. */
+-			save_errno = errno;
+ 			CloseTransientFile(fd);
+-			errno = save_errno;
+-
+ 			ereport(elevel,
+ 					(errcode_for_dynamic_shared_memory(),
+-					 errmsg("could not stat shared memory segment \"%s\": %m",
++					 errmsg("could not read shared memory segment \"%s\": %m",
+ 							name)));
+ 			return false;
+ 		}
+-		request_size = st.st_size;
+-	}
+-	else
+-	{
+-		/*
+-		 * Allocate a buffer full of zeros.
+-		 *
+-		 * Note: palloc zbuffer, instead of just using a local char array, to
+-		 * ensure it is reasonably well-aligned; this may save a few cycles
+-		 * transferring data to the kernel.
+-		 */
+-		char	   *zbuffer = (char *) palloc0(ZBUFFER_SIZE);
+-		Size		remaining = request_size;
+-		bool		success = true;
+-
+-		/*
+-		 * Zero-fill the file. We have to do this the hard way to ensure that
+-		 * all the file space has really been allocated, so that we don't
+-		 * later seg fault when accessing the memory mapping.  This is pretty
+-		 * pessimal.
+-		 */
+-		while (success && remaining > 0)
+-		{
+-			Size		goal = remaining;
+-
+-			if (goal > ZBUFFER_SIZE)
+-				goal = ZBUFFER_SIZE;
+-			pgstat_report_wait_start(WAIT_EVENT_DSM_FILL_ZERO_WRITE);
+-			if (write(fd, zbuffer, goal) == goal)
+-				remaining -= goal;
+-			else
+-				success = false;
+-			pgstat_report_wait_end();
+-		}
+-
+-		if (!success)
+-		{
+-			int			save_errno;
+-
+-			/* Back out what's already been done. */
+-			save_errno = errno;
+-			CloseTransientFile(fd);
+-			unlink(name);
+-			errno = save_errno ? save_errno : ENOSPC;
++		CloseTransientFile(fd);
+ 
+-			ereport(elevel,
+-					(errcode_for_dynamic_shared_memory(),
+-					 errmsg("could not resize shared memory segment \"%s\" to %zu bytes: %m",
+-							name, request_size)));
+-			return false;
+-		}
++		*mapped_address = (void *) (uintptr_t) desc.addr;
++		*mapped_size = (Size) desc.size;
++		return true;
+ 	}
+ 
+-	/* Map it. */
++	/* DSM_OP_CREATE: one anonymous mapping, shared by construction. */
+ 	address = mmap(NULL, request_size, PROT_READ | PROT_WRITE,
+-				   MAP_SHARED | MAP_HASSEMAPHORE | MAP_NOSYNC, fd, 0);
++				   MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+ 	if (address == MAP_FAILED)
+ 	{
+ 		int			save_errno;
+ 
+-		/* Back out what's already been done. */
+ 		save_errno = errno;
+ 		CloseTransientFile(fd);
+-		if (op == DSM_OP_CREATE)
+-			unlink(name);
++		unlink(name);
+ 		errno = save_errno;
+ 
+ 		ereport(elevel,
+@@ -934,18 +916,39 @@
+ 						name)));
+ 		return false;
+ 	}
+-	*mapped_address = address;
+-	*mapped_size = request_size;
++
++	desc.magic = DSM_UK_MAGIC;
++	desc.addr = (uint64) (uintptr_t) address;
++	desc.size = (uint64) request_size;
++
++	if (write(fd, &desc, sizeof(desc)) != (int) sizeof(desc))
++	{
++		int			save_errno;
++
++		save_errno = errno;
++		munmap(address, request_size);
++		CloseTransientFile(fd);
++		unlink(name);
++		errno = save_errno ? save_errno : ENOSPC;
++
++		ereport(elevel,
++				(errcode_for_dynamic_shared_memory(),
++				 errmsg("could not resize shared memory segment \"%s\" to %zu bytes: %m",
++						name, request_size)));
++		return false;
++	}
+ 
+ 	if (CloseTransientFile(fd) != 0)
+ 	{
++		munmap(address, request_size);
+ 		ereport(elevel,
+ 				(errcode_for_file_access(),
+-				 errmsg("could not close shared memory segment \"%s\": %m",
+-						name)));
++				 errmsg("could not close file \"%s\": %m", name)));
+ 		return false;
+ 	}
+ 
++	*mapped_address = address;
++	*mapped_size = request_size;
+ 	return true;
+ }
+ #endif

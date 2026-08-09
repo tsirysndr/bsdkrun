@@ -167,7 +167,10 @@ libraries:
       # Kconfig `choice`, which a Kraftfile cannot set, so it stays at
       # KLVL_ERR and would otherwise swallow all of them.
       CONFIG_APPELFLOADER_DEBUG: 'n'
-      CONFIG_APPELFLOADER_STACK_NBPAGES: 128
+      # 2048 * 4K = 8 MiB, matching Linux's default main-thread stack.
+      # JavaScriptCore sizes its recursion limits from what the stack actually
+      # is and overflows the 512 KiB the other examples use.
+      CONFIG_APPELFLOADER_STACK_NBPAGES: 2048
       CONFIG_APPELFLOADER_VFSEXEC: 'y'
       CONFIG_APPELFLOADER_VFSEXEC_EXECBIT: 'y'
       CONFIG_APPELFLOADER_VFSEXEC_ENVPWD: 'y'

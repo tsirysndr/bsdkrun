@@ -857,4 +857,364 @@ else
 	echo "arm64 W^X via WXN: already patched or absent, skipping"
 fi
 
+# ---------------------------------------------------------------------------
+# 15. mremap() is missing entirely, which breaks musl's stack sizing.
+#
+# lib/posix-mmap never defines mremap, so the syscall returns ENOSYS. That is
+# not merely a missing feature: musl uses mremap to discover how large the
+# *initial* thread's stack is. pthread_getattr_np() has no thread descriptor to
+# read for it, so it starts above the auxiliary vector and probes downward a
+# page at a time, extending its estimate for as long as the probe reports
+# ENOMEM. From ld-musl-aarch64.so.1:
+#
+#     bl   mremap
+#     cmn  x0, #0x1          ; returned -1?
+#     b.ne exit
+#     bl   __errno_location
+#     cmp  w0, #0xc          ; 0xc = ENOMEM
+#     b.eq loop              ; keep probing ONLY on ENOMEM
+#     exit                   ; a->_a_stacksize = l
+#
+# ENOSYS leaves the loop immediately with the estimate still at one page, so
+# musl reports a 4 KiB stack. JavaScriptCore takes its stack bounds from that
+# and aborts on its first bounds check, which is why Bun died before running
+# any JavaScript. glibc sizes the initial stack differently, which is why node
+# and Deno are unaffected.
+#
+# What this implements, and what it deliberately does not:
+#
+#   * shrink - unmap the tail, address unchanged.
+#   * grow in place - map the remainder at the exact address. Without
+#     UK_VMA_MAP_REPLACE that fails with EEXIST if anything is in the way,
+#     which is exactly the "can this grow?" question, and ukvmem merges the new
+#     VMA into the old one.
+#   * moving is NOT implemented. Relocating a mapping without copying needs
+#     page-table surgery ukvmem does not expose, and copying would fault in
+#     every page of a demand-paged region -- turning a 1 GiB mremap into 1 GiB
+#     of committed memory. A grow that cannot happen in place returns ENOMEM,
+#     including under MREMAP_MAYMOVE.
+#
+# ENOMEM is a documented mremap failure and callers already handle it: glibc's
+# realloc falls back to malloc+memcpy+free, exactly as it does today against
+# ENOSYS. musl's probe never needs a move either -- every call it makes either
+# cannot grow in place (ENOMEM) or is below the stack (EFAULT, which ends the
+# loop) -- so this is enough to size the stack correctly.
+#
+# Caveat worth knowing: the estimate musl arrives at is an over-estimate here,
+# because ukvmem packs VMAs contiguously and the probe walks straight out of
+# the stack into whatever is mapped below it, stopping only at the first hole.
+# Linux gets the exact size because the main stack has a guard gap beneath it.
+# What actually bounds the application is CONFIG_APPELFLOADER_STACK_NBPAGES.
+# ---------------------------------------------------------------------------
+MMAPC="$UK/lib/posix-mmap/mmap.c"
+if [ -f "$MMAPC" ] && ! grep -q "mremap" "$MMAPC"; then
+	echo "patching $MMAPC (implement mremap)"
+	python3 - "$MMAPC" <<'PYEOF2'
+import sys
+
+p = sys.argv[1]
+s = open(p).read()
+
+anchor = """UK_SYSCALL_R_DEFINE(int, msync, void*, addr, size_t, length, int, flags)"""
+assert anchor in s, "mmap.c does not contain the expected msync definition"
+
+impl = r"""/* Not provided by nolibc's <sys/mman.h>. */
+#ifndef MREMAP_MAYMOVE
+#define MREMAP_MAYMOVE		0x01
+#endif
+#ifndef MREMAP_FIXED
+#define MREMAP_FIXED		0x02
+#endif
+#ifndef MREMAP_DONTUNMAP
+#define MREMAP_DONTUNMAP	0x04
+#endif
+
+/* Check that [vaddr, vaddr + len) is completely covered by mappings, and
+ * return the VMA containing vaddr. Linux requires the source of an mremap to
+ * live in a single VMA; we only require it to be contiguously mapped, because
+ * ukvmem splits VMAs for reasons of its own that the application cannot see.
+ */
+static int mremap_src_lookup(struct uk_vas *vas, __vaddr_t vaddr, __sz len,
+			     const struct uk_vma **first)
+{
+	const struct uk_vma *vma;
+	__vaddr_t cur = vaddr;
+
+	vma = uk_vma_find(vas, cur);
+	if (unlikely(!vma))
+		return -EFAULT;
+
+	*first = vma;
+
+	while (cur < vaddr + len) {
+		vma = uk_vma_find(vas, cur);
+		if (unlikely(!vma))
+			return -EFAULT;
+
+		UK_ASSERT(vma->end > cur);
+		cur = vma->end;
+	}
+
+	return 0;
+}
+
+static int do_mremap(void **addr, __sz old_len, __sz new_len, int flags)
+{
+	struct uk_vas *vas = uk_vas_get_active();
+	__vaddr_t old_va = (__vaddr_t)*addr;
+	const struct uk_vma *vma;
+	unsigned long vma_attr, vma_flags, map_flags;
+	const struct uk_vma_ops *vma_ops;
+	const char *vma_name;
+	__vaddr_t ext_va;
+	int vma_page_lvl;
+	__sz ext_len;
+	int rc;
+
+	if (unlikely(!vas))
+		return -EINVAL;
+
+	if (unlikely(!UK_PAGING_PAGE_ALIGNED(old_va)))
+		return -EINVAL;
+
+	/* new_len == 0 is invalid; old_len == 0 asks to duplicate a shared
+	 * mapping, which we do not support.
+	 */
+	if (unlikely(new_len == 0 || old_len == 0))
+		return -EINVAL;
+
+	if (unlikely(flags & ~(MREMAP_MAYMOVE | MREMAP_FIXED |
+			       MREMAP_DONTUNMAP)))
+		return -EINVAL;
+
+	if (unlikely((flags & (MREMAP_FIXED | MREMAP_DONTUNMAP)) &&
+		     !(flags & MREMAP_MAYMOVE)))
+		return -EINVAL;
+
+	if (unlikely(flags & MREMAP_DONTUNMAP))
+		return -EINVAL;
+
+	if (unlikely(old_len > __SZ_MAX - UK_PAGING_PAGE_SIZE ||
+		     new_len > __SZ_MAX - UK_PAGING_PAGE_SIZE))
+		return -ENOMEM;
+
+	old_len = UK_PAGING_PAGE_ALIGN_UP(old_len);
+	new_len = UK_PAGING_PAGE_ALIGN_UP(new_len);
+
+	if (unlikely(old_va > __VADDR_MAX - old_len ||
+		     old_va > __VADDR_MAX - new_len))
+		return -EINVAL;
+
+	rc = mremap_src_lookup(vas, old_va, old_len, &vma);
+	if (unlikely(rc))
+		return rc;
+
+	/* Any operation on the address space may free the VMA, so take a copy
+	 * of everything needed before touching it (see uk_vma_find()).
+	 */
+	vma_ops      = vma->ops;
+	vma_attr     = vma->attr;
+	vma_flags    = vma->flags;
+	vma_page_lvl = vma->page_lvl;
+	vma_name     = vma->name;
+
+	if (new_len == old_len)
+		return 0;
+
+	if (new_len < old_len) {
+		rc = uk_vma_unmap(vas, old_va + new_len, old_len - new_len, 0);
+		if (unlikely(rc && rc != -ENOENT))
+			return rc;
+
+		return 0;
+	}
+
+	/* Growing. We never relocate, so a request that insists on a new
+	 * address cannot be satisfied.
+	 */
+	if (unlikely(flags & MREMAP_FIXED))
+		return -ENOMEM;
+
+	/* Only anonymous memory can be extended: growing a file mapping would
+	 * need the file and the offset to continue from, and the public VMA
+	 * interface does not expose either.
+	 */
+	if (vma_ops != &uk_vma_anon_ops)
+		return -ENOMEM;
+
+	/* Reproduce the source's mapping flags so that ukvmem merges the
+	 * extension into it. Anything that would not merge (a large-page VMA)
+	 * is refused rather than left as a silent split.
+	 */
+	if (unlikely(vma_page_lvl >= 0))
+		return -ENOMEM;
+
+	map_flags = vma_flags & (UK_VMA_MAP_EXTF_MASK << UK_VMA_MAP_EXTF_SHIFT);
+	if (vma_flags & UK_VMA_FLAG_UNINITIALIZED)
+		map_flags |= UK_VMA_MAP_UNINITIALIZED;
+
+	ext_va  = old_va + old_len;
+	ext_len = new_len - old_len;
+
+	/* No UK_VMA_MAP_REPLACE: this must fail rather than evict whatever is
+	 * above the mapping. EEXIST is how ukvmem says "occupied", which for
+	 * mremap is ENOMEM.
+	 */
+	rc = uk_vma_map(vas, &ext_va, ext_len, vma_attr, map_flags, vma_name,
+			&uk_vma_anon_ops, __NULL);
+	if (unlikely(rc)) {
+		if (rc == -EEXIST)
+			return -ENOMEM;
+
+		return rc;
+	}
+
+	return 0;
+}
+
+/* <sys/mman.h> declares mremap variadic, because the fifth argument only
+ * exists with MREMAP_FIXED. A fixed-arity UK_SYSCALL_DEFINE would conflict
+ * with that prototype, so define the raw syscall and the libc entry point
+ * separately -- the same split lib/ukmmap uses.
+ */
+UK_LLSYSCALL_R_DEFINE(long, mremap, void *, old_address, size_t, old_size,
+		      size_t, new_size, int, flags, void *, new_address)
+{
+	void *addr = old_address;
+	int rc;
+
+	(void)new_address; /* only used by MREMAP_FIXED, which is refused */
+
+	rc = do_mremap(&addr, old_size, new_size, flags);
+	if (unlikely(rc))
+		return (long)rc; /* negative errno, as Linux returns */
+
+	return (long)(__uptr)addr;
+}
+
+#if UK_LIBC_SYSCALLS
+void *mremap(void *old_address, size_t old_size, size_t new_size, int flags,
+	     ...)
+{
+	void *addr = old_address;
+	int rc;
+
+	rc = do_mremap(&addr, old_size, new_size, flags);
+	if (unlikely(rc)) {
+		errno = -rc;
+		return MAP_FAILED;
+	}
+
+	return addr;
+}
+#endif /* UK_LIBC_SYSCALLS */
+
+"""
+
+open(p, "w").write(s.replace(anchor, impl + anchor, 1))
+PYEOF2
+else
+	echo "mremap: already patched or absent, skipping"
+fi
+
+# Registered separately from the code above: the two edits are independent, and
+# nesting this inside that guard skips it on a tree where only one of them has
+# been made. Without the declaration the shim generates no table entry, so a
+# binary syscall from the application still lands on the "not implemented"
+# stub even though the code is compiled in.
+MK="$UK/lib/posix-mmap/Makefile.uk"
+if [ -f "$MK" ] && ! grep -q "mremap" "$MK"; then
+	echo "patching $MK (declare mremap-5)"
+	sed -i.bak 's#^UK_PROVIDED_SYSCALLS-$(CONFIG_LIBPOSIX_MMAP) += munmap-2$#&\
+UK_PROVIDED_SYSCALLS-$(CONFIG_LIBPOSIX_MMAP) += mremap-5#' "$MK"
+	rm -f "$MK.bak"
+	grep -q 'mremap-5' "$MK" || { echo "failed to register mremap" >&2; exit 1; }
+else
+	echo "mremap syscall registration: already patched or absent, skipping"
+fi
+
+# ---------------------------------------------------------------------------
+# 16. CONFIG_LIBPOSIX_PROCESS_SIGNALFD cannot be built on arm64.
+#
+# lib/posix-process/signal/signal_file.c defines both signalfd4() and the
+# three-argument legacy signalfd(), but lib/syscall_shim's legacy list does not
+# mention the latter. arm64 is one of the architectures that never had a
+# __NR_signalfd -- glibc and musl both reach signalfd() through signalfd4 --
+# so the generated table has nowhere to put it and the build stops with
+#
+#   .../uk/bits/syscall_provided.h:898:2: error: #error Failed to map system
+#   call 'signalfd': No system call number available
+#
+# in every translation unit that includes it. Turning the option on is
+# therefore impossible on arm64, which matters because PostgreSQL 13 and later
+# read signals through a file descriptor and abort at startup with
+# "FATAL: signalfd() failed" without it (see ../../../examples/unikraft-postgres).
+#
+# The list exists for exactly this case -- eventfd, epoll_create, poll, dup2
+# and a dozen others are already on it -- so the fix is the missing line. A
+# legacy entry only suppresses the "no number on this architecture" error; the
+# x86_64 build still gets its __NR_signalfd table entry as before.
+# ---------------------------------------------------------------------------
+LEG="$UK/lib/syscall_shim/include/uk/legacy_syscall.h"
+if [ -f "$LEG" ] && ! grep -q 'LEGACY_SYS_signalfd' "$LEG"; then
+	echo "patching $LEG (mark signalfd legacy; arm64 has only signalfd4)"
+	sed -i.bak 's|^#define LEGACY_SYS_eventfd /\* modern: eventfd2 \*/$|&\
+#define LEGACY_SYS_signalfd /* modern: signalfd4 */|' "$LEG"
+	rm -f "$LEG.bak"
+	grep -q 'LEGACY_SYS_signalfd' "$LEG" || {
+		echo "failed to mark signalfd legacy" >&2
+		exit 1
+	}
+else
+	echo "legacy_syscall.h: already patched or absent, skipping"
+fi
+
+# ---------------------------------------------------------------------------
+# 17. A leading zero-length iovec entry fails the whole writev() with EIO.
+#
+# POSIX says a zero-length iovec entry contributes nothing; Linux skips them.
+# lwip does not. lwip_sendmsg() hands the vectors to
+# netconn_write_vectors_partly() unfiltered, lwip_netconn_do_writemore() walks
+# them one by one, and tcp_write() rejects a NULL data pointer
+#
+#   LWIP_ERROR("tcp_write: arg == NULL (programmer violates API)",
+#              arg != NULL, return ERR_ARG;);
+#
+# *before* tcp_write_checks() gets to its `len == 0 -> ERR_OK` shortcut. The
+# ERR_ARG comes back to the application as EIO -- err_to_errno() maps ERR_ARG
+# to EIO -- so a single empty entry fails a writev() that would have succeeded
+# on Linux, and no byte of the real payload is sent.
+#
+# Erlang's inet driver produces exactly that shape. erts/emulator/drivers/
+# common/inet_drv.c reserves ev->iov[0] for the packet-length header and fills
+# it in only when there is one:
+#
+#     if (h_len > 0) { ev->iov[0].iov_base = buf; ... }
+#     ...
+#     sock_sendv(desc->inet.s, ev->iov, vsize, &n, 0)   /* = writev() */
+#
+# An HTTP server's socket is `{packet, raw}`, so h_len is 0, iov[0] stays
+# {NULL, 0}, and every response write returns EIO. Cowboy closes the
+# connection without sending anything and curl reports an empty reply -- see
+# ../../../examples/unikraft-elixir.
+#
+# The fix is in posix-socket rather than in lib-lwip: the normalisation is
+# POSIX behaviour that every socket driver is entitled to assume, and this is
+# the one place all of them funnel through. Only leading entries are skipped,
+# which is the structural case above; ERTS builds the rest of the vector from
+# io_list_to_vec(), which never emits an empty one.
+# ---------------------------------------------------------------------------
+SOCK="$UK/lib/posix-socket/socket.c"
+if [ -f "$SOCK" ] && ! grep -q 'while (iovcnt && !iov\[0\].iov_len)' "$SOCK"; then
+	echo "patching $SOCK (skip leading zero-length iovec entries on write)"
+	sed -i.bak 's|^\tif (d->ops->write) {$|\t/* A zero-length entry is a no-op per POSIX, but lwip'"'"'s tcp_write()\n\t * rejects its NULL pointer with ERR_ARG and fails the whole call\n\t * with EIO. Erlang'"'"'s inet driver always leads with one.\n\t */\n\twhile (iovcnt \&\& !iov[0].iov_len) {\n\t\tiov++;\n\t\tiovcnt--;\n\t}\n\tif (unlikely(!iovcnt)) {\n\t\tuk_file_runlock(sock);\n\t\treturn 0;\n\t}\n&|' "$SOCK"
+	rm -f "$SOCK.bak"
+	grep -q 'while (iovcnt && !iov\[0\].iov_len)' "$SOCK" || {
+		echo "failed to patch socket_write" >&2
+		exit 1
+	}
+else
+	echo "posix-socket/socket.c: already patched or absent, skipping"
+fi
+
 echo "patches applied."

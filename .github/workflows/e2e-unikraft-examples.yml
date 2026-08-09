@@ -34,6 +34,7 @@ on:
       - "examples/unikraft-bun/**"
       - "examples/unikraft-clojure/**"
       - "examples/unikraft-mysql/**"
+      - "examples/unikraft-elixir/**"
       - "library/unikraft-base/**"
       - "src/**"
       - ".github/workflows/e2e-unikraft-examples.yml"
@@ -124,6 +125,30 @@ jobs:
             # that it happens on x86_64 too, at the same last line -- so the
             # steps above still assert the build, the boot, the interface and
             # entropy, and this one stays non-strict until the hang is fixed.
+            strict: false
+          - example: unikraft-elixir
+            kernel: elixir_fc-x86_64
+            # 68 MiB of root filesystem (a 37 MiB beam.smp, eight OTP
+            # applications and the release), resident twice at boot.
+            mem: 1024
+            # The emulator is started directly, with the argument vector
+            # `erlexec` would have built -- there is no shell to run the
+            # release's start script. The trailing `-extra` is load-bearing:
+            # libkrun appends its own hints to the command line and they arrive
+            # as argv. See examples/unikraft-elixir/README.md.
+            argv: >-
+              /erl/erts/bin/beam.smp -fnu --
+              -root /erl -bindir /erl/erts/bin -progname erl --
+              -home /root --
+              -noshell -mode embedded
+              -config /srv/releases/0.1.0/sys
+              -boot /srv/releases/0.1.0/start
+              -boot_var RELEASE_LIB /srv/lib
+              -- -extra
+            port: 3000
+            expect: "Hello from Elixir on Unikraft!"
+            # Verified end to end on arm64/macOS; x86_64 has never been run, so
+            # this job is the test. Non-strict until it passes.
             strict: false
     steps:
       - uses: actions/checkout@v4

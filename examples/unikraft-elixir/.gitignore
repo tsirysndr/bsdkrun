@@ -1,0 +1,18 @@
+# Elixir
+/_build/
+/deps/
+/cover/
+/doc/
+/.fetch
+erl_crash.dump
+*.ez
+server-*.tar
+
+# Unikraft build output (see build.sh)
+/.unikraft/
+.config*
+.Kraftfile.*
+/.rootfs-*/
+
+# Rust toolchain cache for the containerised build (see build.sh)
+.rust-cache/

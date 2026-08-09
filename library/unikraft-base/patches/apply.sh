@@ -857,4 +857,52 @@ else
 	echo "arm64 W^X via WXN: already patched or absent, skipping"
 fi
 
+# ---------------------------------------------------------------------------
+# 17. A leading zero-length iovec entry fails the whole writev() with EIO.
+#
+# POSIX says a zero-length iovec entry contributes nothing; Linux skips them.
+# lwip does not. lwip_sendmsg() hands the vectors to
+# netconn_write_vectors_partly() unfiltered, lwip_netconn_do_writemore() walks
+# them one by one, and tcp_write() rejects a NULL data pointer
+#
+#   LWIP_ERROR("tcp_write: arg == NULL (programmer violates API)",
+#              arg != NULL, return ERR_ARG;);
+#
+# *before* tcp_write_checks() gets to its `len == 0 -> ERR_OK` shortcut. The
+# ERR_ARG comes back to the application as EIO -- err_to_errno() maps ERR_ARG
+# to EIO -- so a single empty entry fails a writev() that would have succeeded
+# on Linux, and no byte of the real payload is sent.
+#
+# Erlang's inet driver produces exactly that shape. erts/emulator/drivers/
+# common/inet_drv.c reserves ev->iov[0] for the packet-length header and fills
+# it in only when there is one:
+#
+#     if (h_len > 0) { ev->iov[0].iov_base = buf; ... }
+#     ...
+#     sock_sendv(desc->inet.s, ev->iov, vsize, &n, 0)   /* = writev() */
+#
+# An HTTP server's socket is `{packet, raw}`, so h_len is 0, iov[0] stays
+# {NULL, 0}, and every response write returns EIO. Cowboy closes the
+# connection without sending anything and curl reports an empty reply -- see
+# ../../../examples/unikraft-elixir.
+#
+# The fix is in posix-socket rather than in lib-lwip: the normalisation is
+# POSIX behaviour that every socket driver is entitled to assume, and this is
+# the one place all of them funnel through. Only leading entries are skipped,
+# which is the structural case above; ERTS builds the rest of the vector from
+# io_list_to_vec(), which never emits an empty one.
+# ---------------------------------------------------------------------------
+SOCK="$UK/lib/posix-socket/socket.c"
+if [ -f "$SOCK" ] && ! grep -q 'while (iovcnt && !iov\[0\].iov_len)' "$SOCK"; then
+	echo "patching $SOCK (skip leading zero-length iovec entries on write)"
+	sed -i.bak 's|^\tif (d->ops->write) {$|\t/* A zero-length entry is a no-op per POSIX, but lwip'"'"'s tcp_write()\n\t * rejects its NULL pointer with ERR_ARG and fails the whole call\n\t * with EIO. Erlang'"'"'s inet driver always leads with one.\n\t */\n\twhile (iovcnt \&\& !iov[0].iov_len) {\n\t\tiov++;\n\t\tiovcnt--;\n\t}\n\tif (unlikely(!iovcnt)) {\n\t\tuk_file_runlock(sock);\n\t\treturn 0;\n\t}\n&|' "$SOCK"
+	rm -f "$SOCK.bak"
+	grep -q 'while (iovcnt && !iov\[0\].iov_len)' "$SOCK" || {
+		echo "failed to patch socket_write" >&2
+		exit 1
+	}
+else
+	echo "posix-socket/socket.c: already patched or absent, skipping"
+fi
+
 echo "patches applied."

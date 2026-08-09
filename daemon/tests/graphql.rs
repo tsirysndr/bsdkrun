@@ -180,7 +180,9 @@ async fn volume_size_is_text_and_unknown_becomes_null() {
     let data = v.iter().find(|v| v["name"] == "data").unwrap();
     let gone = v.iter().find(|v| v["name"] == "gone").unwrap();
     // A measurable volume reports human-readable text…
-    let size = data["size"].as_str().expect("a measurable volume has a size");
+    let size = data["size"]
+        .as_str()
+        .expect("a measurable volume has a size");
     assert!(size.ends_with('B'), "unexpected size text: {size:?}");
     // …and one whose directory is gone reports null, not the "-" the CLI's
     // table prints in that cell.
@@ -262,7 +264,10 @@ async fn run_bsd_maps_the_enum_and_is_always_detached() {
         .await;
     assert_eq!(json(&d)["runBsd"], "m-boot-001");
     let cmd = h.last_command();
-    assert!(cmd.get("Netbsd").is_some(), "expected a netbsd command: {cmd}");
+    assert!(
+        cmd.get("Netbsd").is_some(),
+        "expected a netbsd command: {cmd}"
+    );
     let a = &cmd["Netbsd"];
     assert_eq!(a["version"], "10.1");
     assert_eq!(a["vm"]["mem"], 512);

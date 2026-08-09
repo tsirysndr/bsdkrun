@@ -273,7 +273,11 @@ pub(crate) fn safe_label(name: &str) -> String {
 /// Build the single guest command that provisions a flavor: Nix package installs
 /// (via the Determinate Systems installer on the OCI base) then the flavor's
 /// shell steps, in order, under a login shell. `None` ⇒ nothing to provision.
-pub(crate) fn flavor_provision_argv(name: &str, nix: &[String], provision: &[String]) -> Option<Vec<String>> {
+pub(crate) fn flavor_provision_argv(
+    name: &str,
+    nix: &[String],
+    provision: &[String],
+) -> Option<Vec<String>> {
     if nix.is_empty() && provision.is_empty() {
         return None;
     }
@@ -310,7 +314,12 @@ pub(crate) fn flavor_provision_argv(name: &str, nix: &[String], provision: &[Str
 /// Cache hit → returns immediately (instant, no re-provisioning). Miss → runs
 /// the provisioning build in a child `bsdkrun` process (streaming its progress)
 /// and records the result so every later launch just clones it.
-pub(crate) fn ensure_flavor_built(spec: &LinuxFlavorSpec, name: &str, cpus: u8, mem: u32) -> Result<PathBuf> {
+pub(crate) fn ensure_flavor_built(
+    spec: &LinuxFlavorSpec,
+    name: &str,
+    cpus: u8,
+    mem: u32,
+) -> Result<PathBuf> {
     let key = flavor_build_key(&spec.image, &spec.nix, &spec.provision);
     let vol = flavor_build_volume(&key);
     let voldir = volume_dir(&vol)?;
@@ -559,4 +568,3 @@ pub(crate) fn cmd_flavor_run(args: FlavorRunArgs) -> Result<()> {
         flavors::Base::Oci(_) => unreachable!("OCI flavors handled above"),
     }
 }
-

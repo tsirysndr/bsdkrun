@@ -15,9 +15,9 @@
 
 use bsdkrun_core::api;
 use bsdkrun_core::cli::{
-    BsdArgs, Command as CoreCommand, ExecArgs, FetchArgs, FlavorAddArgs, FlavorArgs,
-    FlavorCmd, FlavorPrebuildArgs, FlavorRunArgs, IdArgs, LinuxArgs, LogsArgs, NanosArgs,
-    NetConfig, OsvArgs, RunConfig, SshArgs, SystemdArgs, TailscaleArgs, UnikraftArgs, VmConfig,
+    BsdArgs, Command as CoreCommand, ExecArgs, FetchArgs, FlavorAddArgs, FlavorArgs, FlavorCmd,
+    FlavorPrebuildArgs, FlavorRunArgs, IdArgs, LinuxArgs, LogsArgs, NanosArgs, NetConfig, OsvArgs,
+    RunConfig, SshArgs, SystemdArgs, TailscaleArgs, UnikraftArgs, VmConfig,
 };
 use bsdkrun_core::net::PortForward;
 
@@ -573,12 +573,7 @@ impl Ops {
     /// process; the returned id is the machine's own, unchanged.
     pub async fn start(&self, id: &str) -> OpResult<CommandResult> {
         let cmd = CoreCommand::Start(IdArgs { id: id.to_string() });
-        as_result(
-            self.supervisor
-                .detached(&cmd)
-                .await
-                .map_err(OpError::from),
-        )
+        as_result(self.supervisor.detached(&cmd).await.map_err(OpError::from))
     }
 
     pub async fn stop(&self, id: &str) -> OpResult<CommandResult> {

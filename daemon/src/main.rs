@@ -98,7 +98,9 @@ fn run_supervised(args: &[String]) -> Result<()> {
 /// `bsdkrund __cli -- <args…>` — run a bsdkrun command line, parsed by the
 /// engine's own clap definition. Backs the passthrough RPC.
 fn run_command_line(args: &[String]) -> Result<()> {
-    let args = args.strip_prefix(std::slice::from_ref(&"--".to_string())).unwrap_or(args);
+    let args = args
+        .strip_prefix(std::slice::from_ref(&"--".to_string()))
+        .unwrap_or(args);
     let cli = bsdkrun_core::cli::Cli::try_parse_from(
         std::iter::once("bsdkrun".to_string()).chain(args.iter().cloned()),
     )?;
@@ -114,7 +116,9 @@ fn run_command_line(args: &[String]) -> Result<()> {
 /// progress half of a launch stream.
 fn supervisor_setup() {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .with_target(false)
         .with_writer(std::io::stderr)
         .init();

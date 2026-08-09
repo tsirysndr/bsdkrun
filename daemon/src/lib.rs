@@ -28,8 +28,6 @@ pub mod client;
 #[cfg(feature = "server")]
 pub mod auth;
 #[cfg(feature = "server")]
-pub mod supervisor;
-#[cfg(feature = "server")]
 pub mod graphql;
 #[cfg(feature = "server")]
 pub mod http;
@@ -41,6 +39,8 @@ pub mod pty;
 pub mod service;
 #[cfg(feature = "server")]
 pub mod shell;
+#[cfg(feature = "server")]
+pub mod supervisor;
 #[cfg(feature = "server")]
 pub mod system;
 

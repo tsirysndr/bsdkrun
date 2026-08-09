@@ -55,7 +55,9 @@ pub(crate) fn cmd_images(json: bool) -> Result<()> {
             im.id,
             truncate(&im.reference, 32),
             oci::human_size(im.size.max(0) as u64),
-            im.created_at.as_deref().map_or_else(|| "-".to_string(), db::age)
+            im.created_at
+                .as_deref()
+                .map_or_else(|| "-".to_string(), db::age)
         );
     }
     Ok(())

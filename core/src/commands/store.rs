@@ -67,4 +67,3 @@ pub(crate) fn cmd_store_rm(force: bool) -> Result<()> {
     println!("store removed; the default cache and volume directories are in use again");
     Ok(())
 }
-

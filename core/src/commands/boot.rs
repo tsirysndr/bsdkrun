@@ -10,12 +10,12 @@ use tracing::{info, warn};
 use crate::cli::*;
 use crate::krun::Ctx;
 use crate::net::{Gvproxy, PortForward};
+#[cfg(target_os = "macos")]
+use crate::store;
 use crate::{
     agent, console, db, fetch, host, id, krun, linux, names, nanos, net, network, oci, osv, tty,
     unikraft, watchdog,
 };
-#[cfg(target_os = "macos")]
-use crate::store;
 
 use super::guest::{agent_error, agent_target, interactive_shell_argv, interactive_shell_env};
 
@@ -774,7 +774,11 @@ pub(crate) fn ensure_net_for_exec(net: &NetConfig, exec_after: &[String]) -> Res
 /// synthesize, so it gets a PTY; an *explicit* command runs non-interactively
 /// (like `docker run` without `-t`). That also sidesteps a guest-agent PTY drain
 /// race that swallows a fast command's output when a tty is allocated.
-pub(crate) fn bsd_exec_after(command: &[String], detach: bool, no_net: bool) -> (Vec<String>, bool) {
+pub(crate) fn bsd_exec_after(
+    command: &[String],
+    detach: bool,
+    no_net: bool,
+) -> (Vec<String>, bool) {
     if command.is_empty() && !detach && !no_net {
         (vec!["/bin/sh".to_string()], true)
     } else {
@@ -1452,7 +1456,10 @@ pub(crate) fn boot_linux(args: LinuxArgs) -> Result<()> {
 /// (network, member) to record as membership once the machine row exists.
 /// `dhcp` = true for BSD guests (they DHCP their IP); false for Linux (static
 /// kernel IP). Returns `(network, member, dhcp)` to finalize once booted.
-pub(crate) fn prepare_network(net: &NetConfig, dhcp: bool) -> Result<Option<(String, String, bool)>> {
+pub(crate) fn prepare_network(
+    net: &NetConfig,
+    dhcp: bool,
+) -> Result<Option<(String, String, bool)>> {
     if net.network.is_none() && net.name.is_none() {
         return Ok(None);
     }
@@ -1666,7 +1673,11 @@ pub(crate) fn configure_linux_ctx(
 }
 
 /// Like `finish`, but records the guest's exit code in the state DB first.
-pub(crate) fn finish_recording(ctx: Ctx, gvproxy: Option<Gvproxy>, machine_id: String) -> Result<()> {
+pub(crate) fn finish_recording(
+    ctx: Ctx,
+    gvproxy: Option<Gvproxy>,
+    machine_id: String,
+) -> Result<()> {
     let result = ctx.start_enter();
     tty::restore_stdin_termios();
     let code = result.context("starting machine")?;
@@ -1787,7 +1798,8 @@ pub(crate) fn run_detached(
 
 /// How long to wait for a freshly-booted guest's agent before giving up on a
 /// trailing command. A BSD guest takes tens of seconds to reach multiuser.
-pub(crate) const GUEST_AGENT_BOOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+pub(crate) const GUEST_AGENT_BOOT_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(180);
 
 /// Poll a booting machine's guest agent until it answers (or we time out / the
 /// machine dies), returning the forwarded host port to `exec` against.
@@ -1941,7 +1953,11 @@ pub(crate) fn log_boot_timing(
     eprintln!("  {:<45} {}", "total (launch → agent ready)", s(total));
 }
 
-pub(crate) fn wait_for_agent(id: &str, kind: &str, console: Option<&std::path::Path>) -> Result<u16> {
+pub(crate) fn wait_for_agent(
+    id: &str,
+    kind: &str,
+    console: Option<&std::path::Path>,
+) -> Result<u16> {
     use std::io::{IsTerminal, Read, Seek, SeekFrom, Write};
     let counter = console.is_none() && std::io::stderr().is_terminal();
     // A little braille spinner for the counter — cycles each poll.
@@ -2087,4 +2103,3 @@ pub(crate) fn run_guest_command(
     }
     std::process::exit(code);
 }
-

@@ -28,7 +28,9 @@ pub(crate) fn cmd_volume_ls(json: bool) -> Result<()> {
             v.guest.as_deref().unwrap_or("-"),
             truncate(v.base.as_deref().unwrap_or("-"), 28),
             v.size.as_deref().unwrap_or("-"),
-            v.created_at.as_deref().map_or_else(|| "-".to_string(), db::age),
+            v.created_at
+                .as_deref()
+                .map_or_else(|| "-".to_string(), db::age),
         );
     }
     Ok(())
@@ -92,10 +94,8 @@ pub fn remove_volume(name: &str, force: bool) -> Result<String> {
         anyhow::bail!("volume {name:?} is in use by a running machine (use --force)");
     }
     if dir.exists() {
-        std::fs::remove_dir_all(&dir)
-            .with_context(|| format!("removing {}", dir.display()))?;
+        std::fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
     }
     db.remove_volume(name).ok();
     Ok(name.to_string())
 }
-

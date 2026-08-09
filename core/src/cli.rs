@@ -19,9 +19,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::krun;
 use crate::net::PortForward;
-use crate::{fetch, linux, osv};
 #[cfg(target_os = "macos")]
 use crate::store;
+use crate::{fetch, linux, osv};
 
 // Accent palette (with matching muted + error tones) applied to clap's --help
 // styling: electric teal for section headers/usage, violet for literals.
@@ -1337,7 +1337,8 @@ mod tests {
 
     #[test]
     fn flavor_add_defaults_match_clap() {
-        let Command::Flavor(args) = parse(&["bsdkrun", "flavor", "add", "mine", "--base", "alpine"])
+        let Command::Flavor(args) =
+            parse(&["bsdkrun", "flavor", "add", "mine", "--base", "alpine"])
         else {
             panic!("not a flavor command");
         };

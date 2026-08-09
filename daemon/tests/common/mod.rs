@@ -115,12 +115,26 @@ pub fn machine_with_live_process(id: &str) -> String {
     let state = fixture_state();
     let pid = live_process();
     let id = id.to_string();
-    let dir = state.join("machines").join(&id).to_string_lossy().into_owned();
+    let dir = state
+        .join("machines")
+        .join(&id)
+        .to_string_lossy()
+        .into_owned();
     let recorded = id.clone();
     std::thread::spawn(move || {
         bsdkrun_core::db::record_machine(
-            &recorded, &recorded, "alpine", "linux", "sh", "running",
-            Some(pid), true, 1, 512, &dir, None,
+            &recorded,
+            &recorded,
+            "alpine",
+            "linux",
+            "sh",
+            "running",
+            Some(pid),
+            true,
+            1,
+            512,
+            &dir,
+            None,
         );
     })
     .join()
@@ -136,20 +150,47 @@ pub fn seed(state: &Path) {
     std::fs::create_dir_all(state).unwrap();
     // A running Linux machine on a network, and a running FreeBSD one.
     db::record_machine(
-        "abc123", "web", "alpine", "linux", "sh", "running",
-        Some(live_process()), true, 2, 1024,
-        &state.join("machines/abc123").to_string_lossy(), None,
+        "abc123",
+        "web",
+        "alpine",
+        "linux",
+        "sh",
+        "running",
+        Some(live_process()),
+        true,
+        2,
+        1024,
+        &state.join("machines/abc123").to_string_lossy(),
+        None,
     );
     db::record_machine(
-        "bsd456789abc", "fbsd", "disk.raw", "freebsd", "", "running",
-        Some(live_process()), true, 2, 1024,
-        &state.join("machines/bsd456789abc").to_string_lossy(), None,
+        "bsd456789abc",
+        "fbsd",
+        "disk.raw",
+        "freebsd",
+        "",
+        "running",
+        Some(live_process()),
+        true,
+        2,
+        1024,
+        &state.join("machines/bsd456789abc").to_string_lossy(),
+        None,
     );
     // One that is not running, so `all` has something to include.
     db::record_machine(
-        "dead00000001", "old", "alpine", "linux", "sh", "exited",
-        None, true, 1, 512,
-        &state.join("machines/dead00000001").to_string_lossy(), None,
+        "dead00000001",
+        "old",
+        "alpine",
+        "linux",
+        "sh",
+        "exited",
+        None,
+        true,
+        1,
+        512,
+        &state.join("machines/dead00000001").to_string_lossy(),
+        None,
     );
 
     let db = db::Db::open().unwrap();
@@ -162,7 +203,9 @@ pub fn seed(state: &Path) {
     db::record_image("alpine:3.20", "sha256:deadbeef", 5_000_000_000, "/r");
 
     db.create_network(
-        "devnet", "192.168.127.0/24", "192.168.127.1",
+        "devnet",
+        "192.168.127.0/24",
+        "192.168.127.1",
         &state.join("net/control.sock").to_string_lossy(),
         &state.join("net").to_string_lossy(),
         None,

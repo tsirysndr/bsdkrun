@@ -80,9 +80,8 @@ impl Supervisor {
     /// Resolve this daemon's own binary. Fails fast at startup: a daemon that
     /// cannot re-exec itself can boot nothing.
     pub fn resolve() -> Result<Self> {
-        let exe = std::env::current_exe().context(
-            "locating this daemon's own binary (needed to supervise machines it boots)",
-        )?;
+        let exe = std::env::current_exe()
+            .context("locating this daemon's own binary (needed to supervise machines it boots)")?;
         Ok(Self {
             exe,
             path: augmented_path(),
@@ -315,7 +314,13 @@ where
                 } else {
                     output_chunk::Payload::Stderr(buf[..n].to_vec())
                 };
-                if tx.send(Ok(OutputChunk { payload: Some(payload) })).await.is_err() {
+                if tx
+                    .send(Ok(OutputChunk {
+                        payload: Some(payload),
+                    }))
+                    .await
+                    .is_err()
+                {
                     break; // the client stopped reading
                 }
             }

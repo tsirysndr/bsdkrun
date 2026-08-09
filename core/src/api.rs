@@ -221,7 +221,9 @@ pub fn list_volumes() -> Result<Vec<Volume>> {
     if let Ok(entries) = std::fs::read_dir(db::volumes_dir()?) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            if e.path().is_dir() && !tracked.contains(&name) && !name.starts_with(FLAVOR_BUILD_PREFIX)
+            if e.path().is_dir()
+                && !tracked.contains(&name)
+                && !name.starts_with(FLAVOR_BUILD_PREFIX)
             {
                 let path = e.path().to_string_lossy().into_owned();
                 out.push(Volume {

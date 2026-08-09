@@ -28,8 +28,8 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::mpsc;
 use tonic::Status;
 
-use crate::supervisor::SessionInput;
 use crate::pb::{output_chunk, OutputChunk};
+use crate::supervisor::SessionInput;
 
 const READ_CHUNK: usize = 64 * 1024;
 const CHANNEL_DEPTH: usize = 64;

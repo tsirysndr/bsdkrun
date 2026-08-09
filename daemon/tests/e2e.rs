@@ -273,7 +273,10 @@ async fn volume_size_is_text_and_unknown_becomes_absent() {
     let data = res.volumes.iter().find(|v| v.name == "data").unwrap();
     let gone = res.volumes.iter().find(|v| v.name == "gone").unwrap();
     // A measurable volume reports human-readable text…
-    let size = data.size.as_deref().expect("a measurable volume has a size");
+    let size = data
+        .size
+        .as_deref()
+        .expect("a measurable volume has a size");
     assert!(
         size.ends_with("B") && size.chars().next().unwrap().is_ascii_digit(),
         "unexpected size text: {size:?}"
@@ -410,7 +413,10 @@ async fn run_bsd_is_always_detached_and_maps_the_os() {
 
     let cmd = h.last_command();
     // The OS chose the variant, so it cannot be mis-spelled as a subcommand.
-    assert!(cmd.get("Netbsd").is_some(), "expected a netbsd command: {cmd}");
+    assert!(
+        cmd.get("Netbsd").is_some(),
+        "expected a netbsd command: {cmd}"
+    );
     let a = &cmd["Netbsd"];
     assert_eq!(a["version"], "10.1");
     assert_eq!(a["run"]["detach"], true);

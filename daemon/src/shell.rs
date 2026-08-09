@@ -160,9 +160,8 @@ impl ShellRegistry {
 
         let rows = if rows == 0 { DEFAULT_ROWS } else { rows };
         let cols = if cols == 0 { DEFAULT_COLS } else { cols };
-        let (handle, mut stream) =
-            PtySession::spawn(sup.exe(), &argv, sup.env_path(), rows, cols)
-                .map_err(OpError::from)?;
+        let (handle, mut stream) = PtySession::spawn(sup.exe(), &argv, sup.env_path(), rows, cols)
+            .map_err(OpError::from)?;
 
         let id = crate::auth::random_hex(16)
             .map_err(|e| OpError::Failed(format!("generating a session id: {e}")))?;

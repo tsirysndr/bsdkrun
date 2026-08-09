@@ -1,13 +1,12 @@
 //! The machine lifecycle: `ps`, `start`, `stop`, `update`, `rm` and `commit`.
 
-
 use anyhow::{Context, Result};
 use tracing::info;
 
 use crate::cli::*;
-use crate::{agent, api, db, host, id, linux, names, nanos, osv, unikraft};
 #[cfg(target_os = "macos")]
 use crate::store;
+use crate::{agent, api, db, host, id, linux, names, nanos, osv, unikraft};
 
 use super::boot::{
     boot_freebsd, boot_freebsd_disk, boot_linux, boot_linux_from, boot_nanos_image, boot_netbsd,

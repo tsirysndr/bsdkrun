@@ -1,0 +1,9 @@
+/.unikraft/
+.config*
+.Kraftfile.*
+/.rootfs-*/
+/target/
+/.cpcache/
+
+# Rust toolchain cache for the containerised build (see build.sh)
+.rust-cache/

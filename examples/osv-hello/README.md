@@ -6,10 +6,9 @@ and on **Linux/x86_64** via KVM.
 
 OSv is not like the other unikernels bsdkrun boots. A Unikraft or Nanos image is
 the application *linked into* the kernel; an OSv image is a kernel plus a
-filesystem, and the application is an ordinary **Linux shared object** that OSv
-`dlopen()`s and calls `main()` on. So `hello.c` is just C — nothing in it knows
-about OSv — and all the OSv-specific detail lives in how it is linked and
-packaged.
+filesystem, and the application is an ordinary **Linux binary** that OSv loads
+and calls `main()` on. So `hello.c` is just C — nothing in it knows about OSv —
+and all the OSv-specific detail lives in how it is linked and packaged.
 
 ## Build and run
 
@@ -40,17 +39,19 @@ bsdkrun osv disk.raw --cmdline=/hello.so
 
 ## The three things that matter
 
-**1. Link it as a shared object.** OSv loads the application with its ELF
+**1. Build position-independent code.** OSv loads the application with its ELF
 loader and looks up `main`:
 
 ```sh
-gcc -O2 -shared -fPIC -o hello.so hello.c
+gcc -O2 -shared -fPIC -o hello.so hello.c    # what this example does
+gcc -O2 -fPIE -pie  -o hello.elf hello.c     # also works
 ```
 
-`-shared` (not a plain executable) because OSv `dlopen()`s it, and `-fPIC`
-because OSv relocates it into the single address space it shares with the
-kernel. Build it as a normal executable and OSv reports
-`Failed to load object: /hello.so`.
+Either a shared object or a PIE executable is fine — both were verified. What
+does *not* work is a position-dependent binary (`-no-pie`): OSv runs the
+application in the single address space it shares with the kernel, so a binary
+linked at a fixed address has nowhere to go, and the guest hangs with nothing
+on the console.
 
 `libc.so.6` in the app's `DT_NEEDED` is fine and expected: OSv resolves the libc
 symbols against the kernel's own exports, which is why `printf` and `uname` work

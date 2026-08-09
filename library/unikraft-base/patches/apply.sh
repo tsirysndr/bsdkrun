@@ -1438,4 +1438,102 @@ else
 	echo "execve.c argc/envc: already patched or absent, skipping"
 fi
 
+# ---------------------------------------------------------------------------
+# 20. ppoll() refuses a signal mask of its own accord, before epoll ever sees it.
+#
+# The section above teaches uk_sys_epoll_pwait2() to honour a mask, and
+# uk_sys_ppoll() already forwards one to it -- but not before failing on its
+# own copy of the same stub:
+#
+#	if (unlikely(sigmask)) {
+#		uk_pr_warn_once("STUB: ppoll no sigmask support\n");
+#		return -ENOSYS;
+#	}
+#
+# so ppoll() with a mask still returns ENOSYS. Dropping the block is the whole
+# fix; the mask then reaches the machinery that now handles it.
+#
+# This is not a corner case on arm64. aarch64 has no poll() system call at all,
+# so glibc implements poll() as ppoll(), and *every* glibc program that polls a
+# file descriptor arrives here. MySQL is one: its connection layer does a
+# non-blocking read, gets EAGAIN, and waits for the socket to become readable.
+# When that wait fails it declares the connection broken --
+#
+#	[Note] Got an error reading communication packets
+#
+# -- and hangs up on the client mid-handshake, having already sent its greeting.
+# Programs that use epoll directly (node, Deno, Actix) never notice.
+# ---------------------------------------------------------------------------
+POLLC="$UK/lib/posix-poll/poll.c"
+if [ -f "$POLLC" ] && grep -q "STUB: ppoll no sigmask support" "$POLLC"; then
+	echo "patching $POLLC (let ppoll pass its signal mask through)"
+	python3 - "$POLLC" <<'PYEOF'
+import sys
+
+p = sys.argv[1]
+s = open(p).read()
+
+stub = """	if (unlikely(sigmask)) {
+		uk_pr_warn_once("STUB: ppoll no sigmask support\\n");
+		return -ENOSYS;
+	}
+"""
+assert stub in s, "poll.c does not contain the expected sigmask stub"
+open(p, "w").write(s.replace(stub, "", 1))
+PYEOF
+else
+	echo "poll.c ppoll sigmask: already patched or absent, skipping"
+fi
+
+# ---------------------------------------------------------------------------
+# 21. Preempt application code on a timer tick (preempt.patch).
+#
+# The scheduler is cooperative -- ukschedcoop is the only one in the tree, and
+# it says so itself -- so a thread that never enters the kernel is never
+# descheduled. That is fine for programs that block in syscalls and fatal for
+# ones that busy-wait on another thread. InnoDB does exactly that:
+#
+#   void IB_thread::start() {
+#     m_state->store(State::ALLOWED_TO_START);
+#     wait(State::STARTED);        // spins; no yield, no syscall in the loop
+#   }
+#
+# The thread it waits for cannot run until the waiter yields, and the waiter
+# never does. mysqld hangs forever at "InnoDB initialization has started", on
+# both architectures. See examples/unikraft-mysql/repro/.
+#
+# The patch adds CONFIG_UKPLAT_PREEMPT (default off) and, when set:
+#
+#   * arm64 gets a periodic timer tick. It had none -- the generic timer is
+#     armed only by time_block_until(), i.e. when a thread blocks, so a guest
+#     whose threads all spin takes no interrupts at all. x86_64 already has
+#     one: the PIT is left in rate-generator mode at CONFIG_HZ.
+#
+#   * The interrupt return path reschedules, when the interrupted PC lies
+#     outside [__TEXT, __ETEXT). Kernel code may hold a lock or be running on
+#     the auxiliary syscall stack, and does not spin on other threads;
+#     application code is what needs preempting.
+#
+# The switch cannot happen in the interrupt handler: both architectures take
+# interrupts on a per-LCPU stack (arm64 via except_stack_base, x86_64 via
+# IST 1) that the next interrupt reuses, so a thread suspended there would
+# lose its frame. Instead the frame is copied onto the interrupted thread's
+# own stack and the return is redirected to a trampoline that runs there,
+# yields like any other thread, and restores the frame afterwards -- so the
+# interrupt "returns" arbitrarily later, from a different call stack.
+#
+# The trampoline saves the extended context by hand. uk_sched_thread_switch()
+# deliberately does not, because a cooperative switch only ever happens at a
+# call boundary; a preempted thread is suspended mid-instruction-stream with
+# live vector registers. Interrupt handlers may not touch that state (x86_64
+# asserts it under CONFIG_LIBUKPLAT_NATIVE_ECTX_ISR_ASSERTIONS, and arm64
+# builds -mgeneral-regs-only), so it is still intact when the trampoline runs.
+# ---------------------------------------------------------------------------
+if [ -f "$UK/plat/Config.uk" ] && ! grep -q "UKPLAT_PREEMPT" "$UK/plat/Config.uk"; then
+	echo "applying preempt.patch (timer-tick preemption of application code)"
+	patch -p1 -d "$UK" -i "$HERE/preempt.patch" >/dev/null
+else
+	echo "preemption: already patched or absent, skipping"
+fi
+
 echo "patches applied."

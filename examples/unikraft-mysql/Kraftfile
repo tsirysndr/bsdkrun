@@ -74,6 +74,18 @@ unikraft:
     CONFIG_LIBPOSIX_POLL: 'y'
     CONFIG_LIBPOSIX_PROCESS: 'y'
     CONFIG_LIBPOSIX_PROCESS_MULTITHREADING: 'y'
+    # Preempt application code on a timer tick. Without this mysqld never
+    # finishes starting: InnoDB's IB_thread::start() busy-waits for a thread it
+    # has just created, in a loop with no yield and no syscall, and a
+    # cooperative scheduler can never run the thread it is waiting for. See
+    # repro/ and library/unikraft-base/patches (preempt.patch).
+    CONFIG_UKPLAT_PREEMPT: 'y'
+    # The default largest TID is 31, and find_and_reserve_tid() returns EAGAIN
+    # once they are gone -- which mysqld reports as "Can't create
+    # interrupt-thread (error 11)" and treats as fatal. InnoDB alone wants a
+    # page cleaner, a purge thread, IO threads and several monitors before a
+    # single client connects, and every connection is another thread.
+    CONFIG_LIBPOSIX_PROCESS_MAX_PID: 1024
     # Deliver CPU faults to the application as signals. Runtimes that bundle
     # OpenSSL probe for CPU extensions by *executing* an instruction under
     # sigsetjmp and expecting SIGILL when it is unimplemented; without signal

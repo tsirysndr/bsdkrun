@@ -17,136 +17,75 @@ $ mysql -h 127.0.0.1 --ssl-mode=DISABLED -u root -punikraft -e 'select version()
 Credentials are baked into the image: `root` / `unikraft`, reachable from any
 host.
 
+> Needs a libkrun new enough to honour `KRUN_NO_EARLYCON`. Without it libkrun
+> appends its `earlycon=` hint *after* the `--` stop sequence, so it lands in
+> mysqld's argv and mysqld — unlike node or bun — refuses to start on an
+> argument nobody wrote: `Too many arguments (first extra is 'earlycon=...')`.
+
 ## Status
 
-> **This one does not work yet.** It builds and boots, and `mysqld` gets a long
-> way into InnoDB startup, but the guest wedges the moment MySQL creates its
-> *second* thread. Everything below is accurate about where it stops and what
-> has been ruled out.
-
-### What works
-
-The unikernel builds for `fc/arm64`, boots, DHCPs an address, and the binary
-runs — `mysqld --version` completes in the guest:
+**It works.** The unikernel boots, `mysqld` starts, and it serves SQL over a
+forwarded port:
 
 ```console
-$ bsdkrun unikraft . --mem 2048 --no-net --cmdline "elfloader -- /usr/sbin/mysqld --version"
-...
-/usr/sbin/mysqld  Ver 8.0.46 for Linux on aarch64 (MySQL Community Server - GPL)
+$ mysql -h 127.0.0.1 -P 3306 --protocol=TCP --ssl-mode=DISABLED -u root -punikraft \
+    -e "create database demo; use demo;
+        create table t (id int primary key, name varchar(32));
+        insert into t values (1,'unikraft'),(2,'bsdkrun');
+        select * from t;"
+id      name
+1       unikraft
+2       bsdkrun
 ```
 
-So the ELF loader, glibc, `libstdc++`, TLS and the RPATH-resolved private
-libraries are all fine. `mysqld` then starts for real, finds and parses
-`/etc/my.cnf`, and reaches:
+Verified on arm64 under macOS/Hypervisor.framework. x86_64 is covered by
+`.github/workflows/e2e-unikraft-examples.yml`, which runs the same round trip.
+
+Getting there needed three fixes in the guest kernel, none of them in this
+example. Each was hidden behind the one before it.
+
+### 1. InnoDB deadlocks a cooperative scheduler
+
+`IB_thread::start()` busy-waits for the thread it has just created, in a
+six-instruction loop with no yield and no syscall in it. Unikraft's scheduler is
+cooperative, so the thread it waits for can never run: the boot stops dead at
+`InnoDB initialization has started`, at 100% CPU, forever, on both
+architectures.
+
+Fixed by `preempt.patch` in `../../library/unikraft-base/patches`, which
+preempts application code on a timer tick. `repro/` has the gdb session that
+found it and the reasoning behind the patch. With it, InnoDB initialisation
+takes **0.3 s**.
+
+### 2. Thirty-one threads
+
+`CONFIG_LIBPOSIX_PROCESS_MAX_PID` defaults to 31, and `find_and_reserve_tid()`
+returns `EAGAIN` past that. InnoDB spends a dozen threads on page cleaners,
+purge, IO and monitors before a client ever connects, so mysqld died with
 
 ```
-[System] [MY-010116] [Server] /usr/sbin/mysqld (mysqld 8.0.46) starting as process 1
-[System] [MY-013576] [InnoDB] InnoDB initialization has started.
+[ERROR] [MY-010106] [Server] Can't create interrupt-thread (error 11, errno: 11)
 ```
 
-The same root filesystem, run as a plain container (`docker run mysql-rootfs
-/usr/sbin/mysqld --user=root`), serves queries — so the image itself, the baked
-datadir and the credentials are all good. The problem is in the guest.
+The Kraftfile raises it to 1024. Every connection is another thread.
 
-### Where it stops
+### 3. `ppoll()` refused a signal mask
 
-That last log line understates the progress. With syscall tracing on (see the
-Kraftfile for how to actually enable it), InnoDB opens and reads its whole
-tablespace set first:
-
-```
-openat("./ibdata1", O_RDWR)                    = fd
-openat("/var/lib/mysql/#innodb_redo", ...)     = fd
-openat("./mysql.ibd") ... pread64(..., 16384, 0) = 16384
-openat("./undo_001") ... openat("./undo_002")    both read
-openat("/tmp/ibw9iB1W", O_RDONLY|O_CREAT|O_EXCL) = fd     <- temp files
-openat("/sys/devices/system/cpu/online")       = ENOENT   ┐ glibc get_nprocs()
-openat("/proc/stat")                           = ENOENT   ┘
-sched_getaffinity(...)                         = 0x1000
-mmap(196608, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK) = va   <- a stack
-clone(CLONE_VM|CLONE_FS|CLONE_FILES|...)  ->  1  rt_sigprocmask(...) = 0x0
-```
-
-and then **nothing, ever again** — from either thread — while the vCPU sits at
-100%. Left alone for nine minutes it produces not one more line, so this is a
-hang and not slow demand-paging of the 152 MiB root filesystem.
-
-The last two lines are the whole finding. The child thread is created, gets as
-far as the `rt_sigprocmask` that glibc's `start_thread` does before calling the
-thread function, and from that point no thread in the guest issues another
-system call.
-
-### Both architectures stall identically
-
-This is not an arm64 problem. The e2e workflow boots this example on x86_64
-under KVM, and it stops at the same place, after the same last line:
+`uk_sys_ppoll()` returned `ENOSYS` for any non-NULL `sigmask`. MySQL's
+connection layer does a non-blocking read, gets the expected `EAGAIN`, and waits
+for the socket to become readable — so the wait failed, and mysqld hung up on
+the client mid-handshake having already sent its greeting:
 
 ```
-1999-12-31T00:00:01.079148Z 0 [System] [MY-010116] [Server] /usr/sbin/mysqld (mysqld 8.0.46) starting as process 1
-1999-12-31T00:00:01.108370Z 1 [System] [MY-013576] [InnoDB] InnoDB initialization has started.
+sendto(... "8.0.46" ...)  = OK            <- greeting
+recvfrom(..., MSG_DONTWAIT) = EAGAIN      <- expected
+ppoll(...)                 = ENOSYS       <- the bug
+[Note] Got an error reading communication packets
 ```
 
-and nothing follows. That matters for where to look next: it rules out the
-arm64-specific `clone`/TLS handling that would otherwise be the first suspect,
-and leaves the architecture-independent explanation below. It also means this
-can be debugged on either host.
-
-### It is the *second* thread, not threading in general
-
-Threads work. The trace contains exactly two `clone` calls, and the first one
-succeeds completely: that thread is the one that prints "InnoDB initialization
-has started" and performs every tablespace open above. Only the second `clone`
-wedges the guest.
-
-### Ruled out, with evidence
-
-| hypothesis                            | test                                                                       | result                        |
-|---------------------------------------|----------------------------------------------------------------------------|-------------------------------|
-| Something arm64-specific               | the e2e workflow, on x86_64 under KVM                                       | same stall, same last line    |
-| One vCPU starves a spinning thread     | `--cpus 4`                                                                  | wedges identically            |
-| Slow demand paging, not a hang         | left running 9 minutes                                                      | no further output at all      |
-| InnoDB's spin-wait loops               | `--innodb-spin-wait-delay=0 --innodb-sync-spin-loops=0`                     | wedges identically            |
-| The dedicated redo-log threads         | `--innodb-log-writer-threads=OFF`                                           | wedges identically            |
-| Too many background threads            | `--innodb-page-cleaners=1 --innodb-purge-threads=1`, 2 IO threads           | same trace, same second clone |
-| The binary or its libraries            | `mysqld --version` in the guest; whole rootfs under Docker                  | both fine                     |
-| The image, datadir or credentials      | `select version()` against the `scratch` image over TCP                     | answers                       |
-
-### Leading explanation
-
-Unikraft's scheduler is cooperative — the built config has
-`CONFIG_LIBUKSCHEDCOOP=y`, and `lib/` contains no other scheduler — so a thread
-that spins in userspace without entering the kernel can never be preempted. If
-the new thread spins on a lock the other thread holds, nothing can ever run
-again: 100% CPU, no syscalls, forever. That also explains why `--cpus 4` makes
-no difference, since the guest does not use the extra vCPUs.
-
-This is consistent with the evidence but not proven. The obvious alternative —
-a bug in arm64's `clone`/TLS setup that only shows on a second concurrent
-thread — is ruled out by x86_64 failing the same way, so whatever it is, it is
-common to both.
-
-### CI
-
-`.github/workflows/e2e-unikraft-examples.yml` builds and boots this example on
-x86_64 alongside the others, with `strict: false` — the payoff check runs and is
-reported but does not fail the job. Its first run is what established that the
-hang is architecture-independent, exactly as the bun entry did for bun's abort.
-Clear the flag when the hang is fixed.
-
-Its check is not HTTP. A MySQL server sends its handshake packet unprompted on
-connect, so the step reads the first bytes off port 3306 with bash's `/dev/tcp`
-and looks for the version string — no client package on the runner.
-
-Everything before that — the build, the boot, the kernel banner, the network
-interface, entropy — is asserted for this example exactly as for the working
-ones, and all of it passes today.
-
-### Next step
-
-The gdb stub, the way `../unikraft-expressjs/repro/` pinned down the node
-failures: build a `qemu/arm64` target, attach `gdb-multiarch` through QEMU's
-`-S -gdb tcp:...`, and look at what both threads are doing once the console goes
-quiet — which lock, held by whom. Everything cheaper than that has been tried.
+This one is not MySQL-specific: **aarch64 has no `poll` syscall**, so glibc's
+`poll()` is always `ppoll()`. Every glibc program that polls a file descriptor
+hits it; node, Deno and Actix escape only by using `epoll` directly.
 
 ## Differences from upstream
 
@@ -204,6 +143,8 @@ the command line stays short. Four of them are not tuning but constraints:
 | `skip_name_resolve = ON`    | lwip is built without DNS, so a client lookup would stall on timeout |
 | `mysqlx = OFF`              | A second listener on port 33060 that nothing here connects to        |
 | `performance_schema = OFF`  | Its instrumentation tables reserve ~100 MiB at startup               |
+| `event_scheduler = OFF`     | One thread fewer; its creation failure is fatal rather than degrading |
+| `auto_generate_certs = OFF` | Regenerating the deleted `*.pem` needs `chmod`, which ramfs lacks     |
 
 TLS is off (`tls_version =`, which is how 8.0.26+ spells it) and the generated
 `*.pem` are deleted from the datadir. A server generates those on first start;
@@ -215,8 +156,7 @@ private key. Put TLS in front of the guest instead.
 **`--mem 2048`.** The root filesystem is 152 MiB — a 53 MiB `mysqld`, 11 MiB of
 libraries, and an 87 MiB initialised datadir — and it is resident twice at boot:
 embedded in the kernel image *and* unpacked into ramfs. 2048 is what every run
-here used; the floor has not been measured, because the hang above made it a
-pointless thing to bisect.
+here used; the floor has not been measured.
 
 If a smaller `--mem` is tried, note that running out during cpio extraction
 reports itself as I/O, not memory (see `../unikraft-expressjs/README.md`):

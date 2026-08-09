@@ -1,0 +1,443 @@
+--- a/plat/common/arm/generic_timer.c
++++ b/plat/common/arm/generic_timer.c
+@@ -66,6 +66,11 @@
+ #define __MAX_CONVERT_SECS	(3600UL)
+ #define __MAX_CONVERT_NS	(3600UL*NSEC_PER_SEC)
+ static __u64 max_convert_ticks;
++
++#if CONFIG_UKPLAT_PREEMPT
++/* Counter ticks in one preemption tick. */
++static __u64 preempt_tick_ticks;
++#endif /* CONFIG_UKPLAT_PREEMPT */
+ 
+ /* How many nanoseconds per second */
+ #define NSEC_PER_SEC ukarch_time_sec_to_nsec(1)
+@@ -281,8 +286,24 @@
+ 
+ 	max_convert_ticks = __MAX_CONVERT_SECS*counter_freq;
+ 
++#if CONFIG_UKPLAT_PREEMPT
++	preempt_tick_ticks = ns_to_ticks((__u64)CONFIG_UKPLAT_PREEMPT_TICK_US
++					 * 1000UL);
++	UK_BUGON(!preempt_tick_ticks);
++#endif /* CONFIG_UKPLAT_PREEMPT */
++
+ 	return 0;
++}
++
++#if CONFIG_UKPLAT_PREEMPT
++void generic_timer_arm_preempt_tick(void)
++{
++	generic_timer_update_compare(generic_timer_get_ticks()
++				     + preempt_tick_ticks);
++	generic_timer_enable();
++	generic_timer_unmask_irq();
+ }
++#endif /* CONFIG_UKPLAT_PREEMPT */
+ 
+ int generic_timer_irq_handler(void *arg __unused)
+ {
+@@ -292,6 +313,19 @@
+ 	 */
+ 	generic_timer_mask_irq();
+ 
++#if CONFIG_UKPLAT_PREEMPT
++	/* Re-arm, so that the tick is periodic. This is what makes preemption
++	 * possible at all: the deferred reschedule happens on the way out of
++	 * whichever interrupt got us here (see the arm64 IRQ handler), and
++	 * without a tick a spinning thread would never generate one.
++	 *
++	 * Overwriting the comparator is safe with respect to a pending sleep:
++	 * generic_timer_cpu_block_until() re-checks the clock in a loop, so an
++	 * early wake-up costs an iteration and nothing else.
++	 */
++	generic_timer_arm_preempt_tick();
++#endif /* CONFIG_UKPLAT_PREEMPT */
++
+ 	/* Yes, we handled the irq. */
+ 	return 1;
+ }
+--- a/plat/common/arm/time.c
++++ b/plat/common/arm/time.c
+@@ -150,6 +150,14 @@
+ 
+ 	/* Enable timer */
+ 	generic_timer_enable();
++
++#if CONFIG_UKPLAT_PREEMPT
++	/* Start the preemption tick. It cannot fire until interrupts are
++	 * unmasked globally, which happens after the scheduler exists; the
++	 * handler bails out on its own until there is a current thread.
++	 */
++	generic_timer_arm_preempt_tick();
++#endif /* CONFIG_UKPLAT_PREEMPT */
+ }
+ 
+ uint32_t ukplat_time_get_irq(void)
+--- a/plat/common/include/arm/time.h
++++ b/plat/common/include/arm/time.h
+@@ -24,4 +24,14 @@
+ void generic_timer_cpu_block_until(__u64 until_ns);
+ void generic_timer_update_boot_ticks(void);
+ 
++#if CONFIG_UKPLAT_PREEMPT
++/* Program the virtual timer to fire one preemption tick from now, and unmask
++ * its interrupt. Without this the generic timer is only ever armed by
++ * generic_timer_cpu_block_until(), i.e. when a thread blocks -- so a guest
++ * whose threads never block takes no interrupts at all and can never be
++ * rescheduled.
++ */
++void generic_timer_arm_preempt_tick(void);
++#endif /* CONFIG_UKPLAT_PREEMPT */
++
+ #endif /* __ARM_ARM_TIME_H */
+--- a/plat/native/arch/arm64/except.c
++++ b/plat/native/arch/arm64/except.c
+@@ -20,6 +20,17 @@
+ #include <arm/arm64/mte.h>
+ #endif /* CONFIG_ARM64_FEAT_MTE */
+ 
++#if CONFIG_UKPLAT_PREEMPT
++#include <uk/essentials.h>
++#include <uk/plat/common/sections.h>
++#include <uk/plat/native/arch/ectx.h>
++#include <uk/sched.h>
++#include <uk/thread.h>
++
++/* SPSR_EL1.I -- interrupts were masked in the interrupted context. */
++#define UK_PLAT_NATIVE_ARM64_SPSR_I	0x80UL
++#endif /* CONFIG_UKPLAT_PREEMPT */
++
+ extern struct _gic_dev *gic;
+ 
+ __uk_pcpuvar __u8 uk_plat_native_except_switch_stack;
+@@ -231,6 +242,94 @@
+ 	uk_arch_arm64_halt();
+ }
+ 
++#if CONFIG_UKPLAT_PREEMPT
++/* Resume the interrupted context. Defined in the platform's exceptions.S,
++ * where the register-restore sequence already lives: it sets SP to the saved
++ * frame and falls into RESTORE_REGS, which reloads every GPR plus ELR/SPSR and
++ * the interrupted SP, then erets.
++ */
++void uk_plat_native_preempt_return(struct uk_plat_native_regs *frame)
++	__noreturn;
++
++/* Runs on the *interrupted thread's* stack, with interrupts enabled, having
++ * been entered by the eret at the end of the interrupt we are returning from.
++ *
++ * The extended context has to be saved by hand. uk_sched_thread_switch() does
++ * not save it -- deliberately, because with cooperative scheduling a switch
++ * only ever happens at a function call boundary -- but a preempted thread is
++ * suspended at an arbitrary instruction with live vector registers, and the
++ * thread we switch to will use them. The kernel itself never touches FP/SIMD
++ * (arm64 is built -mgeneral-regs-only), so the interrupted thread's registers
++ * are still intact here, several calls deep into the kernel.
++ */
++void uk_plat_native_preempt_trampoline(struct uk_plat_native_regs *frame,
++				       struct uk_plat_native_ectx *ectx)
++{
++	uk_plat_native_ectx_store(ectx);
++	uk_sched_yield();
++	uk_plat_native_ectx_load(ectx);
++
++	uk_plat_native_preempt_return(frame);
++}
++
++/* Decide whether the interrupt we are returning from may reschedule, and if so
++ * arrange for it.
++ *
++ * The interrupt frame lives on a per-LCPU interrupt stack that the next
++ * interrupt will reuse, so switching threads here would lose the interrupted
++ * context. Instead the frame is copied onto the interrupted thread's own
++ * stack and the return is redirected to a trampoline that runs there, which
++ * can yield like any other thread and restore the frame afterwards.
++ */
++static void native_preempt_check(struct uk_plat_native_regs *regs)
++{
++	struct uk_plat_native_ectx *ectx;
++	struct uk_plat_native_regs *frame;
++	__uptr sp;
++
++	/* Preempt application code only. Anything inside the kernel image may
++	 * hold a lock, be halfway through the scheduler, or be running on the
++	 * auxiliary syscall stack; none of that is safe to suspend, and none of
++	 * it spins forever either. The application (and the libraries it maps,
++	 * which are outside the image too) is what needs preempting.
++	 */
++	if (regs->elr_el1 >= __TEXT && regs->elr_el1 < __ETEXT)
++		return;
++
++	/* Interrupts disabled in the interrupted context means a critical
++	 * section, whatever the PC says.
++	 */
++	if (regs->spsr_el1 & UK_PLAT_NATIVE_ARM64_SPSR_I)
++		return;
++
++	/* Nested exception: the frame we would copy is not the thread's. */
++	if (uk_pcpuvar_current_get(uk_plat_native_except_switch_stack) > 1)
++		return;
++
++	/* Too early: no scheduler, nothing to switch to. */
++	if (!uk_thread_current())
++		return;
++
++	/* Carve the frame and the extended context out of the interrupted
++	 * thread's stack, below its stack pointer.
++	 */
++	sp = ALIGN_DOWN(regs->sp - sizeof(*ectx), UK_PLAT_NATIVE_ECTX_ALIGN);
++	ectx = (struct uk_plat_native_ectx *)sp;
++
++	sp = ALIGN_DOWN(sp - sizeof(*frame), UKARCH_SP_ALIGN);
++	frame = (struct uk_plat_native_regs *)sp;
++	*frame = *regs;
++
++	/* Return into the trampoline instead of the application, on the
++	 * thread's stack, with the copies as arguments.
++	 */
++	regs->elr_el1 = (__u64)uk_plat_native_preempt_trampoline;
++	regs->sp = (__u64)sp;
++	regs->x0 = (__u64)frame;
++	regs->x1 = (__u64)ectx;
++}
++#endif /* CONFIG_UKPLAT_PREEMPT */
++
+ void uk_plat_native_except_irq_handler(struct uk_plat_native_regs *regs)
+ {
+ 	struct uk_plat_native_except_irq_ctx ctx;
+@@ -245,6 +344,10 @@
+ 	rc = uk_raise_event(UK_PLAT_NATIVE_EXCEPT_EVENT_IRQ, &ctx);
+ 	if (unlikely(rc < 0))
+ 		UK_CRASH("IRQ event handler returned error: %d\n", rc);
++
++#if CONFIG_UKPLAT_PREEMPT
++	native_preempt_check(regs);
++#endif /* CONFIG_UKPLAT_PREEMPT */
+ }
+ 
+ #if CONFIG_HAVE_SMP
+--- a/plat/kvm/arm/exceptions.S
++++ b/plat/kvm/arm/exceptions.S
+@@ -287,6 +287,25 @@
+ 	bl uk_plat_native_except_irq_handler
+ 	RESTORE_REGS
+ 
++#if CONFIG_UKPLAT_PREEMPT
++/*
++ * void uk_plat_native_preempt_return(struct uk_plat_native_regs *frame)
++ *
++ * Resume a context that was preempted by an interrupt. `frame` is a copy of
++ * that interrupt's register frame, living on the stack of the thread being
++ * resumed rather than on the shared interrupt stack -- see
++ * native_preempt_check(). Pointing SP at it makes it indistinguishable from a
++ * frame RESTORE_REGS was about to pop, which is the whole trick: the interrupt
++ * that suspended this thread finally returns, arbitrarily later, from a
++ * different call stack.
++ */
++.align 6
++.global uk_plat_native_preempt_return
++uk_plat_native_preempt_return:
++	mov	sp, x0
++	RESTORE_REGS
++#endif /* CONFIG_UKPLAT_PREEMPT */
++
+ /* Bad Abort numbers */
+ #define BAD_SYNC  0
+ #define BAD_IRQ   1
+--- a/plat/Config.uk
++++ b/plat/Config.uk
+@@ -26,6 +26,33 @@
+ 	select LIBUKINTCTLR_APIC if (ARCH_X86_64 && UKPLAT_CPU_MAXCOUNT > 1)
+ 	select LIBUKACPI if ARCH_X86_64
+ 
++config UKPLAT_PREEMPT
++	bool "Preempt application code on a timer tick"
++	depends on LIBUKSCHED && LIBUKPLAT_NATIVE_EXCEPT
++	default n
++	help
++		Reschedule from the interrupt return path when the interrupted
++		code is outside the kernel image.
++
++		The scheduler is cooperative, so a thread that never enters the
++		kernel cannot be descheduled. That is fine for programs that
++		block in syscalls, and fatal for ones that busy-wait on another
++		thread: InnoDB's IB_thread::start() spins on a state word with
++		no yield and no syscall in the loop, so on a single logical CPU
++		the thread it is waiting for never gets to run.
++
++		Only application code is preempted. Kernel code may hold locks
++		or be running on the auxiliary syscall stack, and does not spin
++		on other threads.
++
++config UKPLAT_PREEMPT_TICK_US
++	int "Preemption tick (microseconds)"
++	depends on UKPLAT_PREEMPT
++	default 4000
++	help
++		How often to arm the timer for preemption. This is also the
++		worst-case latency before a spinning thread yields.
++
+ config ENFORCE_W_XOR_X
+ 	bool "Enforce W^X"
+ 	depends on LIBUKPAGING && ARCH_ARM_64
+--- a/plat/native/arch/x86_64/except.c
++++ b/plat/native/arch/x86_64/except.c
+@@ -22,6 +22,20 @@
+ #include <uk/assert.h>
+ #include <x86/traps.h>
+ #include <uk/pm.h>
++
++#if CONFIG_UKPLAT_PREEMPT
++#include <uk/plat/common/sections.h>
++#include <uk/plat/native/arch/ectx.h>
++#include <uk/sched.h>
++#include <uk/thread.h>
++
++/* RFLAGS.IF -- interrupts were enabled in the interrupted context. */
++#define X86_EFLAGS_IF			0x200UL
++/* The SysV AMD64 red zone: bytes below %rsp a leaf function may be using
++ * without having reserved them.
++ */
++#define X86_ABI_RED_ZONE_SIZE		128
++#endif /* CONFIG_UKPLAT_PREEMPT */
+ 
+ /*
+  * CPUs should get dedicated IRQ and exception stacks. We use the interrupt
+@@ -307,7 +321,95 @@
+ }
+ 
+ UK_EVENT(UK_PLAT_NATIVE_EXCEPT_EVENT_IRQ);
++
++#if CONFIG_UKPLAT_PREEMPT
++/* Resume the interrupted context. Defined in the platform's
++ * cpu_vectors_x86_64.S, alongside the interrupt epilogue it mirrors.
++ */
++void uk_plat_native_preempt_return(struct uk_plat_native_regs *frame)
++	__noreturn;
++
++/* Runs on the *interrupted thread's* stack, with interrupts enabled, having
++ * been entered by the iretq at the end of the interrupt we are returning from.
++ *
++ * The extended context has to be saved by hand. uk_sched_thread_switch() does
++ * not save it -- deliberately, because with cooperative scheduling a switch
++ * only ever happens at a function call boundary -- but a preempted thread is
++ * suspended at an arbitrary instruction with live vector registers, and the
++ * thread we switch to will use them. Interrupt handlers are required not to
++ * touch extended state (CONFIG_LIBUKPLAT_NATIVE_ECTX_ISR_ASSERTIONS asserts
++ * exactly that around the IRQ event below), so the interrupted thread's
++ * registers are still intact by the time we get here.
++ */
++void uk_plat_native_preempt_trampoline(struct uk_plat_native_regs *frame,
++				       struct uk_plat_native_ectx *ectx)
++{
++	uk_plat_native_ectx_store(ectx);
++	uk_sched_yield();
++	uk_plat_native_ectx_load(ectx);
++
++	uk_plat_native_preempt_return(frame);
++}
++
++/* Decide whether the interrupt we are returning from may reschedule, and if so
++ * arrange for it.
++ *
++ * Interrupt gates are installed with IST 1, so the frame lives on a per-LCPU
++ * interrupt stack that the next interrupt reuses; switching threads here would
++ * lose the interrupted context. Instead the frame is copied onto the
++ * interrupted thread's own stack and the return is redirected to a trampoline
++ * that runs there, which can yield like any other thread.
++ */
++static void native_preempt_check(struct uk_plat_native_regs *regs)
++{
++	struct uk_plat_native_ectx *ectx;
++	struct uk_plat_native_regs *frame;
++	__uptr sp;
++
++	/* Preempt application code only. Anything inside the kernel image may
++	 * hold a lock or be halfway through the scheduler; none of that is safe
++	 * to suspend, and none of it spins forever either.
++	 */
++	if (regs->rip >= __TEXT && regs->rip < __ETEXT)
++		return;
++
++	/* Interrupts disabled in the interrupted context means a critical
++	 * section, whatever the instruction pointer says.
++	 */
++	if (!(regs->rflags & X86_EFLAGS_IF))
++		return;
++
++	/* Too early: no scheduler, nothing to switch to. */
++	if (!uk_thread_current())
++		return;
++
++	/* Carve the frame and the extended context out of the interrupted
++	 * thread's stack, below the red zone that a leaf function may be using.
++	 */
++	sp = regs->rsp - X86_ABI_RED_ZONE_SIZE;
++
++	sp = ALIGN_DOWN(sp - sizeof(*ectx), UK_PLAT_NATIVE_ECTX_ALIGN);
++	ectx = (struct uk_plat_native_ectx *)sp;
+ 
++	sp = ALIGN_DOWN(sp - sizeof(*frame), 16);
++	frame = (struct uk_plat_native_regs *)sp;
++	*frame = *regs;
++
++	/* Return into the trampoline instead of the application, on the
++	 * thread's stack, with the copies as arguments.
++	 *
++	 * The ABI wants (%rsp + 8) 16-byte aligned at a function's entry,
++	 * because a call would have pushed a return address. iretq pushes
++	 * nothing, so bias the stack pointer to match what the trampoline's
++	 * prologue expects.
++	 */
++	regs->rip = (__u64)uk_plat_native_preempt_trampoline;
++	regs->rsp = (__u64)ALIGN_DOWN(sp, 16) - 8;
++	regs->rdi = (__u64)frame;
++	regs->rsi = (__u64)ectx;
++}
++#endif /* CONFIG_UKPLAT_PREEMPT */
++
+ void uk_plat_native_except_irq_handler(struct uk_plat_native_regs *regs,
+ 				       __u32 irq)
+ {
+@@ -331,6 +433,10 @@
+ #if CONFIG_LIBUKPLAT_NATIVE_ECTX_ISR_ASSERTIONS
+ 	uk_plat_native_ectx_assert_equal(ectx);
+ #endif /* CONFIG_LIBUKPLAT_NATIVE_ECTX_ISR_ASSERTIONS */
++
++#if CONFIG_UKPLAT_PREEMPT
++	native_preempt_check(regs);
++#endif /* CONFIG_UKPLAT_PREEMPT */
+ }
+ 
+ static struct uk_arch_x86_64_desc_table_ptr64 idtptr;
+--- a/plat/kvm/x86/cpu_vectors_x86_64.S
++++ b/plat/kvm/x86/cpu_vectors_x86_64.S
+@@ -122,6 +122,27 @@
+ 	.cfi_endproc
+ .endm
+ 
++#if CONFIG_UKPLAT_PREEMPT
++/*
++ * void uk_plat_native_preempt_return(struct uk_plat_native_regs *frame)
++ *
++ * Resume a context that was preempted by an interrupt. `frame` (in %rdi) is a
++ * copy of that interrupt's register frame, living on the stack of the thread
++ * being resumed rather than on the IST stack the interrupt used -- see
++ * native_preempt_check(). Pointing %rsp at it and running IRQ_ENTRY's epilogue
++ * makes it indistinguishable from the interrupt returning normally, except
++ * that it happens arbitrarily later and from a different call stack.
++ *
++ * Must stay in step with the tail of IRQ_ENTRY below.
++ */
++ENTRY(uk_plat_native_preempt_return)
++	movq	%rdi, %rsp
++	addq	$UK_LCPU_X86_64_REGS_OFFSETOF_R15, %rsp
++	POP_CALLER_SAVE
++	addq	$8, %rsp                    /* discard the pushed error code */
++	iretq
++#endif /* CONFIG_UKPLAT_PREEMPT */
++
+ .macro IRQ_ENTRY irqno
+ ENTRY(cpu_irq_\irqno)
+ 	.cfi_startproc simple

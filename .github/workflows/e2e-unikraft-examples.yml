@@ -118,10 +118,12 @@ jobs:
             # The rest of the server's options are /etc/my.cnf inside the image.
             argv: /usr/sbin/mysqld --user=root
             port: 3306
-            # Not HTTP: the check reads MySQL's initial handshake packet, which
-            # carries the server version as a NUL-terminated string.
+            # Not HTTP: the check runs a real query -- create a database and a
+            # table, insert a row, read it back -- so a green run means the
+            # server parsed SQL, wrote to InnoDB and returned a result set, not
+            # merely that it opened a socket.
             probe: mysql
-            expect: "8.0.46"
+            expect: "unikraft-on-bsdkrun"
             # mysqld wedges the moment it creates its second thread (see
             # examples/unikraft-mysql/README.md). This job is what established
             # that it happens on x86_64 too, at the same last line -- so the
@@ -240,6 +242,13 @@ jobs:
           echo "--- virtio-mmio cmdline device budget ---"
           grep -E '^CONFIG_(LIBVIRTIO_MMIO|VIRTIO_MMIO_MAX_DEV_CMDLINE|VIRTIO_MMIO_LINUX_COMPAT_CMDLINE)' "$cfg"
 
+      - name: Install a MySQL client
+        if: ${{ matrix.probe == 'mysql' }}
+        run: |
+          set -eux
+          command -v mysql \
+            || sudo apt-get install -y --no-install-recommends mysql-client
+
       # `<argv0> -- <application argv>`: everything before `--` is parsed as
       # kernel library parameters and the first word is skipped (Unikraft treats
       # it as the program name), so the placeholder is required.
@@ -296,11 +305,13 @@ jobs:
       # `strict: false` in the matrix -- see the top of this file for what that
       # means and when to clear it.
       #
-      # `probe: mysql` selects a protocol check instead of an HTTP one, for the
-      # example that does not speak HTTP. A MySQL server sends its handshake
-      # unprompted on connect, so reading the first bytes is enough; the version
-      # sits in there as a NUL-terminated string. bash's /dev/tcp is used rather
-      # than a client package, to keep the runner free of a MySQL install.
+      # `probe: mysql` selects a SQL check instead of an HTTP one, for the
+      # example that does not speak HTTP. The client comes from the runner
+      # image, which ships one.
+      #
+      # The retry loop matters: mysqld accepts connections a moment before it
+      # finishes opening the datadir, so the first attempts can legitimately be
+      # refused.
       - name: e2e — server answers
         id: http
         continue-on-error: ${{ !matrix.strict }}
@@ -308,10 +319,15 @@ jobs:
           set -eu
           for i in $(seq 1 45); do
             if [ "${{ matrix.probe }}" = mysql ]; then
-              if timeout 5 bash -c \
-                   'exec 3<>/dev/tcp/127.0.0.1/${{ matrix.port }}; head -c 128 <&3' \
-                   > body.bin 2>/dev/null && [ -s body.bin ]; then
-                tr -d '\000' < body.bin > body.txt
+              if mysql --protocol=TCP -h 127.0.0.1 -P ${{ matrix.port }} \
+                       --ssl-mode=DISABLED -u root -punikraft \
+                       -e "CREATE DATABASE IF NOT EXISTS e2e;
+                           USE e2e;
+                           CREATE TABLE IF NOT EXISTS t (
+                               id INT PRIMARY KEY, name VARCHAR(64));
+                           REPLACE INTO t VALUES (1, 'unikraft-on-bsdkrun');
+                           SELECT name FROM t WHERE id = 1;" \
+                       > body.txt 2>probe-err.txt; then
                 break
               fi
             elif curl -fsS --max-time 5 "http://127.0.0.1:${{ matrix.port }}/" -o body.txt; then
@@ -319,7 +335,11 @@ jobs:
             fi
             sleep 2
           done
-          test -s body.txt || { echo "no response from the guest"; exit 1; }
+          test -s body.txt || {
+            echo "no response from the guest"
+            cat probe-err.txt 2>/dev/null || true
+            exit 1
+          }
           cat body.txt
           grep -a -q "${{ matrix.expect }}" body.txt
 

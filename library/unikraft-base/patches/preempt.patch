@@ -316,7 +316,7 @@
  
  /*
   * CPUs should get dedicated IRQ and exception stacks. We use the interrupt
-@@ -307,7 +321,120 @@
+@@ -307,7 +321,106 @@
  }
  
  UK_EVENT(UK_PLAT_NATIVE_EXCEPT_EVENT_IRQ);
@@ -327,7 +327,7 @@
 + */
 +void uk_plat_native_preempt_return(struct uk_plat_native_regs *frame)
 +	__noreturn;
- 
++
 +/* Runs on the *interrupted thread's* stack, with interrupts enabled, having
 + * been entered by the iretq at the end of the interrupt we are returning from.
 + *
@@ -353,7 +353,7 @@
 +	uk_plat_native_ectx_store(ectx);
 +	uk_sched_yield();
 +	uk_plat_native_ectx_load(ectx);
-+
+ 
 +	uk_plat_native_preempt_return(frame);
 +}
 +
@@ -366,24 +366,11 @@
 + * interrupted thread's own stack and the return is redirected to a trampoline
 + * that runs there, which can yield like any other thread.
 + */
-+/* Diagnostic: interrupts seen, and how many of them actually rescheduled.
-+ * Reported once, because the two numbers answer different questions -- zero
-+ * interrupts means no tick reaches the guest at all, while interrupts without
-+ * switches means the checks below are rejecting them.
-+ */
-+static __u32 preempt_irqs;
-+static __u32 preempt_switches;
-+
 +static void native_preempt_check(struct uk_plat_native_regs *regs)
 +{
 +	struct uk_plat_native_ectx *ectx;
 +	struct uk_plat_native_regs *frame;
 +	__uptr sp;
-+
-+	if (++preempt_irqs == 100)
-+		uk_pr_err("preempt: %u irqs, %u switches, last rip %lx (text %lx-%lx)\n",
-+			  preempt_irqs, preempt_switches,
-+			  (unsigned long)regs->rip, __TEXT, __ETEXT);
 +
 +	/* Preempt application code only. Anything inside the kernel image may
 +	 * hold a lock or be halfway through the scheduler; none of that is safe
@@ -426,7 +413,6 @@
 +	 * nothing, so bias the stack pointer to match what the trampoline's
 +	 * prologue expects.
 +	 */
-+	preempt_switches++;
 +	regs->rip = (__u64)uk_plat_native_preempt_trampoline;
 +	regs->rsp = (__u64)ALIGN_DOWN(sp, 16) - 8;
 +	regs->rdi = (__u64)frame;
@@ -437,7 +423,7 @@
  void uk_plat_native_except_irq_handler(struct uk_plat_native_regs *regs,
  				       __u32 irq)
  {
-@@ -331,6 +458,10 @@
+@@ -331,6 +444,10 @@
  #if CONFIG_LIBUKPLAT_NATIVE_ECTX_ISR_ASSERTIONS
  	uk_plat_native_ectx_assert_equal(ectx);
  #endif /* CONFIG_LIBUKPLAT_NATIVE_ECTX_ISR_ASSERTIONS */

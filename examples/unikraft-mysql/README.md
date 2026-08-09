@@ -38,11 +38,12 @@ id      name
 2       bsdkrun
 ```
 
-Verified on arm64 under macOS/Hypervisor.framework. x86_64 is covered by
-`.github/workflows/e2e-unikraft-examples.yml`, which runs the same round trip.
+Verified on **both architectures**: arm64 by hand on macOS/Hypervisor.framework,
+and x86_64 by `.github/workflows/e2e-unikraft-examples.yml`, which runs that
+same round trip under KVM on every push and fails the job if it stops working.
 
-Getting there needed three fixes in the guest kernel, none of them in this
-example. Each was hidden behind the one before it.
+Getting there needed five fixes in the guest kernel, none of them in this
+example, and each hidden behind the one before it.
 
 ### 1. InnoDB deadlocks a cooperative scheduler
 
@@ -56,6 +57,36 @@ Fixed by `preempt.patch` in `../../library/unikraft-base/patches`, which
 preempts application code on a timer tick. `repro/` has the gdb session that
 found it and the reasoning behind the patch. With it, InnoDB initialisation
 takes **0.3 s**.
+
+### 1b. ...which needs a timer tick to preempt on, and x86_64 had none either
+
+Preemption is only as good as the interrupt that drives it. arm64's generic
+timer is masked at init and armed solely by `time_block_until()`, so a guest
+whose threads all spin takes *no interrupts at all*; the patch gives it a
+periodic tick. x86_64 looked like it needed nothing, because `tscclock_init()`
+leaves the PIT in rate-generator mode — but under libkrun that tick never
+arrived, and the guest hung exactly as before while looking configured
+correctly. It now arms its own tick too.
+
+The counters that established this printed `100 irqs, 8 switches`: the tick
+arrives, and only the eight interrupts that landed in application code
+rescheduled. The rest hit kernel text and were skipped, which is the safety
+check doing its job.
+
+### 1c. The extended context has to be sanitized before it is saved
+
+x86_64's ectx is an XSAVE area, and the header is explicit: *"must be called on
+newly allocated memory before any save/restore operations"*. The trampoline
+carves a fresh slice of the interrupted thread's stack every time, so its XSAVE
+header is whatever was there — `XSAVEOPT` consults it, and `XRSTOR` faults on an
+invalid `XSTATE_BV`. arm64 never noticed because its ectx is a plain register
+dump with no header.
+
+A fault here reports itself confusingly, which is worth knowing before debugging
+one: `uk_lcpu_get_current_idx_in_except()` derives the CPU index by subtracting
+the exception stack base from the *stack pointer*, and the crash printer
+disables IST — so any fault on a thread stack surfaces as a crash inside
+`uk_plat_native_except_push_nested`, whatever actually broke.
 
 ### 2. Thirty-one threads
 

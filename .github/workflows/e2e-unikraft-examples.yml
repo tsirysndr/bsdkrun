@@ -126,12 +126,7 @@ jobs:
             # merely that it opened a socket.
             probe: mysql
             expect: "unikraft-on-bsdkrun"
-            # mysqld wedges the moment it creates its second thread (see
-            # examples/unikraft-mysql/README.md). This job is what established
-            # that it happens on x86_64 too, at the same last line -- so the
-            # steps above still assert the build, the boot, the interface and
-            # entropy, and this one stays non-strict until the hang is fixed.
-            strict: false
+            strict: true
           - example: unikraft-elixir
             kernel: elixir_fc-x86_64
             # 68 MiB of root filesystem (a 37 MiB beam.smp, eight OTP

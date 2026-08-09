@@ -7,3 +7,9 @@
 # Rust toolchain cache for the containerised build (see build.sh)
 .rust-cache/
 .Kraftfile.qemu-arm64
+
+# repro/spin builds a static binary; see repro/README.md
+/repro/spin/spin
+/.rootfs-spin/
+/.Kraftfile.qemu-x86_64
+/.rootfs-empty/

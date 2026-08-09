@@ -182,6 +182,10 @@
           pname = "bsdkrun";
           version = "0.6.0";
           strictDeps = true;
+          # Explicit even though the workspace's `default-members` is this
+          # package: the daemon is a member too, and nothing here should build
+          # it by accident.
+          cargoExtraArgs = "-p bsdkrun";
 
           # llvm (llvm-config) + libclang for bindgen-based crates.
           nativeBuildInputs = [ pkgs.pkg-config pkgs.llvmPackages.llvm ];
@@ -204,16 +208,21 @@
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
         # ---- bsdkrund: the gRPC daemon ------------------------------------
-        # A separate crate with its own workspace and lockfile. It links no
-        # libkrun — it drives the `bsdkrun` binary as a subprocess — so unlike
-        # bsdkrun itself it builds purely on every system, darwin included, and
-        # needs no `--impure` and no Homebrew.
+        # A workspace member, not a standalone crate: it depends on
+        # `bsdkrun-core` by path, so its source has to be the whole workspace
+        # (`../core` has to exist) and `-p bsdkrun-daemon` is what narrows the
+        # build back down to it.
+        #
+        # It links the engine, and therefore libkrun, so it is no longer the
+        # pure everywhere-buildable package it was while it merely spawned the
+        # `bsdkrun` binary: on darwin it needs Homebrew's libkrun and
+        # `--impure`, exactly like bsdkrun itself.
         daemonArgs = {
           # NOT `cleanCargoSource`: that keeps only Rust and Cargo files, which
           # drops proto/bsdkrun.proto and leaves the build script failing with
           # "Could not make proto path relative". Keep .proto files too.
           src = lib.cleanSourceWith {
-            src = ./daemon;
+            src = ./.;
             name = "source";
             filter = path: type:
               (builtins.match ".*\\.proto$" path != null)
@@ -222,12 +231,22 @@
           pname = "bsdkrund";
           version = "0.1.0";
           strictDeps = true;
+          # The workspace's `default-members` is the CLI, so without this the
+          # daemon build would build bsdkrun instead — and want the web bundle.
+          cargoExtraArgs = "-p bsdkrun-daemon";
+
+          # Same libkrun wiring as bsdkrun: `bsdkrun-core` links it, and
+          # LIBKRUN_PREFIX short-circuits its build script's brew/pkg-config
+          # search.
+          nativeBuildInputs = [ pkgs.pkg-config pkgs.llvmPackages.llvm pkgs.protobuf ];
+          buildInputs = lib.optionals (!isDarwin) [ libkrun ];
+          LIBKRUN_PREFIX = libkrunPrefix;
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
 
           # tonic-prost-build shells out to protoc to compile the .proto.
           # PROTOC_INCLUDE isn't needed today (nothing imports a well-known
           # type), but without it the first `import "google/protobuf/*.proto"`
           # would fail only under Nix, which is a confusing way to find out.
-          nativeBuildInputs = [ pkgs.protobuf ];
           PROTOC = "${pkgs.protobuf}/bin/protoc";
           PROTOC_INCLUDE = "${pkgs.protobuf}/include";
         };
@@ -237,14 +256,19 @@
         bsdkrund = craneLib.buildPackage (daemonArgs // {
           cargoArtifacts = daemonArtifacts;
 
-          # Deliberately NOT wrapped with bsdkrun on PATH. The daemon's contract
-          # is that it drives whatever `bsdkrun` the host has installed, and
-          # baking one in would drag bsdkrun's libkrun dependency — impure on
-          # darwin — into a package that otherwise builds anywhere. Install both
-          # into the same profile and the daemon finds the CLI on PATH.
+          # No `bsdkrun` wrapper: the daemon needs no CLI on PATH at all. It
+          # links the engine and supervises machines by re-exec'ing itself, so
+          # the only thing it still shells out to is the runtime tools below.
+          nativeBuildInputs = daemonArgs.nativeBuildInputs
+            ++ lib.optionals (!isDarwin) [ pkgs.makeWrapper ];
+          postInstall = lib.optionalString (!isDarwin) ''
+            wrapProgram $out/bin/bsdkrund \
+              --prefix PATH : ${lib.makeBinPath runtimeDeps}
+          '';
+
           meta = with lib; {
             description =
-              "Token-authenticated gRPC daemon that drives the bsdkrun CLI on a remote VPS or bare-metal KVM host";
+              "Token-authenticated gRPC daemon for running bsdkrun machines on a remote VPS or bare-metal KVM host";
             homepage = "https://github.com/tsirysndr/bsdkrun";
             license = licenses.mit;
             mainProgram = "bsdkrund";
@@ -296,10 +320,6 @@
             cargoClippyExtraArgs = "--all-targets -- -D warnings";
           });
 
-          bsdkrund-fmt = craneLib.cargoFmt {
-            inherit (daemonArgs) src;
-            pname = "bsdkrund";
-          };
         };
 
         packages.default = bsdkrun;
@@ -320,7 +340,7 @@
           LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
 
           packages = with pkgs;
-            # protobuf so `cargo build` inside daemon/ can run protoc too.
+            # protobuf so the daemon's build script can run protoc too.
             # bun + node to build the web UI (`make web`).
             [ pkg-config llvmPackages.llvm cargo-zigbuild zig protobuf bun nodejs ]
             ++ lib.optionals (!isDarwin) [ libkrun ]

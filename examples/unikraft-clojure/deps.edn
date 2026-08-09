@@ -1,0 +1,10 @@
+{:paths ["src"]
+
+ :deps {org.clojure/clojure {:mvn/version "1.12.5"}
+        ;; The only third-party dependency, and a pure-Clojure one: /info
+        ;; answers JSON. Everything else the server needs is in the JDK.
+        org.clojure/data.json {:mvn/version "2.5.2"}}
+
+ :aliases
+ {:build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.14"}}
+          :ns-default build}}}

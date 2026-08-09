@@ -6,6 +6,10 @@
 
 BIN_DEBUG    := target/debug/bsdkrun
 BIN_RELEASE  := target/release/bsdkrun
+# The daemon links the same engine and boots machines through its own binary,
+# so it needs the hypervisor entitlement exactly as the CLI does.
+DAEMON_DEBUG   := target/debug/bsdkrund
+DAEMON_RELEASE := target/release/bsdkrund
 ENTITLEMENTS := bsdkrun.entitlements
 UNAME_S      := $(shell uname -s)
 
@@ -13,10 +17,10 @@ UNAME_S      := $(shell uname -s)
 # guest binaries and published as GitHub release assets. bsdkrun downloads +
 # caches the matching one at runtime (Linux auto-injected; FreeBSD/NetBSD are
 # for the user to copy into a running BSD guest). Not tracked in git.
-AGENT_DIR := src/agent-bin
+AGENT_DIR := core/src/agent-bin
 
 .PHONY: build release sign sign-release run test e2e clean web daemon \
-        agent agent-linux agent-freebsd agent-netbsd
+        sign-daemon agent agent-linux agent-freebsd agent-netbsd
 
 build:
 	cargo build
@@ -31,11 +35,19 @@ release:
 sign:
 ifeq ($(UNAME_S),Darwin)
 	codesign --entitlements $(ENTITLEMENTS) --force -s - $(BIN_DEBUG)
+	@[ -f $(DAEMON_DEBUG) ] && codesign --entitlements $(ENTITLEMENTS) --force -s - $(DAEMON_DEBUG) || true
 endif
 
 sign-release:
 ifeq ($(UNAME_S),Darwin)
 	codesign --entitlements $(ENTITLEMENTS) --force -s - $(BIN_RELEASE)
+	@[ -f $(DAEMON_RELEASE) ] && codesign --entitlements $(ENTITLEMENTS) --force -s - $(DAEMON_RELEASE) || true
+endif
+
+# Sign just the daemon (macOS only; a no-op elsewhere).
+sign-daemon:
+ifeq ($(UNAME_S),Darwin)
+	codesign --entitlements $(ENTITLEMENTS) --force -s - $(DAEMON_RELEASE)
 endif
 
 # --- web UI ----------------------------------------------------------------
@@ -52,7 +64,8 @@ web:
 #
 # Standalone crate (own workspace): the gRPC + GraphQL server.
 daemon:
-	cd daemon && cargo build --release
+	cargo build --release -p bsdkrun-daemon
+	@$(MAKE) sign-daemon
 
 # --- guest agents (release assets) -----------------------------------------
 #

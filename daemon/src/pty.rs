@@ -16,7 +16,7 @@
 //!
 //! With a pty there is a single interleaved stream, so everything the child
 //! writes arrives as `Stdout`; `Stderr` frames are only used by the non-pty
-//! paths in [`crate::cli`].
+//! paths in [`crate::supervisor`].
 //!
 //! portable-pty's API is blocking, so each direction gets its own OS thread
 //! rather than a tokio task.
@@ -28,7 +28,7 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::mpsc;
 use tonic::Status;
 
-use crate::cli::SessionInput;
+use crate::supervisor::SessionInput;
 use crate::pb::{output_chunk, OutputChunk};
 
 const READ_CHUNK: usize = 64 * 1024;

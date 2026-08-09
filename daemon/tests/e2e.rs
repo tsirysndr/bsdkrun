@@ -1,28 +1,34 @@
 //! End-to-end tests: a real gRPC server over a real socket, driven by the real
 //! generated client.
 //!
-//! The daemon is driven against a **stub** `bsdkrun` rather than the real one,
-//! for two reasons. It makes the tests hermetic and fast — no VM boots, no
-//! image downloads, nothing that needs a hypervisor, so they run on any CI
-//! runner. And it lets each test assert the exact argv the daemon produced,
-//! which is the part most likely to break: the whole service is a translation
-//! layer from proto messages to command lines, and a wrong flag would otherwise
-//! only surface as a mysterious failure against a real machine.
+//! Two things are stubbed so the tests stay hermetic — no VM boots, no image
+//! downloads, nothing that needs a hypervisor, so they run on any CI runner:
 //!
-//! What is covered: token authentication, the typed RPCs and their JSON
-//! parsing, argv construction, output streaming, exit-code propagation, and
+//!   * **State.** Reads (`ps`, `images`, `volume ls`, …) now run *in* the
+//!     daemon against the engine, so the tests point `BSDKRUN_STATE` at a temp
+//!     directory and seed a real database with fixtures.
+//!   * **The supervisor.** Booting and streaming still run in a separate
+//!     process, so a stub stands in for it and records the command it was
+//!     handed. Those recordings are JSON-encoded `Command`s rather than argv,
+//!     which is what makes them worth asserting: a test now pins the *meaning*
+//!     of a request rather than the spelling of a flag.
+//!
+//! What is covered: token authentication, the typed RPCs and their decoding,
+//! command construction, output streaming, exit-code propagation, and
 //! interactive sessions over both a pty and plain pipes.
 
 use std::net::SocketAddr;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+mod common;
+use common::{decode, fixture_state, install_stub};
+
 use bsdkrun_daemon::auth::TokenAuth;
-use bsdkrun_daemon::cli::Cli;
 use bsdkrun_daemon::client::{self, RemoteConfig};
 use bsdkrun_daemon::pb::bsdkrun_server::BsdkrunServer;
 use bsdkrun_daemon::pb::*;
 use bsdkrun_daemon::service::BsdkrunService;
+use bsdkrun_daemon::supervisor::Supervisor;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 use tokio_stream::StreamExt;
@@ -30,71 +36,14 @@ use tonic::transport::Server;
 
 const TOKEN: &str = "test-token-0123456789";
 
-/// A stub standing in for the `bsdkrun` CLI.
+/// A stub standing in for the supervisor — this daemon's own binary, re-entered
+/// as `__run <json>` or `__cli -- <args…>`.
 ///
 /// It records every argv it is called with (one argument per line, `---`
-/// between invocations) so tests can assert the exact command line, and answers
-/// the subcommands under test with fixtures shaped like the real CLI's output.
-const STUB: &str = r#"#!/bin/sh
-# The log lives beside the stub rather than coming from the environment: each
-# test gets its own temp dir, and tests run in parallel in one process, so a
-# shared env var would have them all writing to whichever log was set last.
-LOG="$0.log"
-for a in "$@"; do printf '%s\n' "$a" >> "$LOG"; done
-printf -- '---\n' >> "$LOG"
-
-case "$1 $2" in
-"--version "*)
-  echo "bsdkrun 9.9.9-stub"; exit 0 ;;
-esac
-
-case "$1" in
-ps)
-  echo '[{"id":"abc123","name":"web","image":"alpine","kind":"linux","command":"sh","status":"running","running":true,"exit_code":null,"pid":42,"detached":true,"cpus":2,"mem":1024,"volume":null,"state_dir":"/s","created_at":"1785993650","finished_at":null,"network":"devnet","net_ip":"192.168.127.7"},{"id":"bsd456789abc","name":"fbsd","image":"disk.raw","kind":"freebsd","command":"","status":"running","running":true,"exit_code":null,"pid":43,"detached":true,"cpus":2,"mem":1024,"volume":null,"state_dir":"/s2","created_at":"1785993651","finished_at":null,"network":null,"net_ip":null}]'
-  exit 0 ;;
-images)
-  echo '[{"id":"img1","reference":"alpine:3.20","digest":"sha256:deadbeef","size":28886818,"rootfs":"/r","created_at":"1785854268"}]'
-  exit 0 ;;
-flavors)
-  echo '[{"name":"node","source":"catalog","kind":"linux","base":"node:22","category":"language","method":"docker","description":"Node","ports":["3000:3000"],"nix":[],"created_at":null}]'
-  exit 0 ;;
-volume)
-  # `volume ls --json` reports size as human text, and "-" when unknown.
-  echo '[{"name":"data","guest":"linux","base":"b.img","path":"/v/data","size":"2.3 GiB","created_at":"1785847926","tracked":true},{"name":"empty","guest":null,"base":null,"path":"/v/empty","size":"-","created_at":null,"tracked":false}]'
-  exit 0 ;;
-network)
-  echo '[{"name":"devnet","subnet":"192.168.127.0/24","gateway":"192.168.127.1","members":6,"running":4,"up":true,"created_at":"1785868258"}]'
-  exit 0 ;;
-versions)
-  printf 'Available builds:\n  14.3\n  15.1  (latest)\n'
-  exit 0 ;;
-linux|freebsd|netbsd)
-  # A boot command prints the new machine id on stdout and exits.
-  echo "m-$1-001"; exit 0 ;;
-flavor)
-  [ "$2" = run ] && { echo "m-flavor-001"; exit 0; }
-  exit 0 ;;
-logs)
-  echo "line one"; echo "line two"; exit 0 ;;
-exec)
-  # Echo back a marker plus whether a tty was requested, then read stdin so the
-  # interactive tests have something to exercise.
-  echo "EXEC_OK"
-  [ "$2" = "-t" ] && echo "TTY_REQUESTED"
-  cat
-  exit 0 ;;
-stop|start|rm|update|commit)
-  echo "$1 ok"; exit 0 ;;
-probe)
-  echo "probe ok"; exit 0 ;;
-fail)
-  echo "boom" >&2; exit 3 ;;
-esac
-
-echo "unknown subcommand: $1" >&2
-exit 2
-"#;
-
+/// between invocations) so a test can decode the command it was handed, and
+/// answers the operations under test with fixtures shaped like real output.
+/// The `case` patterns match the externally-tagged JSON serde produces for
+/// `Command`, e.g. `{"Linux":{…}}`.
 struct Harness {
     addr: SocketAddr,
     log: PathBuf,
@@ -103,20 +52,15 @@ struct Harness {
 
 impl Harness {
     async fn start() -> Self {
+        fixture_state();
         let dir = tempfile::tempdir().unwrap();
-        let stub = dir.path().join("bsdkrun");
-        std::fs::write(&stub, STUB).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        let log = dir.path().join("bsdkrun.log");
-        std::fs::write(&log, "").unwrap();
+        let (stub, log) = install_stub(dir.path());
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
-        let cli = Cli::resolve(Some(stub)).unwrap();
         let svc = BsdkrunServer::with_interceptor(
-            BsdkrunService::new(cli),
+            BsdkrunService::new(Supervisor::with_exe(stub)),
             TokenAuth::new(TOKEN.to_string()),
         );
         tokio::spawn(async move {
@@ -148,33 +92,23 @@ impl Harness {
 
     /// Every recorded invocation, each as its argv.
     fn invocations(&self) -> Vec<Vec<String>> {
-        let raw = std::fs::read_to_string(&self.log).unwrap_or_default();
-        let mut all = Vec::new();
-        let mut cur = Vec::new();
-        for line in raw.lines() {
-            if line == "---" {
-                all.push(std::mem::take(&mut cur));
-            } else {
-                cur.push(line.to_string());
-            }
-        }
-        all
+        common::invocations(&self.log)
     }
 
-    /// The argv of the last invocation that is not bookkeeping.
-    ///
-    /// `--version` is the startup probe, and an interactive exec runs a `ps`
-    /// first to learn whether the guest needs a TERM supplied — neither is what
-    /// a test is asserting about.
+    /// The argv of the last recorded invocation.
     fn last_argv(&self) -> Vec<String> {
         self.invocations()
             .into_iter()
-            .rfind(|a| {
-                a.first()
-                    .map(|s| s != "--version" && s != "ps")
-                    .unwrap_or(false)
-            })
+            .next_back()
             .expect("expected at least one recorded invocation")
+    }
+
+    /// The command the daemon handed the supervisor last, decoded.
+    ///
+    /// This is the modern form of "assert the argv": it pins what was asked
+    /// for, and it cannot be satisfied by a flag that merely looks right.
+    fn last_command(&self) -> serde_json::Value {
+        decode(&self.last_argv())
     }
 }
 
@@ -229,7 +163,9 @@ async fn accepts_the_right_token() {
     let h = Harness::start().await;
     let mut c = h.client().await;
     let info = c.info(InfoRequest {}).await.unwrap().into_inner();
-    assert_eq!(info.cli_version, "bsdkrun 9.9.9-stub");
+    // The engine is linked in, so its version is reported directly rather than
+    // read back out of another binary.
+    assert_eq!(info.cli_version, bsdkrun_core::VERSION);
     assert_eq!(info.daemon_version, env!("CARGO_PKG_VERSION"));
     assert!(!info.arch.is_empty());
 }
@@ -248,25 +184,32 @@ async fn lists_machines() {
         .unwrap()
         .into_inner();
 
-    assert_eq!(res.machines.len(), 2);
-    let m = &res.machines[0];
-    assert_eq!(m.id, "abc123");
+    // Three seeded machines, one of them stopped.
+    assert_eq!(res.machines.len(), 3);
+    let m = res.machines.iter().find(|m| m.id == "abc123").unwrap();
     assert_eq!(m.name.as_deref(), Some("web"));
     assert!(m.running);
     assert_eq!(m.cpus, Some(2));
-    assert_eq!(m.net_ip.as_deref(), Some("192.168.127.7"));
-    // `ps` is filtered out of last_argv, so assert on the recorded call directly.
-    assert_eq!(h.invocations().last().unwrap(), &["ps", "-a", "--json"]);
+    assert_eq!(m.network.as_deref(), Some("devnet"));
+    // No process was involved at all: the listing came from the engine.
+    assert!(h.invocations().is_empty(), "a read must not spawn anything");
 }
 
 #[tokio::test]
-async fn list_machines_without_all_omits_the_flag() {
+async fn list_machines_without_all_lists_only_running_ones() {
     let h = Harness::start().await;
     let mut c = h.client().await;
-    c.list_machines(ListMachinesRequest { all: false })
+    let res = c
+        .list_machines(ListMachinesRequest { all: false })
         .await
-        .unwrap();
-    assert_eq!(h.invocations().last().unwrap(), &["ps", "--json"]);
+        .unwrap()
+        .into_inner();
+    // The stopped fixture is left out; the running ones are there. Asserted by
+    // membership rather than by count, since tests run in parallel.
+    assert!(res.machines.iter().all(|m| m.running));
+    let ids: Vec<&str> = res.machines.iter().map(|m| m.id.as_str()).collect();
+    assert!(ids.contains(&"abc123"), "{ids:?}");
+    assert!(!ids.contains(&"dead00000001"), "{ids:?}");
 }
 
 #[tokio::test]
@@ -279,24 +222,42 @@ async fn lists_images_and_flavors_and_networks() {
         .await
         .unwrap()
         .into_inner();
-    assert_eq!(imgs.images[0].reference, "alpine:3.20");
-    assert_eq!(imgs.images[0].size, 28886818);
+    let img = imgs
+        .images
+        .iter()
+        .find(|i| i.reference == "alpine:3.20")
+        .expect("the seeded image");
+    // Larger than a 32-bit int, so the wire type is exercised for real.
+    assert_eq!(img.size, 5_000_000_000);
 
     let fl = c
         .list_flavors(ListFlavorsRequest {})
         .await
         .unwrap()
         .into_inner();
-    assert_eq!(fl.flavors[0].name, "node");
-    assert_eq!(fl.flavors[0].ports, ["3000:3000"]);
+    // The catalog is compiled into the engine, so it needs no fixture.
+    let node = fl
+        .flavors
+        .iter()
+        .find(|f| f.name == "node")
+        .expect("the built-in node flavor");
+    assert_eq!(node.source, "catalog");
+    assert_eq!(node.kind, "linux");
 
     let nets = c
         .list_networks(ListNetworksRequest {})
         .await
         .unwrap()
         .into_inner();
-    assert_eq!(nets.networks[0].subnet, "192.168.127.0/24");
-    assert_eq!(nets.networks[0].members, 6);
+    let dev = nets
+        .networks
+        .iter()
+        .find(|n| n.name == "devnet")
+        .expect("the seeded network");
+    assert_eq!(dev.subnet, "192.168.127.0/24");
+    // One machine was connected to it, and its pid is alive.
+    assert_eq!(dev.members, 1);
+    assert_eq!(dev.running, 1);
 }
 
 #[tokio::test]
@@ -309,10 +270,17 @@ async fn volume_size_is_text_and_unknown_becomes_absent() {
         .unwrap()
         .into_inner();
 
-    assert_eq!(res.volumes[0].size.as_deref(), Some("2.3 GiB"));
-    // The CLI writes "-" when it cannot measure a volume; that is not a size.
-    assert_eq!(res.volumes[1].size, None);
-    assert_eq!(h.last_argv(), ["volume", "ls", "--json"]);
+    let data = res.volumes.iter().find(|v| v.name == "data").unwrap();
+    let gone = res.volumes.iter().find(|v| v.name == "gone").unwrap();
+    // A measurable volume reports human-readable text…
+    let size = data.size.as_deref().expect("a measurable volume has a size");
+    assert!(
+        size.ends_with("B") && size.chars().next().unwrap().is_ascii_digit(),
+        "unexpected size text: {size:?}"
+    );
+    // …and one whose directory is gone reports no size at all, rather than the
+    // "-" placeholder the table prints.
+    assert_eq!(gone.size, None);
 }
 
 #[tokio::test]
@@ -327,12 +295,15 @@ async fn parses_the_versions_listing() {
         .unwrap()
         .into_inner();
 
-    assert_eq!(res.versions.len(), 2);
-    assert_eq!(res.versions[0].version, "14.3");
-    assert!(!res.versions[0].latest);
-    assert_eq!(res.versions[1].version, "15.1");
-    assert!(res.versions[1].latest);
-    assert_eq!(h.last_argv(), ["versions", "--os", "freebsd"]);
+    // The list comes from the engine (live, or its built-in fallback when the
+    // mirror is unreachable), so assert its shape rather than fixed releases.
+    assert!(!res.versions.is_empty());
+    assert_eq!(
+        res.versions.iter().filter(|v| v.latest).count(),
+        1,
+        "exactly one release is the one to pick"
+    );
+    assert!(res.versions.iter().all(|v| !v.version.is_empty()));
 }
 
 #[tokio::test]
@@ -353,7 +324,7 @@ async fn rejects_an_unspecified_os() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn run_linux_builds_the_expected_command_line() {
+async fn run_linux_builds_the_expected_command() {
     let h = Harness::start().await;
     let mut c = h.client().await;
 
@@ -383,37 +354,26 @@ async fn run_linux_builds_the_expected_command_line() {
         .unwrap()
         .into_inner();
 
-    assert_eq!(res.id, "m-linux-001");
-    assert_eq!(
-        h.last_argv(),
-        [
-            "linux",
-            "-d",
-            "--cpus",
-            "4",
-            "--mem",
-            "2048",
-            "--port",
-            "8080:80",
-            "--network",
-            "devnet",
-            "--name",
-            "web",
-            "-v",
-            "data",
-            "--mount",
-            "/host:/guest:ro",
-            "-e",
-            "A=1",
-            "-e",
-            "B=2",
-            "alpine:3.20",
-            "--",
-            "sh",
-            "-c",
-            "echo hi",
-        ]
-    );
+    assert_eq!(res.id, "m-boot-001");
+
+    let a = &h.last_command()["Linux"];
+    assert_eq!(a["image"], "alpine:3.20");
+    assert_eq!(a["vm"]["cpus"], 4);
+    assert_eq!(a["vm"]["mem"], 2048);
+    assert_eq!(a["net"]["ports"][0]["host"], 8080);
+    assert_eq!(a["net"]["ports"][0]["guest"], 80);
+    assert_eq!(a["net"]["network"], "devnet");
+    assert_eq!(a["net"]["name"], "web");
+    assert_eq!(a["volume"], "data");
+    assert_eq!(a["mounts"][0], "/host:/guest:ro");
+    assert_eq!(a["env"][0], "A=1");
+    assert_eq!(a["env"][1], "B=2");
+    assert_eq!(a["command"], serde_json::json!(["sh", "-c", "echo hi"]));
+    // Always detached, and the fields the request left alone came from the
+    // engine's own defaults rather than being blank.
+    assert_eq!(a["detach"], true);
+    assert_eq!(a["console"], "hvc0");
+    assert!(a["kernel_version"].as_str().is_some_and(|v| !v.is_empty()));
 }
 
 #[tokio::test]
@@ -446,25 +406,22 @@ async fn run_bsd_is_always_detached_and_maps_the_os() {
         .unwrap()
         .into_inner();
 
-    assert_eq!(res.id, "m-netbsd-001");
-    assert_eq!(
-        h.last_argv(),
-        [
-            "netbsd",
-            "-d",
-            // cpus == 0 means "unset", so no --cpus is emitted.
-            "--mem",
-            "512",
-            "--no-net",
-            "--version",
-            "10.1",
-            "--persist",
-            "--attach-disk",
-            "/d.img:ro",
-            "--disk-size",
-            "8G",
-        ]
-    );
+    assert_eq!(res.id, "m-boot-001");
+
+    let cmd = h.last_command();
+    // The OS chose the variant, so it cannot be mis-spelled as a subcommand.
+    assert!(cmd.get("Netbsd").is_some(), "expected a netbsd command: {cmd}");
+    let a = &cmd["Netbsd"];
+    assert_eq!(a["version"], "10.1");
+    assert_eq!(a["run"]["detach"], true);
+    assert_eq!(a["run"]["persist"], true);
+    assert_eq!(a["net"]["no_net"], true);
+    assert_eq!(a["disk_size"], "8G");
+    assert_eq!(a["attach_disk"][0]["read_only"], true);
+    // cpus == 0 means "unset", which takes the engine's default rather than
+    // booting a machine with no vCPUs.
+    assert_eq!(a["vm"]["cpus"], 1);
+    assert_eq!(a["vm"]["mem"], 512);
 }
 
 #[tokio::test]
@@ -511,7 +468,10 @@ async fn logs_stream_and_end_with_an_exit_code() {
     assert!(out.contains("line one"), "{out}");
     assert!(out.contains("line two"), "{out}");
     assert_eq!(code, Some(0));
-    assert_eq!(h.last_argv(), ["logs", "-f", "abc123"]);
+    let a = &h.last_command()["Logs"];
+    assert_eq!(a["id"], "abc123");
+    assert_eq!(a["follow"], true);
+    assert_eq!(a["boot"], false);
 }
 
 #[tokio::test]
@@ -561,8 +521,11 @@ async fn a_half_closed_request_stream_does_not_cancel_the_command() {
 
     let out_stream = c.run(stream).await.unwrap().into_inner();
     let (out, _, code) = drain(out_stream).await;
-    assert!(out.contains("probe ok"), "{out}");
+    assert!(out.contains("ran: probe"), "{out}");
     assert_eq!(code, Some(0));
+    // The passthrough goes through the `__cli` entry point, which parses the
+    // command line with the engine's own clap definition.
+    assert_eq!(h.last_argv(), ["__cli", "--", "probe"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -610,11 +573,15 @@ async fn exec_without_a_tty_streams_stdin_through_a_pipe() {
     assert!(out.contains("piped-input"), "{out}");
     assert!(!out.contains("TTY_REQUESTED"), "{out}");
     assert_eq!(code, Some(0));
-    assert_eq!(h.last_argv(), ["exec", "-e", "K=V", "abc123", "cat"]);
+    let a = &h.last_command()["Exec"];
+    assert_eq!(a["id"], "abc123");
+    assert_eq!(a["command"], serde_json::json!(["cat"]));
+    assert_eq!(a["env"], serde_json::json!(["K=V"]));
+    assert_eq!(a["tty"], false);
 }
 
 #[tokio::test]
-async fn exec_with_a_tty_runs_the_cli_under_a_pty() {
+async fn exec_with_a_tty_runs_the_session_under_a_pty() {
     let h = Harness::start().await;
     let mut c = h.client().await;
 
@@ -663,7 +630,11 @@ async fn exec_with_a_tty_runs_the_cli_under_a_pty() {
     assert!(out.contains("EXEC_OK"), "{out}");
     assert!(out.contains("TTY_REQUESTED"), "{out}");
     assert_eq!(code, Some(0));
-    assert_eq!(h.last_argv(), ["exec", "-t", "abc123", "cat"]);
+    let a = &h.last_command()["Exec"];
+    assert_eq!(a["id"], "abc123");
+    assert_eq!(a["tty"], true);
+    // A Linux guest sets its own TERM, so none is injected for it.
+    assert_eq!(a["env"], serde_json::json!([]));
 }
 
 /// An empty command means "open this machine's shell", which only makes sense
@@ -685,7 +656,8 @@ async fn exec_with_no_command_opens_a_shell() {
 
     let out_stream = c.exec(stream).await.unwrap().into_inner();
     let _ = drain(out_stream).await;
-    assert_eq!(h.last_argv(), ["shell", "abc123"]);
+    let a = &h.last_command()["Shell"];
+    assert_eq!(a["id"], "abc123");
 }
 
 #[tokio::test]
@@ -709,15 +681,10 @@ async fn exec_requires_start_as_the_first_message() {
 #[test]
 fn the_binary_generates_and_prints_a_token() {
     let exe = daemon_binary();
-    let dir = tempfile::tempdir().unwrap();
-    let stub = dir.path().join("bsdkrun");
-    std::fs::write(&stub, STUB).unwrap();
-    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let mut child = std::process::Command::new(exe)
         // Port 0 lets the OS pick, so concurrent test runs cannot collide.
-        .args(["--bind", "127.0.0.1:0", "--bsdkrun"])
-        .arg(&stub)
+        .args(["--bind", "127.0.0.1:0"])
         .env_remove("BSDKRUN_TOKEN")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -771,4 +738,59 @@ fn daemon_binary() -> PathBuf {
         exe.display()
     );
     exe
+}
+
+/// The supervisor entry point is real: `bsdkrund __run <json>` runs the engine
+/// in this binary, with no `bsdkrun` anywhere on PATH.
+///
+/// This is the property the whole change exists for, so it is asserted against
+/// the actual daemon binary rather than a stub.
+#[test]
+fn the_daemon_binary_runs_engine_commands_itself() {
+    let state = fixture_state().to_path_buf();
+    let spec = serde_json::to_string(&serde_json::json!({
+        "Ps": { "all": true, "json": true }
+    }))
+    .unwrap();
+
+    let out = std::process::Command::new(daemon_binary())
+        .arg("__run")
+        .arg(&spec)
+        .env("BSDKRUN_STATE", &state)
+        // Nothing on PATH at all: there is no CLI to fall back to.
+        .env("PATH", "")
+        .output()
+        .expect("running the supervisor");
+
+    assert!(
+        out.status.success(),
+        "exit {:?}\nstderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let machines: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("`ps --json` printed JSON");
+    let ids: Vec<&str> = machines
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"abc123"), "seeded machines missing: {ids:?}");
+}
+
+/// An unparseable spec fails loudly rather than booting something unintended.
+#[test]
+fn the_supervisor_rejects_a_spec_it_cannot_decode() {
+    let out = std::process::Command::new(daemon_binary())
+        .arg("__run")
+        .arg("{\"NoSuchCommand\":{}}")
+        .output()
+        .expect("running the supervisor");
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("decoding the command"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

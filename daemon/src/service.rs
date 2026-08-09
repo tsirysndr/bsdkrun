@@ -23,8 +23,10 @@ pub struct BsdkrunService {
 }
 
 impl BsdkrunService {
-    pub fn new(cli: crate::cli::Cli) -> Self {
-        Self { ops: Ops::new(cli) }
+    pub fn new(supervisor: crate::supervisor::Supervisor) -> Self {
+        Self {
+            ops: Ops::new(supervisor),
+        }
     }
 
     /// Share one [`Ops`] with the GraphQL front end when both are served.
@@ -189,8 +191,12 @@ impl Bsdkrun for BsdkrunService {
         let i = self.ops.info().await?;
         Ok(Response::new(InfoResponse {
             daemon_version: i.daemon_version,
-            cli_version: i.cli_version,
-            cli_path: i.cli_path,
+            // The proto still calls these the "cli" version and path. There is
+            // no separate CLI any more: the daemon links the engine and reports
+            // its own binary, so existing clients keep reading one field pair
+            // that now cannot disagree with what actually runs.
+            cli_version: i.engine_version,
+            cli_path: i.exe_path,
             os: i.os,
             arch: i.arch,
         }))
@@ -247,9 +253,9 @@ impl Bsdkrun for BsdkrunService {
         &self,
         req: Request<MachineRequest>,
     ) -> Result<Response<Self::UpdateAgentStream>, Status> {
-        let argv = self.ops.update_agent_argv(&req.into_inner().id);
+        let cmd = self.ops.update_agent_command(&req.into_inner().id);
         Ok(Response::new(Box::pin(ReceiverStream::new(
-            self.ops.cli().stream(&argv),
+            self.ops.stream(&cmd)?,
         ))))
     }
 
@@ -408,11 +414,11 @@ impl Bsdkrun for BsdkrunService {
         req: Request<FetchRequest>,
     ) -> Result<Response<Self::FetchStream>, Status> {
         let r = req.into_inner();
-        let argv = self
+        let cmd = self
             .ops
-            .fetch_argv(bsd_os(r.os)?, &r.version, &r.dir, r.force);
+            .fetch_command(bsd_os(r.os)?, &r.version, &r.dir, r.force);
         Ok(Response::new(Box::pin(ReceiverStream::new(
-            self.ops.cli().stream(&argv),
+            self.ops.stream(&cmd)?,
         ))))
     }
 
@@ -555,9 +561,9 @@ impl Bsdkrun for BsdkrunService {
     ) -> Result<Response<Self::BuildFlavorStream>, Status> {
         let r = req.into_inner();
         let (cpus, mem) = vm_opts(r.vm);
-        let argv = self.ops.build_flavor_argv(&r.name, cpus, mem, r.force);
+        let cmd = self.ops.build_flavor_command(&r.name, cpus, mem, r.force);
         Ok(Response::new(Box::pin(ReceiverStream::new(
-            self.ops.cli().stream(&argv),
+            self.ops.stream(&cmd)?,
         ))))
     }
 
@@ -596,26 +602,23 @@ impl Bsdkrun for BsdkrunService {
         } else {
             start.env
         };
-        let (argv, tty) = ops::ExecOpts {
+        let (cmd, tty) = ops::ExecOpts {
             id: start.id,
             command: start.command,
             env,
             tty: start.tty,
         }
-        .to_argv();
+        .to_command();
+        let sup = self.ops.supervisor();
+        let argv = sup.argv(&cmd)?;
 
         let stream = if tty {
-            let (session, stream) = PtySession::spawn(
-                self.ops.cli().bin(),
-                &argv,
-                self.ops.cli().env_path(),
-                rows,
-                cols,
-            )?;
+            let (session, stream) =
+                PtySession::spawn(sup.exe(), &argv, sup.env_path(), rows, cols)?;
             tokio::spawn(pump_exec_input(input, Session::Pty(session)));
             Box::pin(stream) as ChunkStream
         } else {
-            let (session, rx) = self.ops.cli().spawn_piped(&argv)?;
+            let (session, rx) = sup.spawn_piped(&argv)?;
             tokio::spawn(pump_exec_input(input, Session::Piped(session)));
             Box::pin(ReceiverStream::new(rx)) as ChunkStream
         };
@@ -624,9 +627,9 @@ impl Bsdkrun for BsdkrunService {
 
     async fn logs(&self, req: Request<LogsRequest>) -> Result<Response<Self::LogsStream>, Status> {
         let r = req.into_inner();
-        let argv = self.ops.logs_argv(&r.id, r.follow, r.boot);
+        let cmd = self.ops.logs_command(&r.id, r.follow, r.boot);
         Ok(Response::new(Box::pin(ReceiverStream::new(
-            self.ops.cli().stream(&argv),
+            self.ops.stream(&cmd)?,
         ))))
     }
 
@@ -641,9 +644,9 @@ impl Bsdkrun for BsdkrunService {
             Ok(GuestTool::Systemd) => ops::GuestTool::Systemd,
             _ => return Err(Status::invalid_argument("unknown guest tool")),
         };
-        let argv = self.ops.guest_tool_argv(tool, &r.id, &r.args)?;
+        let cmd = self.ops.guest_tool_command(tool, &r.id, &r.args)?;
         Ok(Response::new(Box::pin(ReceiverStream::new(
-            self.ops.cli().stream(&argv),
+            self.ops.stream(&cmd)?,
         ))))
     }
 
@@ -675,17 +678,15 @@ impl Bsdkrun for BsdkrunService {
                 .size
                 .map(|s| (s.rows as u16, s.cols as u16))
                 .unwrap_or((DEFAULT_ROWS, DEFAULT_COLS));
-            let (session, stream) = PtySession::spawn(
-                self.ops.cli().bin(),
-                &start.args,
-                self.ops.cli().env_path(),
-                rows,
-                cols,
-            )?;
+            let sup = self.ops.supervisor();
+            let argv = sup.argv_raw(&start.args);
+            let (session, stream) =
+                PtySession::spawn(sup.exe(), &argv, sup.env_path(), rows, cols)?;
             tokio::spawn(pump_run_input(input, Session::Pty(session)));
             Box::pin(stream) as ChunkStream
         } else {
-            let (session, rx) = self.ops.cli().spawn_piped(&start.args)?;
+            let sup = self.ops.supervisor();
+            let (session, rx) = sup.spawn_piped(&sup.argv_raw(&start.args))?;
             tokio::spawn(pump_run_input(input, Session::Piped(session)));
             Box::pin(ReceiverStream::new(rx)) as ChunkStream
         };
@@ -700,7 +701,7 @@ impl Bsdkrun for BsdkrunService {
 /// Either kind of interactive session, so the two bidi RPCs share one pump.
 enum Session {
     Pty(PtySession),
-    Piped(crate::cli::PipedSession),
+    Piped(crate::supervisor::PipedSession),
 }
 
 impl Session {

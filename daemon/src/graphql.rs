@@ -21,6 +21,8 @@ use async_graphql::{
 use base64::Engine as _;
 use tokio_stream::{Stream, StreamExt};
 
+use bsdkrun_core::cli::Command as CoreCommand;
+
 use crate::ops::{self, OpError, Ops};
 use crate::shell::{ShellEvent, ShellRegistry};
 
@@ -525,8 +527,10 @@ impl Query {
         let i = api(ctx)?.ops.info().await.map_err(gql_err)?;
         Ok(Info {
             daemon_version: i.daemon_version,
-            cli_version: i.cli_version,
-            cli_path: i.cli_path,
+            // The proto/schema still name these after the CLI; the daemon now
+            // links the engine, so both describe its own binary.
+            cli_version: i.engine_version,
+            cli_path: i.exe_path,
             os: i.os,
             arch: i.arch,
         })
@@ -1124,8 +1128,8 @@ impl Subscription_ {
         #[graphql(default)] boot: bool,
     ) -> async_graphql::Result<impl Stream<Item = ShellOutput>> {
         let api = api(ctx)?;
-        let argv = api.ops.logs_argv(&id, follow, boot);
-        let rx = api.ops.cli().stream(&argv);
+        let cmd = api.ops.logs_command(&id, follow, boot);
+        let rx = api.ops.stream(&cmd)?;
         Ok(
             tokio_stream::wrappers::ReceiverStream::new(rx).filter_map(|chunk| {
                 let chunk = chunk.ok()?;
@@ -1168,7 +1172,7 @@ impl Subscription_ {
             repo: input.repo,
             command: input.command,
         };
-        Ok(launch_stream(api.ops.clone(), opts.to_argv()))
+        Ok(launch_stream(api.ops.clone(), opts.to_command()))
     }
 
     /// Boot a FreeBSD/NetBSD machine, streaming progress until its id is known.
@@ -1193,7 +1197,7 @@ impl Subscription_ {
             repo: input.repo,
             command: input.command,
         };
-        Ok(launch_stream(api.ops.clone(), opts.to_argv()))
+        Ok(launch_stream(api.ops.clone(), opts.to_command()))
     }
 
     /// Boot a Nanos unikernel, streaming progress until its id is known.
@@ -1212,7 +1216,7 @@ impl Subscription_ {
             cmdline: input.cmdline,
             persist: input.persist,
         };
-        Ok(launch_stream(api.ops.clone(), opts.to_argv()))
+        Ok(launch_stream(api.ops.clone(), opts.to_command()))
     }
 
     /// Boot a Unikraft unikernel, streaming progress until its id is known.
@@ -1231,7 +1235,7 @@ impl Subscription_ {
             initramfs: input.initramfs,
             mounts: input.mounts,
         };
-        Ok(launch_stream(api.ops.clone(), opts.to_argv()))
+        Ok(launch_stream(api.ops.clone(), opts.to_command()))
     }
 
     /// Boot an OSv unikernel, streaming progress until its id is known.
@@ -1242,7 +1246,7 @@ impl Subscription_ {
     ) -> async_graphql::Result<impl Stream<Item = LaunchEvent>> {
         let api = api(ctx)?;
         let opts: ops::RunOsvOpts = input.into();
-        Ok(launch_stream(api.ops.clone(), opts.to_argv()))
+        Ok(launch_stream(api.ops.clone(), opts.to_command()))
     }
 
     /// Boot a flavor, streaming provisioning output until its id is known.
@@ -1260,7 +1264,7 @@ impl Subscription_ {
             volume: input.volume,
             repo: input.repo,
         };
-        Ok(launch_stream(api.ops.clone(), opts.to_argv()))
+        Ok(launch_stream(api.ops.clone(), opts.to_command()))
     }
 
     /// Pre-build a flavor's provisioned rootfs, streaming the build log. No
@@ -1274,16 +1278,16 @@ impl Subscription_ {
         #[graphql(default)] force: bool,
     ) -> async_graphql::Result<impl Stream<Item = LaunchEvent>> {
         let api = api(ctx)?;
-        let argv = api.ops.build_flavor_argv(&name, cpus, mem, force);
-        Ok(launch_stream(api.ops.clone(), argv))
+        let cmd = api.ops.build_flavor_command(&name, cpus, mem, force);
+        Ok(launch_stream(api.ops.clone(), cmd))
     }
 
     /// Poll-backed machine list, so a dashboard can stay current without the
     /// frontend running its own timer.
     ///
-    /// The CLI has no change feed — machine state lives in a SQLite file that
-    /// `ps` reads — so this genuinely polls. `intervalMs` is clamped to a floor
-    /// because each tick forks a CLI process.
+    /// The engine has no change feed — machine state lives in a SQLite file —
+    /// so this genuinely polls. `intervalMs` is clamped to a floor even though a
+    /// tick is now just a database read.
     async fn machines_changed(
         &self,
         ctx: &Context<'_>,
@@ -1304,15 +1308,22 @@ impl Subscription_ {
     }
 }
 
-/// Run a boot command and turn its output into [`LaunchEvent`]s.
+/// Run a boot command in a supervisor process and turn its output into
+/// [`LaunchEvent`]s.
 ///
-/// The CLI writes progress to stderr and the new machine's id to stdout, so the
-/// two streams are classified separately. An id is a bare 12-hex-digit line —
-/// the same shape the desktop app looks for — and anything else on stdout is
+/// The engine writes progress to stderr and the new machine's id to stdout, so
+/// the two streams are classified separately. An id is a bare 12-hex-digit line
+/// — the same shape the desktop app looks for — and anything else on stdout is
 /// just more progress.
-fn launch_stream(ops: Ops, argv: Vec<String>) -> impl Stream<Item = LaunchEvent> {
+fn launch_stream(ops: Ops, cmd: CoreCommand) -> impl Stream<Item = LaunchEvent> {
     async_stream::stream! {
-        let mut rx = ops.cli().stream(&argv);
+        let mut rx = match ops.stream(&cmd) {
+            Ok(rx) => rx,
+            Err(e) => {
+                yield LaunchEvent { line: None, machine_id: None, error: Some(e.to_string()) };
+                return;
+            }
+        };
         let mut machine_id: Option<String> = None;
         let mut stdout = String::new();
         let mut stderr = String::new();

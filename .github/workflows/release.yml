@@ -93,7 +93,7 @@ jobs:
               > bsdkrun-aarch64-apple-darwin.tar.gz.sha256 )
           # All cross-built guest agents (linux/freebsd × aarch64/x86_64). BSD
           # ones are for manual injection into a running VM.
-          cp src/agent-bin/bsdkrun-agent.* dist/
+          cp core/src/agent-bin/bsdkrun-agent.* dist/
           # Subshell so cwd doesn't leak; scope the glob so the sums file
           # doesn't hash itself (and skip the .sha256 sidecar).
           ( cd dist && shasum -a 256 bsdkrun-*.tar.gz bsdkrun-agent.* > SHA256SUMS.txt )

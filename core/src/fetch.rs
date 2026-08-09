@@ -46,7 +46,7 @@ const FREEBSD_AMD64_BASE: &str =
     "https://github.com/tsirysndr/bsdkrun/releases/download/freebsd-amd64";
 
 /// Guest operating systems bsdkrun can provision.
-#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize)]
 pub enum Os {
     Freebsd,
     Netbsd,
@@ -149,7 +149,7 @@ impl Os {
 
     /// Published release versions (ascending). `current`, where applicable, is
     /// not listed here — it's handled separately.
-    fn all_versions(self) -> Result<Vec<String>> {
+    pub(crate) fn all_versions(self) -> Result<Vec<String>> {
         let (url, prefix, suffix) = match self {
             Os::Freebsd => (format!("{FREEBSD_VM_IMAGES}/"), "", "-RELEASE/"),
             Os::Netbsd => (format!("{NETBSD_PUB}/"), "NetBSD-", "/"),
@@ -173,7 +173,7 @@ impl Os {
 
     /// Known releases used when the live CDN listing can't be fetched, so
     /// `versions` still returns a usable set (kept roughly current).
-    fn fallback_versions(self) -> Vec<String> {
+    pub(crate) fn fallback_versions(self) -> Vec<String> {
         let list: &[&str] = match self {
             Os::Freebsd => &[
                 "13.3", "13.4", "13.5", "14.0", "14.1", "14.2", "14.3", "15.0", "15.1",
@@ -558,21 +558,31 @@ pub fn list_versions(os: Os) -> Result<()> {
     // Live listing when the CDN is reachable; a static list of known releases
     // otherwise, so the command (and the desktop's version picker) never fails
     // just because cdn.netbsd.org / the FreeBSD mirror is slow or down.
-    let versions = os.all_versions().unwrap_or_else(|_| os.fallback_versions());
+    // The list itself comes from `api`, so a daemon and this command can never
+    // offer different releases.
+    let versions = crate::api::list_versions(os);
     match os {
         Os::Freebsd => {
-            let latest = versions.last().cloned().unwrap_or_default();
             println!("Available FreeBSD arm64 releases:");
             for v in &versions {
-                let tag = if *v == latest { "  (latest)" } else { "" };
-                println!("  {v}{tag}");
+                let tag = if v.latest { "  (latest)" } else { "" };
+                println!("  {}{tag}", v.version);
             }
         }
         Os::Netbsd => {
             println!("Available NetBSD arm64 builds:");
-            println!("  current  (recommended — modern virtio-mmio; boots to root under libkrun)");
-            for v in versions.iter().rev() {
-                println!("  {v:<7}  (release; boots but no root disk under libkrun — legacy virtio-mmio)");
+            for v in &versions {
+                if v.latest {
+                    println!(
+                        "  {:<7}  (recommended — modern virtio-mmio; boots to root under libkrun)",
+                        v.version
+                    );
+                } else {
+                    println!(
+                        "  {:<7}  (release; boots but no root disk under libkrun — legacy virtio-mmio)",
+                        v.version
+                    );
+                }
             }
         }
     }

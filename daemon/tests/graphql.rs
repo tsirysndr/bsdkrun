@@ -1,56 +1,25 @@
 //! GraphQL API tests.
 //!
-//! Driven against a stub `bsdkrun` for the same reasons as the gRPC suite: it
-//! keeps the tests hermetic and lets each one assert the exact argv produced.
-//! Queries and mutations execute against the real schema; the HTTP layer is
-//! exercised through the real router so the auth path is the shipped one.
+//! Driven against the shared fixtures in `common`: a seeded state directory for
+//! everything the daemon now reads in-process, and a stub supervisor for the
+//! operations that still need their own process. Queries and mutations execute
+//! against the real schema; the HTTP layer is exercised through the real router
+//! so the auth path is the shipped one.
 
-use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 use async_graphql::{Request, Value};
 use bsdkrun_daemon::auth::TokenAuth;
-use bsdkrun_daemon::cli::Cli;
 use bsdkrun_daemon::graphql::{schema, BsdkrunSchema};
 use bsdkrun_daemon::ops::Ops;
 use bsdkrun_daemon::shell::ShellRegistry;
+use bsdkrun_daemon::supervisor::Supervisor;
 use tokio_stream::StreamExt;
 
+mod common;
+use common::{decode, fixture_state, install_stub};
+
 const TOKEN: &str = "test-token-graphql";
-
-const STUB: &str = r#"#!/bin/sh
-LOG="$0.log"
-for a in "$@"; do printf '%s\n' "$a" >> "$LOG"; done
-printf -- '---\n' >> "$LOG"
-
-case "$1" in
---version) echo "bsdkrun 9.9.9-stub"; exit 0 ;;
-ps)
-  echo '[{"id":"abc123","name":"web","image":"alpine","kind":"linux","command":"sh","status":"running","running":true,"exit_code":null,"pid":42,"detached":true,"cpus":2,"mem":1024,"volume":null,"state_dir":"/s","created_at":"1785993650","finished_at":null,"network":"devnet","net_ip":"192.168.127.7"},{"id":"bsd456789abc","name":"fbsd","image":"disk.raw","kind":"freebsd","command":"","status":"running","running":true,"exit_code":null,"pid":43,"detached":true,"cpus":2,"mem":1024,"volume":null,"state_dir":"/s2","created_at":"1785993651","finished_at":null,"network":null,"net_ip":null}]'
-  exit 0 ;;
-images)
-  echo '[{"id":"img1","reference":"alpine:3.20","digest":"sha256:dead","size":3221225472,"rootfs":"/r","created_at":"1785854268"}]'
-  exit 0 ;;
-volume)
-  echo '[{"name":"data","guest":"linux","base":"b.img","path":"/v","size":"2.3 GiB","created_at":"1","tracked":true},{"name":"empty","guest":null,"base":null,"path":"/e","size":"-","created_at":null,"tracked":false}]'
-  exit 0 ;;
-network)
-  echo '[{"name":"devnet","subnet":"192.168.127.0/24","gateway":"192.168.127.1","members":6,"running":4,"up":true,"created_at":"1"}]'
-  exit 0 ;;
-flavors)
-  echo '[{"name":"node","source":"catalog","kind":"linux","base":"node:22","category":"language","method":"docker","description":"Node","ports":["3000:3000"],"nix":[],"created_at":null}]'
-  exit 0 ;;
-versions) printf 'Available builds:\n  14.3\n  15.1  (latest)\n'; exit 0 ;;
-linux|freebsd|netbsd|unikraft|nanos|osv) echo "m-$1-001"; exit 0 ;;
-exec)
-  echo "EXEC_OK"
-  cat
-  exit 0 ;;
-stop|start) echo "$1 ok"; exit 0 ;;
-esac
-echo "unknown subcommand: $1" >&2
-exit 2
-"#;
 
 struct Harness {
     schema: BsdkrunSchema,
@@ -60,14 +29,11 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
+        fixture_state();
         let dir = tempfile::tempdir().unwrap();
-        let stub = dir.path().join("bsdkrun");
-        std::fs::write(&stub, STUB).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let log = dir.path().join("bsdkrun.log");
-        std::fs::write(&log, "").unwrap();
+        let (stub, log) = install_stub(dir.path());
 
-        let ops = Ops::new(Cli::resolve(Some(stub)).unwrap());
+        let ops = Ops::new(Supervisor::with_exe(stub));
         Self {
             schema: schema(ops, Arc::new(ShellRegistry::new())),
             log,
@@ -90,43 +56,38 @@ impl Harness {
     }
 
     fn invocations(&self) -> Vec<Vec<String>> {
-        let raw = std::fs::read_to_string(&self.log).unwrap_or_default();
-        let mut all = Vec::new();
-        let mut cur = Vec::new();
-        for line in raw.lines() {
-            if line == "---" {
-                all.push(std::mem::take(&mut cur));
-            } else {
-                cur.push(line.to_string());
-            }
-        }
-        all
+        common::invocations(&self.log)
     }
 
-    fn last_argv(&self) -> Vec<String> {
-        self.invocations()
-            .into_iter()
-            .rfind(|a| a.first().map(|s| s != "--version").unwrap_or(false))
-            .expect("expected a recorded invocation")
-    }
-
-    /// Wait for the invocation whose subcommand is `verb`.
-    ///
-    /// Opening a shell spawns the pty asynchronously *and* runs a `ps` first to
-    /// learn the guest kind, so neither "the last invocation" nor "read it
-    /// immediately" is right — this waits for the one under test.
-    async fn wait_argv(&self, verb: &str) -> Vec<String> {
-        for _ in 0..100 {
-            if let Some(argv) = self
+    /// The command the daemon handed the supervisor last, decoded.
+    fn last_command(&self) -> serde_json::Value {
+        decode(
+            &self
                 .invocations()
                 .into_iter()
-                .rfind(|a| a.first().map(|s| s == verb).unwrap_or(false))
+                .next_back()
+                .expect("expected a recorded invocation"),
+        )
+    }
+
+    /// Wait for the command carrying `variant`, e.g. "Exec" or "Shell".
+    ///
+    /// Opening a shell spawns the pty asynchronously, so reading the log
+    /// immediately would race it.
+    async fn wait_command(&self, variant: &str) -> serde_json::Value {
+        for _ in 0..100 {
+            if let Some(cmd) = self
+                .invocations()
+                .into_iter()
+                .filter(|a| a.first().map(|s| s == "__run").unwrap_or(false))
+                .map(|a| decode(&a))
+                .rfind(|c| c.get(variant).is_some())
             {
-                return argv;
+                return cmd;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        panic!("no `{verb}` invocation was recorded within 5s");
+        panic!("no `{variant}` command was recorded within 5s");
     }
 }
 
@@ -140,12 +101,13 @@ fn json(v: &Value) -> serde_json::Value {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn info_reports_the_cli_it_drives() {
+async fn info_reports_the_engine_it_links() {
     let h = Harness::new();
     let d = h
         .query("{ info { daemonVersion cliVersion os arch } }")
         .await;
-    assert_eq!(json(&d)["info"]["cliVersion"], "bsdkrun 9.9.9-stub");
+    // The engine is linked in, so its version is reported directly.
+    assert_eq!(json(&d)["info"]["cliVersion"], bsdkrun_core::VERSION);
     assert_eq!(json(&d)["info"]["daemonVersion"], env!("CARGO_PKG_VERSION"));
 }
 
@@ -161,15 +123,26 @@ async fn machines_are_camel_cased_for_the_frontend() {
     assert_eq!(m["running"], true);
     // snake_case in the CLI's JSON, camelCase in the schema.
     assert_eq!(m["netIp"], "192.168.127.7");
-    assert_eq!(m["stateDir"], "/s");
-    assert_eq!(h.last_argv(), ["ps", "-a", "--json"]);
+    assert!(m["stateDir"].as_str().unwrap().ends_with("abc123"));
+    // Nothing was spawned: the listing came from the engine in-process.
+    assert!(h.invocations().is_empty());
 }
 
 #[tokio::test]
-async fn machines_without_all_omits_the_flag() {
+async fn machines_without_all_lists_only_running_ones() {
     let h = Harness::new();
-    h.query("{ machines { id } }").await;
-    assert_eq!(h.last_argv(), ["ps", "--json"]);
+    let d = h.query("{ machines { id } }").await;
+    // The stopped fixture is left out; the running ones are there. Asserted by
+    // membership rather than by count: other tests create machines of their own
+    // and run alongside this one.
+    let ids: Vec<String> = json(&d)["machines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(ids.contains(&"abc123".to_string()), "{ids:?}");
+    assert!(!ids.contains(&"dead00000001".to_string()), "{ids:?}");
 }
 
 #[tokio::test]
@@ -189,34 +162,55 @@ async fn image_size_survives_exceeding_a_32_bit_int() {
     let h = Harness::new();
     let d = h.query("{ images { reference size } }").await;
     // Compared as f64: the schema exposes it as a GraphQL Float.
-    assert_eq!(json(&d)["images"][0]["size"].as_f64(), Some(3221225472.0));
+    let img = json(&d)["images"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["reference"] == "alpine:3.20")
+        .unwrap()
+        .clone();
+    assert_eq!(img["size"].as_f64(), Some(5_000_000_000.0));
 }
 
 #[tokio::test]
 async fn volume_size_is_text_and_unknown_becomes_null() {
     let h = Harness::new();
     let d = h.query("{ volumes { name size tracked } }").await;
-    let v = &json(&d)["volumes"];
-    assert_eq!(v[0]["size"], "2.3 GiB");
-    // The CLI writes "-" when it cannot measure a volume; that is not a size.
-    assert!(v[1]["size"].is_null());
+    let v = json(&d)["volumes"].as_array().unwrap().to_vec();
+    let data = v.iter().find(|v| v["name"] == "data").unwrap();
+    let gone = v.iter().find(|v| v["name"] == "gone").unwrap();
+    // A measurable volume reports human-readable text…
+    let size = data["size"].as_str().expect("a measurable volume has a size");
+    assert!(size.ends_with('B'), "unexpected size text: {size:?}");
+    // …and one whose directory is gone reports null, not the "-" the CLI's
+    // table prints in that cell.
+    assert!(gone["size"].is_null());
 }
 
 #[tokio::test]
 async fn networks_and_flavors_and_versions_resolve() {
     let h = Harness::new();
     let d = h.query("{ networks { name subnet members up } }").await;
-    assert_eq!(json(&d)["networks"][0]["members"], 6);
+    let nets = json(&d)["networks"].as_array().unwrap().to_vec();
+    let dev = nets.iter().find(|n| n["name"] == "devnet").unwrap();
+    assert_eq!(dev["subnet"], "192.168.127.0/24");
+    assert_eq!(dev["members"], 1);
 
-    let d = h.query("{ flavors { name kind ports } }").await;
-    assert_eq!(json(&d)["flavors"][0]["ports"][0], "3000:3000");
+    let d = h.query("{ flavors { name kind source } }").await;
+    let flavors = json(&d)["flavors"].as_array().unwrap().to_vec();
+    // The catalog is compiled into the engine, so it needs no fixture.
+    let node = flavors.iter().find(|f| f["name"] == "node").unwrap();
+    assert_eq!(node["kind"], "linux");
+    assert_eq!(node["source"], "catalog");
 
     let d = h
         .query("{ versions(os: FREEBSD) { version latest } }")
         .await;
-    assert_eq!(json(&d)["versions"][1]["version"], "15.1");
-    assert_eq!(json(&d)["versions"][1]["latest"], true);
-    assert_eq!(h.last_argv(), ["versions", "--os", "freebsd"]);
+    // The list comes from the engine (live, or its built-in fallback), so
+    // assert its shape rather than fixed releases.
+    let versions = json(&d)["versions"].as_array().unwrap().to_vec();
+    assert!(!versions.is_empty());
+    assert_eq!(versions.iter().filter(|v| v["latest"] == true).count(), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -224,7 +218,7 @@ async fn networks_and_flavors_and_versions_resolve() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn run_linux_builds_the_expected_command_line() {
+async fn run_linux_builds_the_expected_command() {
     let h = Harness::new();
     let d = h
         .query(
@@ -238,33 +232,21 @@ async fn run_linux_builds_the_expected_command_line() {
             }) }"#,
         )
         .await;
-    assert_eq!(json(&d)["runLinux"], "m-linux-001");
-    assert_eq!(
-        h.last_argv(),
-        [
-            "linux",
-            "-d",
-            "--cpus",
-            "4",
-            "--mem",
-            "2048",
-            "--port",
-            "8080:80",
-            "--network",
-            "devnet",
-            "--name",
-            "web",
-            "-v",
-            "data",
-            "-e",
-            "A=1",
-            "alpine:3.20",
-            "--",
-            "sh",
-            "-c",
-            "echo hi",
-        ]
-    );
+    assert_eq!(json(&d)["runLinux"], "m-boot-001");
+    let a = &h.last_command()["Linux"];
+    assert_eq!(a["image"], "alpine:3.20");
+    assert_eq!(a["vm"]["cpus"], 4);
+    assert_eq!(a["vm"]["mem"], 2048);
+    assert_eq!(a["net"]["ports"][0]["host"], 8080);
+    assert_eq!(a["net"]["ports"][0]["guest"], 80);
+    assert_eq!(a["net"]["network"], "devnet");
+    assert_eq!(a["net"]["name"], "web");
+    assert_eq!(a["volume"], "data");
+    assert_eq!(a["env"], serde_json::json!(["A=1"]));
+    assert_eq!(a["command"], serde_json::json!(["sh", "-c", "echo hi"]));
+    assert_eq!(a["detach"], true);
+    // Untouched fields come from the engine's defaults, not from blanks.
+    assert_eq!(a["console"], "hvc0");
 }
 
 #[tokio::test]
@@ -278,23 +260,18 @@ async fn run_bsd_maps_the_enum_and_is_always_detached() {
             }) }"#,
         )
         .await;
-    assert_eq!(json(&d)["runBsd"], "m-netbsd-001");
-    assert_eq!(
-        h.last_argv(),
-        [
-            "netbsd",
-            "-d",
-            // cpus unset, so no --cpus is emitted.
-            "--mem",
-            "512",
-            "--no-net",
-            "--version",
-            "10.1",
-            "--persist",
-            "--disk-size",
-            "8G",
-        ]
-    );
+    assert_eq!(json(&d)["runBsd"], "m-boot-001");
+    let cmd = h.last_command();
+    assert!(cmd.get("Netbsd").is_some(), "expected a netbsd command: {cmd}");
+    let a = &cmd["Netbsd"];
+    assert_eq!(a["version"], "10.1");
+    assert_eq!(a["vm"]["mem"], 512);
+    // cpus unset, so the engine's default applies rather than zero.
+    assert_eq!(a["vm"]["cpus"], 1);
+    assert_eq!(a["net"]["no_net"], true);
+    assert_eq!(a["run"]["persist"], true);
+    assert_eq!(a["run"]["detach"], true);
+    assert_eq!(a["disk_size"], "8G");
 }
 
 /// A unikernel has no disk and no agent, so its argv carries none of the
@@ -310,22 +287,14 @@ async fn run_unikraft_puts_the_path_last_and_omits_disk_flags() {
             }) }"#,
         )
         .await;
-    assert_eq!(json(&d)["runUnikraft"], "m-unikraft-001");
-    assert_eq!(
-        h.last_argv(),
-        [
-            "unikraft",
-            "-d",
-            "--cpus",
-            "2",
-            "--mem",
-            "256",
-            "--no-net",
-            "--cmdline",
-            "helloworld a b",
-            "~/hello",
-        ]
-    );
+    assert_eq!(json(&d)["runUnikraft"], "m-boot-001");
+    let a = &h.last_command()["Unikraft"];
+    assert_eq!(a["path"], "~/hello");
+    assert_eq!(a["vm"]["cpus"], 2);
+    assert_eq!(a["vm"]["mem"], 256);
+    assert_eq!(a["net"]["no_net"], true);
+    assert_eq!(a["cmdline"], "helloworld a b");
+    assert_eq!(a["detach"], true);
 }
 
 /// Volumes are the one disk-shaped option a unikernel does take: they are
@@ -340,17 +309,11 @@ async fn run_unikraft_passes_each_volume_as_its_own_mount() {
         }) }"#,
     )
     .await;
+    let a = &h.last_command()["Unikraft"];
+    // Each volume is its own mount rather than one joined string.
     assert_eq!(
-        h.last_argv(),
-        [
-            "unikraft",
-            "-d",
-            "--mount",
-            "~/data:/data",
-            "--mount",
-            "~/logs:/logs",
-            "~/hello",
-        ]
+        a["mount"],
+        serde_json::json!(["~/data:/data", "~/logs:/logs"])
     );
 }
 
@@ -367,21 +330,14 @@ async fn run_nanos_puts_the_image_last() {
             }) }"#,
         )
         .await;
-    assert_eq!(json(&d)["runNanos"], "m-nanos-001");
-    assert_eq!(
-        h.last_argv(),
-        [
-            "nanos",
-            "-d",
-            "--mem",
-            "512",
-            "--no-net",
-            "--cmdline",
-            "x=1",
-            "--persist",
-            "nanos-hello",
-        ]
-    );
+    assert_eq!(json(&d)["runNanos"], "m-boot-001");
+    let a = &h.last_command()["Nanos"];
+    assert_eq!(a["image"], "nanos-hello");
+    assert_eq!(a["vm"]["mem"], 512);
+    assert_eq!(a["net"]["no_net"], true);
+    assert_eq!(a["cmdline"], "x=1");
+    assert_eq!(a["persist"], true);
+    assert_eq!(a["detach"], true);
 }
 
 #[tokio::test]
@@ -398,17 +354,41 @@ async fn run_nanos_requires_an_image() {
 async fn run_unikraft_defaults_the_path_to_the_current_directory() {
     let h = Harness::new();
     h.query(r#"mutation { runUnikraft(input: {}) }"#).await;
-    assert_eq!(h.last_argv(), ["unikraft", "-d", "."]);
+    let a = &h.last_command()["Unikraft"];
+    assert_eq!(a["path"], ".");
+    assert_eq!(a["detach"], true);
 }
 
 #[tokio::test]
 async fn lifecycle_mutations_report_a_non_zero_exit_rather_than_failing() {
     let h = Harness::new();
+    // Its own machine: the shared fixtures are read by tests running alongside
+    // this one, and stopping kills a real process.
+    let id = common::machine_with_live_process("stopme000001");
     let d = h
-        .query(r#"mutation { stopMachine(id: "abc123") { exitCode stdout } }"#)
+        .query(&format!(
+            r#"mutation {{ stopMachine(id: "{id}") {{ exitCode stdout }} }}"#
+        ))
         .await;
+    // Stopping runs in-process now, so the result carries the engine's own
+    // message rather than a subprocess's stdout.
     assert_eq!(json(&d)["stopMachine"]["exitCode"], 0);
-    assert_eq!(h.last_argv(), ["stop", "abc123"]);
+    assert!(json(&d)["stopMachine"]["stdout"]
+        .as_str()
+        .unwrap()
+        .contains(&id));
+    assert!(h.invocations().is_empty());
+
+    // And a request that cannot be satisfied comes back as a non-zero exit
+    // rather than a transport failure.
+    let d = h
+        .query(r#"mutation { stopMachine(id: "no-such-machine") { exitCode stderr } }"#)
+        .await;
+    assert_eq!(json(&d)["stopMachine"]["exitCode"], 1);
+    assert!(!json(&d)["stopMachine"]["stderr"]
+        .as_str()
+        .unwrap()
+        .is_empty());
 }
 
 /// The distinction between "impossible request" and "it ran and failed" is
@@ -452,7 +432,10 @@ async fn shell_output_produced_before_subscribing_is_not_lost() {
     let session_id = json(&d)["openShell"]["id"].as_str().unwrap().to_string();
     assert_eq!(json(&d)["openShell"]["machineId"], "abc123");
     // openShell always allocates a terminal: it exists to back one.
-    assert_eq!(h.wait_argv("exec").await, ["exec", "-t", "abc123", "cat"]);
+    let a = h.wait_command("Exec").await["Exec"].clone();
+    assert_eq!(a["id"], "abc123");
+    assert_eq!(a["command"], serde_json::json!(["cat"]));
+    assert_eq!(a["tty"], true);
 
     // Let the stub write EXEC_OK *before* anyone is listening.
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
@@ -497,7 +480,7 @@ async fn open_shell_with_no_command_opens_the_machine_shell() {
     let h = Harness::new();
     h.query(r#"mutation { openShell(machineId: "abc123") { id } }"#)
         .await;
-    assert_eq!(h.wait_argv("shell").await, ["shell", "abc123"]);
+    assert_eq!(h.wait_command("Shell").await["Shell"]["id"], "abc123");
 }
 
 /// A BSD guest boots with no usable TERM, and `exec` gets no env injected by
@@ -509,10 +492,10 @@ async fn a_bsd_guest_gets_a_usable_term() {
     let h = Harness::new();
     h.query(r#"mutation { openShell(machineId: "bsd456789abc", command: ["cat"]) { id } }"#)
         .await;
-    assert_eq!(
-        h.wait_argv("exec").await,
-        ["exec", "-t", "-e", "TERM=xterm", "bsd456789abc", "cat"]
-    );
+    let a = h.wait_command("Exec").await["Exec"].clone();
+    assert_eq!(a["id"], "bsd456789abc");
+    assert_eq!(a["env"], serde_json::json!(["TERM=xterm"]));
+    assert_eq!(a["tty"], true);
 }
 
 /// Linux images set their own TERM, so nothing is injected for them.
@@ -521,7 +504,8 @@ async fn a_linux_guest_keeps_its_own_term() {
     let h = Harness::new();
     h.query(r#"mutation { openShell(machineId: "abc123", command: ["cat"]) { id } }"#)
         .await;
-    let argv = h.wait_argv("exec").await;
+    let argv = h.wait_command("Exec").await["Exec"]["env"].clone();
+    let argv: Vec<String> = serde_json::from_value(argv).unwrap();
     assert!(
         !argv.iter().any(|a| a.starts_with("TERM=")),
         "TERM was injected for a Linux guest: {argv:?}"
@@ -536,7 +520,8 @@ async fn an_explicit_term_wins() {
         r#"mutation { openShell(machineId: "bsd456789abc", command: ["cat"], env: ["TERM=screen"]) { id } }"#,
     )
     .await;
-    let argv = h.wait_argv("exec").await;
+    let argv = h.wait_command("Exec").await["Exec"]["env"].clone();
+    let argv: Vec<String> = serde_json::from_value(argv).unwrap();
     assert!(argv.contains(&"TERM=screen".to_string()), "{argv:?}");
     assert!(!argv.contains(&"TERM=xterm".to_string()), "{argv:?}");
 }
@@ -657,7 +642,7 @@ mod http {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        assert!(body_text(resp).await.contains("9.9.9-stub"));
+        assert!(body_text(resp).await.contains(bsdkrun_core::VERSION));
     }
 
     #[tokio::test]
@@ -723,25 +708,15 @@ async fn run_osv_puts_the_image_last_and_takes_the_disk_options() {
             }) }"#,
         )
         .await;
-    assert_eq!(json(&d)["runOsv"], "m-osv-001");
-    assert_eq!(
-        h.last_argv(),
-        [
-            "osv",
-            "-d",
-            "--mem",
-            "512",
-            "--no-net",
-            "--cmdline",
-            "/hello.so",
-            "--disk",
-            "d.raw",
-            "--gic",
-            "v3",
-            "--persist",
-            "loader.elf",
-        ]
-    );
+    assert_eq!(json(&d)["runOsv"], "m-boot-001");
+    let a = &h.last_command()["Osv"];
+    assert_eq!(a["image"], "loader.elf");
+    assert_eq!(a["vm"]["mem"], 512);
+    assert_eq!(a["cmdline"], "/hello.so");
+    assert_eq!(a["disk"], "d.raw");
+    assert_eq!(a["gic"], "V3");
+    assert_eq!(a["persist"], true);
+    assert_eq!(a["detach"], true);
 }
 
 /// Booting the kernel alone: no disk to attach, so the guest needs --nomount
@@ -755,19 +730,15 @@ async fn run_osv_forwards_no_disk_and_extra_disks() {
         }) }"#,
     )
     .await;
-    assert_eq!(
-        h.last_argv(),
-        [
-            "osv",
-            "-d",
-            "--no-disk",
-            "--attach-disk",
-            "a.raw",
-            "--attach-disk",
-            "b.raw:ro",
-            "loader.img",
-        ]
-    );
+    let a = &h.last_command()["Osv"];
+    assert_eq!(a["image"], "loader.img");
+    assert_eq!(a["no_disk"], true);
+    assert_eq!(a["attach_disk"][0]["path"], "a.raw");
+    assert_eq!(a["attach_disk"][0]["read_only"], false);
+    assert_eq!(a["attach_disk"][1]["path"], "b.raw");
+    assert_eq!(a["attach_disk"][1]["read_only"], true);
+    // An unset gic keeps the engine's default rather than becoming empty.
+    assert_eq!(a["gic"], "V2");
 }
 
 #[tokio::test]

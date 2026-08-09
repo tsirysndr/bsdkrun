@@ -34,6 +34,15 @@ fn valid_name(name: &str) -> bool {
 
 /// `bsdkrun network create <name>` — create a network + start its shared gvproxy.
 pub fn cmd_create(name: &str) -> Result<()> {
+    println!("{}", create(name)?);
+    Ok(())
+}
+
+/// Create a network and start its shared gvproxy switch, returning its name.
+///
+/// The result is returned rather than printed so the daemon can put it on its
+/// own transport instead of the daemon process's stdout.
+pub fn create(name: &str) -> Result<String> {
     if !valid_name(name) {
         anyhow::bail!("invalid network name {name:?} — use letters, digits, '-', '_' or '.'");
     }
@@ -59,31 +68,15 @@ pub fn cmd_create(name: &str) -> Result<()> {
         gateway = GATEWAY,
         "created network"
     );
-    println!("{name}");
-    Ok(())
+    Ok(name.to_string())
 }
 
 /// `bsdkrun network ls` — list networks + their running member count.
 #[allow(clippy::print_literal)]
 pub fn cmd_ls(json: bool) -> Result<()> {
-    let db = db::Db::open()?;
-    let nets = db.list_networks()?;
+    let nets = crate::api::list_networks()?;
     if json {
-        let mut out = Vec::new();
-        for n in &nets {
-            let members = db.network_members(&n.name).unwrap_or_default();
-            let running = members
-                .iter()
-                .filter(|(_, _, pid)| pid.map(db::pid_alive).unwrap_or(false))
-                .count();
-            out.push(serde_json::json!({
-                "name": n.name, "subnet": n.subnet, "gateway": n.gateway,
-                "members": members.len(), "running": running,
-                "up": n.pid.map(db::pid_alive).unwrap_or(false),
-                "created_at": n.created_at,
-            }));
-        }
-        println!("{}", serde_json::to_string(&out)?);
+        println!("{}", serde_json::to_string(&nets)?);
         return Ok(());
     }
     println!(
@@ -91,24 +84,10 @@ pub fn cmd_ls(json: bool) -> Result<()> {
         "NAME", "SUBNET", "GATEWAY", "STATUS"
     );
     for n in &nets {
-        let members = db.network_members(&n.name).unwrap_or_default();
-        let running = members
-            .iter()
-            .filter(|(_, _, pid)| pid.map(db::pid_alive).unwrap_or(false))
-            .count();
-        let status = if n.pid.map(db::pid_alive).unwrap_or(false) {
-            "up"
-        } else {
-            "down"
-        };
+        let status = if n.up { "up" } else { "down" };
         println!(
             "{:<18}  {:<20}  {:<9}  {:<7}  {} running / {} total",
-            n.name,
-            n.subnet,
-            n.gateway,
-            status,
-            running,
-            members.len()
+            n.name, n.subnet, n.gateway, status, n.running, n.members
         );
     }
     Ok(())
@@ -117,34 +96,15 @@ pub fn cmd_ls(json: bool) -> Result<()> {
 /// `bsdkrun network rm <name>…` — stop a network's gvproxy + delete it. Refuses a
 /// network with running members unless `force`.
 pub fn cmd_rm(names: &[String], force: bool) -> Result<()> {
-    let db = db::Db::open()?;
     let mut failed = false;
     for name in names {
-        let Some(net_row) = db.find_network(name)? else {
-            eprintln!("Error: no such network: {name}");
-            failed = true;
-            continue;
-        };
-        let running = db
-            .network_members(name)?
-            .into_iter()
-            .filter(|(_, _, pid)| pid.map(db::pid_alive).unwrap_or(false))
-            .count();
-        if running > 0 && !force {
-            eprintln!(
-                "Error: network {name:?} has {running} running member(s) — stop them or use -f"
-            );
-            failed = true;
-            continue;
-        }
-        if let Some(pid) = net_row.pid {
-            if db::pid_alive(pid) {
-                unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        match remove(name, force) {
+            Ok(msg) => println!("{msg}"),
+            Err(e) => {
+                eprintln!("Error: {e}");
+                failed = true;
             }
         }
-        crate::host::remove_dir_all_detached(&PathBuf::from(&net_row.dir));
-        db.remove_network(name).ok();
-        println!("{name}");
     }
     if failed {
         std::process::exit(1);
@@ -152,11 +112,43 @@ pub fn cmd_rm(names: &[String], force: bool) -> Result<()> {
     Ok(())
 }
 
+/// Stop a network's gvproxy and delete it. Refuses one with running members
+/// unless `force`.
+pub fn remove(name: &str, force: bool) -> Result<String> {
+    let db = db::Db::open()?;
+    let Some(net_row) = db.find_network(name)? else {
+        anyhow::bail!("no such network: {name}");
+    };
+    let running = db
+        .network_members(name)?
+        .into_iter()
+        .filter(|(_, _, pid)| pid.map(db::pid_alive).unwrap_or(false))
+        .count();
+    if running > 0 && !force {
+        anyhow::bail!("network {name:?} has {running} running member(s) — stop them or use -f");
+    }
+    if let Some(pid) = net_row.pid {
+        if db::pid_alive(pid) {
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        }
+    }
+    crate::host::remove_dir_all_detached(&PathBuf::from(&net_row.dir));
+    db.remove_network(name).ok();
+    Ok(name.to_string())
+}
+
 /// `bsdkrun network connect <machine> <network>` — join/switch a machine to a
 /// network. Records membership + clears any prior IP; takes effect on the next
 /// `start` (libkrun fixes a VM's devices at boot, so a running machine can't
 /// hot-swap its NIC).
 pub fn cmd_connect(machine: &str, network: &str) -> Result<()> {
+    println!("{}", connect(machine, network)?);
+    Ok(())
+}
+
+/// Join a machine to a network. Applies on the machine's next start, which the
+/// returned message says when it is already running.
+pub fn connect(machine: &str, network: &str) -> Result<String> {
     let db = db::Db::open()?;
     let vm = db.find_machine(machine)?;
     if db.find_network(network)?.is_none() {
@@ -167,14 +159,13 @@ pub fn cmd_connect(machine: &str, network: &str) -> Result<()> {
     db.update_machine_network(&vm.id, Some(network))?;
     let running = vm.status == "running" && vm.pid.map(db::pid_alive).unwrap_or(false);
     info!(machine = %vm.id, network, "connected machine to network");
-    println!("{}", vm.id);
     if running {
-        println!(
-            "restart the machine (`bsdkrun start {}`) to join {network}",
-            vm.id
-        );
+        return Ok(format!(
+            "{}\nrestart the machine (`bsdkrun start {}`) to join {network}",
+            vm.id, vm.id
+        ));
     }
-    Ok(())
+    Ok(vm.id)
 }
 
 /// Push a managed `/etc/hosts` block (every member's name → IP) to each running
@@ -239,31 +230,41 @@ pub fn sync_hosts(network: &str) -> Result<()> {
 /// `bsdkrun network sync <network>` — refresh every running member's `/etc/hosts`
 /// with the current membership (fixes name resolution without restarting them).
 pub fn cmd_sync(network: &str) -> Result<()> {
+    println!("{}", sync(network)?);
+    Ok(())
+}
+
+/// Rewrite a network's hosts file from its current membership.
+pub fn sync(network: &str) -> Result<String> {
     let db = db::Db::open()?;
     if db.find_network(network)?.is_none() {
         anyhow::bail!("no such network: {network}");
     }
     sync_hosts(network)?;
-    println!("{network}");
-    Ok(())
+    Ok(network.to_string())
 }
 
 /// `bsdkrun network disconnect <machine>` — detach a machine back to the default
 /// isolated stack. Takes effect on the next `start`.
 pub fn cmd_disconnect(machine: &str) -> Result<()> {
+    println!("{}", disconnect(machine)?);
+    Ok(())
+}
+
+/// Remove a machine from its network; applies on its next start.
+pub fn disconnect(machine: &str) -> Result<String> {
     let db = db::Db::open()?;
     let vm = db.find_machine(machine)?;
     db.update_machine_network(&vm.id, None)?;
     let running = vm.status == "running" && vm.pid.map(db::pid_alive).unwrap_or(false);
     info!(machine = %vm.id, "disconnected machine from its network");
-    println!("{}", vm.id);
     if running {
-        println!(
-            "restart the machine (`bsdkrun start {}`) to leave the network",
-            vm.id
-        );
+        return Ok(format!(
+            "{}\nrestart the machine (`bsdkrun start {}`) to leave the network",
+            vm.id, vm.id
+        ));
     }
-    Ok(())
+    Ok(vm.id)
 }
 
 /// Spawn a detached, long-lived gvproxy for a network: a control socket that

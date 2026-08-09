@@ -1,98 +1,38 @@
-//! Transport-agnostic operations: the CLI's surface expressed as plain Rust.
+//! Transport-agnostic operations: the engine's surface, as this daemon uses it.
 //!
 //! Both front ends — gRPC ([`crate::service`]) and GraphQL ([`crate::graphql`])
-//! — go through here rather than building command lines themselves. That
-//! matters because argv construction is where this daemon is most likely to be
-//! wrong: a misplaced flag is invisible until it reaches a real machine, and
-//! three of the bugs found while building the gRPC side lived exactly here.
-//! Duplicating it per transport would double that risk and let the two drift.
+//! — go through here rather than talking to `bsdkrun-core` themselves, so the
+//! two can't drift and each maps only its own wire types.
 //!
-//! Nothing in this module knows about protobuf, GraphQL or HTTP. Domain types
-//! deserialize straight from the CLI's `--json` output; each front end maps
-//! them into its own wire types.
+//! This module used to build *command lines*. Its own header said argv
+//! construction was where the daemon was most likely to be wrong, and that
+//! three of the bugs found while building the gRPC side lived exactly here.
+//! There is no argv any more: reads and mutations call the engine in-process,
+//! and the operations that need their own process ([`crate::supervisor`]) hand
+//! it a typed [`bsdkrun_core::cli::Command`] rather than a string of flags.
+//!
+//! Nothing here knows about protobuf, GraphQL or HTTP.
 
-use serde::Deserialize;
+use bsdkrun_core::api;
+use bsdkrun_core::cli::{
+    BsdArgs, Command as CoreCommand, ExecArgs, FetchArgs, FlavorAddArgs, FlavorArgs,
+    FlavorCmd, FlavorPrebuildArgs, FlavorRunArgs, IdArgs, LinuxArgs, LogsArgs, NanosArgs,
+    NetConfig, OsvArgs, RunConfig, SshArgs, SystemdArgs, TailscaleArgs, UnikraftArgs, VmConfig,
+};
+use bsdkrun_core::net::PortForward;
 
-use crate::cli::Cli;
 use crate::pb::CommandResult;
+use crate::supervisor::Supervisor;
 
-// ---------------------------------------------------------------------------
-// argv building
-// ---------------------------------------------------------------------------
-
-/// A small builder so each operation reads as the command line it produces.
-///
-/// Flags are always emitted *before* positionals. clap accepts them
-/// interspersed, but several subcommands take `trailing_var_arg` /
-/// `last = true` arguments that swallow everything after the positional, so
-/// keeping flags in front is the only ordering that is correct everywhere.
-#[derive(Default)]
-pub struct Argv(Vec<String>);
-
-impl Argv {
-    pub fn new(parts: &[&str]) -> Self {
-        Self(parts.iter().map(|s| s.to_string()).collect())
-    }
-
-    pub fn arg(&mut self, v: impl Into<String>) -> &mut Self {
-        self.0.push(v.into());
-        self
-    }
-
-    pub fn args<I: IntoIterator<Item = S>, S: Into<String>>(&mut self, vs: I) -> &mut Self {
-        self.0.extend(vs.into_iter().map(Into::into));
-        self
-    }
-
-    pub fn flag(&mut self, name: &str, on: bool) -> &mut Self {
-        if on {
-            self.0.push(name.to_string());
-        }
-        self
-    }
-
-    pub fn opt<T: ToString>(&mut self, name: &str, v: &Option<T>) -> &mut Self {
-        if let Some(v) = v {
-            self.0.push(name.to_string());
-            self.0.push(v.to_string());
-        }
-        self
-    }
-
-    /// A repeatable `--flag VALUE` option.
-    pub fn each(&mut self, name: &str, vs: &[String]) -> &mut Self {
-        for v in vs {
-            self.0.push(name.to_string());
-            self.0.push(v.clone());
-        }
-        self
-    }
-
-    /// vCPU / memory sizing. `None` leaves the flag off so the CLI applies its
-    /// own default rather than this daemon pinning one.
-    pub fn vm(&mut self, cpus: Option<u32>, mem: Option<u32>) -> &mut Self {
-        self.opt("--cpus", &cpus.filter(|c| *c > 0))
-            .opt("--mem", &mem.filter(|m| *m > 0))
-    }
-
-    pub fn net(&mut self, net: &NetOpts) -> &mut Self {
-        self.flag("--no-net", net.no_net)
-            .each("--port", &net.ports)
-            .opt("--mac", &net.mac)
-            .opt("--network", &net.network)
-            .opt("--name", &net.name)
-    }
-
-    pub fn take(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.0)
-    }
-}
+/// The domain types are the engine's own — the shapes it already used for
+/// `--json` — so nothing is re-declared or re-parsed here.
+pub use bsdkrun_core::api::{Flavor, Image, Machine, Network, Version, Volume};
 
 // ---------------------------------------------------------------------------
 // option structs
 // ---------------------------------------------------------------------------
 
-/// The guest OSes with a dedicated CLI subcommand.
+/// The guest OSes with a dedicated subcommand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BsdOs {
     Freebsd,
@@ -106,6 +46,13 @@ impl BsdOs {
             BsdOs::Netbsd => "netbsd",
         }
     }
+
+    fn fetch_os(self) -> bsdkrun_core::fetch::Os {
+        match self {
+            BsdOs::Freebsd => bsdkrun_core::fetch::Os::Freebsd,
+            BsdOs::Netbsd => bsdkrun_core::fetch::Os::Netbsd,
+        }
+    }
 }
 
 /// User-mode networking, shared by every boot operation.
@@ -117,6 +64,30 @@ pub struct NetOpts {
     pub mac: Option<String>,
     pub network: Option<String>,
     pub name: Option<String>,
+}
+
+impl NetOpts {
+    /// A malformed forward is dropped rather than failing the boot: the same
+    /// leniency the wire had when these were passed through as strings.
+    fn to_config(&self) -> NetConfig {
+        NetConfig {
+            no_net: self.no_net,
+            ports: self.ports.iter().filter_map(|p| p.parse().ok()).collect(),
+            mac: self.mac.clone(),
+            network: self.network.clone(),
+            name: self.name.clone(),
+        }
+    }
+}
+
+/// vCPU / memory, where 0 or absent means "whatever the engine defaults to"
+/// rather than this daemon pinning a number of its own.
+fn vm_config(cpus: Option<u32>, mem: Option<u32>) -> VmConfig {
+    let d = VmConfig::default();
+    VmConfig {
+        cpus: cpus.filter(|c| *c > 0).map_or(d.cpus, |c| c.min(255) as u8),
+        mem: mem.filter(|m| *m > 0).unwrap_or(d.mem),
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -138,26 +109,30 @@ pub struct RunLinuxOpts {
 }
 
 impl RunLinuxOpts {
-    /// `-d` is unconditional: the daemon outlives any single request, so a
+    /// `detach` is unconditional: the daemon outlives any single request, so a
     /// foreground VM would have nowhere to live.
-    pub fn to_argv(&self) -> Vec<String> {
-        let mut argv = Argv::new(&["linux", "-d"]);
-        argv.vm(self.cpus, self.mem)
-            .net(&self.net)
-            .opt("-v", &self.volume)
-            .each("--mount", &self.mounts)
-            .each("-e", &self.env)
-            .opt("--entrypoint", &self.entrypoint)
-            .flag("--initramfs", self.initramfs)
-            .opt("--kernel", &self.kernel)
-            .opt("--kernel-version", &self.kernel_version)
-            .opt("--console", &self.console)
-            .opt("--repo", &self.repo)
-            .arg(self.image.clone());
-        if !self.command.is_empty() {
-            argv.arg("--").args(self.command.clone());
-        }
-        argv.take()
+    ///
+    /// Every field the caller did not set comes from `LinuxArgs::default()`,
+    /// which restates clap's own defaults — so a machine booted through the
+    /// daemon is configured exactly as `bsdkrun linux` would configure it.
+    pub fn to_command(&self) -> CoreCommand {
+        let d = LinuxArgs::default();
+        CoreCommand::Linux(LinuxArgs {
+            image: self.image.clone(),
+            kernel: self.kernel.as_ref().map(Into::into),
+            kernel_version: self.kernel_version.clone().unwrap_or(d.kernel_version),
+            detach: true,
+            initramfs: self.initramfs,
+            volume: self.volume.clone(),
+            mounts: self.mounts.clone(),
+            entrypoint: self.entrypoint.clone(),
+            env: self.env.clone(),
+            console: self.console.clone().unwrap_or(d.console),
+            net: self.net.to_config(),
+            vm: vm_config(self.cpus, self.mem),
+            repo: self.repo.clone(),
+            command: self.command.clone(),
+        })
     }
 }
 
@@ -179,22 +154,32 @@ pub struct RunBsdOpts {
 }
 
 impl RunBsdOpts {
-    pub fn to_argv(&self) -> Vec<String> {
-        let mut argv = Argv::new(&[self.os.as_str(), "-d"]);
-        argv.vm(self.cpus, self.mem)
-            .net(&self.net)
-            .opt("--version", &self.version)
-            .opt("-v", &self.volume)
-            .flag("--persist", self.persist)
-            .flag("-f", self.force)
-            .opt("--firmware", &self.firmware)
-            .each("--attach-disk", &self.attach_disk)
-            .opt("--disk-size", &self.disk_size)
-            .opt("--repo", &self.repo);
-        if !self.command.is_empty() {
-            argv.arg("--").args(self.command.clone());
+    pub fn to_command(&self) -> CoreCommand {
+        let args = BsdArgs {
+            version: self.version.clone(),
+            firmware: self.firmware.as_ref().map(Into::into),
+            force: self.force,
+            attach_disk: self
+                .attach_disk
+                .iter()
+                .filter_map(|d| d.parse().ok())
+                .collect(),
+            run: RunConfig {
+                detach: true,
+                persist: self.persist,
+                volume: self.volume.clone(),
+            },
+            net: self.net.to_config(),
+            vm: vm_config(self.cpus, self.mem),
+            disk_size: self.disk_size.clone(),
+            verbose: false,
+            repo: self.repo.clone(),
+            command: self.command.clone(),
+        };
+        match self.os {
+            BsdOs::Freebsd => CoreCommand::Freebsd(args),
+            BsdOs::Netbsd => CoreCommand::Netbsd(args),
         }
-        argv.take()
     }
 }
 
@@ -211,18 +196,20 @@ pub struct RunNanosOpts {
 }
 
 impl RunNanosOpts {
-    pub fn to_argv(&self) -> Vec<String> {
-        // Like unikraft: no -v/--repo/command — a unikernel has no agent to
-        // run anything through. Nanos does have a root disk, so --persist
+    pub fn to_command(&self) -> CoreCommand {
+        // Like unikraft: no volume/repo/command — a unikernel has no agent to
+        // run anything through. Nanos does have a root disk, so `persist`
         // (in-place boot) is the one disk option it takes.
-        Argv::new(&["nanos", "-d"])
-            .vm(self.cpus, self.mem)
-            .net(&self.net)
-            .opt("--kernel", &self.kernel)
-            .opt("--cmdline", &self.cmdline)
-            .flag("--persist", self.persist)
-            .arg(self.image.clone())
-            .take()
+        CoreCommand::Nanos(NanosArgs {
+            image: self.image.clone(),
+            kernel: self.kernel.as_ref().map(Into::into),
+            cmdline: self.cmdline.clone().unwrap_or_default(),
+            firmware: None,
+            detach: true,
+            persist: self.persist,
+            net: self.net.to_config(),
+            vm: vm_config(self.cpus, self.mem),
+        })
     }
 }
 
@@ -240,18 +227,20 @@ pub struct RunUnikraftOpts {
 }
 
 impl RunUnikraftOpts {
-    pub fn to_argv(&self) -> Vec<String> {
-        // No -v/--persist/--repo/command: a unikernel has no disk to persist
-        // and no agent to run anything through. `--mount` is the exception —
-        // it shares a host directory over virtio-fs, which needs neither.
-        Argv::new(&["unikraft", "-d"])
-            .vm(self.cpus, self.mem)
-            .net(&self.net)
-            .opt("--cmdline", &self.cmdline)
-            .opt("--initramfs", &self.initramfs)
-            .each("--mount", &self.mounts)
-            .arg(self.path.clone().unwrap_or_else(|| ".".into()))
-            .take()
+    pub fn to_command(&self) -> CoreCommand {
+        // No volume/persist/repo/command: a unikernel has no disk to persist
+        // and no agent to run anything through. `mount` is the exception — it
+        // shares a host directory over virtio-fs, which needs neither.
+        let d = UnikraftArgs::default();
+        CoreCommand::Unikraft(UnikraftArgs {
+            path: self.path.as_ref().map_or(d.path, Into::into),
+            cmdline: self.cmdline.clone().unwrap_or_default(),
+            initramfs: self.initramfs.as_ref().map(Into::into),
+            mount: self.mounts.clone(),
+            detach: true,
+            net: self.net.to_config(),
+            vm: vm_config(self.cpus, self.mem),
+        })
     }
 }
 
@@ -269,28 +258,37 @@ pub struct RunOsvOpts {
     pub disk: Option<String>,
     pub no_disk: bool,
     pub attach_disk: Vec<String>,
-    /// "v2" or "v3"; None lets the CLI default it (v2).
+    /// "v2" or "v3"; None takes the engine's default (v2).
     pub gic: Option<String>,
     pub persist: bool,
     pub volume: Option<String>,
 }
 
 impl RunOsvOpts {
-    pub fn to_argv(&self) -> Vec<String> {
-        // No --repo/command: a unikernel has no agent to run anything through.
-        // Everything disk-shaped does apply, unlike unikraft.
-        Argv::new(&["osv", "-d"])
-            .vm(self.cpus, self.mem)
-            .net(&self.net)
-            .opt("--cmdline", &self.cmdline)
-            .opt("--disk", &self.disk)
-            .flag("--no-disk", self.no_disk)
-            .each("--attach-disk", &self.attach_disk)
-            .opt("--gic", &self.gic)
-            .flag("--persist", self.persist)
-            .opt("-v", &self.volume)
-            .arg(self.image.clone())
-            .take()
+    pub fn to_command(&self) -> CoreCommand {
+        use bsdkrun_core::osv::Gic;
+        CoreCommand::Osv(OsvArgs {
+            image: self.image.clone().into(),
+            cmdline: self.cmdline.clone().unwrap_or_default(),
+            disk: self.disk.as_ref().map(Into::into),
+            no_disk: self.no_disk,
+            attach_disk: self
+                .attach_disk
+                .iter()
+                .filter_map(|d| d.parse().ok())
+                .collect(),
+            // Anything but an explicit "v3" keeps the default, which is what an
+            // unset field meant when this was a command line.
+            gic: match self.gic.as_deref() {
+                Some("v3") => Gic::V3,
+                _ => Gic::default(),
+            },
+            persist: self.persist,
+            volume: self.volume.clone(),
+            detach: true,
+            net: self.net.to_config(),
+            vm: vm_config(self.cpus, self.mem),
+        })
     }
 }
 
@@ -305,14 +303,21 @@ pub struct RunFlavorOpts {
 }
 
 impl RunFlavorOpts {
-    pub fn to_argv(&self) -> Vec<String> {
-        Argv::new(&["flavor", "run", "-d"])
-            .vm(self.cpus, self.mem)
-            .each("--port", &self.ports)
-            .opt("-v", &self.volume)
-            .opt("--repo", &self.repo)
-            .arg(self.name.clone())
-            .take()
+    pub fn to_command(&self) -> CoreCommand {
+        CoreCommand::Flavor(FlavorArgs {
+            cmd: FlavorCmd::Run(FlavorRunArgs {
+                name: self.name.clone(),
+                detach: true,
+                vm: vm_config(self.cpus, self.mem),
+                ports: self
+                    .ports
+                    .iter()
+                    .filter_map(|p| p.parse::<PortForward>().ok())
+                    .collect(),
+                volume: self.volume.clone(),
+                repo: self.repo.clone(),
+            }),
+        })
     }
 }
 
@@ -329,45 +334,28 @@ pub struct AddFlavorOpts {
 }
 
 impl AddFlavorOpts {
-    pub fn to_argv(&self) -> Vec<String> {
-        let mut argv = Argv::new(&["flavor", "add"]);
-        argv.arg("--base").arg(self.base.clone());
-        if !self.category.is_empty() {
-            argv.arg("--category").arg(self.category.clone());
+    fn to_args(&self) -> FlavorAddArgs {
+        let d = FlavorAddArgs::default();
+        FlavorAddArgs {
+            name: self.name.clone(),
+            base: self.base.clone(),
+            category: if self.category.is_empty() {
+                d.category
+            } else {
+                self.category.clone()
+            },
+            description: self.description.clone(),
+            ports: self.ports.clone(),
+            env: self.env.clone(),
+            nix: self.nix.clone(),
+            provision: self.provision.clone(),
         }
-        if !self.description.is_empty() {
-            argv.arg("--description").arg(self.description.clone());
-        }
-        argv.each("--port", &self.ports)
-            .each("--env", &self.env)
-            .each("--nix", &self.nix)
-            .each("--provision", &self.provision)
-            .arg(self.name.clone());
-        argv.take()
     }
 }
 
-/// Whether a guest kind is a BSD rather than Linux.
-///
-/// Mirrors the CLI's own rule: anything that is not `linux` is a BSD guest.
-/// The boot-mode kinds (`firmware`, `kernel`) are BSD too.
-pub fn is_bsd(kind: &str) -> bool {
-    kind != "linux"
-}
-
-/// `TERM` for an interactive session on a guest of this kind.
-///
-/// FreeBSD and NetBSD guests boot with no `TERM` on the agent's pty, which
-/// leaves the shell in `dumb` mode — no line editing, no colour, no key
-/// sequences. `xterm` is in both guests' terminfo. Linux images set their own,
-/// so they are left alone.
-///
-/// The CLI injects this for `shell`, but an explicit `exec` runs verbatim with
-/// no injected env by design — so anything driving `exec` for an interactive
-/// terminal has to supply it, as the desktop app does locally.
-pub fn interactive_term(kind: &str) -> Option<String> {
-    is_bsd(kind).then(|| "TERM=xterm".to_string())
-}
+/// Whether a guest kind is a BSD rather than Linux, and the `TERM` such a
+/// guest needs for an interactive session. Both are the engine's own rules.
+pub use bsdkrun_core::api::{interactive_term, is_bsd};
 
 /// An `exec` invocation. An empty `command` means "open this machine's shell",
 /// which only makes sense on a terminal and therefore implies a tty.
@@ -380,18 +368,25 @@ pub struct ExecOpts {
 }
 
 impl ExecOpts {
-    /// Returns the argv and whether a terminal is required.
-    pub fn to_argv(&self) -> (Vec<String>, bool) {
+    /// Returns the command and whether a terminal is required.
+    pub fn to_command(&self) -> (CoreCommand, bool) {
         if self.command.is_empty() {
-            (Argv::new(&["shell"]).arg(self.id.clone()).take(), true)
+            (
+                CoreCommand::Shell(IdArgs {
+                    id: self.id.clone(),
+                }),
+                true,
+            )
         } else {
-            let argv = Argv::new(&["exec"])
-                .flag("-t", self.tty)
-                .each("-e", &self.env)
-                .arg(self.id.clone())
-                .args(self.command.clone())
-                .take();
-            (argv, self.tty)
+            (
+                CoreCommand::Exec(ExecArgs {
+                    tty: self.tty,
+                    env: self.env.clone(),
+                    id: self.id.clone(),
+                    command: self.command.clone(),
+                }),
+                self.tty,
+            )
         }
     }
 }
@@ -416,135 +411,27 @@ impl GuestTool {
 }
 
 // ---------------------------------------------------------------------------
-// domain types — the shapes the CLI's `--json` subcommands emit
+// results
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Machine {
-    pub id: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    pub image: String,
-    pub kind: String,
-    pub command: String,
-    pub status: String,
-    pub running: bool,
-    pub exit_code: Option<i64>,
-    pub pid: Option<i64>,
-    pub detached: bool,
-    pub cpus: Option<i64>,
-    pub mem: Option<i64>,
-    pub volume: Option<String>,
-    pub state_dir: Option<String>,
-    pub created_at: Option<String>,
-    pub finished_at: Option<String>,
-    #[serde(default)]
-    pub network: Option<String>,
-    #[serde(default)]
-    pub net_ip: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Image {
-    pub id: String,
-    pub reference: String,
-    pub digest: Option<String>,
-    pub size: i64,
-    pub rootfs: Option<String>,
-    pub created_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Volume {
-    pub name: String,
-    pub guest: Option<String>,
-    pub base: Option<String>,
-    pub path: Option<String>,
-    /// Human-readable ("2.3 GiB"). The CLI reports volume size as text, and
-    /// writes "-" when it cannot be measured — normalised away by [`Ops`].
-    pub size: Option<String>,
-    pub created_at: Option<String>,
-    pub tracked: bool,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Network {
-    pub name: String,
-    pub subnet: String,
-    pub gateway: String,
-    pub members: i64,
-    pub running: i64,
-    pub up: bool,
-    pub created_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Flavor {
-    pub name: String,
-    /// "catalog" | "user" | "snapshot".
-    pub source: String,
-    /// "linux" | "freebsd" | "netbsd".
-    pub kind: String,
-    pub base: String,
-    pub category: String,
-    #[serde(default)]
-    pub method: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub ports: Vec<String>,
-    #[serde(default)]
-    pub nix: Vec<String>,
-    #[serde(default)]
-    pub created_at: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Version {
-    pub version: String,
-    pub latest: bool,
-}
 
 #[derive(Debug, Clone)]
 pub struct Info {
     pub daemon_version: String,
-    pub cli_version: String,
-    pub cli_path: String,
+    /// The engine this daemon links. There is no second binary to disagree with
+    /// it, which is the point of the field.
+    pub engine_version: String,
+    pub exe_path: String,
     pub os: String,
     pub arch: String,
 }
-
-/// Parse `versions --os <os>`, which prints indented `  <ver>  (latest)` rows.
-/// NetBSD's recommended build is the literal `current` rather than a number.
-pub fn parse_versions(out: &str) -> Vec<Version> {
-    let mut v = Vec::new();
-    for line in out.lines() {
-        let t = line.trim();
-        let first = t.split_whitespace().next().unwrap_or("");
-        let is_version = first.chars().next().is_some_and(|c| c.is_ascii_digit());
-        let is_current = first == "current";
-        if !is_version && !is_current {
-            continue;
-        }
-        v.push(Version {
-            version: first.to_string(),
-            latest: t.contains("(latest)") || is_current,
-        });
-    }
-    v
-}
-
-// ---------------------------------------------------------------------------
-// Ops
-// ---------------------------------------------------------------------------
 
 /// An error from an operation, kept transport-neutral so each front end can
 /// render it in its own idiom (a gRPC `Status`, a GraphQL error).
 #[derive(Debug)]
 pub enum OpError {
-    /// The caller asked for something impossible; no command was run.
+    /// The caller asked for something impossible; nothing was run.
     InvalidArgument(String),
-    /// The command ran and failed, or could not be run at all.
+    /// The operation ran and failed, or could not be run at all.
     Failed(String),
 }
 
@@ -589,29 +476,88 @@ fn require_non_empty(what: &str, items: &[String]) -> OpResult<()> {
     Ok(())
 }
 
+/// Run a blocking engine call on a thread with no tokio runtime attached.
+///
+/// Not `spawn_blocking`: a blocking-pool thread still carries the runtime
+/// context, and the engine's database handle builds a runtime of its own and
+/// `block_on`s it — which panics with "Cannot start a runtime from within a
+/// runtime" the moment any context is present. A plain OS thread has none, so
+/// the engine behaves exactly as it does under the CLI.
+async fn blocking<T, F>(what: &'static str, f: F) -> OpResult<T>
+where
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name(format!("bsdkrun-{what}").replace(' ', "-"))
+        .spawn(move || {
+            let _ = tx.send(f());
+        })
+        .map_err(|e| OpError::Failed(format!("starting a thread for {what}: {e}")))?;
+    match rx.await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(OpError::Failed(format!("{e:#}"))),
+        // The sender is only dropped without a value if the thread panicked.
+        Err(_) => Err(OpError::Failed(format!("{what} panicked"))),
+    }
+}
+
+/// A mutation's outcome as the wire's `CommandResult`.
+///
+/// There is no subprocess to have written anything any more, so the message the
+/// engine returns — the same line the CLI prints — becomes stdout, and a
+/// failure becomes a non-zero exit with the error chain on stderr. Clients that
+/// display `stdout` keep working unchanged.
+fn as_result(outcome: OpResult<String>) -> OpResult<CommandResult> {
+    match outcome {
+        Ok(stdout) => Ok(CommandResult {
+            exit_code: 0,
+            stdout: if stdout.ends_with('\n') {
+                stdout
+            } else {
+                format!("{stdout}\n")
+            },
+            stderr: String::new(),
+        }),
+        // An invalid argument is the caller's mistake and stays an error; a
+        // failure *while running* is reported like a non-zero exit was, since
+        // several callers treat that as a state to display rather than a fault.
+        Err(OpError::InvalidArgument(m)) => Err(OpError::InvalidArgument(m)),
+        Err(OpError::Failed(m)) => Ok(CommandResult {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: format!("{m}\n"),
+        }),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ops
+// ---------------------------------------------------------------------------
+
 /// Every operation the daemon exposes, independent of how it was requested.
 #[derive(Clone, Debug)]
 pub struct Ops {
-    cli: Cli,
+    supervisor: Supervisor,
 }
 
 impl Ops {
-    pub fn new(cli: Cli) -> Self {
-        Self { cli }
+    pub fn new(supervisor: Supervisor) -> Self {
+        Self { supervisor }
     }
 
-    pub fn cli(&self) -> &Cli {
-        &self.cli
+    pub fn supervisor(&self) -> &Supervisor {
+        &self.supervisor
     }
 
     // -- daemon --------------------------------------------------------------
 
     pub async fn info(&self) -> OpResult<Info> {
-        let res = self.cli.output(&["--version".to_string()]).await?;
         Ok(Info {
             daemon_version: env!("CARGO_PKG_VERSION").to_string(),
-            cli_version: res.stdout.trim().to_string(),
-            cli_path: self.cli.bin().display().to_string(),
+            engine_version: bsdkrun_core::VERSION.to_string(),
+            exe_path: self.supervisor.exe().display().to_string(),
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
         })
@@ -620,31 +566,39 @@ impl Ops {
     // -- machines ------------------------------------------------------------
 
     pub async fn list_machines(&self, all: bool) -> OpResult<Vec<Machine>> {
-        let argv = Argv::new(&["ps"]).flag("-a", all).arg("--json").take();
-        Ok(self.cli.json(&argv).await?)
+        blocking("listing machines", move || api::list_machines(all)).await
     }
 
+    /// Start a stopped machine. Booting, so it goes through a supervisor
+    /// process; the returned id is the machine's own, unchanged.
     pub async fn start(&self, id: &str) -> OpResult<CommandResult> {
-        Ok(self
-            .cli
-            .output(&Argv::new(&["start"]).arg(id).take())
-            .await?)
+        let cmd = CoreCommand::Start(IdArgs { id: id.to_string() });
+        as_result(
+            self.supervisor
+                .detached(&cmd)
+                .await
+                .map_err(OpError::from),
+        )
     }
 
     pub async fn stop(&self, id: &str) -> OpResult<CommandResult> {
-        Ok(self
-            .cli
-            .output(&Argv::new(&["stop"]).arg(id).take())
-            .await?)
+        let id = id.to_string();
+        as_result(blocking("stopping a machine", move || api::stop(&id)).await)
     }
 
     pub async fn remove_machines(&self, ids: &[String], force: bool) -> OpResult<CommandResult> {
         require_non_empty("ids", ids)?;
-        let argv = Argv::new(&["rm"])
-            .flag("-f", force)
-            .args(ids.to_vec())
-            .take();
-        Ok(self.cli.output(&argv).await?)
+        let ids = ids.to_vec();
+        as_result(
+            blocking("removing machines", move || {
+                let mut removed = Vec::new();
+                for id in &ids {
+                    removed.push(api::remove_machine(id, force)?);
+                }
+                Ok(removed.join("\n"))
+            })
+            .await,
+        )
     }
 
     pub async fn update_machine(
@@ -653,148 +607,132 @@ impl Ops {
         cpus: Option<u32>,
         mem: Option<u32>,
     ) -> OpResult<CommandResult> {
-        let argv = Argv::new(&["update"])
-            .opt("--cpus", &cpus)
-            .opt("--mem", &mem)
-            .arg(id)
-            .take();
-        Ok(self.cli.output(&argv).await?)
+        let id = id.to_string();
+        let cpus = cpus.map(|c| c.min(255) as u8);
+        as_result(blocking("updating a machine", move || api::update(&id, cpus, mem)).await)
     }
 
     pub async fn commit(&self, id: &str, name: &str, description: &str) -> OpResult<CommandResult> {
-        let argv = Argv::new(&["commit"])
-            .arg("-d")
-            .arg(description)
-            .arg(id)
-            .arg(name)
-            .take();
-        Ok(self.cli.output(&argv).await?)
+        let (id, name, description) = (id.to_string(), name.to_string(), description.to_string());
+        as_result(
+            blocking("committing a machine", move || {
+                api::commit(&id, &name, &description)
+            })
+            .await,
+        )
     }
 
     // -- booting -------------------------------------------------------------
+    //
+    // Each of these returns the new machine's id. They run in a supervisor
+    // process because a detached boot forks and the child becomes the VM — see
+    // [`crate::supervisor`].
 
     pub async fn run_linux(&self, opts: &RunLinuxOpts) -> OpResult<String> {
         if opts.image.trim().is_empty() {
             return Err(OpError::InvalidArgument("image must not be empty".into()));
         }
-        Ok(self.cli.detached(&opts.to_argv()).await?)
+        Ok(self.supervisor.detached(&opts.to_command()).await?)
     }
 
     pub async fn run_bsd(&self, opts: &RunBsdOpts) -> OpResult<String> {
-        Ok(self.cli.detached(&opts.to_argv()).await?)
+        Ok(self.supervisor.detached(&opts.to_command()).await?)
     }
 
     pub async fn run_unikraft(&self, opts: &RunUnikraftOpts) -> OpResult<String> {
-        Ok(self.cli.detached(&opts.to_argv()).await?)
+        Ok(self.supervisor.detached(&opts.to_command()).await?)
     }
 
     pub async fn run_nanos(&self, opts: &RunNanosOpts) -> OpResult<String> {
         if opts.image.trim().is_empty() {
             return Err(OpError::InvalidArgument("image must not be empty".into()));
         }
-        Ok(self.cli.detached(&opts.to_argv()).await?)
+        Ok(self.supervisor.detached(&opts.to_command()).await?)
     }
 
     pub async fn run_osv(&self, opts: &RunOsvOpts) -> OpResult<String> {
         if opts.image.trim().is_empty() {
             return Err(OpError::InvalidArgument("image must not be empty".into()));
         }
-        Ok(self.cli.detached(&opts.to_argv()).await?)
+        Ok(self.supervisor.detached(&opts.to_command()).await?)
     }
 
     pub async fn run_flavor(&self, opts: &RunFlavorOpts) -> OpResult<String> {
         if opts.name.trim().is_empty() {
             return Err(OpError::InvalidArgument("name must not be empty".into()));
         }
-        Ok(self.cli.detached(&opts.to_argv()).await?)
+        Ok(self.supervisor.detached(&opts.to_command()).await?)
     }
 
     // -- images --------------------------------------------------------------
 
     pub async fn list_images(&self) -> OpResult<Vec<Image>> {
-        let argv = Argv::new(&["images", "--json"]).take();
-        Ok(self.cli.json(&argv).await?)
+        blocking("listing images", api::list_images).await
     }
 
     pub async fn list_versions(&self, os: BsdOs) -> OpResult<Vec<Version>> {
-        let argv = Argv::new(&["versions", "--os"]).arg(os.as_str()).take();
-        let res = self.cli.output(&argv).await?;
-        if res.exit_code != 0 {
-            return Err(OpError::Failed(format!(
-                "`bsdkrun versions` failed ({}): {}",
-                res.exit_code,
-                res.stderr.trim()
-            )));
-        }
-        Ok(parse_versions(&res.stdout))
+        let os = os.fetch_os();
+        blocking("listing versions", move || Ok(api::list_versions(os))).await
     }
 
     // -- volumes -------------------------------------------------------------
 
     pub async fn list_volumes(&self) -> OpResult<Vec<Volume>> {
-        let argv = Argv::new(&["volume", "ls", "--json"]).take();
-        let mut volumes: Vec<Volume> = self.cli.json(&argv).await?;
-        for v in &mut volumes {
-            // The CLI prints "-" for a size it could not determine; an absent
-            // field says that more clearly than the placeholder.
-            v.size = v.size.take().filter(|s| s != "-");
-        }
-        Ok(volumes)
+        blocking("listing volumes", api::list_volumes).await
     }
 
     pub async fn remove_volumes(&self, names: &[String], force: bool) -> OpResult<CommandResult> {
         require_non_empty("names", names)?;
-        let argv = Argv::new(&["volume", "rm"])
-            .flag("-f", force)
-            .args(names.to_vec())
-            .take();
-        Ok(self.cli.output(&argv).await?)
+        let names = names.to_vec();
+        as_result(each(names, move |n| api::remove_volume(&n, force)).await)
     }
 
     // -- networks ------------------------------------------------------------
 
     pub async fn list_networks(&self) -> OpResult<Vec<Network>> {
-        let argv = Argv::new(&["network", "ls", "--json"]).take();
-        Ok(self.cli.json(&argv).await?)
+        blocking("listing networks", api::list_networks).await
     }
 
     pub async fn create_network(&self, name: &str) -> OpResult<CommandResult> {
-        let argv = Argv::new(&["network", "create"]).arg(name).take();
-        Ok(self.cli.output(&argv).await?)
+        let name = name.to_string();
+        as_result(blocking("creating a network", move || api::create_network(&name)).await)
     }
 
     pub async fn remove_networks(&self, names: &[String], force: bool) -> OpResult<CommandResult> {
         require_non_empty("names", names)?;
-        let argv = Argv::new(&["network", "rm"])
-            .flag("-f", force)
-            .args(names.to_vec())
-            .take();
-        Ok(self.cli.output(&argv).await?)
+        let names = names.to_vec();
+        as_result(each(names, move |n| api::remove_network(&n, force)).await)
     }
 
     pub async fn connect_network(&self, machine: &str, network: &str) -> OpResult<CommandResult> {
-        let argv = Argv::new(&["network", "connect"])
-            .arg(machine)
-            .arg(network)
-            .take();
-        Ok(self.cli.output(&argv).await?)
+        let (machine, network) = (machine.to_string(), network.to_string());
+        as_result(
+            blocking("connecting a machine to a network", move || {
+                api::connect_network(&machine, &network)
+            })
+            .await,
+        )
     }
 
     pub async fn disconnect_network(&self, machine: &str) -> OpResult<CommandResult> {
-        let argv = Argv::new(&["network", "disconnect"]).arg(machine).take();
-        Ok(self.cli.output(&argv).await?)
+        let machine = machine.to_string();
+        as_result(
+            blocking("disconnecting a machine", move || {
+                api::disconnect_network(&machine)
+            })
+            .await,
+        )
     }
 
     pub async fn sync_network(&self, network: &str) -> OpResult<CommandResult> {
-        let argv = Argv::new(&["network", "sync"]).arg(network).take();
-        Ok(self.cli.output(&argv).await?)
+        let network = network.to_string();
+        as_result(blocking("syncing a network", move || api::sync_network(&network)).await)
     }
 
     // -- flavors -------------------------------------------------------------
 
     pub async fn list_flavors(&self) -> OpResult<Vec<Flavor>> {
-        let argv = Argv::new(&["flavors", "--json"]).take();
-        Ok(self.cli.json(&argv).await?)
+        blocking("listing flavors", api::list_flavors).await
     }
 
     pub async fn add_flavor(&self, opts: &AddFlavorOpts) -> OpResult<CommandResult> {
@@ -803,26 +741,27 @@ impl Ops {
                 "name and base are required".into(),
             ));
         }
-        Ok(self.cli.output(&opts.to_argv()).await?)
+        let args = opts.to_args();
+        as_result(blocking("adding a flavor", move || api::add_flavor(args)).await)
     }
 
     pub async fn remove_flavors(&self, names: &[String], force: bool) -> OpResult<CommandResult> {
         require_non_empty("names", names)?;
-        let argv = Argv::new(&["flavor", "rm"])
-            .flag("-f", force)
-            .args(names.to_vec())
-            .take();
-        Ok(self.cli.output(&argv).await?)
+        // `force` has never meant anything for a flavor — a catalog entry is
+        // refused either way — but it stays on the wire.
+        let _ = force;
+        let names = names.to_vec();
+        as_result(each(names, |n| api::remove_flavor(&n)).await)
     }
 
     /// Environment for an interactive session, with `TERM` supplied when the
     /// guest needs one.
     ///
     /// Every interactive path must go through this. A BSD guest boots with no
-    /// usable TERM and the CLI injects none for an explicit `exec` — by design,
-    /// since a non-interactive exec should run verbatim — so a terminal opened
-    /// that way comes up `dumb` unless the caller supplies it. A caller that set
-    /// TERM itself always wins.
+    /// usable TERM and an explicit `exec` injects none — by design, since a
+    /// non-interactive exec should run verbatim — so a terminal opened that way
+    /// comes up `dumb` unless the caller supplies it. A caller that set TERM
+    /// itself always wins.
     pub async fn interactive_env(&self, id: &str, env: Vec<String>) -> Vec<String> {
         let mut env = env;
         if env.iter().any(|e| e.starts_with("TERM=")) {
@@ -844,10 +783,11 @@ impl Ops {
     ///
     /// Ids may be a unique prefix, exactly as on the CLI.
     pub async fn machine_kind(&self, id: &str) -> Option<String> {
-        let machines = self.list_machines(true).await.ok()?;
-        machines
-            .into_iter()
-            .find(|m| m.id == id || m.name.as_deref() == Some(id) || m.id.starts_with(id))
+        let id = id.to_string();
+        blocking("finding a machine", move || api::find_machine(&id))
+            .await
+            .ok()
+            .flatten()
             .map(|m| m.kind)
     }
 
@@ -863,19 +803,21 @@ impl Ops {
         id: &str,
         args: &[String],
     ) -> OpResult<CommandResult> {
-        let argv = self.guest_tool_argv(tool, id, args)?;
-        Ok(self.cli.output(&argv).await?)
+        let cmd = self.guest_tool_command(tool, id, args)?;
+        Ok(self.supervisor.output(&self.supervisor.argv(&cmd)?).await?)
     }
 
     pub async fn update_agent(&self, id: &str) -> OpResult<CommandResult> {
-        Ok(self.cli.output(&self.update_agent_argv(id)).await?)
+        let cmd = self.update_agent_command(id);
+        Ok(self.supervisor.output(&self.supervisor.argv(&cmd)?).await?)
     }
 
     /// A machine's console log as a single string, for a non-following read.
     pub async fn machine_logs(&self, id: &str, boot: bool) -> OpResult<String> {
-        let res = self.cli.output(&self.logs_argv(id, false, boot)).await?;
-        // Console output goes to stdout and bsdkrun's own boot log to stderr,
-        // so which one carries the content depends on `boot`.
+        let cmd = self.logs_command(id, false, boot);
+        let res = self.supervisor.output(&self.supervisor.argv(&cmd)?).await?;
+        // Console output goes to stdout and the engine's own boot log to
+        // stderr, so which one carries the content depends on `boot`.
         Ok(if res.stdout.trim().is_empty() {
             res.stderr
         } else {
@@ -894,197 +836,209 @@ impl Ops {
             .map_err(|e| OpError::Failed(format!("sampling host stats: {e}")))
     }
 
-    // -- argv for the streaming operations ------------------------------------
+    /// Run a command in a supervisor process and stream its output.
+    ///
+    /// The one streaming primitive both front ends use; neither builds a
+    /// process itself.
+    pub fn stream(
+        &self,
+        cmd: &CoreCommand,
+    ) -> Result<tokio::sync::mpsc::Receiver<Result<crate::pb::OutputChunk, tonic::Status>>, OpError>
+    {
+        let argv = self.supervisor.argv(cmd)?;
+        Ok(self.supervisor.stream(&argv))
+    }
+
+    // -- commands for the streaming operations --------------------------------
     //
-    // These return a command line rather than running it: the caller decides
-    // how to surface a stream (a gRPC response stream, a GraphQL subscription).
+    // These return a command rather than running it: the caller decides how to
+    // surface a stream (a gRPC response stream, a GraphQL subscription).
 
-    pub fn logs_argv(&self, id: &str, follow: bool, boot: bool) -> Vec<String> {
-        Argv::new(&["logs"])
-            .flag("-f", follow)
-            .flag("--boot", boot)
-            .arg(id)
-            .take()
+    pub fn logs_command(&self, id: &str, follow: bool, boot: bool) -> CoreCommand {
+        CoreCommand::Logs(LogsArgs {
+            id: id.to_string(),
+            follow,
+            boot,
+        })
     }
 
-    pub fn update_agent_argv(&self, id: &str) -> Vec<String> {
-        Argv::new(&["agent", "update"]).arg(id).take()
+    pub fn update_agent_command(&self, id: &str) -> CoreCommand {
+        CoreCommand::Agent(bsdkrun_core::cli::AgentArgs {
+            cmd: bsdkrun_core::cli::AgentCmd::Update(IdArgs { id: id.to_string() }),
+        })
     }
 
-    pub fn fetch_argv(
+    pub fn fetch_command(
         &self,
         os: BsdOs,
         version: &Option<String>,
         dir: &Option<String>,
         force: bool,
-    ) -> Vec<String> {
-        Argv::new(&["fetch", "--os"])
-            .arg(os.as_str())
-            .opt("--version", version)
-            .opt("--dir", dir)
-            .flag("-f", force)
-            .take()
+    ) -> CoreCommand {
+        let d = FetchArgs::default();
+        CoreCommand::Fetch(FetchArgs {
+            os: os.fetch_os(),
+            version: version.clone(),
+            dir: dir.clone().map_or(d.dir, Into::into),
+            force,
+        })
     }
 
-    pub fn build_flavor_argv(
+    pub fn build_flavor_command(
         &self,
         name: &str,
         cpus: Option<u32>,
         mem: Option<u32>,
         force: bool,
-    ) -> Vec<String> {
-        Argv::new(&["flavor", "build"])
-            .vm(cpus, mem)
-            .flag("--force", force)
-            .arg(name)
-            .take()
+    ) -> CoreCommand {
+        CoreCommand::Flavor(FlavorArgs {
+            cmd: FlavorCmd::Build(FlavorPrebuildArgs {
+                name: name.to_string(),
+                vm: vm_config(cpus, mem),
+                force,
+            }),
+        })
     }
 
-    pub fn guest_tool_argv(
+    pub fn guest_tool_command(
         &self,
         tool: GuestTool,
         id: &str,
         args: &[String],
-    ) -> OpResult<Vec<String>> {
+    ) -> OpResult<CoreCommand> {
         if args.is_empty() {
             return Err(OpError::InvalidArgument(
                 "args must name an action, e.g. [\"status\"]".into(),
             ));
         }
-        Ok(Argv::new(&[tool.as_str()])
-            .arg(id)
-            .args(args.to_vec())
-            .take())
+        let (id, args) = (id.to_string(), args.to_vec());
+        Ok(match tool {
+            GuestTool::Ssh => CoreCommand::Ssh(SshArgs { id, args }),
+            GuestTool::Tailscale => CoreCommand::Tailscale(TailscaleArgs { id, args }),
+            GuestTool::Systemd => CoreCommand::Systemd(SystemdArgs { id, args }),
+        })
     }
+}
+
+/// Apply an operation to each name, collecting the results into one report.
+///
+/// The first failure stops the run, matching what the CLI does when it is given
+/// several names and one of them cannot be removed.
+async fn each<F>(names: Vec<String>, f: F) -> OpResult<String>
+where
+    F: Fn(String) -> anyhow::Result<String> + Send + 'static,
+{
+    blocking("applying an operation to each name", move || {
+        let mut done = Vec::new();
+        for n in names {
+            done.push(f(n)?);
+        }
+        Ok(done.join("\n"))
+    })
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The single most valuable property of building typed commands rather than
+    /// argv: a field the caller leaves alone gets the engine's own default,
+    /// not an empty string or a zero.
     #[test]
-    fn argv_puts_flags_before_positionals() {
-        let argv = Argv::new(&["linux", "-d"])
-            .vm(Some(2), Some(1024))
-            .each("-e", &["A=1".into()])
-            .arg("alpine")
-            .take();
-        assert_eq!(
-            argv,
-            vec!["linux", "-d", "--cpus", "2", "--mem", "1024", "-e", "A=1", "alpine"]
-        );
-    }
-
-    #[test]
-    fn vm_zero_or_none_means_let_the_cli_decide() {
-        assert_eq!(Argv::new(&["linux"]).vm(Some(0), Some(0)).take(), ["linux"]);
-        assert_eq!(Argv::new(&["linux"]).vm(None, None).take(), ["linux"]);
-    }
-
-    #[test]
-    fn net_opts_expand_every_field() {
-        let argv = Argv::new(&["freebsd"])
-            .net(&NetOpts {
-                no_net: false,
-                ports: vec!["2222:22".into(), "8080:80".into()],
-                mac: None,
-                network: Some("dev".into()),
-                name: Some("web".into()),
-            })
-            .take();
-        assert_eq!(
-            argv,
-            vec![
-                "freebsd",
-                "--port",
-                "2222:22",
-                "--port",
-                "8080:80",
-                "--network",
-                "dev",
-                "--name",
-                "web"
-            ]
-        );
-    }
-
-    #[test]
-    fn run_linux_is_detached_and_puts_the_command_last() {
-        let opts = RunLinuxOpts {
-            image: "alpine:3.20".into(),
-            cpus: Some(4),
-            mem: Some(2048),
-            volume: Some("data".into()),
-            env: vec!["A=1".into()],
-            command: vec!["sh".into(), "-c".into(), "echo hi".into()],
+    fn an_unset_option_takes_the_engines_default() {
+        let CoreCommand::Linux(a) = RunLinuxOpts {
+            image: "alpine".into(),
             ..Default::default()
+        }
+        .to_command() else {
+            panic!("not a linux command");
         };
-        assert_eq!(
-            opts.to_argv(),
-            vec![
-                "linux",
-                "-d",
-                "--cpus",
-                "4",
-                "--mem",
-                "2048",
-                "-v",
-                "data",
-                "-e",
-                "A=1",
-                "alpine:3.20",
-                "--",
-                "sh",
-                "-c",
-                "echo hi",
-            ]
-        );
+        let d = LinuxArgs::default();
+        assert_eq!(a.console, d.console);
+        assert_eq!(a.kernel_version, d.kernel_version);
+        assert_eq!(a.vm.cpus, d.vm.cpus);
+        assert_eq!(a.vm.mem, d.vm.mem);
+        // Always detached: the daemon outlives the request.
+        assert!(a.detach);
     }
 
     #[test]
-    fn exec_with_no_command_becomes_a_shell_and_forces_a_tty() {
-        let (argv, tty) = ExecOpts {
-            id: "abc".into(),
-            tty: false, // deliberately false: a shell implies a tty regardless
-            ..Default::default()
+    fn zero_resources_mean_the_default_rather_than_zero() {
+        let d = VmConfig::default();
+        assert_eq!(vm_config(Some(0), Some(0)).cpus, d.cpus);
+        assert_eq!(vm_config(None, None).mem, d.mem);
+        assert_eq!(vm_config(Some(4), Some(2048)).cpus, 4);
+        assert_eq!(vm_config(Some(4), Some(2048)).mem, 2048);
+        // More vCPUs than the field can hold saturates instead of wrapping.
+        assert_eq!(vm_config(Some(9000), None).cpus, 255);
+    }
+
+    #[test]
+    fn net_opts_become_a_parsed_config() {
+        let cfg = NetOpts {
+            no_net: false,
+            ports: vec!["2222:22".into(), "not-a-port".into(), "8080:80".into()],
+            mac: None,
+            network: Some("dev".into()),
+            name: Some("web".into()),
         }
-        .to_argv();
-        assert_eq!(argv, ["shell", "abc"]);
-        assert!(tty);
+        .to_config();
+        // The malformed one is dropped; the good ones survive intact.
+        assert_eq!(cfg.ports.len(), 2);
+        assert_eq!(cfg.ports[0].host, 2222);
+        assert_eq!(cfg.ports[0].guest, 22);
+        assert_eq!(cfg.ports[1].host, 8080);
+        assert_eq!(cfg.network.as_deref(), Some("dev"));
     }
 
     #[test]
-    fn exec_puts_flags_before_the_id() {
-        let (argv, tty) = ExecOpts {
+    fn an_empty_exec_command_opens_a_shell_and_forces_a_tty() {
+        let (cmd, tty) = ExecOpts {
             id: "abc".into(),
-            command: vec!["ls".into(), "-l".into()],
-            env: vec!["K=V".into()],
-            tty: true,
+            command: vec![],
+            env: vec![],
+            tty: false,
         }
-        .to_argv();
-        assert_eq!(argv, ["exec", "-t", "-e", "K=V", "abc", "ls", "-l"]);
-        assert!(tty);
+        .to_command();
+        assert!(tty, "a shell is only meaningful on a terminal");
+        assert!(matches!(cmd, CoreCommand::Shell(a) if a.id == "abc"));
     }
 
     #[test]
-    fn versions_parses_numeric_and_current_rows() {
-        let v = parse_versions("Available FreeBSD builds:\n  15.1  (latest)\n  14.3\n");
-        assert_eq!(v.len(), 2);
-        assert_eq!(v[0].version, "15.1");
-        assert!(v[0].latest);
-        assert!(!v[1].latest);
-
-        let v = parse_versions("Available NetBSD builds:\n  current\n  10.1\n");
-        assert_eq!(v[0].version, "current");
-        assert!(v[0].latest);
+    fn a_bsd_run_targets_the_requested_os() {
+        let opts = RunBsdOpts {
+            os: BsdOs::Netbsd,
+            version: Some("current".into()),
+            cpus: None,
+            mem: None,
+            net: NetOpts::default(),
+            volume: None,
+            persist: true,
+            force: false,
+            firmware: None,
+            attach_disk: vec!["/tmp/a.raw:ro".into()],
+            disk_size: None,
+            repo: None,
+            command: vec![],
+        };
+        let CoreCommand::Netbsd(a) = opts.to_command() else {
+            panic!("not a netbsd command");
+        };
+        assert!(a.run.detach && a.run.persist);
+        assert_eq!(a.version.as_deref(), Some("current"));
+        assert_eq!(a.attach_disk.len(), 1);
+        assert!(a.attach_disk[0].read_only);
     }
 
     #[test]
-    fn empty_id_lists_are_refused_before_running_anything() {
-        assert!(matches!(
-            require_non_empty("ids", &[]),
-            Err(OpError::InvalidArgument(_))
-        ));
-        assert!(require_non_empty("ids", &["a".to_string()]).is_ok());
+    fn a_failed_mutation_reads_as_a_non_zero_exit() {
+        let res = as_result(Err(OpError::Failed("no such machine".into()))).unwrap();
+        assert_eq!(res.exit_code, 1);
+        assert!(res.stderr.contains("no such machine"));
+
+        let ok = as_result(Ok("abc123".into())).unwrap();
+        assert_eq!(ok.exit_code, 0);
+        assert_eq!(ok.stdout, "abc123\n");
     }
 }

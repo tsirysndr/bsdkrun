@@ -1,0 +1,38 @@
+[package]
+name = "bsdkrun-core"
+version = "0.6.0"
+edition = "2021"
+description = "The bsdkrun engine: microVM boot, images, networking, volumes and the guest agent, as a library"
+
+# Everything that actually drives a machine lives here so both front ends — the
+# `bsdkrun` CLI and `bsdkrund` — call the same code. The daemon used to shell out
+# to the CLI and rebuild its command lines as strings; linking this instead means
+# the two can no longer drift, and a daemon needs no `bsdkrun` binary on PATH.
+#
+# `links` claims libkrun for the whole build graph, and lets `build.rs` publish
+# the library directory to dependents as `DEP_KRUN_LIBDIR` — see build.rs for why
+# the binary crates need it.
+links = "krun"
+
+[features]
+default = []
+# `bsdkrun ui` — the embedded web SPA. Off by default so a consumer that only
+# wants the engine (the daemon) does not pull in a web server.
+ui = ["dep:actix-web", "dep:rust-embed", "dep:mime_guess"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+libc = "0.2"
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+tokio = { version = "1", features = ["rt", "time"] }
+actix-web = { version = "4", optional = true }
+rust-embed = { version = "8", optional = true }
+mime_guess = { version = "2", optional = true }
+
+[dev-dependencies]
+tempfile = "3"

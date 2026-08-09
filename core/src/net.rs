@@ -78,7 +78,7 @@ pub fn free_local_port() -> Result<u16> {
 }
 
 /// A host→guest TCP port forward.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct PortForward {
     pub host: u16,
     pub guest: u16,

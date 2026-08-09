@@ -33,6 +33,7 @@ on:
       - "examples/unikraft-deno/**"
       - "examples/unikraft-bun/**"
       - "examples/unikraft-clojure/**"
+      - "examples/unikraft-mysql/**"
       - "library/unikraft-base/**"
       - "src/**"
       - ".github/workflows/e2e-unikraft-examples.yml"
@@ -105,6 +106,23 @@ jobs:
             expect: "Hello from Clojure on Unikraft!"
             # Verified end to end on arm64/macOS; x86_64 has never been run, so
             # this job is the test. Non-strict until it passes.
+            strict: false
+          - example: unikraft-mysql
+            kernel: mysql_fc-x86_64
+            # 152 MiB of root filesystem (a 53 MiB mysqld and an 87 MiB
+            # pre-initialised datadir), resident twice at boot.
+            mem: 2048
+            # The rest of the server's options are /etc/my.cnf inside the image.
+            argv: /usr/sbin/mysqld --user=root
+            port: 3306
+            # Not HTTP: the check reads MySQL's initial handshake packet, which
+            # carries the server version as a NUL-terminated string.
+            probe: mysql
+            expect: "8.0.46"
+            # mysqld wedges on arm64 the moment it creates its second thread
+            # (see examples/unikraft-mysql/README.md). Whether x86_64 is
+            # affected has never been tested, so this job is the test --
+            # exactly as it was for unikraft-bun. Non-strict until it passes.
             strict: false
     steps:
       - uses: actions/checkout@v4
@@ -269,24 +287,37 @@ jobs:
           grep -q "Set IPv4 address" "$out"
           ! grep -q "Could not obtain randomness" "$out"
 
-      # The payoff assertion: the guest ran the application and it served a
-      # request over the forwarded port. `continue-on-error` applies only to
-      # examples marked `strict: false` in the matrix -- see the top of this
-      # file for what that means and when to clear it.
-      - name: e2e — HTTP server answers
+      # The payoff assertion: the guest ran the application and it answered over
+      # the forwarded port. `continue-on-error` applies only to examples marked
+      # `strict: false` in the matrix -- see the top of this file for what that
+      # means and when to clear it.
+      #
+      # `probe: mysql` selects a protocol check instead of an HTTP one, for the
+      # example that does not speak HTTP. A MySQL server sends its handshake
+      # unprompted on connect, so reading the first bytes is enough; the version
+      # sits in there as a NUL-terminated string. bash's /dev/tcp is used rather
+      # than a client package, to keep the runner free of a MySQL install.
+      - name: e2e — server answers
         id: http
         continue-on-error: ${{ !matrix.strict }}
         run: |
           set -eu
           for i in $(seq 1 45); do
-            if curl -fsS --max-time 5 "http://127.0.0.1:${{ matrix.port }}/" -o body.txt; then
+            if [ "${{ matrix.probe }}" = mysql ]; then
+              if timeout 5 bash -c \
+                   'exec 3<>/dev/tcp/127.0.0.1/${{ matrix.port }}; head -c 128 <&3' \
+                   > body.bin 2>/dev/null && [ -s body.bin ]; then
+                tr -d '\000' < body.bin > body.txt
+                break
+              fi
+            elif curl -fsS --max-time 5 "http://127.0.0.1:${{ matrix.port }}/" -o body.txt; then
               break
             fi
             sleep 2
           done
           test -s body.txt || { echo "no response from the guest"; exit 1; }
           cat body.txt
-          grep -q "${{ matrix.expect }}" body.txt
+          grep -a -q "${{ matrix.expect }}" body.txt
 
       # Make a non-strict result visible in the job summary rather than leaving
       # it buried in a green tick.

@@ -12,16 +12,38 @@ bsdkrun unikraft . --mem 2048 --cmdline "elfloader -- /usr/bin/node /usr/src/ser
 
 ## Status
 
-**x86_64 works** — the unikernel boots, DHCPs an address, node starts, and the
-server answers over a forwarded port. Covered end to end by
-`.github/workflows/e2e-unikraft-examples.yml`.
+**Both architectures work.** The unikernel boots, DHCPs an address, node
+starts, and the server answers over a forwarded port:
 
-**arm64 boots but node still faults during startup**, tripping a stack-protector
-check inside `libc.so.6`. The Dockerfile uses Debian's packaged node rather than
-Alpine or the official images — see the comment there for why the alternatives do
-not work — but that moves the failure onto the one open glibc issue rather than
-fixing it. See
-[../../library/unikraft-base/README.md](../../library/unikraft-base/README.md).
+```console
+$ curl http://127.0.0.1:3000/
+Bye, World!
+```
+
+x86_64 is covered end to end by `.github/workflows/e2e-unikraft-examples.yml`.
+arm64 is verified on macOS/Hypervisor.framework.
+
+The loader is [app-elfloader-rs](https://github.com/tsirysndr/app-elfloader), a
+Rust rewrite of upstream `app-elfloader`; the Kraftfile pulls it like any other
+library. Set `ELFLOADER_RS=/path/to/checkout` to build a working copy instead.
+
+### What arm64 needed
+
+Getting node to run turned up four bugs in Unikraft, none of them in the
+loader — the C `app-elfloader` failed at exactly the same points. All are
+applied by `../../library/unikraft-base/patches/apply.sh`:
+
+| # | bug |
+|---|-----|
+| 10 | `invalidate_icache_range()` invalidated the I-cache *before* cleaning the D-cache, and strode by the wrong line size. Both halves are wrong for publishing newly written code. |
+| 11 | `ukvmem` did no I-cache maintenance at all when demand-paging executable pages, so `.text` could be fetched stale from whatever previously used the frame. Linux does this in `set_pte_at()`. |
+| 12 | **`struct stat` was the x86_64 layout on every architecture** (144 bytes vs arm64's 128 — the header carried a `FIXME` saying so). vfscore's `vn_stat()` starts with `memset(st, 0, sizeof(struct stat))` on the *application's* buffer, so every `stat()`/`fstat()` wrote 16 zero bytes past the end of it. In musl's `load_library()` that is the saved frame pointer and return address, so **any** binary loading a second shared library returned to address 0. |
+| 13 | The arm64 signal trampoline had **never assembled** (`and sp, sp, #~0xf`; SP is not a valid `AND` operand), so `CONFIG_LIBPOSIX_PROCESS_SIGNAL` could not be enabled and no CPU fault reached the application as a signal. node needs it: OpenSSL probes for the SM3 extension by *executing* an SM3 instruction under `sigsetjmp` and catching `SIGILL`. |
+| 14 | **W^X was enforced with `SCTLR_EL1.WXN`**, a control for the entire EL1&0 regime rather than a per-page attribute. While it is set no page can be both writable and executable — including application pages — so V8's RWX code space took an instruction abort on the first jump into JIT-ed code. x86_64 has no such global bit, which is why it was never affected. The patch marks kernel regions execute-never through their PTEs instead, exactly as x86_64 already did. |
+
+`repro/` documents how these were found: a one-second reproducer instead of a
+two-minute node boot, QEMU under both HVF and TCG (which is what exonerated
+libkrun), and the gdb stub.
 
 ## Differences from upstream
 

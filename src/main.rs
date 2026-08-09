@@ -1726,6 +1726,12 @@ fn boot_osv_image(
     // off the bus.
     std::env::set_var("KRUN_NO_RNG", "1");
     std::env::set_var("KRUN_NO_BALLOON", "1");
+    // OSv hands everything after the application path to the application as
+    // argv, so libkrun's `earlycon=` hint arrives as a stray argument. A
+    // program that parses its own arguments then fails on a directive nobody
+    // wrote — redis-server, for one, aborts reading its config. The console is
+    // unaffected; only the cmdline hint goes away.
+    std::env::set_var("KRUN_NO_EARLYCON", "1");
     std::env::set_var("KRUN_GIC", gic.krun_value());
     if matches!(kind, osv::Image::ElfPvh) {
         std::env::set_var("KRUN_PVH", "1");

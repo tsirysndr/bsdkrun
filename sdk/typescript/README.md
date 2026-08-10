@@ -271,6 +271,68 @@ a synced `/etc/hosts` block (its resolver rejects the DNS's AAAA `NXDOMAIN`) —
 joins auto-sync, and `networks.sync` refreshes an existing network without
 restarting members.
 
+## Connecting to a remote daemon
+
+Everything above talks to a local `bsdkrun` binary. `Client` is the network
+sibling: it drives the same operations against a remote
+[`bsdkrund`](../../daemon/README.md) over its GraphQL API — no local binary
+needed, just a URL and a bearer token.
+
+```ts
+import { Client } from "@bsdkrun/sdk";
+
+const client = new Client({ url: "http://vps.example.com:50052", token: "9f2c..." });
+// or, from BSDKRUN_URL / BSDKRUN_TOKEN:
+const client = Client.fromEnv();
+
+const machines = await client.list(true);   // SandboxInfo[] — same type Sandbox.list() returns
+const id = await client.runLinux({ image: "alpine", cpus: 2, mem: 1024, command: ["sleep", "300"] });
+
+const { exitCode, output } = await client.exec(id, ["uname", "-a"]);
+console.log(new TextDecoder().decode(output), exitCode);
+
+await client.stop(id);
+await client.remove([id]);
+```
+
+`client.runLinux`/`runBsd`/`runNanos`/`runUnikraft`/`runOsv`/`runFlavor` each
+take the same fields as the corresponding GraphQL mutation
+(`daemon/src/graphql.rs`) — `runBsd({ os: "FREEBSD", ... })`, etc. — and
+return the new machine's id. `stop`/`start`/`remove`/`update`/`commit` return
+a `RemoteCommandResult` (`{exitCode, stdout, stderr}`).
+
+For a live terminal instead of a one-shot `exec`, use `shell()`:
+
+```ts
+const session = await client.shell(id);   // or shell(id, { command: [...] }) for a non-login command
+session.onOutput((chunk) => process.stdout.write(chunk));
+session.onExit((code) => console.log(`exited ${code}`));
+session.write("ls -la\n");
+session.resize(50, 120);
+session.close();
+```
+
+`followLogs(id, {}, { onData, onError, onComplete })` streams a machine's
+console live instead of the one-shot `logs(id)`. Both `exec`/`shell` and
+`followLogs` are built on the same `openShell`/`shellOutput` shell-session
+protocol the daemon uses for every interactive terminal — see
+[`daemon/README.md`](../../daemon/README.md#interactive-shells-over-graphql)
+for the wire-level story.
+
+Not every GraphQL operation has a typed method yet (flavor/network/volume
+management, for instance) — `client.request(query, variables)` runs any raw
+query or mutation, and `client.subscribe(query, variables, { onNext, ... })`
+runs any raw subscription, for anything not wrapped above.
+
+Like the rest of this SDK, `Client` has **zero npm dependencies** — the HTTP
+transport is the platform's global `fetch`, and subscriptions (used by
+`exec`/`shell`/`followLogs`) run over the platform's global `WebSocket`
+speaking `graphql-transport-ws` directly (no `graphql-ws`/Apollo/urql).
+
+`new Client({...})` and `Client.fromEnv()` both reject a URL configured
+without a token rather than silently making an unauthenticated request — set
+both `BSDKRUN_URL` and `BSDKRUN_TOKEN`, or pass both explicitly.
+
 ## Errors
 
 All errors extend `BsdkrunError`:
@@ -280,6 +342,9 @@ All errors extend `BsdkrunError`:
   `stdout`, `stderr`). Thrown by `sh` (unless `.nothrow()`), by `exec` with
   `throwOnError`, and by the agent helpers.
 - `SandboxNotFoundError` — `Sandbox.get` matched no machine.
+- `GraphQLError` — a `Client` request failed (carries `code`, the daemon's
+  `extensions.code`, when there is one).
+- `AuthError` (a `GraphQLError`) — the daemon rejected the bearer token.
 
 ## Examples
 

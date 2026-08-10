@@ -46,3 +46,31 @@ export class SandboxNotFoundError extends BsdkrunError {
     this.name = "SandboxNotFoundError";
   }
 }
+
+// ---- remote Client (GraphQL) errors -----------------------------------------
+//
+// Thrown by `Client` (client.ts) instead of the CommandFailedError family
+// above, which is specific to shelling out to the local `bsdkrun` binary.
+// Mirrors web/src/lib/graphql.ts's `GraphQLError`/`AuthError` — same names,
+// same meaning, so error handling reads the same whether the daemon is local
+// or remote.
+
+/** A GraphQL request failed: a transport error, or a non-auth `errors[]` entry. */
+export class GraphQLError extends BsdkrunError {
+  /** The error's `extensions.code`, when the daemon set one. */
+  readonly code?: string;
+
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = "GraphQLError";
+    this.code = code;
+  }
+}
+
+/** The daemon rejected the bearer token — over HTTP (401) or the WS handshake. */
+export class AuthError extends GraphQLError {
+  constructor(message = "the daemon rejected this token") {
+    super(message, "UNAUTHENTICATED");
+    this.name = "AuthError";
+  }
+}

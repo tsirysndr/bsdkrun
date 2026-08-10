@@ -304,3 +304,43 @@ export interface NetworkInfo {
   /** Unix epoch seconds, or null. */
   createdAt: number | null;
 }
+
+// ---- remote Client (GraphQL) types -----------------------------------------
+//
+// Returned by `Client` (client.ts), the GraphQL counterpart to the local,
+// CLI-backed `Sandbox` above. `Client` reuses `SandboxInfo` / `PortForward`
+// as-is (see `fromGraphQLMachine` in sandbox.ts) since the GraphQL schema is
+// already camelCase; these three are new, wire-shaped types with no local
+// equivalent.
+//
+// `CommandResult` here is a plain `{exitCode, stdout, stderr}` record — the
+// GraphQL `CommandResult` type (daemon/src/graphql.rs) has no `command`
+// field, unlike the CLI-flavored `CommandResult` *class* exported from
+// shell.ts (which wraps a `bsdkrun` invocation with `.text()`/`.json()`/
+// `.throwIfFailed()`). The two intentionally share a name — same concept,
+// different transport — so `index.ts` re-exports this one aliased to avoid
+// a duplicate top-level export.
+
+/** The outcome of a `Client` mutation that runs a daemon command to completion. */
+export interface CommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+/** An open shell session, as returned by the `openShell` mutation. */
+export interface ShellSessionInfo {
+  id: string;
+  machineId: string;
+  finished: boolean;
+  /** Output was dropped to stay under the session buffer cap. */
+  truncated: boolean;
+}
+
+/** One frame of a shell session's (or `machineLogs` subscription's) output. */
+export interface ShellOutput {
+  /** Decoded bytes, or null when this frame only carries `exitCode`. */
+  data: Uint8Array | null;
+  /** Set exactly once, when the underlying process exits. */
+  exitCode: number | null;
+}

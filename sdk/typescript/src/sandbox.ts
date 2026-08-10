@@ -68,6 +68,41 @@ function mapInfo(row: Record<string, unknown>): SandboxInfo {
 }
 
 /**
+ * Map a GraphQL `Machine` object (the `MACHINE_FIELDS` selection in
+ * client.ts, matching `daemon/src/graphql.rs`'s `Machine`) to a typed
+ * {@link SandboxInfo} — the `Client` counterpart to {@link mapInfo} above.
+ *
+ * The schema is already camelCase, so this is close to a pass-through; the
+ * one real conversion is `createdAt`/`finishedAt`, which the daemon sends as
+ * numeric strings (GraphQL has no 64-bit integer type) and `SandboxInfo`
+ * wants as numbers, exactly like the CLI's JSON.
+ */
+export function fromGraphQLMachine(m: Record<string, unknown>): SandboxInfo {
+  const num = (v: unknown): number | null => (v == null ? null : Number(v));
+  return {
+    id: String(m.id),
+    name: (m.name as string | null) ?? null,
+    image: String(m.image),
+    kind: String(m.kind),
+    command: String(m.command ?? ""),
+    status: m.running ? "running" : "exited",
+    running: Boolean(m.running),
+    exitCode: num(m.exitCode),
+    pid: num(m.pid),
+    detached: Boolean(m.detached),
+    cpus: Number(m.cpus),
+    mem: Number(m.mem),
+    volume: (m.volume as string | null) ?? null,
+    stateDir: String(m.stateDir),
+    network: (m.network as string | null) ?? null,
+    netIp: (m.netIp as string | null) ?? null,
+    ports: (m.ports as SandboxInfo["ports"] | undefined) ?? [],
+    createdAt: Number(m.createdAt),
+    finishedAt: num(m.finishedAt),
+  };
+}
+
+/**
  * A handle to a running (or stopped) bsdkrun microVM. Create one with
  * {@link Sandbox.create}, reconnect with {@link Sandbox.get}, or enumerate with
  * {@link Sandbox.list}.

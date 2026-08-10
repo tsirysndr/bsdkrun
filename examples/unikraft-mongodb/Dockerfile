@@ -25,16 +25,26 @@ FROM busybox:stable-musl AS shell
 # same single process that then serves from it.
 FROM build AS rootfs
 COPY --from=shell /bin/busybox /bin/busybox.static
-# The /proc and /sys entries are plain files, same trick as
-# ../unikraft-dragonflydb: Unikraft has no procfs or sysfs, so nothing
-# shadows these paths and the ramfs serves whatever the image put there.
-# mongod sizes its plan-cache partitions from the CPU count
-# (std::thread::hardware_concurrency -> glibc __get_nprocs, which reads
-# /sys/devices/system/cpu/online and falls back to /proc/stat); with neither
-# file present it detects zero cores and dies on its own invariant:
-#   "Invariant failure numPartitions > 0, src/mongo/db/query/
-#    partitioned_cache.h:103".
-# One CPU, matching the single vcpu libkrun gives the guest.
+# A hand-written /proc and /sys, same trick as ../unikraft-dragonflydb:
+# Unikraft has no procfs or sysfs, so nothing shadows these paths and the
+# ramfs serves whatever the image put there. mongod needs two different
+# things from them.
+#
+# The CPU count, which it takes from std::thread::hardware_concurrency ->
+# glibc's __get_nprocs (which reads /sys/devices/system/cpu/online and falls
+# back to /proc/stat). With neither file present it detects zero cores and
+# dies on its own invariant: "Invariant failure numPartitions > 0,
+# src/mongo/db/query/partitioned_cache.h:103". One CPU here, matching the
+# single vcpu libkrun gives the guest.
+#
+# And its own process statistics, from /proc/<pid>/stat and statm
+# (processinfo_linux.cpp). Missing, those throw Location13538 -- which the
+# FTDC thread catches and logs once a second, but a connection thread does
+# not, and an uncaught C++ exception is terminate() and then abort(). That is
+# the "Got signal: 6 (Aborted)" with no message of mongod's own that killed
+# the server moments after it accepted its first client. The pid is 2: the
+# loader's init is 1 and the start.sh shell -- whose pid execve() keeps -- is
+# 2. /proc/self is a symlink to it for the paths that spell it that way.
 RUN set -eu; \
     mkdir -p /rootfs/usr/bin /rootfs/bin /rootfs/data/db /rootfs/tmp \
              /rootfs/etc /rootfs/sys/devices/system/cpu /rootfs/proc; \
@@ -42,6 +52,13 @@ RUN set -eu; \
     printf 'cpu  0 0 0 0 0 0 0 0 0 0\ncpu0 0 0 0 0 0 0 0 0 0 0\n' \
         > /rootfs/proc/stat; \
     printf 'processor\t: 0\n\n' > /rootfs/proc/cpuinfo; \
+    printf 'MemTotal:       2097152 kB\nMemFree:        1048576 kB\nMemAvailable:   1048576 kB\nBuffers:              0 kB\nCached:               0 kB\nSwapTotal:            0 kB\nSwapFree:             0 kB\n' \
+        > /rootfs/proc/meminfo; \
+    mkdir -p /rootfs/proc/2; \
+    ln -s 2 /rootfs/proc/self; \
+    printf '2 (mongod) S 1 2 2 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 0 2147483648 65536 18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n' \
+        > /rootfs/proc/2/stat; \
+    printf '524288 65536 0 1 0 0 0\n' > /rootfs/proc/2/statm; \
     cp /bin/busybox.static /rootfs/bin/busybox; \
     ln -s busybox /rootfs/bin/sh; \
     cp /usr/bin/mongod /rootfs/usr/bin/mongod; \

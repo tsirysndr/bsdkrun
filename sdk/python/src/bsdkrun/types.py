@@ -21,6 +21,9 @@ __all__ = [
     "ImageInfo",
     "VolumeInfo",
     "NetworkInfo",
+    "CommandResult",
+    "ShellSessionInfo",
+    "ExecResult",
 ]
 
 
@@ -137,6 +140,41 @@ class SandboxInfo:
             finished_at=_num(row.get("finished_at")),
         )
 
+    @classmethod
+    def from_graphql(cls, m: Mapping[str, Any]) -> SandboxInfo:
+        """Build from a GraphQL ``Machine`` (the ``MACHINE_FIELDS`` selection:
+        ``id name image kind command status running exitCode pid detached
+        cpus mem volume stateDir createdAt finishedAt network netIp
+        ports{bind host guest}``).
+
+        The schema is camelCase; ``created_at``/``finished_at`` arrive as
+        decimal-string unix timestamps (the daemon passes the CLI's own text
+        through unchanged) rather than numbers, so they're parsed here same
+        as everything else.
+        """
+        running = bool(m.get("running"))
+        return cls(
+            id=str(m.get("id")),
+            name=m.get("name"),
+            image=str(m.get("image")),
+            kind=str(m.get("kind")),
+            command=str(m.get("command") or ""),
+            status=str(m.get("status") or ("running" if running else "exited")),
+            running=running,
+            exit_code=_num(m.get("exitCode")),
+            pid=_num(m.get("pid")),
+            detached=bool(m.get("detached")),
+            cpus=int(m.get("cpus") or 0),
+            mem=int(m.get("mem") or 0),
+            volume=m.get("volume"),
+            state_dir=str(m.get("stateDir") or ""),
+            network=m.get("network"),
+            net_ip=m.get("netIp"),
+            ports=[PortForward.from_row(p) for p in m.get("ports") or []],
+            created_at=int(m.get("createdAt") or 0),
+            finished_at=_num(m.get("finishedAt")),
+        )
+
 
 @dataclass
 class ImageInfo:
@@ -209,3 +247,59 @@ class NetworkInfo:
             up=bool(row.get("up")),
             created_at=_num(row.get("created_at")),
         )
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    """The outcome of a remote lifecycle mutation (stop/start/remove/update/commit).
+
+    Mirrors the GraphQL ``CommandResult`` type. A non-zero ``exit_code`` is
+    reported rather than raised: for some underlying commands (``ssh
+    status``, ``tailscale status``) it is a legitimate state to display, not
+    a transport failure.
+    """
+
+    exit_code: int
+    stdout: str
+    stderr: str
+
+    @classmethod
+    def from_graphql(cls, r: Mapping[str, Any]) -> CommandResult:
+        return cls(
+            exit_code=int(r.get("exitCode") or 0),
+            stdout=str(r.get("stdout") or ""),
+            stderr=str(r.get("stderr") or ""),
+        )
+
+
+@dataclass(frozen=True)
+class ShellSessionInfo:
+    """A shell session as reported by ``openShell`` / ``shellSessions``."""
+
+    id: str
+    machine_id: str
+    finished: bool
+    truncated: bool
+
+    @classmethod
+    def from_graphql(cls, s: Mapping[str, Any]) -> ShellSessionInfo:
+        return cls(
+            id=str(s.get("id")),
+            machine_id=str(s.get("machineId")),
+            finished=bool(s.get("finished")),
+            truncated=bool(s.get("truncated")),
+        )
+
+
+@dataclass(frozen=True)
+class ExecResult:
+    """The captured result of :meth:`bsdkrun.client.Client.exec`.
+
+    Unlike :class:`Result` (the local CLI's captured stdout/stderr as text),
+    a remote exec's output is a single interleaved byte stream — the shell
+    agent's ``shellOutput`` subscription does not distinguish stdout from
+    stderr — so this carries raw ``bytes`` instead.
+    """
+
+    exit_code: int
+    output: bytes

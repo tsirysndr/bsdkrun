@@ -19,28 +19,37 @@ from __future__ import annotations
 from . import images, networks, system, volumes
 from .args import build_create_args
 from .binary import reset_binary_cache, resolve_binary, set_binary_path
+from .client import Client, ShellSession
 from .errors import (
+    AuthError,
     BinaryNotFound,
     BsdkrunError,
     CommandFailed,
+    GraphQLError,
     SandboxNotFound,
 )
 from .process import RawResult, run, run_checked, spawn
 from .sandbox import Sandbox
 from .types import (
+    CommandResult,
+    ExecResult,
     ImageInfo,
     NetworkInfo,
     PortForward,
     Result,
     SandboxInfo,
+    ShellSessionInfo,
     VolumeInfo,
 )
 
 __version__ = "0.1.0"
 
 __all__ = [
-    # sandbox
+    # sandbox (local CLI)
     "Sandbox",
+    # client (remote daemon)
+    "Client",
+    "ShellSession",
     # namespaces
     "images",
     "volumes",
@@ -64,11 +73,16 @@ __all__ = [
     "NetworkInfo",
     "PortForward",
     "Result",
+    "CommandResult",
+    "ShellSessionInfo",
+    "ExecResult",
     # errors
     "BsdkrunError",
     "BinaryNotFound",
     "CommandFailed",
     "SandboxNotFound",
+    "GraphQLError",
+    "AuthError",
     # metadata
     "__version__",
 ]

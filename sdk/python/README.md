@@ -179,6 +179,68 @@ box.ssh_setup(user="tsiry", key="~/.ssh/work.pub")
 box.tailscale_up(authkey="tskey-auth-...", hostname="web")
 ```
 
+## Connecting to a remote daemon
+
+Everything above talks to a local `bsdkrun` binary. `Client` is the network
+sibling: it drives the same operations against a remote
+[`bsdkrund`](../../daemon/README.md) over its GraphQL API — no local binary
+needed, just a URL and a bearer token.
+
+```python
+from bsdkrun import Client
+
+client = Client(url="http://vps.example.com:50052", token="9f2c...")
+# or, from BSDKRUN_URL / BSDKRUN_TOKEN:
+client = Client.from_env()
+
+machines = client.list(all=True)  # list[SandboxInfo] — same type Sandbox.list() returns
+machine_id = client.run_linux(image="alpine", cpus=2, mem=1024, command=["sleep", "300"])
+
+result = client.exec(machine_id, ["uname", "-a"])
+print(result.output.decode(), result.exit_code)
+
+client.stop(machine_id)
+client.remove([machine_id])
+```
+
+`Client.run_linux`/`run_bsd`/`run_nanos`/`run_unikraft`/`run_osv`/`run_flavor`
+each take the same keyword options as the corresponding GraphQL mutation
+(`daemon/src/graphql.rs`) — `run_bsd(os="freebsd", ...)`, etc. — and return
+the new machine's id. `stop`/`start`/`remove`/`update`/`commit` return a
+`CommandResult(exit_code, stdout, stderr)`.
+
+For a live terminal instead of a one-shot `exec`, use `shell()`:
+
+```python
+session = client.shell(machine_id)  # or shell(machine_id, command=[...]) for a non-login command
+session.on_output(lambda data: print(data.decode(), end=""))
+session.on_exit(lambda code: print(f"\nexited {code}"))
+session.write(b"ls -la\n")
+session.resize(rows=50, cols=120)
+session.close()
+```
+
+`follow_logs(id, on_data=...)` streams a machine's console live instead of
+the one-shot `logs(id)`. Both `exec`/`shell` and `follow_logs` are built on
+the same `openShell`/`shellOutput` shell-session protocol the daemon uses for
+every interactive terminal — see [`daemon/README.md`](../../daemon/README.md#interactive-shells-over-graphql)
+for the wire-level story.
+
+Not every GraphQL operation has a typed method yet (flavor/network/volume
+management, for instance) — `client.request(query, variables)` runs any raw
+query or mutation, and `client.subscribe(query, variables, on_next=...)` runs
+any raw subscription, for anything not wrapped above.
+
+Like the local SDK, `Client` has **zero runtime dependencies** — the HTTP
+transport is stdlib `urllib`, and subscriptions (used by `exec`/`shell`/
+`follow_logs`) run over a hand-rolled `graphql-transport-ws` WebSocket client
+on top of stdlib `socket`/`ssl`, since Python's standard library has no
+WebSocket client of its own.
+
+`Client(url=..., token=...)` and `from_env()` both reject a URL configured
+without a token rather than silently making an unauthenticated request — set
+both `BSDKRUN_URL` and `BSDKRUN_TOKEN`, or pass both explicitly.
+
 ## Errors
 
 All errors extend `BsdkrunError`:
@@ -188,6 +250,9 @@ All errors extend `BsdkrunError`:
   `stderr`). Raised by `exec` when `throw_on_error=True`, by the lifecycle
   methods, and by the agent helpers.
 - `SandboxNotFound` — `Sandbox.get` matched no machine.
+- `GraphQLError` — a `Client` request failed (carries `code`, the daemon's
+  `extensions.code`, when there is one).
+- `AuthError` (a `GraphQLError`) — the daemon rejected the bearer token.
 
 ## Try it interactively
 

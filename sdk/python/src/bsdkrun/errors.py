@@ -7,6 +7,8 @@ __all__ = [
     "BinaryNotFound",
     "CommandFailed",
     "SandboxNotFound",
+    "GraphQLError",
+    "AuthError",
 ]
 
 
@@ -54,3 +56,29 @@ class SandboxNotFound(BsdkrunError):
     def __init__(self, sandbox_id: str) -> None:
         self.sandbox_id = sandbox_id
         super().__init__(f"no sandbox found matching id {sandbox_id!r}")
+
+
+class GraphQLError(BsdkrunError):
+    """A GraphQL- or transport-level failure talking to a remote ``bsdkrund``.
+
+    Raised by :class:`~bsdkrun.client.Client`. ``code`` carries the
+    response's ``extensions.code`` when the daemon set one (e.g.
+    ``"INVALID_ARGUMENT"``, ``"FAILED"``); it is ``None`` for a transport
+    failure (the daemon was unreachable) or a malformed response.
+    """
+
+    def __init__(self, message: str, code: str | None = None) -> None:
+        self.code = code
+        super().__init__(message)
+
+
+class AuthError(GraphQLError):
+    """The daemon rejected the bearer token.
+
+    Raised on an HTTP 401, a GraphQL error with
+    ``extensions.code == "UNAUTHENTICATED"``, or the WebSocket closing before
+    ``connection_ack`` was ever received.
+    """
+
+    def __init__(self, message: str = "the daemon rejected this token") -> None:
+        super().__init__(message, "UNAUTHENTICATED")

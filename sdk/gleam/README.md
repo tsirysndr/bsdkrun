@@ -50,7 +50,7 @@ pub fn main() {
   let assert Ok(box) = bsdkrun.create(args.linux("alpine"))
   let assert Ok(res) = bsdkrun.exec(box, ["uname", "-a"])
   echo types.text(res)
-  let assert Ok(Nil) = bsdkrun.stop(box)
+  let assert Ok(box) = bsdkrun.stop(box)
 }
 ```
 
@@ -93,6 +93,18 @@ Setters that do not apply to the chosen guest kind are ignored rather than
 rejected — `with_command` on a NetBSD guest is a no-op, since only Linux guests
 take a trailing command.
 
+A volume, a mount, or a port forward has no runtime "attach" in `bsdkrun` —
+they're only ever chosen at boot — so `with_volume`/`with_network`/`with_port`
+before `create` *is* how one gets attached "by pipe":
+
+```gleam
+args.linux("alpine")
+|> args.with_volume("web")
+|> args.with_network("devnet")
+|> args.with_ports([args.Port(8080, 80)])
+|> sandbox.create
+```
+
 ## Running commands
 
 `bsdkrun.exec` covers the common case. For env vars, a TTY, stdin, or a working
@@ -126,7 +138,7 @@ A non-zero exit is **not** an error by default — it comes back in the
 ## Lifecycle
 
 ```gleam
-bsdkrun.stop(box)
+bsdkrun.stop(box)              // Ok(box) back — not Ok(Nil)
 bsdkrun.start(box)             // restart in place: same id, disk, resources
 bsdkrun.remove(box, True)      // force: stop first if running
 bsdkrun.status(box)            // Ok(Some(SandboxInfo)) or Ok(None) if gone
@@ -134,7 +146,23 @@ bsdkrun.is_running(box)
 bsdkrun.logs(box)              // console log
 sandbox.boot_logs(box)         // bsdkrun's own boot log
 sandbox.update(box, Some(4), Some(4096))  // cpus, mem — applies on next start
+sandbox.connect_network(box, "devnet")    // join/switch — applies on next start
+sandbox.disconnect_network(box)
 sandbox.shell(box)             // interactive shell, inherits stdio
+```
+
+`stop`, `start`, `remove`, `update`, `connect_network` and `disconnect_network`
+all return `Result(Sandbox, Error)` — the same `box`, not `Nil` — so a
+sequence of them chains with `|>` through `gleam/result.try` instead of
+re-threading `box` by hand:
+
+```gleam
+import gleam/result
+
+bsdkrun.create(args.linux("alpine"))
+|> result.try(sandbox.connect_network(_, "devnet"))
+|> result.try(sandbox.start)
+|> result.try(bsdkrun.exec(_, ["uname", "-a"]))
 ```
 
 Reconnect to a machine you already booted with `bsdkrun.get(id)` — a unique id

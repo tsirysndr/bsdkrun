@@ -14,7 +14,7 @@
 ////   let assert Ok(box) = bsdkrun.create(args.linux("alpine"))
 ////   let assert Ok(res) = bsdkrun.exec(box, ["uname", "-a"])
 ////   echo types.text(res)
-////   let assert Ok(Nil) = bsdkrun.stop(box)
+////   let assert Ok(box) = bsdkrun.stop(box)
 //// }
 //// ```
 ////
@@ -76,18 +76,20 @@ pub fn logs(box: Sandbox) -> Result(String, Error) {
   sandbox.logs(box)
 }
 
-/// Stop the machine.
-pub fn stop(box: Sandbox) -> Result(Nil, Error) {
+/// Stop the machine. Returns `box` back (not `Nil`) — see `bsdkrun/sandbox`.
+pub fn stop(box: Sandbox) -> Result(Sandbox, Error) {
   sandbox.stop(box)
 }
 
-/// Restart a stopped machine in place.
-pub fn start(box: Sandbox) -> Result(Nil, Error) {
+/// Restart a stopped machine in place. Returns `box` back (not `Nil`) — see
+/// `bsdkrun/sandbox`.
+pub fn start(box: Sandbox) -> Result(Sandbox, Error) {
   sandbox.start(box)
 }
 
 /// Remove the machine and its state. `force` stops it first if running.
-pub fn remove(box: Sandbox, force: Bool) -> Result(Nil, Error) {
+/// Returns `box` back (not `Nil`) — see `bsdkrun/sandbox`.
+pub fn remove(box: Sandbox, force: Bool) -> Result(Sandbox, Error) {
   sandbox.remove(box, force)
 }
 

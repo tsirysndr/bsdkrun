@@ -29,7 +29,16 @@
                 :scm {:url "https://github.com/tsirysndr/bsdkrun"
                       :connection "scm:git:https://github.com/tsirysndr/bsdkrun.git"
                       :developerConnection "scm:git:ssh://git@github.com/tsirysndr/bsdkrun.git"
-                      :tag (str "clojure-sdk-v" version)}})
+                      :tag (str "clojure-sdk-v" version)}
+                ;; Clojars rejects a deploy whose pom.xml has no <licenses>
+                ;; (403 "the POM file does not include a license") — write-pom
+                ;; doesn't infer one from the LICENSE file, so it must be
+                ;; supplied explicitly here.
+                :pom-data [[:licenses
+                            [:license
+                             [:name "MIT License"]
+                             [:url "https://opensource.org/licenses/MIT"]
+                             [:distribution "repo"]]]]})
   (b/copy-dir {:src-dirs ["src"] :target-dir class-dir})
   (b/jar {:class-dir class-dir :jar-file jar-file})
   (println "Built" jar-file))

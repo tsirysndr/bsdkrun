@@ -6,11 +6,37 @@
 ////
 //// let assert Ok(box) = sandbox.create(args.linux("alpine"))
 //// let assert Ok(res) = sandbox.exec(box, ["uname", "-a"], sandbox.exec_options())
-//// let assert Ok(Nil) = sandbox.stop(box)
+//// let assert Ok(box) = sandbox.stop(box)
 //// ```
 ////
 //// Functions that act on a machine take a `Sandbox`; use `from_id` to build
 //// one from a bare id you already hold.
+////
+//// The lifecycle operations — `stop`, `start`, `remove`, `update`,
+//// `connect_network`, `disconnect_network` — return `Result(Sandbox, Error)`,
+//// the same `box` back rather than `Nil`, so a sequence of them chains with
+//// `|>` through `result.try` instead of re-threading `box` by hand:
+////
+//// ```gleam
+//// import gleam/result
+////
+//// sandbox.create(args.linux("alpine"))
+//// |> result.try(sandbox.connect_network(_, "devnet"))
+//// |> result.try(sandbox.start)
+//// |> result.try(sandbox.exec(_, ["uname", "-a"], sandbox.exec_options()))
+//// ```
+////
+//// A volume, a mount, or a port forward has no such runtime "attach" in
+//// `bsdkrun` — those are only ever chosen at boot — so wiring one up "by
+//// pipe" instead means building the `CreateOptions` that go into `create`
+//// with `bsdkrun/args`'s `with_*` functions:
+////
+//// ```gleam
+//// args.linux("alpine")
+//// |> args.with_volume("web")
+//// |> args.with_network("devnet")
+//// |> sandbox.create
+//// ```
 
 import bsdkrun/args.{type CreateOptions}
 import bsdkrun/cli
@@ -230,30 +256,41 @@ fn read_logs(box: Sandbox, boot: Bool) -> Result(String, Error) {
 // --- lifecycle --------------------------------------------------------------
 
 /// Stop the machine — BSD guests get a clean poweroff, Linux gets SIGTERM.
-pub fn stop(box: Sandbox) -> Result(Nil, Error) {
-  cli.checked_unit(["stop", box.id], "bsdkrun stop", cli.options())
+/// Returns `box` back (not `Nil`), so this composes with `use` into a
+/// lifecycle sequence.
+pub fn stop(box: Sandbox) -> Result(Sandbox, Error) {
+  cli.checked(["stop", box.id], "bsdkrun stop", cli.options())
+  |> result.replace(box)
 }
 
-/// Restart a stopped machine in place: same id, disk, and resources.
-pub fn start(box: Sandbox) -> Result(Nil, Error) {
-  cli.checked_unit(["start", box.id], "bsdkrun start", cli.options())
+/// Restart a stopped machine in place: same id, disk, and resources. Returns
+/// `box` back (not `Nil`), so this composes with `use` into a lifecycle
+/// sequence.
+pub fn start(box: Sandbox) -> Result(Sandbox, Error) {
+  cli.checked(["start", box.id], "bsdkrun start", cli.options())
+  |> result.replace(box)
 }
 
-/// Remove the machine and its state. `force` stops it first if it is running.
-pub fn remove(box: Sandbox, force: Bool) -> Result(Nil, Error) {
+/// Remove the machine and its state. `force` stops it first if it is
+/// running. Returns `box` back (not `Nil`) — it no longer resolves via
+/// `list`/`get`, but the handle itself is still valid data to hold onto (an
+/// id to log, e.g.).
+pub fn remove(box: Sandbox, force: Bool) -> Result(Sandbox, Error) {
   let argv = case force {
     True -> ["rm", "--force", box.id]
     False -> ["rm", box.id]
   }
-  cli.checked_unit(argv, "bsdkrun rm", cli.options())
+  cli.checked(argv, "bsdkrun rm", cli.options())
+  |> result.replace(box)
 }
 
-/// Change the recorded vCPU / RAM. Applies on the next `start`.
+/// Change the recorded vCPU / RAM. Applies on the next `start`. Returns `box`
+/// back (not `Nil`), so this composes with `use` into a lifecycle sequence.
 pub fn update(
   box: Sandbox,
   cpus: Option(Int),
   mem: Option(Int),
-) -> Result(Nil, Error) {
+) -> Result(Sandbox, Error) {
   let argv =
     list.flatten([
       ["update", box.id],
@@ -261,26 +298,36 @@ pub fn update(
       flag_int("--mem", mem),
     ])
 
-  cli.checked_unit(argv, "bsdkrun update", cli.options())
+  cli.checked(argv, "bsdkrun update", cli.options())
+  |> result.replace(box)
 }
 
 /// Join or switch this machine to a global network. Applies on the next
-/// `start`.
-pub fn connect_network(box: Sandbox, network: String) -> Result(Nil, Error) {
-  cli.checked_unit(
+/// `start`. Returns `box` back (not `Nil`), so this composes with `use` into
+/// a lifecycle sequence — the network equivalent of `bsdkrun/args`'s
+/// `with_network` for a machine that already exists.
+pub fn connect_network(
+  box: Sandbox,
+  network: String,
+) -> Result(Sandbox, Error) {
+  cli.checked(
     ["network", "connect", box.id, network],
     "bsdkrun network connect",
     cli.options(),
   )
+  |> result.replace(box)
 }
 
 /// Detach this machine from its network. Applies on the next `start`.
-pub fn disconnect_network(box: Sandbox) -> Result(Nil, Error) {
-  cli.checked_unit(
+/// Returns `box` back (not `Nil`), so this composes with `use` into a
+/// lifecycle sequence.
+pub fn disconnect_network(box: Sandbox) -> Result(Sandbox, Error) {
+  cli.checked(
     ["network", "disconnect", box.id],
     "bsdkrun network disconnect",
     cli.options(),
   )
+  |> result.replace(box)
 }
 
 // --- status -----------------------------------------------------------------

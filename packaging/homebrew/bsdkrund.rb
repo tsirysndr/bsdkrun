@@ -8,11 +8,11 @@
 # publishes. To cut a new version: bump `version`, then read each `sha256` from
 # the `.sha256` sidecar published beside its tarball, e.g.
 #
-#   curl -sL https://github.com/tsirysndr/bsdkrun/releases/download/v0.6.0/bsdkrund-aarch64-apple-darwin.tar.gz.sha256
+#   curl -sL https://github.com/tsirysndr/bsdkrun/releases/download/v0.7.0/bsdkrund-aarch64-apple-darwin.tar.gz.sha256
 class Bsdkrund < Formula
   desc "Token-authenticated gRPC + GraphQL daemon for driving bsdkrun remotely"
   homepage "https://github.com/tsirysndr/bsdkrun"
-  version "0.6.0"
+  version "0.7.0"
   license "MIT"
 
   # The daemon links no hypervisor itself: booting a machine is handed off to
@@ -26,7 +26,7 @@ class Bsdkrund < Formula
     # an arm64 host for libkrun, so an Intel daemon would have nothing to boot with.
     on_arm do
       url "https://github.com/tsirysndr/bsdkrun/releases/download/v#{version}/bsdkrund-aarch64-apple-darwin.tar.gz"
-      sha256 "REPLACE_WITH_SHA256_FROM_THE_RELEASE"
+      sha256 "0dc4aea002eb9e7f9cb087aa964f229794382ceefb0c15fb8dc7f7f24f0ac0c2"
     end
   end
 
@@ -34,7 +34,7 @@ class Bsdkrund < Formula
     on_intel do
       # Statically linked against musl, so it runs on any distro.
       url "https://github.com/tsirysndr/bsdkrun/releases/download/v#{version}/bsdkrund-x86_64-unknown-linux-musl.tar.gz"
-      sha256 "REPLACE_WITH_SHA256_FROM_THE_RELEASE"
+      sha256 "d7eb47e833e6de25d4fe9dfa51422f2d544971c38b3f9680af432bcbe81597ab"
     end
   end
 

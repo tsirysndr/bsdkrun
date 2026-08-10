@@ -37,11 +37,11 @@ class BsdkrunSupervisor < Formula
   on_linux do
     on_intel do
       url "https://github.com/tsirysndr/bsdkrun/releases/download/v#{version}/bsdkrun-supervisor-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "REPLACE_WITH_SHA256_FROM_THE_RELEASE"
+      sha256 "9a5fa41f003fc84ece1a5259550e4c56616dca5f06fc2aed026f0ba869d94995"
     end
     on_arm do
       url "https://github.com/tsirysndr/bsdkrun/releases/download/v#{version}/bsdkrun-supervisor-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "REPLACE_WITH_SHA256_FROM_THE_RELEASE"
+      sha256 "7be42f706a846563178b38cc82a049755db2f122d0c0d24673a7d86a7df90337"
     end
   end
 

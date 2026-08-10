@@ -267,8 +267,13 @@ jobs:
             # same client protocol, same credentials (root/unikraft).
             probe: mysql
             expect: "unikraft-on-bsdkrun"
-            # Never run on x86_64; this job is the test. Non-strict until it
-            # passes.
+            # Verified end to end on arm64/macOS -- it took four fixes, each
+            # hidden behind the last: an Aria recovery that wedges the boot,
+            # an argv the server refuses, a transaction-coordinator log it
+            # cannot mmap, and a TLS certificate minted in 1970 by a guest
+            # with no clock. See examples/unikraft-mariadb/README.md. x86_64
+            # has never been run, so this job is the test; non-strict until
+            # it passes.
             strict: false
           - example: unikraft-mongodb
             kernel: mongodb_fc-x86_64
@@ -283,8 +288,11 @@ jobs:
             # An upsert and a read-back through WiredTiger, not a ping.
             probe: mongo
             expect: "unikraft-on-bsdkrun"
-            # Never run on x86_64; this job is the test. Non-strict until it
-            # passes.
+            # Known failing, on both architectures, for two different
+            # reasons -- see examples/unikraft-mongodb/README.md. On x86_64 a
+            # thread in WaitForMajorityServiceThreadPool takes SIGABRT half a
+            # second in with nothing of mongod's own on the stack; arm64 gets
+            # much further. This job is the tracker for the x86_64 half.
             strict: false
           - example: unikraft-php
             kernel: php_fc-x86_64

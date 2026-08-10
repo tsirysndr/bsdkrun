@@ -1,6 +1,20 @@
 # mariadb:11.4 is the current LTS and is published for both amd64 and arm64.
 FROM mariadb:11.4 AS build
 
+# A statically linked shell, for argv hygiene rather than for scripting:
+# libkrun appends its own words (earlycon=..., tsi_hijack, a bare `--`) to the
+# end of the kernel command line, past the `--` stop sequence, so they arrive
+# in the application's argv. mysqld ignores them; mariadbd does not --
+#
+#   mariadbd: Too many arguments (first extra is 'earlycon=pl011,mmio32,...')
+#   [ERROR] Aborting
+#
+# -- so it is booted as `sh /start.sh` instead: the junk becomes the script's
+# positional parameters and the script exec()s mariadbd with a clean argv, an
+# execve() rather than a fork (CONFIG_APPELFLOADER_MULTIPROCESS in the
+# Kraftfile). Same pattern as ../unikraft-redis and ../unikraft-mongodb.
+FROM busybox:stable-musl AS shell
+
 # The data directory is initialised *here*, when the image is built, instead of
 # by docker-entrypoint.sh when the container starts. Upstream's port ships the
 # whole entrypoint plus bash, gosu, awk and a dozen coreutils to run it -- a
@@ -74,9 +88,12 @@ RUN set -eux; \
 # errmsg.sys, and every megabyte here is paid for twice at boot (once embedded
 # in the kernel image, once unpacked into ramfs). No plugins are copied: the
 # engines this datadir uses (InnoDB, Aria) are built into mariadbd.
+COPY --from=shell /bin/busybox /bin/busybox.static
 RUN set -eux; \
     mkdir -p /rootfs/usr/sbin /rootfs/usr/share /rootfs/var/lib \
-             /rootfs/tmp /rootfs/etc; \
+             /rootfs/bin /rootfs/tmp /rootfs/etc; \
+    cp /bin/busybox.static /rootfs/bin/busybox; \
+    ln -s busybox /rootfs/bin/sh; \
     cp /usr/sbin/mariadbd /rootfs/usr/sbin/mariadbd; \
     ldd /usr/sbin/mariadbd \
       | grep -oE '/[^ ()]+' \
@@ -101,6 +118,7 @@ RUN set -eux; \
 # line. Everything in it is either a unikernel constraint or a size cut; see
 # the comments there and the README.
 COPY my.cnf /rootfs/etc/my.cnf
+COPY start.sh /rootfs/start.sh
 
 FROM scratch
 

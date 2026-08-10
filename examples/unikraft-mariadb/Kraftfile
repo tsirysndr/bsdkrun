@@ -84,6 +84,13 @@ unikraft:
     # threads and several monitors before a single client connects, and every
     # connection is another thread.
     CONFIG_LIBPOSIX_PROCESS_MAX_PID: 1024
+    # The boot command is `sh /start.sh`, and the script exec()s mariadbd to
+    # shed the junk argv libkrun appends -- which mariadbd, unlike mysqld,
+    # rejects outright ("Too many arguments"). execve() support comes with
+    # the loader's multiprocess mode, which also selects
+    # LIBPOSIX_PROCESS_SIGNAL and an init process; same mechanism as
+    # ../unikraft-postgres, used here for exactly one exec.
+    CONFIG_APPELFLOADER_MULTIPROCESS: 'y'
     # Deliver CPU faults to the application as signals. Runtimes that bundle
     # OpenSSL probe for CPU extensions by *executing* an instruction under
     # sigsetjmp and expecting SIGILL when it is unimplemented; without signal
@@ -236,5 +243,9 @@ targets:
 
 rootfs: ./Dockerfile
 
-# The rest of the configuration is /etc/my.cnf inside the image, not argv.
-cmd: ["/usr/sbin/mariadbd", "--user=root"]
+# Not mariadbd directly: libkrun appends junk to the boot argv and mariadbd
+# refuses to start ("Too many arguments (first extra is 'earlycon=...')").
+# The script soaks the junk up as positional parameters and exec()s the
+# server with a clean argv; see the Dockerfile and start.sh. The rest of the
+# configuration is /etc/my.cnf inside the image.
+cmd: ["/bin/sh", "/start.sh"]

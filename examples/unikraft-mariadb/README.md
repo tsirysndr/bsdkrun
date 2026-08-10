@@ -11,7 +11,7 @@ is a process tree.
 ```sh
 ./build.sh                    # host arch; or: ./build.sh x86_64
 bsdkrun unikraft . --mem 2048 --port 3306:3306 \
-  --cmdline "elfloader -- /usr/sbin/mariadbd --user=root"
+  --cmdline "elfloader -- /bin/sh /start.sh"
 ```
 
 ```console
@@ -42,13 +42,42 @@ script initialises the data directory by starting mariadbd, backgrounding it,
 running SQL against it and shutting it down -- a process tree, and a unikernel
 runs one program. This port moves all of it to image build time: the datadir
 is created there by `mariadb-install-db`, and the network `root` account is
-baked with `mariadbd --bootstrap` (the same no-network stdin mechanism
-`mariadb-install-db` itself uses). The guest boots straight into `mariadbd`.
+baked by a real server started on a unix socket and shut down cleanly. (Not
+`mariadbd --bootstrap`: that mode implies skip-grant-tables, so the account
+statements fail, and it leaves Aria's log unclean -- see below.) The guest
+boots into `mariadbd` with no entrypoint, no gosu and no coreutils; the only
+other program in the image is the busybox that filters argv.
 
 **No `runtime: base-compat:latest`**, and **libraries resolved with `ldd`**
 rather than listed -- same reasons as every other example here: the prebuilt
 kernel and the hardcoded `/lib/x86_64-linux-gnu/...` paths are both
 x86_64-only.
+
+**The boot command is `sh /start.sh`, not mariadbd.** libkrun appends its own
+words (`earlycon=...`, `tsi_hijack`, a bare `--`) to the end of the kernel
+command line, past the `--` stop sequence, so they arrive in the application's
+argv. mysqld ignores them — which is why `../unikraft-mysql` boots its server
+directly — but mariadbd refuses to start:
+
+```
+mariadbd: Too many arguments (first extra is 'earlycon=pl011,mmio32,0x0a001000').
+[ERROR] Aborting
+```
+
+The start script soaks them up as positional parameters and `exec`s mariadbd
+with a clean argv — one execve(), no fork, enabled by
+`CONFIG_APPELFLOADER_MULTIPROCESS`. The shell is the statically linked busybox
+(~1 MiB). Same pattern as `../unikraft-redis` and `../unikraft-mongodb`.
+
+**Aria ships with nothing to recover.** After the bootstrap server is shut
+down cleanly, the Dockerfile zerofills the Aria system tables and deletes
+`aria_log.*` and `aria_log_control`; a fresh server recreates both at startup.
+Without this the guest wedges at boot in "Aria engine: starting recovery ...
+transactions to roll back: 1" and spins forever in userspace — on a datadir
+the same binary opens with no recovery at all on plain Linux. The syscall
+trace shows mariadbd reading exactly the bytes the image contains, so the
+divergence is behavioural rather than corruption; it is not understood yet,
+and this sidesteps it.
 
 **`innodb_use_native_aio = 0`** in `my.cnf`: the guest has neither io_uring
 nor `io_submit()`. mariadbd links liburing regardless (so the library is in
@@ -63,5 +92,6 @@ embedded initrd is unpacked into, exactly as in `../unikraft-mysql`.
 |--------------|---------------------------------------------------------------------|
 | `Dockerfile` | bakes the datadir + root account, assembles rootfs via `ldd`        |
 | `my.cnf`     | unikernel constraints (no native AIO, no DNS) and memory bounds     |
-| `Kraftfile`  | the from-source base runtime + preemption/TID fixes + elfloader     |
+| `start.sh`   | argv filter: soaks up libkrun's junk, `exec`s mariadbd              |
+| `Kraftfile`  | base runtime + preemption/TID fixes + MULTIPROCESS + elfloader      |
 | `build.sh`   | two-phase build; see `../unikraft-postgres/build.sh`                |

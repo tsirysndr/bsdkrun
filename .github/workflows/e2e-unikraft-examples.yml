@@ -197,17 +197,17 @@ jobs:
             argv: /usr/local/bin/postgres -D /var/lib/postgresql/data
             port: 5432
             # Like mysql, this runs a real query rather than an HTTP request:
-            # a green run means the postmaster spawned a backend for the
-            # connection and that backend planned and executed SQL.
+            # a green run means the postmaster spawned a backend process for
+            # the connection (posix_spawn + execve — there is no fork) and
+            # that backend planned and executed SQL.
             probe: postgres
             expect: "unikraft-on-bsdkrun"
-            # Not yet expected to pass. On arm64 the postmaster starts, listens
-            # on 5432 and spawns children -- which took five fixes in
-            # library/unikraft-base/patches, including execve() entering the
-            # new program at the wrong register on arm64 -- but a child still
-            # faults during WAL recovery. x86_64 has never been run at all.
-            # This job is the tracker for both; see the README.
-            strict: false
+            # Strict: serving SQL end to end on both architectures took seven
+            # patches in library/unikraft-base/patches (15-16, 18-22) — three
+            # of which (19, 20, 22) were kernel bugs that no other example
+            # exercises — so a regression here is a kernel regression, and it
+            # must be loud. See examples/unikraft-postgres/README.md.
+            strict: true
           - example: unikraft-redis
             kernel: redis_fc-x86_64
             # ~7 MiB of root filesystem (redis-server, four libraries and
@@ -256,10 +256,12 @@ jobs:
             # Like mysql: a large server binary and a datadir initialised at
             # image build time, resident twice at boot.
             mem: 2048
-            # The rest of the configuration is /etc/my.cnf inside the image.
-            # mariadbd shrugs off the argv words libkrun appends, exactly as
-            # mysqld does, so no trampoline script.
-            argv: /usr/sbin/mariadbd --user=root
+            # `sh /start.sh`: mariadbd, unlike mysqld, refuses to start
+            # when libkrun's appended words reach its argv ("Too many
+            # arguments (first extra is 'earlycon=...')"), so the script
+            # absorbs them and exec()s the server. The rest of the
+            # configuration is /etc/my.cnf inside the image.
+            argv: /bin/sh /start.sh
             port: 3306
             # The same real-query check as unikraft-mysql; MariaDB answers the
             # same client protocol, same credentials (root/unikraft).
@@ -513,9 +515,10 @@ jobs:
       # A register dump is only actionable with symbols, and only this job has
       # everything needed to resolve them: the kernel's .dbg for kernel-range
       # addresses, and the exported rootfs plus the loader's "loaded to" lines
-      # for application-range ones (which is why the postgres Kraftfile keeps
-      # CONFIG_APPELFLOADER_DEBUG on). Print names instead of hex, right in
-      # the log where the crash is.
+      # for application-range ones (flip CONFIG_APPELFLOADER_DEBUG to 'y' in
+      # the example's Kraftfile to get those). Print names instead of hex,
+      # right in the log where the crash is. This is how the vfork TLS bug
+      # (patch 22) was pinned to musl's pthread_exit+0x17f.
       - name: Symbolicate a guest crash
         if: ${{ always() }}
         run: |

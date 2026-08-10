@@ -111,6 +111,36 @@ defmodule Bsdkrun.Types do
     defstruct [:name, :subnet, :gateway, :members, :running, :up, :created_at]
   end
 
+  defmodule CommandResult do
+    @moduledoc """
+    The outcome of a daemon command run to completion, as reported by
+    `Bsdkrun.Client` over GraphQL (`stopMachine`, `removeMachines`, etc.). A
+    non-zero `exit_code` is a state to inspect, not necessarily a transport
+    failure — mirrors the GraphQL schema's `CommandResult`.
+    """
+
+    @type t :: %__MODULE__{
+            exit_code: integer(),
+            stdout: String.t(),
+            stderr: String.t()
+          }
+
+    defstruct [:exit_code, :stdout, :stderr]
+  end
+
+  defmodule ShellSessionInfo do
+    @moduledoc "A shell/exec session opened via the GraphQL `openShell` mutation."
+
+    @type t :: %__MODULE__{
+            id: String.t(),
+            machine_id: String.t(),
+            finished: boolean(),
+            truncated: boolean()
+          }
+
+    defstruct [:id, :machine_id, :finished, :truncated]
+  end
+
   defmodule Result do
     @moduledoc """
     The captured result of running a command in the guest (`Bsdkrun.Sandbox.exec/3`).
@@ -181,6 +211,58 @@ defmodule Bsdkrun.Types do
       bind: row["bind"],
       host: num(row["host"]),
       guest: num(row["guest"])
+    }
+  end
+
+  @doc """
+  Map a GraphQL `Machine` row (camelCase keys, as selected by
+  `Bsdkrun.Client`'s `MACHINE_FIELDS`) to a `SandboxInfo` — the same struct
+  `sandbox_info/1` builds from the CLI's `ps --json`, just sourced from the
+  daemon instead.
+  """
+  @spec sandbox_info_from_graphql(map()) :: SandboxInfo.t()
+  def sandbox_info_from_graphql(row) do
+    %SandboxInfo{
+      id: to_string(row["id"]),
+      name: row["name"],
+      image: to_string(row["image"]),
+      kind: to_string(row["kind"]),
+      command: to_string(row["command"] || ""),
+      status: to_string(row["status"]),
+      running: truthy(row["running"]),
+      exit_code: num(row["exitCode"]),
+      pid: num(row["pid"]),
+      detached: truthy(row["detached"]),
+      cpus: num(row["cpus"]),
+      mem: num(row["mem"]),
+      volume: row["volume"],
+      state_dir: to_string(row["stateDir"] || ""),
+      network: row["network"],
+      net_ip: row["netIp"],
+      created_at: num(row["createdAt"]),
+      finished_at: num(row["finishedAt"]),
+      ports: (row["ports"] || []) |> Enum.map(&port_forward/1)
+    }
+  end
+
+  @doc "Map a GraphQL `CommandResult` row to a `CommandResult` struct."
+  @spec command_result_from_graphql(map()) :: CommandResult.t()
+  def command_result_from_graphql(row) do
+    %CommandResult{
+      exit_code: num(row["exitCode"]),
+      stdout: to_string(row["stdout"] || ""),
+      stderr: to_string(row["stderr"] || "")
+    }
+  end
+
+  @doc "Map a GraphQL `ShellSessionInfo` row to a `ShellSessionInfo` struct."
+  @spec shell_session_info_from_graphql(map()) :: ShellSessionInfo.t()
+  def shell_session_info_from_graphql(row) do
+    %ShellSessionInfo{
+      id: to_string(row["id"]),
+      machine_id: to_string(row["machineId"]),
+      finished: truthy(row["finished"]),
+      truncated: truthy(row["truncated"])
     }
   end
 

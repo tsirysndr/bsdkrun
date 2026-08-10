@@ -167,6 +167,71 @@ Names resolve on Linux and FreeBSD via the network's DNS; **NetBSD** resolves vi
 a synced `/etc/hosts` block — joins auto-sync, and `Networks.sync/1` refreshes an
 existing network without restarting members.
 
+## Connecting to a remote daemon
+
+Everything above talks to a local `bsdkrun` binary. `Bsdkrun.Client` is the
+network sibling: it drives the same operations against a remote
+[`bsdkrund`](../../daemon/README.md) over its GraphQL API — no local binary
+needed, just a URL and a bearer token.
+
+```elixir
+client = Bsdkrun.Client.from_env!()  # BSDKRUN_URL / BSDKRUN_TOKEN
+# or: client = Bsdkrun.Client.new(url: "http://vps.example.com:50052", token: "9f2c...")
+
+{:ok, machines} = Bsdkrun.Client.list(client, true)  # same SandboxInfo Bsdkrun.list returns
+{:ok, id} = Bsdkrun.Client.run_linux(client, image: "alpine", cpus: 2, mem: 1024, command: ["sleep", "300"])
+
+{:ok, result} = Bsdkrun.Client.exec(client, id, ["uname", "-a"])
+IO.puts(result.output)
+
+Bsdkrun.Client.stop(client, id)
+Bsdkrun.Client.remove(client, [id])
+```
+
+`Client.run_linux`/`run_bsd`/`run_nanos`/`run_unikraft`/`run_osv`/`run_flavor`
+each take the same options (a keyword list or map) as the corresponding
+GraphQL mutation (`daemon/src/graphql.rs`) — `run_bsd(client, os: :freebsd, ...)`,
+etc. — and return the new machine's id. `stop`/`start`/`remove`/`update`/
+`commit` return a `CommandResult` (`exit_code`, `stdout`, `stderr`).
+
+For a live terminal instead of a one-shot `exec`, use `shell`:
+
+```elixir
+{:ok, session} = Bsdkrun.Client.shell(client, id)  # or shell(client, id, command: [...])
+Bsdkrun.Client.Shell.write(session, "ls -la\n")
+Bsdkrun.Client.Shell.resize(session, 50, 120)
+receive do
+  {:bsdkrun_shell, _id, {:data, bytes}} -> IO.write(bytes)
+  {:bsdkrun_shell, _id, {:exit, code}} -> IO.puts("exited #{code}")
+end
+Bsdkrun.Client.Shell.close(session)
+```
+
+Live output (from `shell`, `follow_logs`, and the raw `subscribe` escape
+hatch) delivers either as `{:bsdkrun_shell, id, event}`-style messages to the
+calling process, or to an `opts[:on_data]` callback — your choice. Both
+`exec`/`shell` and `follow_logs` are built on the same `openShell`/
+`shellOutput` shell-session protocol the daemon uses for every interactive
+terminal — see [`daemon/README.md`](../../daemon/README.md#interactive-shells-over-graphql)
+for the wire-level story.
+
+Not every GraphQL operation has a typed function yet (flavor/network/volume
+management, for instance) — `Client.request(client, query, variables)` runs
+any raw query or mutation, and `Client.subscribe(client, query, variables)`
+runs any raw subscription, for anything not wrapped above.
+
+Like the rest of this SDK, the remote client adds no new dependency —
+`jason` (already a dependency for `--json` parsing) is the only one. HTTP
+runs over Erlang/OTP's built-in `:httpc`, and subscriptions (used by `exec`/
+`shell`/`follow_logs`) run over a hand-rolled `graphql-transport-ws` client
+on `:gen_tcp`/`:ssl`, all part of the standard Erlang distribution — plus a
+small supervision tree (`Bsdkrun.Application`) giving each `Client`'s shared
+socket somewhere to live.
+
+`Client.new/1`/`from_env/0` both reject a URL configured without a token
+rather than silently making an unauthenticated request — set both
+`BSDKRUN_URL` and `BSDKRUN_TOKEN`, or pass both explicitly.
+
 ## Errors
 
 Every fallible function returns `{:ok, value}` or `{:error, %Bsdkrun.Error{}}`.
@@ -176,6 +241,10 @@ The `%Bsdkrun.Error{}` exception has a `:kind`:
 - `:command_failed`    — a command exited non-zero (carries `:exit_code`,
   `:stdout`, `:stderr`, `:label`).
 - `:sandbox_not_found` — `Bsdkrun.get/1` matched no machine.
+- `:auth_error`        — a `Bsdkrun.Client` request's bearer token was rejected.
+- `:graphql_error`     — any other `Bsdkrun.Client` request failure (carries
+  `:code`, the daemon's `extensions.code`, when there is one).
+- `:config_error`      — invalid or missing `Bsdkrun.Client.from_env/0` configuration.
 
 The bang variants (`Bsdkrun.create!/1`, `Bsdkrun.Sandbox.get!/1`,
 `Bsdkrun.Sandbox.list!/1`) unwrap the value or `raise` the error.

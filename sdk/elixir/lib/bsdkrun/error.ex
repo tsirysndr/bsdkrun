@@ -3,14 +3,30 @@ defmodule Bsdkrun.Error do
   The single exception type raised (or returned in `{:error, _}` tuples) by the
   SDK. `kind` discriminates the failure:
 
-    * `:binary_not_found` — the `bsdkrun` binary could not be located.
-    * `:command_failed`   — a `bsdkrun` invocation exited non-zero. Carries
+    * `:binary_not_found`  — the `bsdkrun` binary could not be located.
+    * `:command_failed`    — a `bsdkrun` invocation exited non-zero. Carries
       `exit_code`, `stdout`, `stderr`, and the `label` of the command.
     * `:sandbox_not_found` — no machine matched the given id / prefix.
+    * `:auth_error`        — the remote daemon (`Bsdkrun.Client`) rejected the
+      bearer token, either over HTTP (401) or a GraphQL error with
+      `extensions.code == "UNAUTHENTICATED"`, or a `graphql-transport-ws`
+      socket that closed before `connection_ack` ever arrived.
+    * `:graphql_error`     — any other `Bsdkrun.Client` failure: an
+      unreachable daemon, a non-GraphQL response, or a GraphQL `errors[]`
+      entry that isn't an auth failure. `code` carries the GraphQL
+      `extensions.code`, if any.
+    * `:config_error`      — invalid or missing `Bsdkrun.Client.from_env/0`
+      configuration.
   """
 
   @typedoc "The category of failure this error represents."
-  @type kind :: :binary_not_found | :command_failed | :sandbox_not_found
+  @type kind ::
+          :binary_not_found
+          | :command_failed
+          | :sandbox_not_found
+          | :auth_error
+          | :graphql_error
+          | :config_error
 
   @type t :: %__MODULE__{
           kind: kind(),
@@ -19,7 +35,8 @@ defmodule Bsdkrun.Error do
           stdout: String.t() | nil,
           stderr: String.t() | nil,
           label: String.t() | nil,
-          searched: [String.t()] | nil
+          searched: [String.t()] | nil,
+          code: String.t() | nil
         }
 
   defexception [
@@ -29,7 +46,8 @@ defmodule Bsdkrun.Error do
     :stdout,
     :stderr,
     :label,
-    :searched
+    :searched,
+    :code
   ]
 
   @impl true
@@ -71,5 +89,27 @@ defmodule Bsdkrun.Error do
       kind: :sandbox_not_found,
       message: "no sandbox found matching id #{inspect(id)}"
     }
+  end
+
+  @doc "Build an `:auth_error` — the daemon rejected the bearer token."
+  @spec auth_error(String.t()) :: t()
+  def auth_error(message \\ "the daemon rejected this token") do
+    %__MODULE__{kind: :auth_error, message: message, code: "UNAUTHENTICATED"}
+  end
+
+  @doc """
+  Build a `:graphql_error` — an unreachable daemon, a non-GraphQL response, or
+  a GraphQL `errors[]` entry that isn't an auth failure. `code` is the
+  GraphQL `extensions.code`, if the server sent one.
+  """
+  @spec graphql_error(String.t(), String.t() | nil) :: t()
+  def graphql_error(message, code \\ nil) do
+    %__MODULE__{kind: :graphql_error, message: message, code: code}
+  end
+
+  @doc "Build a `:config_error` for invalid/missing `Bsdkrun.Client.from_env/0` configuration."
+  @spec config_error(String.t()) :: t()
+  def config_error(message) do
+    %__MODULE__{kind: :config_error, message: message}
   end
 end

@@ -10,6 +10,7 @@ defmodule Bsdkrun.MixProject do
       version: @version,
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
+      elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       description:
         "Elixir SDK for bsdkrun — a Firecracker-style microVM launcher for BSD and Linux guests.",
@@ -20,9 +21,13 @@ defmodule Bsdkrun.MixProject do
     ]
   end
 
-  # No application runtime — this is a thin, stateless wrapper around the CLI.
+  # The CLI-backed half of the SDK (Bsdkrun.Sandbox et al.) is a thin,
+  # stateless wrapper with no runtime of its own. Bsdkrun.Client — the remote
+  # GraphQL client — needs :inets (HTTP) and :ssl (HTTP/S and wss://), plus a
+  # tiny supervision tree (Bsdkrun.Application) that gives each Client's
+  # shared graphql-transport-ws socket somewhere to live.
   def application do
-    [extra_applications: [:logger]]
+    [extra_applications: [:logger, :inets, :ssl], mod: {Bsdkrun.Application, []}]
   end
 
   defp deps do
@@ -31,6 +36,12 @@ defmodule Bsdkrun.MixProject do
       {:ex_doc, "~> 0.31", only: :dev, runtime: false}
     ]
   end
+
+  # test/support holds fake HTTP/WS servers (built on :gen_tcp, no hex
+  # dependency) used to exercise Bsdkrun.GraphQL and Bsdkrun.GraphQLSocket
+  # end-to-end; keep them out of the published package.
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_env), do: ["lib"]
 
   # Published to Hex as `bsdkrun_ex`: the Gleam SDK already claims `bsdkrun`
   # there, and Hex is a single namespace shared by both. The modules stay

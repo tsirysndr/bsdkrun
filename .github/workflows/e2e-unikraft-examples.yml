@@ -288,11 +288,14 @@ jobs:
             # An upsert and a read-back through WiredTiger, not a ping.
             probe: mongo
             expect: "unikraft-on-bsdkrun"
-            # Known failing, on both architectures, for two different
-            # reasons -- see examples/unikraft-mongodb/README.md. On x86_64 a
-            # thread in WaitForMajorityServiceThreadPool takes SIGABRT half a
-            # second in with nothing of mongod's own on the stack; arm64 gets
-            # much further. This job is the tracker for the x86_64 half.
+            # Verified end to end on arm64/macOS. It took five fixes --
+            # a CPU topology and /proc entries baked into the image, 1 MiB
+            # stacks, no WiredTiger journal pre-allocation, and two kernel
+            # signal fixes in library/unikraft-base/patches, the second of
+            # which (sigaltstack(SS_DISABLE) returning ENOMEM) is what had
+            # been aborting the server in a pool thread here too. That fix
+            # is not architecture specific, so this run is the test.
+            # See examples/unikraft-mongodb/README.md.
             strict: false
           - example: unikraft-php
             kernel: php_fc-x86_64

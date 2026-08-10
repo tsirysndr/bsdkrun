@@ -18,9 +18,10 @@ $ mongosh --port 27017 --quiet --eval \
 
 ## Status
 
-**Starts and serves on arm64; whether it stays up is being verified.** The
-unikernel boots, DHCPs an address, WiredTiger opens and recovers, mongod
-listens on 27017, and a real write round-trips over the forwarded port:
+**arm64 works.** The unikernel boots, DHCPs an address, WiredTiger opens and
+recovers, mongod listens on 27017, and a real write round-trips over the
+forwarded port — verified twice, ninety seconds apart, with the server still
+up and no aborts in the console:
 
 ```console
 $ mongosh --port 27017 --quiet --eval \
@@ -29,29 +30,44 @@ $ mongosh --port 27017 --quiet --eval \
 unikraft-on-bsdkrun
 ```
 
-The first version of that run then **aborted a few seconds later**, in the
-connection thread, which is what the `/proc/<pid>/stat` entries described
-below address. x86_64 shows the same abort in
-`WaitForMajorityServiceThreadPool`, and there is good reason to think it is
-the same cause rather than an architecture-specific one — see below.
-`.github/workflows/e2e-unikraft-examples.yml` runs this as `strict: false`.
+x86_64 has never been run; `.github/workflows/e2e-unikraft-examples.yml`
+runs it as `strict: false` until its first green run. The bug that used to
+kill it there is fixed below and is not architecture specific, so it has a
+fair chance.
 
-Getting arm64 working took four things, three of them in this directory and
-one in the kernel:
+Getting here took five things — three in this directory, two in the kernel:
 
 | | |
 |---|---|
 | **CPU topology** | mongod counted zero cores and died on `numPartitions > 0`. |
 | **1 MiB stacks** | Default pthread stacks are sized from `RLIMIT_STACK`; at 64 KiB a startup thread overflowed its guard page. |
 | **No journal pre-allocation** | WiredTiger's log server panicked with `ENOENT` renaming `WiredTigerPreplog` files on ramfs. |
-| **Per-delivery alternate stack** | The guest crashed *inside* signal delivery, destroying every diagnostic above it. Fixed in `../../library/unikraft-base/patches`. |
-| **Its own /proc entries** | mongod reads `/proc/<pid>/stat`; without it, `Location13538` is thrown once a second, and a thread that does not catch it calls `terminate()` → `abort()`. |
+| **Its own `/proc` entries** | `/proc/<pid>/stat` missing throws `Location13538` once a second; a thread that does not catch it calls `terminate()` → `abort()`. |
+| **`sigaltstack(SS_DISABLE)`** | Rejected with `ENOMEM`, so every thread teardown aborted the server. Kernel fix. |
 
-That last one was the expensive one: until it was fixed, all the guest ever
-reported was `Assertion failure: !(altstack->ss_flags & 1)`, never the
-application error underneath. Unikraft keeps one alternate signal stack per
-*process* where POSIX gives each thread its own, so the second thread of any
-threaded program to take a signal brought the guest down.
+The last two were the same symptom — a bare `Got signal: 6 (Aborted)` in a
+pool thread, with nothing of mongod's own on the stack — which is why they
+took three days and a syscall trace to tell apart. The trace ends:
+
+```
+sigaltstack(...) = Cannot allocate memory (-12)
+rt_sigprocmask / gettid() / getpid()            <- glibc's raise()
+"Writing fatal message" ... "Got signal: 6 (Aborted)."
+```
+
+mongod installs an alternate signal stack on each thread and disables it when
+the thread goes away, and treats a failing `sigaltstack()` as fatal. Unikraft
+validated the stack size before looking at the flags, so a teardown — a
+zeroed `stack_t` with `SS_DISABLE`, which describes no stack at all — failed
+with `ENOMEM`. Linux checks the size only when the request is not a disable.
+Fixed in `../../library/unikraft-base/patches`.
+
+None of that was visible until an earlier fix in the same file: Unikraft kept
+one alternate signal stack per *process* where POSIX gives each thread its
+own, so the guest crashed *inside* signal delivery
+(`Assertion failure: !(altstack->ss_flags & 1)`) and destroyed the diagnostic
+the application was printing. Fixing that is what made everything above
+legible.
 
 Mind the CPU floors inherited from MongoDB itself: 5.0+ requires AVX on
 x86_64 and ARMv8.2-A on arm64. GitHub's runners and Apple Silicon both

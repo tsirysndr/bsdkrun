@@ -189,6 +189,68 @@ Names resolve on Linux and FreeBSD via the network's DNS; **NetBSD** resolves
 via a synced `/etc/hosts` block — joins auto-sync, and `Networks.sync` refreshes
 an existing network without restarting members.
 
+## Connecting to a remote daemon
+
+Everything above talks to a local `bsdkrun` binary. `Bsdkrun::Client` is the
+network sibling: it drives the same operations against a remote
+[`bsdkrund`](../../daemon/README.md) over its GraphQL API — no local binary
+needed, just a URL and a bearer token.
+
+```ruby
+require "bsdkrun"
+
+client = Bsdkrun::Client.new(url: "http://vps.example.com:50052", token: "9f2c...")
+# or, from BSDKRUN_URL / BSDKRUN_TOKEN:
+client = Bsdkrun::Client.from_env
+
+machines = client.list(all: true)  # Array<SandboxInfo> — same type Sandbox.list returns
+id = client.run_linux(image: "alpine", cpus: 2, mem: 1024, command: ["sleep", "300"])
+
+result = client.exec(id, ["uname", "-a"])
+puts result.output, result.exit_code
+
+client.stop(id)
+client.remove([id])
+```
+
+`client.run_linux`/`run_bsd`/`run_nanos`/`run_unikraft`/`run_osv`/`run_flavor`
+each take the same options as the corresponding GraphQL mutation
+(`daemon/src/graphql.rs`) — `run_bsd(os: "freebsd", ...)`, etc. — and return
+the new machine's id. `stop`/`start`/`remove`/`update`/`commit` return a
+`CommandResult` (`exit_code`, `stdout`, `stderr`).
+
+For a live terminal instead of a one-shot `exec`, use `shell`:
+
+```ruby
+session = client.shell(id)  # or shell(id, command: [...]) for a non-login command
+session.on_output { |bytes| $stdout.write(bytes) }
+session.on_exit { |code| puts "\nexited #{code}" }
+session.write("ls -la\n")
+session.resize(50, 120)
+session.close
+```
+
+`follow_logs(id) { |bytes| ... }` streams a machine's console live instead of
+the one-shot `logs(id)`. Both `exec`/`shell` and `follow_logs` are built on
+the same `openShell`/`shellOutput` shell-session protocol the daemon uses for
+every interactive terminal — see [`daemon/README.md`](../../daemon/README.md#interactive-shells-over-graphql)
+for the wire-level story.
+
+Not every GraphQL operation has a typed method yet (flavor/network/volume
+management, for instance) — `client.request(query, variables)` runs any raw
+query or mutation, and `client.subscribe(query, variables, on_next: ...)` runs
+any raw subscription, for anything not wrapped above.
+
+Like the rest of this gem, `Client` uses **only the Ruby standard library** —
+the HTTP transport is `Net::HTTP`, and subscriptions (used by `exec`/`shell`/
+`follow_logs`) run over a hand-rolled `graphql-transport-ws` client on top of
+`Socket`/`OpenSSL`, since Ruby's standard library has no WebSocket client of
+its own.
+
+`Client.new(url:, token:)` and `.from_env` both reject a URL configured
+without a token rather than silently making an unauthenticated request — set
+both `BSDKRUN_URL` and `BSDKRUN_TOKEN`, or pass both explicitly.
+
 ## Errors
 
 All errors extend `Bsdkrun::Error`:
@@ -198,6 +260,9 @@ All errors extend `Bsdkrun::Error`:
   `stdout`, `stderr`, `command`). Raised by `exec` with `throw_on_error: true`,
   by the lifecycle/namespace helpers, and by the agent helpers.
 - `Bsdkrun::SandboxNotFound` — `Sandbox.get` matched no machine.
+- `Bsdkrun::GraphQLError` — a `Client` request failed (carries `code`, the
+  daemon's `extensions.code`, when there is one).
+- `Bsdkrun::AuthError` (a `GraphQLError`) — the daemon rejected the bearer token.
 
 ## Try it interactively
 

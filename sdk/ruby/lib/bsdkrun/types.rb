@@ -67,6 +67,38 @@ module Bsdkrun
     def self.to_i_or_nil(value)
       value.nil? ? nil : value.to_i
     end
+
+    # Map a GraphQL +Machine+ object (String keys, camelCase — it comes from
+    # +JSON.parse+ on the daemon's response, not the CLI) to a typed instance.
+    # Sibling to {from_row}; same fields, different source and casing.
+    #
+    # @param m [Hash] a +MACHINE_FIELDS+-shaped hash, e.g. from
+    #   {Bsdkrun::Client#list} / {Bsdkrun::Client#get}.
+    # @return [SandboxInfo]
+    def self.from_graphql(m)
+      running = !!m["running"]
+      new(
+        id: m["id"].to_s,
+        name: m["name"],
+        image: m["image"].to_s,
+        kind: m["kind"].to_s,
+        command: (m["command"] || "").to_s,
+        status: m["status"].to_s,
+        running: running,
+        exit_code: to_i_or_nil(m["exitCode"]),
+        pid: to_i_or_nil(m["pid"]),
+        detached: !!m["detached"],
+        cpus: m["cpus"].to_i,
+        mem: m["mem"].to_i,
+        volume: m["volume"],
+        state_dir: m["stateDir"].to_s,
+        network: m["network"],
+        net_ip: m["netIp"],
+        created_at: m["createdAt"].to_i,
+        finished_at: to_i_or_nil(m["finishedAt"]),
+        ports: (m["ports"] || []).map { |p| PortForward.from_row(p) }
+      )
+    end
   end
 
   # An image as reported by +bsdkrun images --json+.
@@ -164,4 +196,41 @@ module Bsdkrun
       self
     end
   end
+
+  # The outcome of a {Bsdkrun::Client} lifecycle mutation (+stopMachine+,
+  # +startMachine+, +removeMachines+, +updateMachine+, +commitMachine+, ...).
+  # A non-zero +exit_code+ is a value to inspect, not necessarily a failure —
+  # mirrors +daemon/src/graphql.rs+'s +CommandResult+.
+  #
+  # @!attribute [r] exit_code
+  #   @return [Integer]
+  # @!attribute [r] stdout
+  #   @return [String]
+  # @!attribute [r] stderr
+  #   @return [String]
+  CommandResult = Data.define(:exit_code, :stdout, :stderr)
+
+  # A {Bsdkrun::Client#exec} result: the guest command's exit status and its
+  # combined (stdout+stderr, in arrival order) output, decoded from the
+  # +shellOutput+ subscription's base64 frames.
+  #
+  # @!attribute [r] exit_code
+  #   @return [Integer]
+  # @!attribute [r] output
+  #   @return [String] binary-safe combined output.
+  ExecResult = Data.define(:exit_code, :output)
+
+  # An open interactive shell session, as reported by +openShell+ / the
+  # +shellSessions+ query. Mirrors +daemon/src/graphql.rs+'s +ShellSessionInfo+.
+  #
+  # @!attribute [r] id
+  #   @return [String]
+  # @!attribute [r] machine_id
+  #   @return [String]
+  # @!attribute [r] finished
+  #   @return [Boolean]
+  # @!attribute [r] truncated
+  #   @return [Boolean] whether buffered output was dropped to stay under the
+  #     session buffer cap.
+  ShellSessionInfo = Data.define(:id, :machine_id, :finished, :truncated)
 end

@@ -11,6 +11,10 @@ require_relative "bsdkrun/images"
 require_relative "bsdkrun/volumes"
 require_relative "bsdkrun/networks"
 require_relative "bsdkrun/system"
+require_relative "bsdkrun/websocket_frame"
+require_relative "bsdkrun/ws_client"
+require_relative "bsdkrun/shell_session"
+require_relative "bsdkrun/client"
 
 # bsdkrun — a Ruby SDK for {https://github.com/tsirysndr/bsdkrun bsdkrun}, a
 # Firecracker-style microVM launcher for BSD and Linux guests. A thin wrapper

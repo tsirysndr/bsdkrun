@@ -49,4 +49,29 @@ module Bsdkrun
       super("no sandbox found matching id #{id.inspect}")
     end
   end
+
+  # A GraphQL request to a remote +bsdkrund+ daemon failed — a transport
+  # failure, a non-JSON response, or a +body["errors"]+ entry that was not an
+  # auth failure. Mirrors +web/src/lib/graphql.ts+'s +GraphQLError+.
+  class GraphQLError < Error
+    # @return [String, nil] the error's +extensions.code+, when the daemon set one.
+    attr_reader :code
+
+    # @param message [String]
+    # @param code [String, nil]
+    def initialize(message, code = nil)
+      super(message)
+      @code = code
+    end
+  end
+
+  # The daemon rejected our token — an HTTP 401, a GraphQL error whose
+  # +extensions.code+ is +"UNAUTHENTICATED"+, or a websocket that closed
+  # before +connection_ack+ ever arrived.
+  class AuthError < GraphQLError
+    # @param message [String]
+    def initialize(message = "the daemon rejected this token")
+      super(message, "UNAUTHENTICATED")
+    end
+  end
 end

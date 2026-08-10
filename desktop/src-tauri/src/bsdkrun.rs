@@ -295,6 +295,14 @@ pub async fn run_detached(bin: &Target, args: &[&str]) -> Result<String, BkError
 
 // ---- typed models (mirror the CLI's `--json` shapes) ----------------------
 
+/// A host↔guest TCP port forward (mirrors `bsdkrun ps --json`'s `ports[]`).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PortForward {
+    pub bind: String,
+    pub host: u16,
+    pub guest: u16,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Machine {
     pub id: String,
@@ -318,6 +326,8 @@ pub struct Machine {
     pub network: Option<String>,
     #[serde(default)]
     pub net_ip: Option<String>,
+    #[serde(default)]
+    pub ports: Vec<PortForward>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

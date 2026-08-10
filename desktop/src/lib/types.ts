@@ -1,6 +1,12 @@
 // Mirrors the Rust structs returned by the Tauri commands (which in turn mirror
 // bsdkrun's `--json` output).
 
+export interface PortForward {
+  bind: string;
+  host: number;
+  guest: number;
+}
+
 export interface Machine {
   id: string;
   name: string | null;
@@ -20,6 +26,7 @@ export interface Machine {
   finished_at: string | null;
   network: string | null;
   net_ip: string | null;
+  ports: PortForward[];
 }
 
 export interface Image {

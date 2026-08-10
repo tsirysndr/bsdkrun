@@ -92,6 +92,16 @@ function Inspect({ m }: { m: Machine }) {
             : "— (isolated)"
         }
       />
+      <Row
+        label="Ports"
+        value={
+          m.ports.length > 0
+            ? m.ports
+                .map((p) => `${p.bind}:${p.host}->${p.guest}/tcp`)
+                .join(", ")
+            : "—"
+        }
+      />
       <Row label="Created" value={m.created_at || "—"} />
       {m.finished_at && <Row label="Finished" value={m.finished_at} />}
       <Row label="State dir" value={m.state_dir || "—"} mono />

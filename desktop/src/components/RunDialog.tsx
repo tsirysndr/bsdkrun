@@ -72,8 +72,8 @@ const schema = z
             .split("\n")
             .map((l) => l.trim())
             .filter(Boolean)
-            .every((l) => /^\d+:\d+$/.test(l)),
-        "Each line must be HOST:GUEST (numbers)",
+            .every((l) => /^((\d{1,3}\.){3}\d{1,3}:)?\d+:\d+$/.test(l)),
+        "Each line must be HOST:GUEST or BIND:HOST:GUEST (e.g. 0.0.0.0:8080:80)",
       ),
     attachDisks: z.string(),
     diskSize: z
@@ -747,9 +747,9 @@ export default function RunDialog() {
                   name="ports"
                   render={({ field }) => (
                     <Textarea
-                      label="Port forwards (one per line, HOST:GUEST)"
+                      label="Port forwards (one per line, HOST:GUEST or BIND:HOST:GUEST)"
                       labelPlacement="outside"
-                      placeholder={"8080:80\n2222:22"}
+                      placeholder={"8080:80\n2222:22\n0.0.0.0:8080:80"}
                       value={field.value}
                       onValueChange={field.onChange}
                       minRows={2}

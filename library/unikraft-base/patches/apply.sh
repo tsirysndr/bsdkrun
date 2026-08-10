@@ -1870,7 +1870,7 @@ else
 fi
 
 
-# --- Patch 23: signal delivery must not assert on a busy alternate stack ---
+# --- Patch 24: signal delivery must not assert on a busy alternate stack ---
 #
 # sigaltstack(2) is per *thread* in POSIX and in Linux. Unikraft keeps a single
 # stack_t in the process signal descriptor (struct uk_signal_pdesc), shared by
@@ -1988,6 +1988,89 @@ if [ -f "$BRK" ] && grep -q 'uk_pr_err("brk request=' "$BRK"; then
 	}
 else
 	echo "brk() entry trace: already patched or absent, skipping"
+fi
+
+
+# ---------------------------------------------------------------------------
+# 25. sigaltstack(SS_DISABLE) is rejected with ENOMEM.
+#
+# Tearing an alternate signal stack down is normally spelled
+#
+#     stack_t ss = {};
+#     ss.ss_flags = SS_DISABLE;
+#     sigaltstack(&ss, nullptr);
+#
+# -- ss_sp and ss_size left zero, because a teardown does not describe a
+# stack. Unikraft validates the size before it looks at the flags:
+#
+#     if (unlikely(ss->ss_size < MINSIGSTKSZ))
+#             return -ENOMEM;
+#
+# so that call fails with ENOMEM (0 < 6144 on arm64, < 2048 on x86_64).
+# Linux checks the size only when the request is *not* a disable
+# (kernel/signal.c, do_sigaltstack(): the check sits in the `else` of
+# `if (ss_flags & SS_DISABLE)`, which zeroes ss_sp/ss_size instead).
+#
+# mongod installs an alternate stack on each of its threads and disables it
+# again when the thread goes away, and it treats a failing sigaltstack() as
+# fatal -- it calls abort() with no diagnostic of its own. The result was a
+# server that started, listened, served queries, and then died the moment a
+# thread pool recycled a thread:
+#
+#     sigaltstack(...) = Cannot allocate memory (-12)
+#     ... "ctx":"WaitForMajorityServiceThreadPool-0",
+#         "msg":"Writing fatal message","attr":{"message":"Got signal: 6"}
+#
+# Skip the size check for SS_DISABLE, and clear ss_sp/ss_size on the way out
+# as Linux does rather than leaving the old ones behind a disabled flag.
+# ---------------------------------------------------------------------------
+SAS="$UK/lib/posix-process/signal/sigaltstack.c"
+if [ -f "$SAS" ] && grep -q 'if (unlikely(ss->ss_size < MINSIGSTKSZ))' "$SAS"; then
+	echo "patching $SAS (sigaltstack(SS_DISABLE) must not be size-checked)"
+	python3 - "$SAS" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+
+old_size = """		if (unlikely(ss->ss_size < MINSIGSTKSZ))
+			return -ENOMEM;
+"""
+new_size = """		/* A disable request carries no stack, so there is no size to
+		 * validate -- callers pass a zeroed stack_t. Linux checks the
+		 * size only in the `else` of its SS_DISABLE branch; checking
+		 * it first turns every teardown into ENOMEM.
+		 */
+		if (unlikely((unsigned int)ss->ss_flags != SS_DISABLE &&
+			     ss->ss_size < MINSIGSTKSZ))
+			return -ENOMEM;
+"""
+
+old_dis = """		if ((unsigned int)ss->ss_flags == SS_DISABLE) {
+			proc->signal->altstack.ss_flags |= SS_DISABLE;
+			return 0;
+		}
+"""
+new_dis = """		if ((unsigned int)ss->ss_flags == SS_DISABLE) {
+			/* Linux zeroes the stack description as it disables,
+			 * so a later sigaltstack(NULL, &old) reports an empty
+			 * disabled stack rather than a stale pointer.
+			 */
+			proc->signal->altstack.ss_sp = __NULL;
+			proc->signal->altstack.ss_size = 0;
+			proc->signal->altstack.ss_flags = SS_DISABLE;
+			return 0;
+		}
+"""
+
+for old, new, what in ((old_size, new_size, "size check"),
+                       (old_dis, new_dis, "disable branch")):
+    assert old in s, "sigaltstack.c %s does not match the expected shape" % what
+    s = s.replace(old, new, 1)
+
+open(p, "w").write(s)
+PYEOF
+else
+	echo "sigaltstack.c SS_DISABLE: already patched or absent, skipping"
 fi
 
 echo "patches applied."

@@ -1,13 +1,22 @@
 //// Typed records mirroring `bsdkrun`'s `--json` output, their decoders, and
 //// the result of running a command inside a guest.
+////
+//// The same records also back `bsdkrun/client` (the remote GraphQL client):
+//// `sandbox_info_from_graphql` and `command_result_from_graphql` decode the
+//// daemon's camelCase GraphQL responses into these exact same
+//// `SandboxInfo` / `CommandResult` types, so code written against the local,
+//// CLI-shelling API and code written against a remote daemon see identical
+//// shapes.
 
 import bsdkrun/error.{type Error, DecodeFailed}
+import gleam/bit_array
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode.{type Decoder}
 import gleam/float
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
@@ -106,6 +115,61 @@ pub fn lines(res: CommandResult) -> List(String) {
   res.stdout
   |> string.split("\n")
   |> list.filter(fn(line) { line != "" })
+}
+
+// --- remote-client-only types -----------------------------------------------
+//
+// These back `bsdkrun/client`, the GraphQL client for a remote `bsdkrund`.
+// They have no local-CLI equivalent to reuse (unlike `SandboxInfo` and
+// `CommandResult` above), because they describe daemon-only concepts: a
+// base64-framed exec result, and a shell session's identity as the daemon
+// reports it.
+
+/// The captured result of `client.exec` — a one-shot command run through
+/// `openShell` + `shellOutput` + `closeShell` (see `bsdkrun/client`).
+///
+/// Unlike the local `CommandResult`, output is a single interleaved
+/// `BitArray` rather than separate stdout/stderr: the daemon's shell
+/// protocol is a pty, which does not keep the streams apart.
+pub type ExecResult {
+  ExecResult(exit_code: Int, output: BitArray)
+}
+
+/// A shell session, as reported by the daemon's `openShell` mutation /
+/// `shellSessions` query.
+pub type ShellSessionInfo {
+  ShellSessionInfo(
+    id: String,
+    machine_id: String,
+    finished: Bool,
+    truncated: Bool,
+  )
+}
+
+/// One event from a live `shellOutput` or `machineLogs` subscription, as
+/// delivered to a `bsdkrun/subject.Subject` by `bsdkrun/client`.
+pub type ShellEvent {
+  /// A chunk of output, already base64-decoded.
+  ShellData(BitArray)
+  /// The session's command exited. Terminal — no further events follow.
+  ShellExit(Int)
+  /// The subscription itself failed (a GraphQL `error` message, or the
+  /// socket closing). Terminal.
+  ShellError(String)
+  /// The subscription ended with no more data (a GraphQL `complete`, or the
+  /// caller unsubscribed). Terminal.
+  ShellClosed
+}
+
+/// One event from `client.subscribe`, the generic subscription escape hatch.
+pub type SubscriptionEvent {
+  /// One `next` payload's `data`, exactly as the operation's document shapes
+  /// it — decode it the same way you would decode `client.request`'s result.
+  SubNext(Dynamic)
+  /// A GraphQL `error` message (or the socket closing). Terminal.
+  SubError(String)
+  /// A GraphQL `complete`. Terminal.
+  SubComplete
 }
 
 // --- decoders ---------------------------------------------------------------
@@ -249,6 +313,162 @@ pub fn network_info_decoder() -> Decoder(NetworkInfo) {
     up:,
     created_at:,
   ))
+}
+
+// --- GraphQL decoders (bsdkrun/client) ---------------------------------------
+//
+// The daemon's GraphQL schema is camelCase, and several fields that are
+// unconditionally present (with a CLI default) in `--json` output are
+// instead `Option`s of their GraphQL type — the `Machine` object can and does
+// send `"cpus": null` for a field the local decoders above never see absent
+// *or* null. `field_or` (unlike `optional_field`) runs its inner decoder
+// straight over a present-but-null value and fails, so every field below
+// that GraphQL types as nullable goes through `optional_field` and is
+// unwrapped afterwards, even where `SandboxInfo` itself wants a bare value.
+
+/// A field that decodes through `decode.run` on its own, for use outside a
+/// `use`-chain decoder — needed once for `payload.data` (kept in
+/// `bsdkrun/ws`), and useful here for one-off top-level decodes.
+fn decode_or(
+  dyn: Dynamic,
+  decoder: Decoder(a),
+  label: String,
+) -> Result(a, Error) {
+  case decode.run(dyn, decoder) {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(DecodeFailed(label, string.inspect(dyn)))
+  }
+}
+
+/// Decoder for one GraphQL `Machine` object (the `MACHINE_FIELDS` selection:
+/// `id name image kind command status running exitCode pid detached cpus mem
+/// volume stateDir createdAt finishedAt network netIp ports{bind host
+/// guest}`) into the same `SandboxInfo` the local `ps --json` decoder
+/// produces. `status`/`stateDir` GraphQL fields not covered above: `status`
+/// is redundant with `running` (this SDK derives it via `types.status`) and
+/// is not decoded here.
+fn sandbox_info_from_graphql_decoder() -> Decoder(SandboxInfo) {
+  use id <- field_or("id", "", decode.string)
+  use name <- optional_field("name", decode.string)
+  use image <- field_or("image", "", decode.string)
+  use kind <- field_or("kind", "", decode.string)
+  use command <- field_or("command", "", decode.string)
+  use running <- field_or("running", False, decode.bool)
+  use exit_code <- optional_field("exitCode", lenient_int())
+  use pid <- optional_field("pid", lenient_int())
+  use detached <- field_or("detached", False, decode.bool)
+  use cpus <- optional_field("cpus", lenient_int())
+  use mem <- optional_field("mem", lenient_int())
+  use volume <- optional_field("volume", decode.string)
+  use state_dir <- optional_field("stateDir", decode.string)
+  use network <- optional_field("network", decode.string)
+  use net_ip <- optional_field("netIp", decode.string)
+  use created_at <- optional_field("createdAt", lenient_int())
+  use finished_at <- optional_field("finishedAt", lenient_int())
+  use ports <- field_or("ports", [], decode.list(port_forward_decoder()))
+
+  decode.success(SandboxInfo(
+    id:,
+    name:,
+    image:,
+    kind:,
+    command:,
+    running:,
+    exit_code:,
+    pid:,
+    detached:,
+    cpus: option.unwrap(cpus, 0),
+    mem: option.unwrap(mem, 0),
+    volume:,
+    state_dir: option.unwrap(state_dir, ""),
+    network:,
+    net_ip:,
+    created_at: option.unwrap(created_at, 0),
+    finished_at:,
+    ports:,
+  ))
+}
+
+/// Decode a GraphQL `Machine` object (the `machine`/`machines` query result,
+/// or `data.machine` from a raw `client.request` call) into a `SandboxInfo`.
+pub fn sandbox_info_from_graphql(dyn: Dynamic) -> Result(SandboxInfo, Error) {
+  decode_or(dyn, sandbox_info_from_graphql_decoder(), "machine")
+}
+
+/// Decode a GraphQL `CommandResult` object (`{ exitCode stdout stderr }`,
+/// what every lifecycle mutation returns) into the local `CommandResult`
+/// type. GraphQL's `CommandResult` has no `command` field — the mutation
+/// name is supplied by the caller (`bsdkrun/client`) so error messages still
+/// name the operation that failed, exactly as the local CLI path does.
+pub fn command_result_from_graphql(
+  dyn: Dynamic,
+  label: String,
+) -> Result(CommandResult, Error) {
+  let decoder = {
+    use exit_code <- field_or("exitCode", 0, lenient_int())
+    use stdout <- field_or("stdout", "", decode.string)
+    use stderr <- field_or("stderr", "", decode.string)
+    decode.success(CommandResult(stdout:, stderr:, exit_code:, command: label))
+  }
+  decode_or(dyn, decoder, label)
+}
+
+/// Decode a GraphQL `ShellSessionInfo` object (`openShell`'s result, or a row
+/// of `shellSessions`).
+pub fn shell_session_info_from_graphql(
+  dyn: Dynamic,
+) -> Result(ShellSessionInfo, Error) {
+  let decoder = {
+    use id <- field_or("id", "", decode.string)
+    use machine_id <- field_or("machineId", "", decode.string)
+    use finished <- field_or("finished", False, decode.bool)
+    use truncated <- field_or("truncated", False, decode.bool)
+    decode.success(ShellSessionInfo(id:, machine_id:, finished:, truncated:))
+  }
+  decode_or(dyn, decoder, "openShell")
+}
+
+/// Base64-decode one `shellOutput`/`machineLogs` chunk's `dataBase64` field.
+/// Invalid base64 (should not happen — the daemon only ever sends what it
+/// itself encoded) decodes as empty, so a display glitch never becomes a
+/// crash.
+pub fn decode_base64_chunk(data_base64: String) -> BitArray {
+  case bit_array.base64_decode(data_base64) {
+    Ok(bits) -> bits
+    Error(Nil) -> <<>>
+  }
+}
+
+/// Decode a `decode.optional_field(name, option.None, decode.optional(inner),
+/// next)` shaped field returning a `String`. A convenience for the few call
+/// sites outside this module (`bsdkrun/client`) that need one field decoded
+/// out of a `Dynamic` without building a full record decoder.
+pub fn optional_string_field(dyn: Dynamic, name: String) -> Option(String) {
+  let decoder = optional_field(name, decode.string, decode.success)
+  case decode.run(dyn, decoder) {
+    Ok(value) -> value
+    Error(_) -> None
+  }
+}
+
+/// Decode a `Dynamic`'s `Int` field by name, defaulting to `default` when the
+/// field is absent, null, or the wrong shape.
+pub fn int_field(dyn: Dynamic, name: String, default: Int) -> Int {
+  let decoder = optional_field(name, lenient_int(), decode.success)
+  case decode.run(dyn, decoder) {
+    Ok(Some(value)) -> value
+    _ -> default
+  }
+}
+
+/// Decode a `Dynamic`'s `String` field by name, defaulting to `default` when
+/// the field is absent, null, or the wrong shape.
+pub fn string_field(dyn: Dynamic, name: String, default: String) -> String {
+  let decoder = optional_field(name, decode.string, decode.success)
+  case decode.run(dyn, decoder) {
+    Ok(Some(value)) -> value
+    _ -> default
+  }
 }
 
 /// Decode a `--json` list payload. Blank output — which the CLI emits when

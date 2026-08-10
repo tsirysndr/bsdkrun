@@ -25,9 +25,23 @@ FROM busybox:stable-musl AS shell
 # same single process that then serves from it.
 FROM build AS rootfs
 COPY --from=shell /bin/busybox /bin/busybox.static
+# The /proc and /sys entries are plain files, same trick as
+# ../unikraft-dragonflydb: Unikraft has no procfs or sysfs, so nothing
+# shadows these paths and the ramfs serves whatever the image put there.
+# mongod sizes its plan-cache partitions from the CPU count
+# (std::thread::hardware_concurrency -> glibc __get_nprocs, which reads
+# /sys/devices/system/cpu/online and falls back to /proc/stat); with neither
+# file present it detects zero cores and dies on its own invariant:
+#   "Invariant failure numPartitions > 0, src/mongo/db/query/
+#    partitioned_cache.h:103".
+# One CPU, matching the single vcpu libkrun gives the guest.
 RUN set -eu; \
     mkdir -p /rootfs/usr/bin /rootfs/bin /rootfs/data/db /rootfs/tmp \
-             /rootfs/etc; \
+             /rootfs/etc /rootfs/sys/devices/system/cpu /rootfs/proc; \
+    printf '0\n' > /rootfs/sys/devices/system/cpu/online; \
+    printf 'cpu  0 0 0 0 0 0 0 0 0 0\ncpu0 0 0 0 0 0 0 0 0 0 0\n' \
+        > /rootfs/proc/stat; \
+    printf 'processor\t: 0\n\n' > /rootfs/proc/cpuinfo; \
     cp /bin/busybox.static /rootfs/bin/busybox; \
     ln -s busybox /rootfs/bin/sh; \
     cp /usr/bin/mongod /rootfs/usr/bin/mongod; \

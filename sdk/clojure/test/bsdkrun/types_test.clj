@@ -93,3 +93,42 @@
   (is (= [] (types/read-json-rows "")))
   (is (= [] (types/read-json-rows nil)))
   (is (= [{"a" 1}] (types/read-json-rows "[{\"a\":1}]"))))
+
+;; --- GraphQL decoders (bsdkrun.client) ----------------------------------
+
+(deftest sandbox-info-from-graphql-full
+  (let [info (types/sandbox-info-from-graphql
+              {"id" "abc123" "name" "api" "image" "alpine" "kind" "linux"
+               "command" "sleep 300" "status" "running" "running" true
+               "exitCode" nil "pid" 42 "detached" true "cpus" 2 "mem" 512
+               "volume" nil "stateDir" "/s" "network" "devnet" "netIp" "10.0.0.2"
+               "createdAt" 1700000000 "finishedAt" nil
+               "ports" [{"bind" "127.0.0.1" "host" 8080 "guest" 80}]})]
+    (is (= "abc123" (:id info)))
+    (is (= "running" (:status info)))
+    (is (true? (:running info)))
+    (is (nil? (:exit-code info)))
+    (is (= 42 (:pid info)))
+    (is (= "/s" (:state-dir info)))
+    (is (= "10.0.0.2" (:net-ip info)))
+    (is (= 1700000000 (:created-at info)))
+    (is (nil? (:finished-at info)))
+    (is (= {:bind "127.0.0.1" :host 8080 :guest 80} (first (:ports info))))))
+
+(deftest sandbox-info-from-graphql-sparse
+  (let [info (types/sandbox-info-from-graphql {"id" "abc123"})]
+    (is (= "abc123" (:id info)))
+    (is (= "" (:image info)))
+    (is (false? (:running info)))
+    (is (nil? (:exit-code info)))
+    (is (= 0 (:cpus info)))
+    (is (= [] (:ports info)))))
+
+(deftest command-result-from-graphql-defaults-blank-strings
+  (is (= {:exit-code 0 :stdout "ok" :stderr ""}
+         (types/command-result-from-graphql {"exitCode" 0 "stdout" "ok" "stderr" nil}))))
+
+(deftest shell-session-info-from-graphql
+  (is (= {:id "s1" :machine-id "m1" :finished false :truncated true}
+         (types/shell-session-info-from-graphql
+          {"id" "s1" "machineId" "m1" "finished" false "truncated" true}))))

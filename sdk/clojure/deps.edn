@@ -9,4 +9,12 @@
 
   :build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.5"}
                  slipset/deps-deploy {:mvn/version "0.2.2"}}
-          :ns-default build}}}
+          :ns-default build}
+
+  ;; `clj -M:rebel` — a syntax-highlighting, autocompleting REPL (Bruce
+  ;; Hauman's rebel-readline) with the SDK's namespaces preloaded via
+  ;; dev/user.clj. Dev-only; not part of the published jar (`dev` is not in
+  ;; :paths above).
+  :rebel {:extra-paths ["dev"]
+          :extra-deps {com.bhauman/rebel-readline {:mvn/version "0.1.4"}}
+          :main-opts ["-m" "rebel-readline.main"]}}}

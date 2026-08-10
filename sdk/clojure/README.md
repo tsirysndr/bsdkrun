@@ -226,6 +226,10 @@ resolves via a synced `/etc/hosts` block — joins auto-sync, and
 - `bsdkrun.process` — the low-level subprocess layer (`run`, `run!`,
   `spawn-interactive!`), if you need to shell out to a `bsdkrun` subcommand
   this SDK doesn't wrap yet.
+- `bsdkrun.client` — the remote GraphQL client sibling to `bsdkrun.sandbox`,
+  talking to a [`bsdkrund`](../../daemon/README.md) daemon instead of
+  shelling out locally. See
+  [Connecting to a remote daemon](#connecting-to-a-remote-daemon) below.
 - `bsdkrun.errors` — the `ex-info` constructors every namespace above throws.
 
 There is no `bsdkrun.core` "front door" namespace — `require` the namespace
@@ -233,11 +237,74 @@ you need with a short alias (as in every example above); that's idiomatic
 Clojure and keeps call sites unambiguous about which host-level resource
 they're touching.
 
-A `bsdkrun.client` namespace — a remote GraphQL client sibling to
-`bsdkrun.sandbox`, talking to a [`bsdkrund`](../../daemon/README.md) daemon
-instead of shelling out locally (mirroring the Ruby SDK's `Bsdkrun::Client`)
-— is planned for a future release; nothing in this SDK's shape assumes it
-can't be added alongside `bsdkrun.sandbox` later.
+## Connecting to a remote daemon
+
+Everything above talks to a local `bsdkrun` binary. `bsdkrun.client` is the
+network sibling: it drives the same operations against a remote
+[`bsdkrund`](../../daemon/README.md) over its GraphQL API — no local binary
+needed, just a URL and a bearer token. Every function takes a `client` map
+first, exactly like `bsdkrun.sandbox`'s functions take a `sandbox` map first.
+
+```clojure
+(require '[bsdkrun.client :as client])
+
+(def c (client/new-client {:url "http://vps.example.com:50052" :token "9f2c..."}))
+;; or, from BSDKRUN_URL / BSDKRUN_TOKEN:
+(def c (client/client-from-env))
+
+(def machines (client/list-machines c {:all true}))  ; same SandboxInfo shape sandbox/list returns
+(def id (client/run-linux! c {:image "alpine" :cpus 2 :mem 1024 :command ["sleep" "300"]}))
+
+(def result (client/exec! c id ["uname" "-a"]))
+(println (String. (:output result) "UTF-8") (:exit-code result))
+
+(client/stop! c id)
+(client/remove! c [id])
+```
+
+`run-linux!`/`run-bsd!`/`run-nanos!`/`run-unikraft!`/`run-osv!`/`run-flavor!`
+each take the same options as the corresponding GraphQL mutation
+(`daemon/src/graphql.rs`) — kebab-case keys mapped 1:1 onto the wire's
+camelCase fields (`:kernel-version` -> `kernelVersion`, `:attach-disk` ->
+`attachDisk`, etc.) — and return the new machine's id.
+`stop!`/`start!`/`remove!`/`update!`/`commit!` return a command-result map
+(`{:exit-code :stdout :stderr}`).
+
+For a live terminal instead of a one-shot `exec!`, use `shell!`:
+
+```clojure
+(def session (client/shell! c id))  ; or {:command [...]} for a non-login command
+((:on-output! session) (fn [bytes] (.write System/out bytes)))
+((:on-exit! session) (fn [code] (println "\nexited" code)))
+((:write! session) "ls -la\n")
+((:resize! session) 50 120)
+((:close! session))
+```
+
+`(client/follow-logs c id {:on-data (fn [bytes] ...)})` streams a machine's
+console live instead of the one-shot `(client/logs c id)`. Both
+`exec!`/`shell!` and `follow-logs` are built on the same
+`openShell`/`shellOutput` shell-session protocol the daemon uses for every
+interactive terminal — see
+[`daemon/README.md`](../../daemon/README.md#interactive-shells-over-graphql)
+for the wire-level story.
+
+Not every GraphQL operation has a typed method yet (flavor/network/volume
+management, for instance) — `(client/request c query variables)` runs any
+raw query or mutation, and `(client/subscribe c query variables handlers)`
+runs any raw subscription, for anything not wrapped above.
+
+Unlike every other bsdkrun SDK, `bsdkrun.client` needs **zero extra
+dependencies** for its transport: `java.net.http.HttpClient` handles the
+queries/mutations, and its built-in `java.net.http.WebSocket` speaks
+`graphql-transport-ws` for subscriptions (`exec!`/`shell!`/`follow-logs`) —
+both are core JDK APIs (Java 11+). TypeScript/Python/Ruby/Elixir/Gleam each
+had to hand-roll RFC 6455 WebSocket framing because their standard library
+had no client of its own; the JVM does, so this namespace doesn't.
+
+`new-client`/`client-from-env` both reject a URL configured without a token
+rather than silently making an unauthenticated request — set both
+`BSDKRUN_URL` and `BSDKRUN_TOKEN`, or pass both explicitly.
 
 ## Errors
 
@@ -269,6 +336,15 @@ Error kinds:
   `:firmware`, `:disk`, depending on `:os`) was left out.
 - `:unknown-os` — `sandbox/create!` / `args/build-create-args` was called
   with an `:os` the SDK doesn't know how to build argv for.
+- `:graphql-error` — a `bsdkrun.client` request to a remote daemon failed —
+  a transport failure, a non-JSON response, or any GraphQL error that isn't
+  an auth failure (`ex-data` carries `:code`, the daemon's `extensions.code`,
+  when there is one).
+- `:auth-error` — the daemon rejected the bearer token: an HTTP 401, a
+  GraphQL error whose `extensions.code` is `"UNAUTHENTICATED"`, or a
+  websocket that closed before `connection_ack` ever arrived.
+- `:missing-config` — `client/client-from-env` was called with
+  `BSDKRUN_URL` unset, or set without `BSDKRUN_TOKEN`.
 
 ## Development
 
@@ -276,16 +352,31 @@ Needs a JDK (21+) and the [Clojure CLI](https://clojure.org/guides/install_cloju
 — pinned via [`mise`](https://mise.jdx.dev) (`mise install`).
 
 ```sh
-mise install          # JDK 21 + the Clojure CLI (or install them yourself)
-clj -M:test            # run the test suite
-clj -T:build jar       # build target/bsdkrun-<version>.jar
-clj -T:build install   # install to the local ~/.m2
-clj -T:build deploy    # deploy to Clojars (needs CLOJARS_USERNAME / CLOJARS_PASSWORD)
+mise install           # JDK 21 + the Clojure CLI (or install them yourself)
+clj -M:test             # run the test suite
+clj -M:rebel            # a syntax-highlighting, autocompleting REPL with the SDK preloaded
+clj -T:build jar        # build target/bsdkrun-<version>.jar
+clj -T:build install    # install to the local ~/.m2
+clj -T:build deploy     # deploy to Clojars (needs CLOJARS_USERNAME / CLOJARS_PASSWORD)
 ```
 
-Tests are unit tests only — argv building, JSON-row decoding, and binary
+Tests are unit tests only — argv building, JSON-row decoding, binary
 discovery (via dependency injection, not real subprocesses or environment
-mutation). Nothing spawns a real `bsdkrun` binary or needs a hypervisor.
+mutation), and `bsdkrun.client`'s HTTP/websocket transport (driven against a
+from-scratch local HTTP+WS server on loopback, not a real `bsdkrund`).
+Nothing spawns a real `bsdkrun` binary, talks to a real daemon, or needs a
+hypervisor.
+
+`clj -M:rebel` starts [rebel-readline](https://github.com/bhauman/rebel-readline)
+(syntax highlighting, structural editing, inline docs/autocomplete) in the
+`user` namespace, with `dev/user.clj` preloading `bsdkrun.sandbox`,
+`.images`/`.volumes`/`.networks`/`.system`/`.args`/`.types`/`.errors`, and
+`bsdkrun.client` under short aliases — mirrors `sdk/ruby/bin/console`'s
+preload. `(ps)` lists every machine (exited ones included); `(last-machine)`
+is the newest one. Needs a real terminal (rebel-readline reads raw
+keystrokes for its interactive editing, so it refuses to start under piped
+input or a non-tty process). `dev/` is dev-only — it is not part of `:paths`
+and is not packaged into the published jar.
 
 ## License
 

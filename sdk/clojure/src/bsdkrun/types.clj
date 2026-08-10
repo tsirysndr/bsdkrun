@@ -101,6 +101,57 @@
      :up (boolean (get row "up"))
      :created-at (when (some? created) (to-int created))}))
 
+(defn sandbox-info-from-graphql
+  "A machine as reported by the daemon's GraphQL API — a `Machine` object
+  decoded straight from JSON (camelCase string keys), unlike
+  [[sandbox-info-from-row]]'s snake_case CLI rows. Same kebab-case-keyword
+  shape either way, so callers of `bsdkrun.sandbox` and `bsdkrun.client` see
+  identical `SandboxInfo` maps regardless of transport.
+
+  `m` is a `MACHINE_FIELDS`-shaped map (see `bsdkrun.client`), e.g. from
+  `bsdkrun.client/list-machines` or `bsdkrun.client/get-machine`."
+  [m]
+  (let [running (boolean (get m "running"))]
+    {:id (str (get m "id"))
+     :name (get m "name")
+     :image (str (get m "image"))
+     :kind (str (get m "kind"))
+     :command (str (or (get m "command") ""))
+     :status (str (get m "status"))
+     :running running
+     :exit-code (to-int-or-nil (get m "exitCode"))
+     :pid (to-int-or-nil (get m "pid"))
+     :detached (boolean (get m "detached"))
+     :cpus (to-int (get m "cpus"))
+     :mem (to-int (get m "mem"))
+     :volume (get m "volume")
+     :state-dir (str (get m "stateDir"))
+     :network (get m "network")
+     :net-ip (get m "netIp")
+     :created-at (to-int (get m "createdAt"))
+     :finished-at (to-int-or-nil (get m "finishedAt"))
+     :ports (mapv port-forward-from-row (or (get m "ports") []))}))
+
+(defn command-result-from-graphql
+  "The outcome of a `bsdkrun.client` lifecycle mutation (`stopMachine`,
+  `startMachine`, `removeMachines`, `updateMachine`, `commitMachine`, ...). A
+  non-zero `:exit-code` is a value to inspect, not necessarily a failure —
+  mirrors `daemon/src/graphql.rs`'s `CommandResult`."
+  [r]
+  {:exit-code (to-int (get r "exitCode"))
+   :stdout (str (or (get r "stdout") ""))
+   :stderr (str (or (get r "stderr") ""))})
+
+(defn shell-session-info-from-graphql
+  "An open interactive shell session, as reported by `openShell` / the
+  `shellSessions` query. Mirrors `daemon/src/graphql.rs`'s
+  `ShellSessionInfo`."
+  [s]
+  {:id (str (get s "id"))
+   :machine-id (str (get s "machineId"))
+   :finished (boolean (get s "finished"))
+   :truncated (boolean (get s "truncated"))})
+
 ;; --- Result-map helpers -----------------------------------------------
 
 (defn ok?

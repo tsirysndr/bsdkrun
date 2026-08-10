@@ -61,3 +61,33 @@
   (ex-info (str "unknown os: " (pr-str os))
            {:bsdkrun/error :unknown-os
             :os os}))
+
+(defn graphql-error
+  "A GraphQL request to a remote `bsdkrund` daemon failed — a transport
+  failure, a non-JSON response, or a `body[\"errors\"]` entry that was not an
+  auth failure. Mirrors `web/src/lib/graphql.ts`'s `GraphQLError`.
+
+  `code` is the error's `extensions.code`, when the daemon set one."
+  ([message] (graphql-error message nil))
+  ([message code]
+   (ex-info message
+            {:bsdkrun/error :graphql-error
+             :code code})))
+
+(defn auth-error
+  "The daemon rejected our token — an HTTP 401, a GraphQL error whose
+  `extensions.code` is `\"UNAUTHENTICATED\"`, or a websocket that closed
+  before `connection_ack` ever arrived. Mirrors `web/src/lib/graphql.ts`'s
+  `AuthError`."
+  ([] (auth-error "the daemon rejected this token"))
+  ([message]
+   (ex-info message
+            {:bsdkrun/error :auth-error
+             :code "UNAUTHENTICATED"})))
+
+(defn missing-config
+  "`bsdkrun.client/client-from-env` was called with `BSDKRUN_URL` unset, or
+  set without `BSDKRUN_TOKEN` — an error, not a silent unauthenticated
+  fallback. Mirrors `daemon/src/client.rs`'s `RemoteConfig::from_env` rule."
+  [message]
+  (ex-info message {:bsdkrun/error :missing-config}))

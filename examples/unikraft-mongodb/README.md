@@ -18,9 +18,9 @@ $ mongosh --port 27017 --quiet --eval \
 
 ## Status
 
-**arm64 works.** The unikernel boots, DHCPs an address, WiredTiger opens and
-recovers, mongod listens on 27017, and a real write round-trips over the
-forwarded port:
+**Starts and serves on arm64; whether it stays up is being verified.** The
+unikernel boots, DHCPs an address, WiredTiger opens and recovers, mongod
+listens on 27017, and a real write round-trips over the forwarded port:
 
 ```console
 $ mongosh --port 27017 --quiet --eval \
@@ -29,18 +29,12 @@ $ mongosh --port 27017 --quiet --eval \
 unikraft-on-bsdkrun
 ```
 
-x86_64 does **not** work yet, and its failure is unrelated to anything in
-this directory: a thread in `WaitForMajorityServiceThreadPool` takes
-`SIGABRT` about half a second in, and the backtrace mongod prints contains
-nothing but its own signal handler — the abort is asynchronous, with none of
-mongod's code on the stack. The same code path is fine on arm64, so this
-points at something architecture specific in the guest. A newly created
-thread aborting with no diagnostic of its own is the shape of a
-stack-protector failure (glibc calls `abort()` from `__stack_chk_fail`),
-which makes thread TLS setup the place to look; see the vfork TLS fix in
-`../../library/unikraft-base/patches` for a related x86_64 TLS bug.
-`.github/workflows/e2e-unikraft-examples.yml` runs it as `strict: false` and
-is the tracker for that half.
+The first version of that run then **aborted a few seconds later**, in the
+connection thread, which is what the `/proc/<pid>/stat` entries described
+below address. x86_64 shows the same abort in
+`WaitForMajorityServiceThreadPool`, and there is good reason to think it is
+the same cause rather than an architecture-specific one — see below.
+`.github/workflows/e2e-unikraft-examples.yml` runs this as `strict: false`.
 
 Getting arm64 working took four things, three of them in this directory and
 one in the kernel:
@@ -51,6 +45,7 @@ one in the kernel:
 | **1 MiB stacks** | Default pthread stacks are sized from `RLIMIT_STACK`; at 64 KiB a startup thread overflowed its guard page. |
 | **No journal pre-allocation** | WiredTiger's log server panicked with `ENOENT` renaming `WiredTigerPreplog` files on ramfs. |
 | **Per-delivery alternate stack** | The guest crashed *inside* signal delivery, destroying every diagnostic above it. Fixed in `../../library/unikraft-base/patches`. |
+| **Its own /proc entries** | mongod reads `/proc/<pid>/stat`; without it, `Location13538` is thrown once a second, and a thread that does not catch it calls `terminate()` → `abort()`. |
 
 That last one was the expensive one: until it was fixed, all the guest ever
 reported was `Assertion failure: !(altstack->ss_flags & 1)`, never the

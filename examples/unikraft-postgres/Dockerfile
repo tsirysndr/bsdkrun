@@ -36,7 +36,7 @@ RUN apk add --no-cache \
 
 ADD https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.bz2 /tmp/postgresql.tar.bz2
 COPY allow-root.patch no-sysv-ipc.patch dsm-single-address-space.patch \
-     exec-backend-posix-spawn.patch /tmp/
+     exec-backend-posix-spawn.patch exec-backend-self-path.patch /tmp/
 
 # `--without-icu` is the one flag that is not just about size: PostgreSQL 16
 # builds against ICU by default, and ICU's collation lookup wants a locale
@@ -50,6 +50,7 @@ RUN set -eux; \
     patch -p1 < /tmp/no-sysv-ipc.patch; \
     patch -p1 < /tmp/dsm-single-address-space.patch; \
     patch -p1 < /tmp/exec-backend-posix-spawn.patch; \
+    patch -p1 < /tmp/exec-backend-self-path.patch; \
     export CFLAGS="-Os -Wl,--strip-all"; \
     # -DEXEC_BACKEND is the whole ballgame. PostgreSQL normally creates every
     # child with a bare fork() and lets it inherit the postmaster's memory;
@@ -137,7 +138,17 @@ RUN set -eux; \
         # Nothing in the guest can connect over one anyway; clients arrive over
         # the forwarded TCP port.
         echo "unix_socket_directories = ''"; \
-    } >> "$PGDATA/postgresql.conf"
+    } >> "$PGDATA/postgresql.conf"; \
+    # Let clients in from anywhere, without a password. initdb's default
+    # pg_hba.conf covers only 127.0.0.1 and ::1, but a client forwarded by
+    # gvproxy arrives as the gateway (192.168.127.1):
+    #
+    #   FATAL:  no pg_hba.conf entry for host "192.168.127.1", user "postgres"
+    #
+    # `trust` is what upstream's wrapper.sh defaults to as well when no
+    # password is set. The guest is reachable only through ports bsdkrun
+    # explicitly forwards.
+    echo "host all all all trust" >> "$PGDATA/pg_hba.conf"
 
 # Assemble the root filesystem: the server, its data, and nothing else.
 #

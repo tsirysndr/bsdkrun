@@ -2,8 +2,8 @@
 
 **PostgreSQL 16.4 as a Unikraft unikernel**, ported from
 [`unikraft-cloud/examples`'s `postgres`](https://github.com/unikraft-cloud/examples/tree/main/postgres)
-to build for **arm64** and boot under bsdkrun — with a **real postmaster**, not
-single-user mode.
+to build for **arm64** and boot under bsdkrun — with a **real postmaster**
+serving SQL over TCP, not single-user mode.
 
 ```sh
 ./build.sh                    # host arch; or: ./build.sh x86_64
@@ -12,24 +12,30 @@ bsdkrun unikraft . --mem 2048 --port 5432:5432 \
 ```
 
 ```console
-LOG:  starting PostgreSQL 16.4 on aarch64-unknown-linux-musl, compiled by gcc 13.2.1, 64-bit
-LOG:  listening on IPv4 address "0.0.0.0", port 5432
-LOG:  database system was shut down at 2026-08-09 21:17:19 UTC
+$ psql -h 127.0.0.1 -p 5432 -U postgres postgres
+postgres=# CREATE TABLE t (id INT PRIMARY KEY, name TEXT);
+postgres=# INSERT INTO t VALUES (1, 'unikraft-on-bsdkrun');
+postgres=# SELECT name FROM t;
+        name
+---------------------
+ unikraft-on-bsdkrun
+(1 row)
 ```
 
 ## Status
 
-| what                                              | state                                        |
-|---------------------------------------------------|----------------------------------------------|
-| Builds and boots (arm64)                          | works                                        |
-| Postmaster starts and listens on 5432             | works                                        |
-| Spawns child processes (`posix_spawn` + `execve`) | works                                        |
-| Startup process opens the cluster, reads WAL      | works                                        |
-| Accepting client connections                      | **not yet** — a child faults during recovery |
-| `postgres --single` (SQL on the console)          | works end to end                             |
+| what                                              | state    |
+|---------------------------------------------------|----------|
+| Builds and boots (arm64)                          | works    |
+| Postmaster starts and listens on 5432             | works    |
+| Spawns child processes (`posix_spawn` + `execve`) | works    |
+| WAL recovery, checkpointer, background writer     | works    |
+| Clients over the forwarded port, one backend each | works — 10/10 sequential connections served |
+| `postgres --single` (SQL on the console)          | works    |
 
 arm64 on macOS/Hypervisor.framework is what was tested; x86_64 goes through
-`.github/workflows/e2e-unikraft-examples.yml` (non-strict until it passes).
+`.github/workflows/e2e-unikraft-examples.yml` (non-strict until it passes, and
+the workflow symbolicates any guest crash against the built image's `.dbg`).
 
 ## How a forking server runs on a kernel with no fork
 
@@ -92,6 +98,7 @@ own startup hits 20.
 | `no-sysv-ipc.patch`           | There is no System V IPC, so `shmget()` answers `ENOSYS`. Anonymous memory is not a downgrade here: one page table means an anonymous mapping is shared between the postmaster and its children by construction, at the same address — which is exactly what the segment was for. The second hunk is the child side, where re-attaching is a no-op. |
 | `dsm-single-address-space.patch` | Dynamic shared memory cannot be turned off (PostgreSQL 12 removed `none`) and maps a *file* `MAP_SHARED`, which Unikraft supports only for anonymous mappings. The rewrite demotes the file from storage to a name: it records the address of an anonymous mapping, and attaching becomes a lookup. |
 | `exec-backend-posix-spawn.patch` | The fork+exec in `internal_forkexec()` becomes one `posix_spawn()`. Hand-writing `vfork()` here would be undefined behaviour — `fork_process()` assigns to globals that would land in the *parent's* memory — and musl's `posix_spawn()` is precisely this sequence done safely. |
+| `exec-backend-self-path.patch`   | The postmaster execs *itself*, so skip `find_other_exec()` — which locates a `postgres` beside argv[0] and version-checks it by running `"<path>" -V` through `popen()`: a `/bin/sh` plus a second postgres before the server has done anything. In a unikernel there is exactly one postgres and it is the one running. This is also what unblocked startup: with those two extra process lifetimes gone, the startup child no longer hits a heap-consistency abort during WAL recovery (see below). |
 
 Three more things are configuration rather than patches, all in the
 `Dockerfile`:
@@ -132,11 +139,13 @@ since raising only the report hands PostgreSQL a limit it could overrun.
 > editing kconfig in the Kraftfile, `rm .config.postgres_fc-*` or the build
 > silently keeps the old values.
 
-**There is a shell in the image.** Before the postmaster execs a child it
-version-checks the binary with `popen("… -V")`, which needs `/bin/sh`. busybox
-is 800 KiB, already links against this image's musl, and — the part that matters
-— is a PIE, which `execve()` requires on a single-address-space kernel: the
-loader has to place it somewhere other than where the caller is running.
+**There is still a shell in the image** even though nothing invokes it at boot
+any more (`exec-backend-self-path.patch` removed the `popen` that needed it) —
+it stays because archive recovery and `COPY FROM PROGRAM` also go through
+`/bin/sh`, and at 800 KiB busybox is cheap. It links against this image's musl
+and — the part that matters — is a PIE, which `execve()` requires on a
+single-address-space kernel: the loader has to place it somewhere other than
+where the caller is running.
 
 **libkrun appends words to the application's argv** (`earlycon=`, `tsi_hijack`,
 a bare `--`), because they land after the `--` stop sequence. It does not bite
@@ -146,21 +155,25 @@ argument — omit the name there and the stray word is absorbed instead.
 
 ## What is left
 
-A child process faults during WAL recovery, after the startup process has opened
-the cluster and read `pg_control`, so the server never reaches "ready to accept
-connections". Everything before that works, including the parts that looked
-impossible.
+**One unexplained kernel behaviour, worked around rather than root-caused.**
+With the `popen("postgres -V")` version check still in place, a *later* exec'd
+child (the startup process) died in musl's allocator — `mov x0,#0; strb wzr,[x0];
+brk #0x3e8`, mallocng's deliberate abort on a failed heap-consistency check — a
+few syscalls into WAL recovery. Two extra process lifetimes before it were
+enough to corrupt state somewhere; ten backend lifetimes after it are not. The
+difference between those two shapes (a pipe and a `pclose`/`wait`, versus plain
+spawn-and-exit) is where the remaining bug lives, and it is in the kernel, not
+in PostgreSQL. `exec-backend-self-path.patch` removes the trigger and is the
+right change on its own merits; the underlying suspect is tracked separately.
+
+**x86_64 crashes earlier**, at a kernel-mode fault inside a `read()` — quite
+possibly the same popen-shaped trigger, since the postmaster reads the version
+string back over a pipe. The e2e job now symbolicates guest crashes, so the next
+CI run answers this.
 
 `postgres --single` — the whole server in one process, SQL on stdin, no
-postmaster and no children — works end to end on the same image:
-
-```sh
-bsdkrun unikraft . --mem 2048 \
-  --cmdline "elfloader -- /usr/local/bin/postgres --single -D /var/lib/postgresql/data"
-```
-
-Piped stdin does not reach the guest (the console reads EOF immediately), so
-single-user mode is only useful from a terminal.
+postmaster and no children — also works on the same image, from a terminal
+(piped stdin does not reach the guest; the console reads EOF immediately).
 
 ## Differences from upstream
 

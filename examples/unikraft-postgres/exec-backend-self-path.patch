@@ -1,0 +1,43 @@
+The backend to exec is this very executable; do not go looking for it.
+
+Under EXEC_BACKEND the postmaster resolves the binary it will exec for each
+child with find_other_exec(), which locates a `postgres` beside argv[0] and then
+version-checks it by running `"<path>" -V` through popen(). That is a /bin/sh
+and a second postgres -- two complete process lifetimes -- before the server has
+done any work, and it is the only reason this image needs a shell at all.
+
+The check is worth having on a general-purpose system, where the binary next
+door may belong to a different installation. In a unikernel the root filesystem
+is part of the image: there is exactly one postgres, it is the one already
+running, and nothing can have replaced it since boot.
+
+--- a/src/backend/postmaster/postmaster.c
++++ b/src/backend/postmaster/postmaster.c
+@@ -1536,12 +1536,21 @@
+ 				(errmsg("%s: could not locate my own executable path", argv0)));
+ 
+ #ifdef EXEC_BACKEND
+-	/* Locate executable backend before we change working directory */
+-	if (find_other_exec(argv0, "postgres", PG_BACKEND_VERSIONSTR,
+-						postgres_exec_path) < 0)
+-		ereport(FATAL,
+-				(errmsg("%s: could not locate matching postgres executable",
+-						argv0)));
++	/*
++	 * The backend to exec is this very executable.
++	 *
++	 * find_other_exec() would look for a `postgres` beside argv[0] and then
++	 * version-check it by running `"<path>" -V` through popen() -- which means
++	 * a /bin/sh and a second postgres, two whole process lifetimes, before the
++	 * server has done anything. That check earns its keep on a general-purpose
++	 * system, where the binary next door can be from another installation. In
++	 * a unikernel the root filesystem is part of the image: there is exactly
++	 * one postgres, it is the one running, and it cannot have been upgraded
++	 * underneath us.
++	 *
++	 * my_exec_path was just resolved above, so use it.
++	 */
++	strlcpy(postgres_exec_path, my_exec_path, MAXPGPATH);
+ #endif
+ 
+ 	/*

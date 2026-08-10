@@ -368,6 +368,28 @@ jobs:
           echo "::endgroup::"
           grep -q "Powered by Unikraft" "$out"
 
+      # A register dump is only actionable with symbols, and only this job has
+      # the matching .dbg. Resolve every code-looking address in the crash
+      # banner (rip, and any register that lands in kernel text) right here,
+      # so the log carries function names instead of hex.
+      - name: Symbolicate a guest crash
+        if: ${{ always() }}
+        run: |
+          set -eu
+          out=uk-${{ matrix.example }}.out
+          dbg=examples/${{ matrix.example }}/.unikraft/build/${{ matrix.kernel }}.dbg
+          grep -aq "Unikraft Crash" "$out" 2>/dev/null || exit 0
+          test -f "$dbg" || { echo "no .dbg image at $dbg"; exit 0; }
+          echo "::group::crash symbolication"
+          # Every 16-hex-digit value in the register dump; addr2line answers
+          # '??' for the ones that are not code, which is fine.
+          grep -a -A 20 "Unikraft Crash" "$out" \
+            | grep -oE '[0-9a-f]{16}' | sort -u | while read -r a; do
+                sym=$(addr2line -f -e "$dbg" "0x$a" | paste -sd' ' -)
+                case "$sym" in \?\?*) ;; *) echo "0x$a -> $sym" ;; esac
+            done
+          echo "::endgroup::"
+
       - name: e2e — networking and entropy
         run: |
           set -eu

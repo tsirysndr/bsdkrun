@@ -31,10 +31,25 @@ def _num(value: Any) -> int | None:
 
 @dataclass(frozen=True)
 class PortForward:
-    """A host to guest TCP port forward, e.g. ``PortForward(2222, 22)``."""
+    """A host to guest TCP port forward, e.g. ``PortForward(2222, 22)``.
+
+    ``bind`` is the host interface the forward is bound to (``127.0.0.1`` by
+    default, or ``0.0.0.0`` for a LAN-reachable forward). It is always
+    populated on :attr:`SandboxInfo.ports`; it's optional when constructing a
+    ``PortForward`` to pass as input, since the CLI defaults it too.
+    """
 
     host: int
     guest: int
+    bind: str = "127.0.0.1"
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any]) -> PortForward:
+        return cls(
+            host=int(row.get("host") or 0),
+            guest=int(row.get("guest") or 0),
+            bind=str(row.get("bind") or "127.0.0.1"),
+        )
 
 
 @dataclass(frozen=True)
@@ -93,6 +108,7 @@ class SandboxInfo:
     state_dir: str
     network: str | None
     net_ip: str | None
+    ports: list[PortForward]
     created_at: int
     finished_at: int | None
 
@@ -116,6 +132,7 @@ class SandboxInfo:
             state_dir=str(row.get("state_dir")),
             network=row.get("network"),
             net_ip=row.get("net_ip"),
+            ports=[PortForward.from_row(p) for p in row.get("ports") or []],
             created_at=int(row.get("created_at") or 0),
             finished_at=_num(row.get("finished_at")),
         )

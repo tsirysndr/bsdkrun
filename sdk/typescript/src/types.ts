@@ -1,5 +1,11 @@
-/** A host→guest TCP port forward, `{ host: 2222, guest: 22 }`. */
+/** A host→guest TCP port forward, `{ bind: "127.0.0.1", host: 2222, guest: 22 }`. */
 export interface PortForward {
+  /**
+   * Host interface the forward is bound to, e.g. `127.0.0.1` (default) or
+   * `0.0.0.0`. Always present on {@link SandboxInfo.ports}; optional when
+   * passed as input to {@link NetworkOptions.ports}.
+   */
+  bind?: string;
   host: number;
   guest: number;
 }
@@ -253,6 +259,8 @@ export interface SandboxInfo {
   network: string | null;
   /** The machine's assigned IP on that network, if any. */
   netIp: string | null;
+  /** Host↔guest TCP port forwards (`--port HOST:GUEST`), empty if none. */
+  ports: PortForward[];
   /** Unix epoch seconds. */
   createdAt: number;
   /** Unix epoch seconds, or null while running. */

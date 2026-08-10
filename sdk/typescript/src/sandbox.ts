@@ -61,6 +61,7 @@ function mapInfo(row: Record<string, unknown>): SandboxInfo {
     stateDir: String(row.state_dir),
     network: (row.network as string | null) ?? null,
     netIp: (row.net_ip as string | null) ?? null,
+    ports: (row.ports as SandboxInfo["ports"] | undefined) ?? [],
     createdAt: Number(row.created_at),
     finishedAt: num(row.finished_at),
   };

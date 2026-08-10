@@ -315,6 +315,12 @@ fn run_bridge(dgram: UnixDatagram, control_socket: &Path) -> Result<()> {
     }
     let n = n as usize;
     // Diagnostic: what address did libkrun bind (so we can reply to it)?
+    //
+    // `sun_path` is `[c_char; _]`, and `c_char` is *signed* on x86_64 and
+    // aarch64-darwin but *unsigned* on aarch64-linux — so this cast is doing
+    // real work on most targets and is a no-op on exactly one. Clippy only ever
+    // sees the target it is running on, and calls it redundant there.
+    #[allow(clippy::unnecessary_cast)]
     let path_bytes: Vec<u8> = peer
         .sun_path
         .iter()

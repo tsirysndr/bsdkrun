@@ -421,11 +421,17 @@ pub fn finalize_dhcp(
 
     // Forward the agent (for exec/shell) + any user ports to the leased IP.
     let host = net::free_local_port()?;
-    net::expose_on_control(&control, host, &ip, agent::GUEST_PORT)
-        .context("forwarding the agent port on the network")?;
+    net::expose_on_control(
+        &control,
+        std::net::Ipv4Addr::LOCALHOST.into(),
+        host,
+        &ip,
+        agent::GUEST_PORT,
+    )
+    .context("forwarding the agent port on the network")?;
     let _ = std::fs::write(agent::port_file(agent_dir), host.to_string());
     for pf in ports {
-        let _ = net::expose_on_control(&control, pf.host, &ip, pf.guest);
+        let _ = net::expose_on_control(&control, pf.bind, pf.host, &ip, pf.guest);
     }
     if let Err(e) = net::dns_add(&control, network, member, &ip) {
         warn!("couldn't register {member} in {network} DNS: {e:#}");

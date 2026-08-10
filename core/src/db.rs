@@ -110,6 +110,9 @@ pub struct MachineRow {
     /// Its assigned IP on that network (cleared when membership is edited; a
     /// fresh IP is allocated / DHCP'd on the next start).
     pub net_ip: Option<String>,
+    /// Host↔guest TCP port forwards, comma-joined `HOST:GUEST` pairs (see
+    /// [`crate::net::format_ports`] / `parse_ports`), or `None` if there are none.
+    pub ports: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -232,6 +235,10 @@ impl Db {
                 .execute(&self.pool)
                 .await;
             let _ = sqlx::query("ALTER TABLE machines ADD COLUMN net_ip TEXT")
+                .execute(&self.pool)
+                .await;
+            // Host↔guest port forwards, comma-joined `HOST:GUEST` pairs.
+            let _ = sqlx::query("ALTER TABLE machines ADD COLUMN ports TEXT")
                 .execute(&self.pool)
                 .await;
             sqlx::query(
@@ -373,6 +380,7 @@ impl Db {
         mem: i64,
         state_dir: &str,
         volume: Option<&str>,
+        ports: Option<&str>,
     ) -> Result<()> {
         self.rt
             .block_on(async {
@@ -381,8 +389,8 @@ impl Db {
                 // running rather than briefly vanishing from `ps`.
                 sqlx::query(
                     "INSERT OR REPLACE INTO machines
-                     (id, name, image, kind, command, status, pid, detached, cpus, mem, state_dir, created_at, volume)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     (id, name, image, kind, command, status, pid, detached, cpus, mem, state_dir, created_at, volume, ports)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(id)
                 .bind(name)
@@ -397,6 +405,7 @@ impl Db {
                 .bind(state_dir)
                 .bind(now())
                 .bind(volume)
+                .bind(ports)
                 .execute(&self.pool)
                 .await?;
                 Ok::<_, sqlx::Error>(())
@@ -480,7 +489,7 @@ impl Db {
             .block_on(async {
                 let rows = sqlx::query(
                     "SELECT id, name, image, kind, command, status, exit_code, pid, detached,
-                            cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip
+                            cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip, ports
                      FROM machines ORDER BY created_at DESC",
                 )
                 .fetch_all(&self.pool)
@@ -496,7 +505,7 @@ impl Db {
         if let Some(row) = self.rt.block_on(async {
             sqlx::query(
                 "SELECT id, name, image, kind, command, status, exit_code, pid, detached,
-                        cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip
+                        cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip, ports
                  FROM machines WHERE name = ? LIMIT 1",
             )
             .bind(prefix)
@@ -509,7 +518,7 @@ impl Db {
         let matches: Vec<MachineRow> = self.rt.block_on(async {
             let rows = sqlx::query(
                 "SELECT id, name, image, kind, command, status, exit_code, pid, detached,
-                        cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip
+                        cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip, ports
                  FROM machines WHERE id LIKE ? ORDER BY created_at DESC",
             )
             .bind(format!("{prefix}%"))
@@ -963,6 +972,7 @@ fn row_to_machine(r: sqlx::sqlite::SqliteRow) -> MachineRow {
         volume: r.get("volume"),
         network: r.get("network"),
         net_ip: r.get("net_ip"),
+        ports: r.get("ports"),
     }
 }
 
@@ -1070,10 +1080,12 @@ pub fn record_machine(
     mem: i64,
     state_dir: &str,
     volume: Option<&str>,
+    ports: Option<&str>,
 ) {
     if let Err(e) = Db::open().and_then(|db| {
         db.insert_machine(
             id, name, image, kind, command, status, pid, detached, cpus, mem, state_dir, volume,
+            ports,
         )
     }) {
         tracing::warn!("recording machine in state db: {e:#}");

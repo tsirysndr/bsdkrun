@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::commands::flavor::FLAVOR_BUILD_PREFIX;
 use crate::commands::images::reconcile_bsd_images;
 use crate::commands::volumes::volume_size;
-use crate::{db, fetch, flavors};
+use crate::{db, fetch, flavors, net};
 
 // The write side. These live beside the subcommands that print their results,
 // and are re-exported here so a caller has one place to look.
@@ -57,6 +57,9 @@ pub struct Machine {
     pub network: Option<String>,
     #[serde(default)]
     pub net_ip: Option<String>,
+    /// Host↔guest TCP port forwards (`--port HOST:GUEST`), empty if none.
+    #[serde(default)]
+    pub ports: Vec<net::PortForward>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,6 +163,7 @@ pub fn list_machines(all: bool) -> Result<Vec<Machine>> {
             finished_at: m.finished_at,
             network: m.network,
             net_ip: m.net_ip,
+            ports: m.ports.as_deref().map(net::parse_ports).unwrap_or_default(),
         });
     }
     Ok(out)

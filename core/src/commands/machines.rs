@@ -22,8 +22,8 @@ pub(crate) fn cmd_ps(all: bool, json: bool) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{:<14}  {:<20}  {:<22}  {:<24}  {:<15}  {}",
-        "ID", "NAME", "IMAGE", "STATUS", "CREATED", "COMMAND"
+        "{:<14}  {:<20}  {:<22}  {:<24}  {:<15}  {:<24}  {}",
+        "ID", "NAME", "IMAGE", "STATUS", "CREATED", "PORTS", "COMMAND"
     );
     for m in machines {
         let created = m.created_at.unwrap_or_default();
@@ -39,13 +39,23 @@ pub(crate) fn cmd_ps(all: bool, json: bool) -> Result<()> {
                 (None, None) => "Exited".to_string(),
             }
         };
+        let ports = if m.ports.is_empty() {
+            "-".to_string()
+        } else {
+            m.ports
+                .iter()
+                .map(|p| format!("{}:{}->{}/tcp", p.bind, p.host, p.guest))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         println!(
-            "{:<14}  {:<20}  {:<22}  {:<24}  {:<15}  {}",
+            "{:<14}  {:<20}  {:<22}  {:<24}  {:<15}  {:<24}  {}",
             m.id,
             truncate(m.name.as_deref().unwrap_or("-"), 20),
             truncate(&m.image, 22),
             status,
             format!("{} ago", db::human_duration_since(&created)),
+            truncate(&ports, 24),
             truncate(&m.command, 40)
         );
     }

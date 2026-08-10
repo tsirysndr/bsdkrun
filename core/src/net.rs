@@ -78,10 +78,66 @@ pub fn free_local_port() -> Result<u16> {
 }
 
 /// A host→guest TCP port forward.
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct PortForward {
+    /// Host interface to bind, e.g. `127.0.0.1` (default) or `0.0.0.0` (LAN-reachable).
+    #[serde(default = "PortForward::default_bind")]
+    pub bind: std::net::IpAddr,
     pub host: u16,
     pub guest: u16,
+}
+
+impl PortForward {
+    fn default_bind() -> std::net::IpAddr {
+        std::net::Ipv4Addr::LOCALHOST.into()
+    }
+
+    /// A forward on the default (loopback-only) bind address. Used for
+    /// bsdkrun's own internal forwards (the exec/shell agent port) — those
+    /// are never meant to be LAN-reachable, regardless of what the user's
+    /// `--port` flags asked for.
+    pub fn loopback(host: u16, guest: u16) -> Self {
+        PortForward {
+            bind: Self::default_bind(),
+            host,
+            guest,
+        }
+    }
+}
+
+impl std::fmt::Display for PortForward {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.bind == Self::default_bind() {
+            write!(f, "{}:{}", self.host, self.guest)
+        } else {
+            write!(f, "{}:{}:{}", self.bind, self.host, self.guest)
+        }
+    }
+}
+
+/// Serialize a machine's port forwards for the `machines.ports` DB column:
+/// comma-joined `HOST:GUEST` pairs, or `None` if there are none.
+pub fn format_ports(ports: &[PortForward]) -> Option<String> {
+    if ports.is_empty() {
+        return None;
+    }
+    Some(
+        ports
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    )
+}
+
+/// Parse the `machines.ports` DB column back into port forwards, e.g. to
+/// re-apply them on `start`. Malformed entries (there shouldn't be any — this
+/// only ever round-trips what `format_ports` wrote) are skipped.
+pub fn parse_ports(s: &str) -> Vec<PortForward> {
+    s.split(',')
+        .filter(|p| !p.is_empty())
+        .filter_map(|p| p.parse().ok())
+        .collect()
 }
 
 /// A running gvproxy process serving one microVM's network. Killed and its
@@ -207,8 +263,8 @@ impl Gvproxy {
     /// so this is safe to call before the VM boots.
     fn expose_port(&self, pf: PortForward) -> Result<()> {
         let body = format!(
-            r#"{{"local":"127.0.0.1:{}","remote":"{}:{}","protocol":"tcp"}}"#,
-            pf.host, GUEST_IP, pf.guest
+            r#"{{"local":"{}:{}","remote":"{}:{}","protocol":"tcp"}}"#,
+            pf.bind, pf.host, GUEST_IP, pf.guest
         );
         let resp = self.control_post("/services/forwarder/expose", &body)?;
         // gvproxy answers 200 with an empty body on success.
@@ -226,17 +282,18 @@ impl Gvproxy {
     }
 }
 
-/// Ask a gvproxy at `control_socket` to forward host `127.0.0.1:host` to
+/// Ask a gvproxy at `control_socket` to forward host `bind:host` to
 /// `guest_ip:guest`. Used to add a forward to a **shared network** gvproxy that
 /// this process doesn't own (each member targets its own IP).
 pub fn expose_on_control(
     control_socket: &Path,
+    bind: std::net::IpAddr,
     host: u16,
     guest_ip: &str,
     guest: u16,
 ) -> Result<()> {
     let body =
-        format!(r#"{{"local":"127.0.0.1:{host}","remote":"{guest_ip}:{guest}","protocol":"tcp"}}"#);
+        format!(r#"{{"local":"{bind}:{host}","remote":"{guest_ip}:{guest}","protocol":"tcp"}}"#);
     let resp = control_post_to(control_socket, "/services/forwarder/expose", &body)?;
     if !resp.starts_with("HTTP/1.1 200") && !resp.starts_with("HTTP/1.0 200") {
         let status = resp.lines().next().unwrap_or("<no status line>");

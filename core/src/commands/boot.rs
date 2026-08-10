@@ -101,13 +101,19 @@ pub(crate) fn setup_networking_with_agent(
             if let Some(dir) = agent_dir {
                 let host =
                     net::free_local_port().context("reserving a host port for the exec agent")?;
-                net::expose_on_control(&control, host, ip, agent::GUEST_PORT)
-                    .context("forwarding the agent port on the shared network")?;
+                net::expose_on_control(
+                    &control,
+                    std::net::Ipv4Addr::LOCALHOST.into(),
+                    host,
+                    ip,
+                    agent::GUEST_PORT,
+                )
+                .context("forwarding the agent port on the shared network")?;
                 let _ = std::fs::write(agent::port_file(dir), host.to_string());
                 info!(agent_port = host, %ip, "exec agent reachable via the shared network");
             }
             for pf in &cfg.ports {
-                net::expose_on_control(&control, pf.host, ip, pf.guest)
+                net::expose_on_control(&control, pf.bind, pf.host, ip, pf.guest)
                     .with_context(|| format!("forwarding host port {}", pf.host))?;
             }
         }
@@ -144,10 +150,7 @@ pub(crate) fn setup_networking_with_agent(
         Some(dir) => {
             let host =
                 net::free_local_port().context("reserving a host port for the exec agent")?;
-            ports.push(PortForward {
-                host,
-                guest: agent::GUEST_PORT,
-            });
+            ports.push(PortForward::loopback(host, agent::GUEST_PORT));
             let _ = std::fs::write(agent::port_file(dir), host.to_string());
             Some(host)
         }
@@ -225,6 +228,7 @@ pub(crate) fn boot_kernel(args: KernelArgs) -> Result<()> {
         args.run.detach,
         true, // BSD: use the SMP-shutdown watchdog on the foreground path
         args.run.volume.as_deref(),
+        &args.net.ports,
         &[],
         false,
         false,
@@ -331,6 +335,7 @@ pub(crate) fn boot_unikraft_image(
         // the same path the watchdog covers for a BSD guest.
         true,
         None,
+        &net.ports,
         &[],
         false,
         false,
@@ -536,6 +541,7 @@ pub(crate) fn boot_osv_image(
         // same path the watchdog covers for a BSD guest.
         true,
         volume,
+        &net.ports,
         &[],
         false,
         false,
@@ -665,6 +671,7 @@ pub(crate) fn boot_nanos_image(
         detach,
         true,
         None,
+        &net.ports,
         &[],
         false,
         false,
@@ -743,6 +750,7 @@ pub(crate) fn firmware_machine(
         run.detach,
         true,
         run.volume.as_deref(),
+        &net.ports,
         exec_after,
         interactive,
         verbose,
@@ -971,6 +979,7 @@ pub(crate) fn boot_freebsd_pvh(args: BsdArgs, disk_override: Option<PathBuf>) ->
         args.run.detach,
         true,
         args.run.volume.as_deref(),
+        &args.net.ports,
         &exec_after,
         interactive,
         args.verbose,
@@ -1087,6 +1096,7 @@ pub(crate) fn boot_netbsd_disk(mut args: BsdArgs, disk_override: Option<PathBuf>
         args.run.detach,
         true,
         args.run.volume.as_deref(),
+        &args.net.ports,
         &exec_after,
         interactive,
         args.verbose,
@@ -1276,6 +1286,7 @@ pub(crate) fn run_machine(
     detach: bool,
     watchdog: bool,
     volume: Option<&str>,
+    ports: &[PortForward],
     exec_after: &[String],
     interactive: bool,
     verbose: bool,
@@ -1294,6 +1305,7 @@ pub(crate) fn run_machine(
             cpus,
             mem,
             volume,
+            ports,
             exec_after,
             detach,
             interactive,
@@ -1314,6 +1326,7 @@ pub(crate) fn run_machine(
         mem as i64,
         &vdir.to_string_lossy(),
         volume,
+        net::format_ports(ports).as_deref(),
     );
     tty::install();
     if watchdog {
@@ -1576,6 +1589,7 @@ pub(crate) fn boot_linux_from(
         args.detach,
         false,
         args.volume.as_deref(),
+        &args.net.ports,
         provision,
         false,
         false,
@@ -1661,6 +1675,7 @@ pub(crate) fn run_detached(
     cpus: u8,
     mem: u32,
     volume: Option<&str>,
+    ports: &[PortForward],
     exec_after: &[String],
     keep_running: bool,
     interactive: bool,
@@ -1691,6 +1706,7 @@ pub(crate) fn run_detached(
             mem as i64,
             &vdir.to_string_lossy(),
             volume,
+            net::format_ports(ports).as_deref(),
         );
         // No trailing command: classic `-d`, just announce the id.
         if exec_after.is_empty() {
@@ -2126,7 +2142,9 @@ pub(crate) fn cmd_start(id: &str) -> Result<()> {
     }
     let net = NetConfig {
         no_net: false,
-        ports: vec![],
+        // Restore the port forwards recorded at the original `run`/`-d`, so a
+        // restarted machine keeps serving on the same host ports.
+        ports: vm.ports.as_deref().map(net::parse_ports).unwrap_or_default(),
         mac: None,
         network: vm.network.clone(),
         name: vm.name.clone(),

@@ -340,8 +340,10 @@ pub struct FlavorAddArgs {
     #[arg(long, default_value = "")]
     pub description: String,
 
-    /// Default host↔guest port forward `HOST:GUEST` (repeatable).
-    #[arg(long = "port", value_name = "HOST:GUEST")]
+    /// Default host↔guest port forward `HOST:GUEST` (repeatable). Prefix with
+    /// a bind address (`BIND:HOST:GUEST`, e.g. `0.0.0.0:8080:80`) to make it
+    /// reachable from the LAN instead of just localhost.
+    #[arg(long = "port", value_name = "[BIND:]HOST:GUEST")]
     pub ports: Vec<String>,
 
     /// Default environment `K=V` (repeatable).
@@ -384,8 +386,11 @@ pub struct FlavorRunArgs {
     #[command(flatten)]
     pub vm: VmConfig,
 
-    /// Extra host↔guest port forward (repeatable), on top of the flavor's defaults.
-    #[arg(long = "port", value_name = "HOST:GUEST")]
+    /// Extra host↔guest port forward (repeatable), on top of the flavor's
+    /// defaults. Prefix with a bind address (`BIND:HOST:GUEST`, e.g.
+    /// `0.0.0.0:8080:80`) to make it reachable from the LAN instead of just
+    /// localhost.
+    #[arg(long = "port", value_name = "[BIND:]HOST:GUEST")]
     pub ports: Vec<PortForward>,
 
     /// Persist to a named volume (Linux flavors).
@@ -1092,8 +1097,10 @@ pub struct NetConfig {
     pub no_net: bool,
 
     /// Forward a host TCP port to the guest: HOST:GUEST (repeatable).
-    /// Example: `--port 2222:22` for SSH.
-    #[arg(long = "port", value_name = "HOST:GUEST")]
+    /// Example: `--port 2222:22` for SSH. Binds `127.0.0.1` by default;
+    /// prefix a bind address to change that, e.g. `--port 0.0.0.0:8080:80`
+    /// to make it reachable from the LAN instead of just localhost.
+    #[arg(long = "port", value_name = "[BIND:]HOST:GUEST")]
     pub ports: Vec<PortForward>,
 
     /// MAC address for the guest NIC (default: a fixed locally-administered one).
@@ -1145,17 +1152,29 @@ impl FromStr for DiskSpec {
 impl FromStr for PortForward {
     type Err = String;
 
+    /// `HOST:GUEST` (binds `127.0.0.1`, the default), or `BIND:HOST:GUEST` to
+    /// choose the host interface explicitly — e.g. `0.0.0.0:8080:80` to make
+    /// the forward reachable from the LAN, not just localhost.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (host, guest) = s
-            .split_once(':')
-            .ok_or_else(|| format!("expected HOST:GUEST, got {s:?}"))?;
+        let parts: Vec<&str> = s.split(':').collect();
+        let (bind, host, guest) = match parts.as_slice() {
+            [host, guest] => (None, *host, *guest),
+            [bind, host, guest] => (Some(*bind), *host, *guest),
+            _ => return Err(format!("expected HOST:GUEST or BIND:HOST:GUEST, got {s:?}")),
+        };
+        let bind = match bind {
+            Some(b) => b
+                .parse::<std::net::IpAddr>()
+                .map_err(|_| format!("invalid bind address {b:?} in {s:?}"))?,
+            None => std::net::Ipv4Addr::LOCALHOST.into(),
+        };
         let host = host
             .parse::<u16>()
             .map_err(|_| format!("invalid host port {host:?} in {s:?}"))?;
         let guest = guest
             .parse::<u16>()
             .map_err(|_| format!("invalid guest port {guest:?} in {s:?}"))?;
-        Ok(PortForward { host, guest })
+        Ok(PortForward { bind, host, guest })
     }
 }
 
@@ -1376,5 +1395,28 @@ mod tests {
         assert!(a.detach);
         assert_eq!(a.net.ports.len(), 1);
         assert_eq!(a.command, ["sh", "-c", "echo hi"]);
+    }
+
+    #[test]
+    fn port_forward_defaults_to_loopback() {
+        let pf: PortForward = "8080:80".parse().unwrap();
+        assert_eq!(pf.bind, std::net::Ipv4Addr::LOCALHOST);
+        assert_eq!(pf.host, 8080);
+        assert_eq!(pf.guest, 80);
+    }
+
+    #[test]
+    fn port_forward_accepts_an_explicit_bind_address() {
+        let pf: PortForward = "0.0.0.0:8080:80".parse().unwrap();
+        assert_eq!(pf.bind, std::net::Ipv4Addr::UNSPECIFIED);
+        assert_eq!(pf.host, 8080);
+        assert_eq!(pf.guest, 80);
+    }
+
+    #[test]
+    fn port_forward_rejects_garbage() {
+        assert!("8080".parse::<PortForward>().is_err());
+        assert!("not-an-ip:8080:80".parse::<PortForward>().is_err());
+        assert!("a:b:c:d".parse::<PortForward>().is_err());
     }
 }

@@ -2144,7 +2144,11 @@ pub(crate) fn cmd_start(id: &str) -> Result<()> {
         no_net: false,
         // Restore the port forwards recorded at the original `run`/`-d`, so a
         // restarted machine keeps serving on the same host ports.
-        ports: vm.ports.as_deref().map(net::parse_ports).unwrap_or_default(),
+        ports: vm
+            .ports
+            .as_deref()
+            .map(net::parse_ports)
+            .unwrap_or_default(),
         mac: None,
         network: vm.network.clone(),
         name: vm.name.clone(),

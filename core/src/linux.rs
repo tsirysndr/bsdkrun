@@ -23,7 +23,7 @@ use crate::oci::{self, ImageConfig};
 
 /// Where the prebuilt aarch64 kernels are published, and the default release.
 const KERNEL_RELEASE_BASE: &str = "https://github.com/tsirysndr/vmlinux-builder/releases/download";
-pub const DEFAULT_KERNEL_VERSION: &str = "7.1.5";
+pub const DEFAULT_KERNEL_VERSION: &str = "7.1.8";
 
 /// Asset filename for a given vmlinux-builder release + host arch.
 fn kernel_file(version: &str, arch: crate::host::Arch) -> String {
@@ -499,6 +499,30 @@ fn generate_init(ep: &Entrypoint, net: bool, persistent: bool, mounts: &[BindMou
     );
     s.push_str("is_mounted /sys || mount -t sysfs sysfs /sys\n");
     s.push_str("is_mounted /dev || mount -t devtmpfs dev /dev\n");
+    // cgroup2 (unified hierarchy). On a real host this arrives for free —
+    // systemd mounts it, or a container inherits it bind-mounted in from the
+    // host. Here the guest kernel IS the whole machine, so nothing mounts it
+    // unless we do. Without this, any workload that manages its own cgroups
+    // (dockerd/containerd chief among them) dies at startup with "devices
+    // cgroup isn't mounted" — the daemon falls back to probing for a legacy
+    // cgroup v1 hierarchy, finds nothing mounted at all, and gives up.
+    s.push_str("mkdir -p /sys/fs/cgroup\n");
+    s.push_str("is_mounted /sys/fs/cgroup || mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null\n");
+    // Delegate a leaf cgroup to the workload instead of leaving it at the true
+    // root. The root cgroup permanently holds every kernel thread (they can
+    // never be moved out — that's fundamental cgroup semantics, not a config
+    // issue), so anything that tries to enable controllers there fails with
+    // EINVAL forever. On a real Docker host this is a non-issue: `--privileged`
+    // gives the container its own cgroup NAMESPACE, so /sys/fs/cgroup already
+    // shows a kernel-thread-free subtree. We can't unshare(CLONE_NEWCGROUP) —
+    // busybox's `unshare` in these images has no -C/--cgroup support — so we
+    // get the same effect with a plain bind mount: move ourselves into a child
+    // cgroup, then bind that child over /sys/fs/cgroup. Every process we
+    // subsequently start (the whole workload) inherits the move; the true root
+    // — and its kernel threads — becomes unreachable through this path.
+    s.push_str("mkdir -p /sys/fs/cgroup/machine\n");
+    s.push_str("echo $$ > /sys/fs/cgroup/machine/cgroup.procs 2>/dev/null\n");
+    s.push_str("mount --bind /sys/fs/cgroup/machine /sys/fs/cgroup 2>/dev/null\n");
     s.push_str("[ -e /dev/null ] || mknod -m 666 /dev/null c 1 3\n");
     s.push_str("[ -e /dev/zero ] || mknod -m 666 /dev/zero c 1 5\n");
     s.push_str("[ -e /dev/console ] || mknod -m 600 /dev/console c 5 1\n");
@@ -555,6 +579,19 @@ fn generate_init(ep: &Entrypoint, net: bool, persistent: bool, mounts: &[BindMou
             .unwrap_or_default();
         s.push_str(&format!(
             "printf '{search}nameserver {GATEWAY_IP}\\n' > /etc/resolv.conf 2>/dev/null\n"
+        ));
+        // The kernel's `ip=` autoconfig (see add_ip) hardcodes the guest's own
+        // hostname to "bsdkrun", but gvproxy's DNS has no record for it (that
+        // only happens for named --network members). Anything that resolves
+        // its own hostname — e.g. dind's entrypoint doing `hostname`/`getent
+        // hosts $(hostname)` for its TLS cert CN — fails with "Host not
+        // found" without a local /etc/hosts entry.
+        let guest = std::env::var("BSDKRUN_NET_IP")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| GUEST_IP.to_string());
+        s.push_str(&format!(
+            "printf '127.0.0.1 localhost\\n{guest} bsdkrun\\n' >> /etc/hosts 2>/dev/null\n"
         ));
     }
     // systemd handoff: `bsdkrun-agent systemd setup` installs systemd, writes
@@ -780,6 +817,53 @@ mod tests {
         // HOME defaults to /root (image set USER=root, no HOME) so nix stops
         // warning "$HOME ('/') is not owned by you".
         assert!(s.contains("export HOME='/root'"));
+    }
+
+    #[test]
+    fn init_mounts_cgroup2() {
+        let s = generate_init(&ep(), true, false, &[]);
+        // Required before any workload that manages its own cgroups (dockerd,
+        // containerd) can start — otherwise it fails with "devices cgroup
+        // isn't mounted", since the guest kernel is the whole machine and
+        // nothing else mounts cgroupfs for it.
+        assert!(s.contains("mkdir -p /sys/fs/cgroup"));
+        assert!(s.contains("mount -t cgroup2 none /sys/fs/cgroup"));
+        // Mounted after /sys (which cgroup2 sits under) but before the
+        // workload's entrypoint runs.
+        let sys_pos = s.find("mount -t sysfs sysfs /sys").expect("sysfs mount");
+        let cgroup_pos = s.find("mount -t cgroup2").expect("cgroup2 mount");
+        assert!(sys_pos < cgroup_pos);
+    }
+
+    #[test]
+    fn init_delegates_a_leaf_cgroup_to_the_workload() {
+        let s = generate_init(&ep(), true, false, &[]);
+        // The root cgroup permanently holds kernel threads, which can never be
+        // migrated out — so anything (e.g. dockerd/dind) that waits for the
+        // root cgroup to empty before enabling controllers would spin forever.
+        // We move PID 1 into a child cgroup and bind it over /sys/fs/cgroup so
+        // the workload only ever sees a kernel-thread-free subtree.
+        assert!(s.contains("mkdir -p /sys/fs/cgroup/machine"));
+        assert!(s.contains("echo $$ > /sys/fs/cgroup/machine/cgroup.procs"));
+        assert!(s.contains("mount --bind /sys/fs/cgroup/machine /sys/fs/cgroup"));
+        // Delegated after the cgroup2 mount exists, before the workload runs.
+        let cgroup2_pos = s.find("mount -t cgroup2").expect("cgroup2 mount");
+        let bind_pos = s.find("mount --bind").expect("bind mount");
+        assert!(cgroup2_pos < bind_pos);
+    }
+
+    #[test]
+    fn init_registers_own_hostname_in_etc_hosts() {
+        let s = generate_init(&ep(), true, false, &[]);
+        // The kernel's `ip=` autoconfig hardcodes the guest hostname to
+        // "bsdkrun" (see add_ip), but gvproxy's DNS has no record for it, so
+        // anything resolving its own hostname (e.g. dind's entrypoint) would
+        // otherwise fail with "Host not found".
+        assert!(s.contains(&format!("{GUEST_IP} bsdkrun")));
+        assert!(s.contains(">> /etc/hosts"));
+        // No net, no kernel-assigned hostname to register.
+        let s = generate_init(&ep(), false, false, &[]);
+        assert!(!s.contains("/etc/hosts"));
     }
 
     #[test]

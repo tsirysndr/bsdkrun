@@ -127,6 +127,19 @@ class _TestWSServer:
 
     def close(self) -> None:
         if self.conn is not None:
+            # shutdown() first: the server's own `_read_loop` thread may
+            # still be blocked in `conn.recv()` on this exact fd, and
+            # closing a socket concurrently with a blocking read on it from
+            # another thread is not reliably safe or immediate across
+            # platforms (a classic POSIX footgun — the read may not unblock
+            # promptly, or a since-reused fd number could even be affected).
+            # shutdown(SHUT_RDWR) is specifically designed to deliver EOF to
+            # a concurrent blocking read and to send the peer a clean FIN
+            # right away, which close() alone does not guarantee.
+            try:
+                self.conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             try:
                 self.conn.close()
             except OSError:

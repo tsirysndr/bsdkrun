@@ -1,0 +1,75 @@
+{:paths ["src"]
+ :deps  {}
+
+ :tasks
+ {:requires ([console.core :as c])
+
+  ;; ── meta ─────────────────────────────────────────────────────
+  help    {:doc "Show all available console commands"
+           :task (c/help)}
+  ls      {:doc "List every registered command grouped by namespace"
+           :task (c/ls)}
+
+  ;; ── build (root Makefile) ───────────────────────────────────
+  build          {:doc  "make build — debug build + codesign"
+                  :task (do (require 'console.build) ((resolve 'console.build/build)))}
+  release        {:doc  "make release — release build + codesign"
+                  :task (do (require 'console.build) ((resolve 'console.build/release)))}
+  sign           {:task (do (require 'console.build) ((resolve 'console.build/sign)))}
+  sign-release   {:task (do (require 'console.build) ((resolve 'console.build/sign-release)))}
+  web            {:doc  "make web — build the web SPA into web/dist"
+                  :task (do (require 'console.build) ((resolve 'console.build/web)))}
+  daemon         {:doc  "make daemon — release build bsdkrun-daemon + -supervisor"
+                  :task (do (require 'console.build) ((resolve 'console.build/daemon)))}
+  agent          {:doc  "make agent — cross-compile the in-guest exec agent"
+                  :task (do (require 'console.build) ((resolve 'console.build/agent)))}
+  agent:linux    {:task (do (require 'console.build) ((resolve 'console.build/agent-linux)))}
+  agent:freebsd  {:task (do (require 'console.build) ((resolve 'console.build/agent-freebsd)))}
+  agent:netbsd   {:task (do (require 'console.build) ((resolve 'console.build/agent-netbsd)))}
+  run            {:doc  "make run ARGS=... — build then run. Usage: bb run [args...]"
+                  :task (do (require 'console.build)
+                            (apply (resolve 'console.build/run) *command-line-args*))}
+  test           {:doc  "make test (= make e2e) — boot the FreeBSD image under a PTY"
+                  :task (do (require 'console.build) ((resolve 'console.build/test)))}
+  clean          {:doc  "make clean — cargo clean"
+                  :task (do (require 'console.build) ((resolve 'console.build/clean)))}
+
+  ;; ── sdk (all six language packages — lang is always a keyword atom;
+  ;;         `bb` hands us strings, so every task below coerces the first
+  ;;         CLI arg with `keyword`) ────────────────────────────────────
+  sdk:deps     {:doc  "Fetch deps. Usage: bb sdk:deps <elixir|gleam>"
+               :task (do (require 'console.sdk)
+                         ((resolve 'console.sdk/deps) (keyword (first *command-line-args*))))}
+  sdk:test     {:doc  "Run one SDK's tests. Usage: bb sdk:test <clojure|ruby|python|elixir|gleam|typescript>"
+               :task (do (require 'console.sdk)
+                         ((resolve 'console.sdk/test) (keyword (first *command-line-args*))))}
+  sdk:lint     {:doc  "Lint. Usage: bb sdk:lint <python>"
+               :task (do (require 'console.sdk)
+                         ((resolve 'console.sdk/lint) (keyword (first *command-line-args*))))}
+  sdk:build    {:doc  "Build the distributable artifact. Usage: bb sdk:build <clojure|ruby|python|typescript>"
+               :task (do (require 'console.sdk)
+                         ((resolve 'console.sdk/build) (keyword (first *command-line-args*))))}
+  sdk:install  {:doc  "Install locally. Usage: bb sdk:install <clojure>"
+               :task (do (require 'console.sdk)
+                         ((resolve 'console.sdk/install) (keyword (first *command-line-args*))))}
+  sdk:publish  {:doc  "Publish to the registry. Usage: bb sdk:publish <lang> [args...]"
+               :task (do (require 'console.sdk)
+                         (let [[lang & args] *command-line-args*]
+                           (apply (resolve 'console.sdk/publish) (keyword lang) args)))}
+  sdk:test-all {:doc  "Every SDK's unit-test suite in turn"
+               :task (do (require 'console.sdk) ((resolve 'console.sdk/test-all)))}
+
+  ;; ── web (web/) ───────────────────────────────────────────────
+  web:dev        {:doc  "bun run dev — Vite dev server"
+                  :task (do (require 'console.web) ((resolve 'console.web/dev)))}
+  web:build      {:task (do (require 'console.web) ((resolve 'console.web/build)))}
+  web:typecheck  {:task (do (require 'console.web) ((resolve 'console.web/typecheck)))}
+  web:preview    {:task (do (require 'console.web) ((resolve 'console.web/preview)))}
+
+  ;; ── desktop (desktop/) ───────────────────────────────────────
+  desktop:dev          {:doc  "bun run dev — renderer only"
+                        :task (do (require 'console.desktop) ((resolve 'console.desktop/dev)))}
+  desktop:build        {:task (do (require 'console.desktop) ((resolve 'console.desktop/build)))}
+  desktop:tauri-dev    {:doc  "bun run tauri dev — full native app shell"
+                        :task (do (require 'console.desktop) ((resolve 'console.desktop/tauri-dev)))}
+  desktop:tauri-build  {:task (do (require 'console.desktop) ((resolve 'console.desktop/tauri-build)))}}}

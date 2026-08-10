@@ -246,6 +246,17 @@ The [`build.rs`](./build.rs) locates libkrun via `brew --prefix libkrun` (macOS)
 (Linux), override with `LIBKRUN_PREFIX=/path`, and embeds an rpath so the shared library resolves
 at runtime.
 
+### Monorepo dev console (`./console`)
+
+Not to be confused with the [guest serial console](#console-how-output-reaches-your-terminal)
+below — this is a contributor tool. `./console` (or `cd tools/console && clj -M:rebel`) drops you
+into a Clojure REPL that centralizes every build/test/publish command in this monorepo — the
+`Makefile` targets above, all six SDKs' test/build/publish steps, and `web`/`desktop`'s dev
+servers — as plain functions (`(build/release)`, `(sdk/test :clojure)`, `(sdk/publish :ruby)`,
+`(web/dev)`) instead of remembering which tool owns which command. `bb help` from
+`tools/console` works the same way without a REPL. See
+[`tools/console/README.md`](./tools/console/README.md).
+
 ---
 
 ## Usage
@@ -1254,6 +1265,7 @@ long-lived state, so the SDKs are safe to use from short-lived processes and scr
 | **Ruby**       | `bsdkrun`      | [`sdk/ruby`](sdk/ruby)             | No runtime dependencies.                                                                                   |
 | **Elixir**     | `bsdkrun_ex`   | [`sdk/elixir`](sdk/elixir)         | One dependency (`:jason`). `{:ok, _}` / `{:error, _}` with bang variants. Modules are plain `Bsdkrun.*`.    |
 | **Gleam**      | `bsdkrun`      | [`sdk/gleam`](sdk/gleam)           | Erlang target. Fully typed `Result`s; no exceptions.                                                       |
+| **Clojure**    | `io.github.tsirysndr/bsdkrun` | [`sdk/clojure`](sdk/clojure) | No runtime dependencies beyond `org.clojure/clojure` + `data.json`. A "sandbox" is a plain map — no object hierarchy. Docs on [cljdoc.org](https://cljdoc.org/d/io.github.tsirysndr/bsdkrun). |
 
 Elixir publishes as **`bsdkrun_ex`** because Hex is a single namespace and the Gleam SDK
 already takes `bsdkrun` there; its modules are unaffected.
@@ -1288,6 +1300,12 @@ box.exec(["uname", "-a"])
 let assert Ok(box) = bsdkrun.create(args.linux("alpine"))
 let assert Ok(res) = bsdkrun.exec(box, ["uname", "-a"])
 ```
+```clojure
+;; Clojure
+(require '[bsdkrun.sandbox :as sandbox])
+(def box (sandbox/create! {:os "linux" :image "alpine"}))
+(sandbox/exec! box ["uname" "-a"])
+```
 
 ### Try it interactively
 
@@ -1295,13 +1313,15 @@ Each SDK ships a console with the binary resolved and the API already in scope, 
 poke at real machines without writing a script:
 
 ```sh
-cd sdk/python && uv run console.py    # IPython
-cd sdk/ruby   && bin/console          # IRB
-cd sdk/elixir && iex -S mix           # IEx, via .iex.exs
+cd sdk/python  && uv run console.py    # IPython
+cd sdk/ruby    && bin/console          # IRB
+cd sdk/elixir  && iex -S mix           # IEx, via .iex.exs
+cd sdk/clojure && clj -M:rebel         # rebel-readline, via dev/user.clj
 ```
 
-All three define `ps` (every machine, exited ones included) and accept a
-`--bin path/to/bsdkrun` override (`BSDKRUN_BIN=…` for IEx) to drive a locally built binary.
+All four define `ps` (every machine, exited ones included) and accept a
+`--bin path/to/bsdkrun` override (`BSDKRUN_BIN=…` for IEx and rebel) to drive a locally built
+binary.
 
 See each SDK's README for the full API. The TypeScript SDK is covered by an
 [end-to-end CI job](.github/workflows/e2e-sdk.yml) that boots a real microVM under KVM; the
@@ -1329,7 +1349,10 @@ others run [unit + argv tests](.github/workflows/sdk-unit.yml) on every change.
 | `bsdkrun.entitlements` | `com.apple.security.hypervisor` + library-validation opt-out. |
 | `images/`              | Guest disk images and a symlink to libkrun's EDK2 firmware (git-ignored blobs). |
 | `skills/`              | Agent skills published to [skills.sh](https://skills.sh/tsirysndr/bsdkrun) — `skills/bsdkrun-cli/` documents every subcommand and flag for coding agents. |
-| `sdk/`                 | Client [SDKs](#sdks) — TypeScript, Python, Ruby, Elixir, and Gleam. Each builds argv, shells out to the binary, and parses its JSON output. |
+| `sdk/`                 | Client [SDKs](#sdks) — TypeScript, Python, Ruby, Elixir, Gleam, and Clojure. Each builds argv, shells out to the binary, and parses its JSON output. |
+| `tools/console/`       | Contributor tooling: a Clojure/Babashka REPL centralizing every build/test/publish command in the monorepo. See [Monorepo dev console](#monorepo-dev-console-console). |
+| `console`              | Root shortcut: `./console` == `cd tools/console && clj -M:rebel`. |
+| `doc/cljdoc.edn`       | [cljdoc.org](https://cljdoc.org) doc-tree config for the Clojure SDK (`sdk/clojure`), published to Clojars as `io.github.tsirysndr/bsdkrun`. |
 
 ---
 

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# bsdkrun command console — Clojure + rebel REPL that centralizes every
+# monorepo command (build/release/sign, all six SDKs, web, desktop). Requires
+# the toolchain from mise (`cd tools/console && mise install`).
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+export BSDKRUN_ROOT="$ROOT"
+cd "$ROOT/tools/console"
+exec clojure -M:rebel

@@ -15,14 +15,15 @@ class Bsdkrund < Formula
   version "0.6.0"
   license "MIT"
 
-  # The daemon owns no VM logic: it resolves the `bsdkrun` binary and runs it as
-  # a subprocess. Without the CLI it starts and then fails every request, so
-  # this is a hard runtime dependency rather than a suggestion.
-  depends_on "tsirysndr/tap/bsdkrun"
+  # The daemon links no hypervisor itself: booting a machine is handed off to
+  # `bsdkrun-supervisor`, which it finds beside itself or on PATH (see
+  # daemon/src/supervisor.rs). Without it the daemon still starts and serves
+  # everything that isn't a boot, but that's a crippled install, so pull it in.
+  depends_on "tsirysndr/tap/bsdkrun-supervisor"
 
   on_macos do
-    # macOS is Apple Silicon only, matching the CLI — bsdkrun needs an arm64
-    # host for libkrun, so an Intel daemon would have no CLI to drive.
+    # macOS is Apple Silicon only, matching the CLI — bsdkrun-supervisor needs
+    # an arm64 host for libkrun, so an Intel daemon would have nothing to boot with.
     on_arm do
       url "https://github.com/tsirysndr/bsdkrun/releases/download/v#{version}/bsdkrund-aarch64-apple-darwin.tar.gz"
       sha256 "REPLACE_WITH_SHA256_FROM_THE_RELEASE"
@@ -63,7 +64,7 @@ class Bsdkrund < Formula
     log_path var/"log/bsdkrund.log"
     error_log_path var/"log/bsdkrund.log"
     # A service manager's PATH is minimal, and the daemon has to be able to find
-    # `bsdkrun` (and the tools it shells out to: gvproxy, curl, tar).
+    # `bsdkrun-supervisor` (and the tools it shells out to: gvproxy, curl, tar).
     environment_variables PATH: std_service_path_env
   end
 
@@ -96,11 +97,10 @@ class Bsdkrund < Formula
   test do
     assert_match "bsdkrund", shell_output("#{bin}/bsdkrund --version")
 
-    # It must refuse to start when it cannot find a bsdkrun to drive — that is
-    # the failure the dependency above exists to prevent, and a formula that
-    # installed a daemon which silently did nothing would be worse than one
-    # that failed here.
-    output = shell_output("#{bin}/bsdkrund --bsdkrun /nonexistent/bsdkrun 2>&1", 1)
-    assert_match "bsdkrun", output
+    # A missing supervisor is a warning, not a startup failure (the daemon
+    # still serves everything that isn't a boot) — so there's nothing to
+    # assert by exit code here. Just confirm the flag the dependency above
+    # exists to satisfy is still the one the binary understands.
+    assert_match "--supervisor", shell_output("#{bin}/bsdkrund --help")
   end
 end

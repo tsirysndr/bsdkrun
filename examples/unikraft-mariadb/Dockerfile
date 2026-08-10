@@ -32,7 +32,8 @@ RUN set -eux; \
     rm -rf /var/lib/mysql; \
     mkdir -p /var/lib/mysql; \
     mariadb-install-db --no-defaults --user=root --datadir=/var/lib/mysql \
-        --auth-root-authentication-method=normal --skip-test-db
+        --auth-root-authentication-method=normal --skip-test-db \
+        -- --innodb-log-file-size=16M
 
 # Give root a password and let it connect from anywhere; connections through
 # the forwarded port arrive from the gvproxy gateway address, so 'root'@'%' is
@@ -47,6 +48,7 @@ RUN set -eux; \
 # datadir with no recovery to do. Same approach as ../unikraft-mysql.
 RUN set -eux; \
     mariadbd --no-defaults --user=root --datadir=/var/lib/mysql \
+             --innodb-log-file-size=16M \
              --skip-networking --socket=/tmp/bootstrap.sock & \
     for _ in $(seq 60); do \
         mariadb --socket=/tmp/bootstrap.sock -u root -e "SELECT 1" \
@@ -60,6 +62,17 @@ RUN set -eux; \
     mariadb-admin --socket=/tmp/bootstrap.sock -u root -punikraft shutdown; \
     for _ in $(seq 30); do [ -S /tmp/bootstrap.sock ] || break; sleep 1; done; \
     test ! -S /tmp/bootstrap.sock
+
+# --innodb-log-file-size=16M above matches my.cnf, and is about boot time
+# rather than disk. The default leaves a 96 MiB redo log in the image, which
+# does not match my.cnf, so *every* boot begins by rewriting it:
+#
+#   [Note] InnoDB: Resizing redo log from 96.000MiB to 16.000MiB
+#
+# On a ramfs, through the syscall shim, that is dead time before the server
+# will answer -- and it is what the e2e job was still watching when its
+# twenty-second wait ran out. Baking the size the server will ask for means
+# there is nothing to resize.
 
 # Reset Aria to a virgin state: zerofill the Aria system tables (strips the
 # transaction ids and LSNs that tie them to this server's log -- the

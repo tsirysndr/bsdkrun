@@ -21,6 +21,20 @@ ARGV.clear
 ENV["GEM_HOME"] ||= "/usr/local/bundle"
 Gem.clear_paths
 
+# Ruby takes its default external encoding from the locale, and the guest has
+# no LANG -- the Kraftfile bakes four environment variables and that is not
+# one of them -- so it settles on US-ASCII. Rails' own templates and helpers
+# are UTF-8, so the first page render dies with
+#
+#   ActionView::Template::Error (invalid byte sequence in UTF-8)
+#
+# and the server answers 500 while looking perfectly healthy in its log.
+# Setting the default here is enough because it applies to files opened
+# afterwards, and every template is read later than this.
+ENV["LANG"] ||= "C.UTF-8"
+Encoding.default_external = Encoding::UTF_8
+Encoding.default_internal = Encoding::UTF_8
+
 APP_PATH = File.expand_path("config/application", __dir__)
 require_relative "config/boot"
 require "rails/command"

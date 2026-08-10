@@ -205,12 +205,12 @@ libraries:
       # and the dynamic loader cannot resolve TLS relocations.
       CONFIG_LIBPOSIX_PROCESS_ARCH_PRCTL: 'y'
       CONFIG_APPELFLOADER_CUSTOMAPPNAME: 'y'
-      # Loader diagnostics. Off by default; turn it on to get the placement
-      # trace in the arm64 notes below. The messages are forced to error level
-      # (see app-elfloader-rs's glue/shim.c) because the kernel log level is a
-      # Kconfig `choice`, which a Kraftfile cannot set, so it stays at
-      # KLVL_ERR and would otherwise swallow all of them.
-      CONFIG_APPELFLOADER_DEBUG: 'n'
+      # Loader diagnostics: deliberately ON for this example, not just for
+      # debugging sessions. The "loaded to" lines are what lets the e2e
+      # workflow's crash symbolicator attribute an application-range address
+      # to postgres vs musl and compute the offset — without them a register
+      # dump from CI is unactionable hex. Costs ~10 console lines per exec.
+      CONFIG_APPELFLOADER_DEBUG: 'y'
       # 2 MiB, matching CONFIG_STACK_SIZE_PAGE_ORDER above (base uses 128
       # pages = 512 KiB). The kernel reports the *thread* stack size as
       # RLIMIT_STACK but the application runs on this one, so raising only the

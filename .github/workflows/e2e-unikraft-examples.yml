@@ -37,6 +37,13 @@ on:
       - "examples/unikraft-elixir/**"
       - "examples/unikraft-gleam/**"
       - "examples/unikraft-postgres/**"
+      - "examples/unikraft-redis/**"
+      - "examples/unikraft-dragonflydb/**"
+      - "examples/unikraft-mariadb/**"
+      - "examples/unikraft-mongodb/**"
+      - "examples/unikraft-php/**"
+      - "examples/unikraft-ruby/**"
+      - "examples/unikraft-rails/**"
       - "library/unikraft-base/**"
       - "src/**"
       - ".github/workflows/e2e-unikraft-examples.yml"
@@ -201,6 +208,115 @@ jobs:
             # faults during WAL recovery. x86_64 has never been run at all.
             # This job is the tracker for both; see the README.
             strict: false
+          - example: unikraft-redis
+            kernel: redis_fc-x86_64
+            # ~7 MiB of root filesystem (redis-server, four libraries and
+            # busybox); 512 covers it twice over.
+            mem: 512
+            # `sh /start.sh`, not redis-server directly: libkrun appends its
+            # own words to the boot argv and redis-server fatals on the first
+            # one ("Bad directive or wrong number of arguments"). The script
+            # absorbs them as positional parameters and exec()s the server
+            # with a clean argv. See examples/unikraft-redis/README.md.
+            argv: /bin/sh /start.sh
+            port: 6379
+            # Not HTTP: a SET then a GET, so a green run means the server
+            # parsed RESP and round-tripped a value.
+            probe: redis
+            expect: "unikraft-on-bsdkrun"
+            # Never run on x86_64; this job is the test. Non-strict until it
+            # passes.
+            strict: false
+          - example: unikraft-dragonflydb
+            kernel: dragonflydb_fc-x86_64
+            # A ~50 MiB mostly-static binary, resident twice at boot.
+            mem: 1024
+            # --force_epoll: there is no io_uring under Unikraft, and without
+            # the flag dragonfly aborts probing for it. --maxmemory: with no
+            # cgroup to read a limit from, dragonfly must be told its budget.
+            # No trampoline script: abseil's flag parser ignores the
+            # positional junk libkrun appends to argv.
+            argv: /usr/bin/dragonfly --force_epoll --maxmemory=256mb
+            port: 6379
+            # Dragonfly speaks the Redis protocol, so it shares the redis
+            # probe.
+            probe: redis
+            expect: "unikraft-on-bsdkrun"
+            # The most speculative example of the set -- dragonfly's epoll
+            # backend still expects a modern Linux underneath; see the README.
+            strict: false
+          - example: unikraft-mariadb
+            kernel: mariadb_fc-x86_64
+            # Like mysql: a large server binary and a datadir initialised at
+            # image build time, resident twice at boot.
+            mem: 2048
+            # The rest of the configuration is /etc/my.cnf inside the image.
+            # mariadbd shrugs off the argv words libkrun appends, exactly as
+            # mysqld does, so no trampoline script.
+            argv: /usr/sbin/mariadbd --user=root
+            port: 3306
+            # The same real-query check as unikraft-mysql; MariaDB answers the
+            # same client protocol, same credentials (root/unikraft).
+            probe: mysql
+            expect: "unikraft-on-bsdkrun"
+            # Never run on x86_64; this job is the test. Non-strict until it
+            # passes.
+            strict: false
+          - example: unikraft-mongodb
+            kernel: mongodb_fc-x86_64
+            # mongod alone is ~150 MiB, resident twice at boot, plus the
+            # WiredTiger cache (bounded to 256 MiB in start.sh).
+            mem: 2048
+            # `sh /start.sh`: mongod's option parser rejects the positional
+            # junk libkrun appends to argv, so the script absorbs it and
+            # exec()s mongod (--bind_ip_all --nounixsocket, bounded cache).
+            argv: /bin/sh /start.sh
+            port: 27017
+            # An upsert and a read-back through WiredTiger, not a ping.
+            probe: mongo
+            expect: "unikraft-on-bsdkrun"
+            # Never run on x86_64; this job is the test. Non-strict until it
+            # passes.
+            strict: false
+          - example: unikraft-php
+            kernel: php_fc-x86_64
+            # php-cli plus its extensions is ~30 MiB of rootfs.
+            mem: 512
+            # server.php ignores the extra argv words libkrun appends, so no
+            # trampoline script.
+            argv: /usr/local/bin/php /usr/src/server.php
+            port: 8080
+            expect: "Hello, World!"
+            # Never run on x86_64; this job is the test. Non-strict until it
+            # passes.
+            strict: false
+          - example: unikraft-ruby
+            kernel: ruby_fc-x86_64
+            # ruby plus its stdlib is ~60 MiB of rootfs.
+            mem: 512
+            # server.rb ignores the extra ARGV words libkrun appends, so no
+            # trampoline script.
+            argv: /usr/bin/ruby /src/server.rb
+            port: 8080
+            expect: "Hello, World!"
+            # Never run on x86_64; this job is the test. Non-strict until it
+            # passes.
+            strict: false
+          - example: unikraft-rails
+            kernel: rails_fc-x86_64
+            # ruby, the gem bundle, the generated app and zoneinfo, resident
+            # twice at boot, plus Rails' own appetite.
+            mem: 2048
+            # boot.rb, not `bin/rails server`: Thor would abort on the argv
+            # words libkrun appends, so the entrypoint clears ARGV and invokes
+            # the server command programmatically. See
+            # examples/unikraft-rails/README.md.
+            argv: /usr/bin/ruby /app/boot.rb
+            port: 3000
+            expect: "Hello, World!"
+            # Never run on x86_64; this job is the test. Non-strict until it
+            # passes.
+            strict: false
     steps:
       - uses: actions/checkout@v4
 
@@ -335,6 +451,26 @@ jobs:
           command -v psql \
             || sudo apt-get install -y --no-install-recommends postgresql-client
 
+      - name: Install a Redis client
+        if: ${{ matrix.probe == 'redis' }}
+        run: |
+          set -eux
+          command -v redis-cli \
+            || sudo apt-get install -y --no-install-recommends redis-tools
+
+      # mongosh comes from MongoDB's download server: Ubuntu dropped its
+      # mongodb packages when the license changed, so there is nothing to apt
+      # install from the stock repos.
+      - name: Install a MongoDB client (mongosh)
+        if: ${{ matrix.probe == 'mongo' }}
+        run: |
+          set -eux
+          command -v mongosh && exit 0
+          curl -fsSL -o /tmp/mongosh.deb \
+            https://downloads.mongodb.com/compass/mongodb-mongosh_2.3.8_amd64.deb
+          sudo dpkg -i /tmp/mongosh.deb
+          mongosh --version
+
       # `<argv0> -- <application argv>`: everything before `--` is parsed as
       # kernel library parameters and the first word is skipped (Unikraft treats
       # it as the program name), so the placeholder is required.
@@ -369,25 +505,23 @@ jobs:
           grep -q "Powered by Unikraft" "$out"
 
       # A register dump is only actionable with symbols, and only this job has
-      # the matching .dbg. Resolve every code-looking address in the crash
-      # banner (rip, and any register that lands in kernel text) right here,
-      # so the log carries function names instead of hex.
+      # everything needed to resolve them: the kernel's .dbg for kernel-range
+      # addresses, and the exported rootfs plus the loader's "loaded to" lines
+      # for application-range ones (which is why the postgres Kraftfile keeps
+      # CONFIG_APPELFLOADER_DEBUG on). Print names instead of hex, right in
+      # the log where the crash is.
       - name: Symbolicate a guest crash
         if: ${{ always() }}
         run: |
           set -eu
           out=uk-${{ matrix.example }}.out
-          dbg=examples/${{ matrix.example }}/.unikraft/build/${{ matrix.kernel }}.dbg
           grep -aq "Unikraft Crash" "$out" 2>/dev/null || exit 0
-          test -f "$dbg" || { echo "no .dbg image at $dbg"; exit 0; }
           echo "::group::crash symbolication"
-          # Every 16-hex-digit value in the register dump; addr2line answers
-          # '??' for the ones that are not code, which is fine.
-          grep -a -A 20 "Unikraft Crash" "$out" \
-            | grep -oE '[0-9a-f]{16}' | sort -u | while read -r a; do
-                sym=$(addr2line -f -e "$dbg" "0x$a" | paste -sd' ' -)
-                case "$sym" in \?\?*) ;; *) echo "0x$a -> $sym" ;; esac
-            done
+          python3 .github/scripts/symbolicate-unikraft-crash.py \
+            "$out" \
+            examples/${{ matrix.example }}/.unikraft/build/${{ matrix.kernel }}.dbg \
+            examples/${{ matrix.example }}/.rootfs-x86_64 \
+            || true
           echo "::endgroup::"
 
       - name: e2e — networking and entropy
@@ -450,6 +584,31 @@ jobs:
                               ON CONFLICT (id) DO UPDATE SET name = excluded.name;
                           SELECT name FROM t WHERE id = 1;" \
                       postgres > body.txt 2>probe-err.txt; then
+                break
+              fi
+            elif [ "${{ matrix.probe }}" = redis ]; then
+              # SET then GET: a green run means the server parsed RESP and
+              # round-tripped a value, not merely that it opened a socket.
+              # (redis-cli exits 0 even when the server answers with an
+              # error, so the grep is part of the loop condition, not just
+              # the final assertion.)
+              if redis-cli -h 127.0.0.1 -p ${{ matrix.port }} \
+                     SET e2e unikraft-on-bsdkrun > /dev/null 2>probe-err.txt \
+                 && redis-cli -h 127.0.0.1 -p ${{ matrix.port }} \
+                     GET e2e > body.txt 2>>probe-err.txt \
+                 && grep -q "${{ matrix.expect }}" body.txt; then
+                break
+              fi
+            elif [ "${{ matrix.probe }}" = mongo ]; then
+              # An upsert and a read-back, so a green run means WiredTiger
+              # accepted a write and served it back, not merely that mongod
+              # opened a socket.
+              if mongosh --host 127.0.0.1 --port ${{ matrix.port }} --quiet \
+                     --eval 'db.t.replaceOne({_id: 1},
+                                             {_id: 1, name: "unikraft-on-bsdkrun"},
+                                             {upsert: true});
+                             print(db.t.findOne({_id: 1}).name)' \
+                     e2e > body.txt 2>probe-err.txt; then
                 break
               fi
             elif curl -fsS --max-time 5 "http://127.0.0.1:${{ matrix.port }}/" -o body.txt; then

@@ -1,4 +1,4 @@
-name: sdk unit (Python / Ruby / Elixir / Gleam)
+name: sdk unit (Python / Ruby / Elixir / Gleam / Clojure)
 
 # Unit + argv-builder tests for the non-TypeScript SDKs. These never boot a
 # guest, so they need no /dev/kvm and no libkrun — they exercise argv building,
@@ -15,6 +15,7 @@ on:
       - "sdk/ruby/**"
       - "sdk/elixir/**"
       - "sdk/gleam/**"
+      - "sdk/clojure/**"
       - ".github/workflows/sdk-unit.yml"
   pull_request:
     paths:
@@ -22,6 +23,7 @@ on:
       - "sdk/ruby/**"
       - "sdk/elixir/**"
       - "sdk/gleam/**"
+      - "sdk/clojure/**"
       - ".github/workflows/sdk-unit.yml"
 
 permissions:
@@ -95,3 +97,21 @@ jobs:
       - run: gleam deps download
       - run: gleam format --check src test
       - run: gleam test
+
+  clojure:
+    name: clojure
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: sdk/clojure
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          cli: latest
+      - run: clj -M:test

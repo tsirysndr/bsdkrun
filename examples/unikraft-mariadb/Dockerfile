@@ -1,6 +1,3 @@
-# mariadb:11.4 is the current LTS and is published for both amd64 and arm64.
-FROM mariadb:11.4 AS build
-
 # A statically linked shell, for argv hygiene rather than for scripting:
 # libkrun appends its own words (earlycon=..., tsi_hijack, a bare `--`) to the
 # end of the kernel command line, past the `--` stop sequence, so they arrive
@@ -14,6 +11,9 @@ FROM mariadb:11.4 AS build
 # execve() rather than a fork (CONFIG_APPELFLOADER_MULTIPROCESS in the
 # Kraftfile). Same pattern as ../unikraft-redis and ../unikraft-mongodb.
 FROM busybox:stable-musl AS shell
+
+# mariadb:11.4 is the current LTS and is published for both amd64 and arm64.
+FROM mariadb:11.4 AS build
 
 # The data directory is initialised *here*, when the image is built, instead of
 # by docker-entrypoint.sh when the container starts. Upstream's port ships the

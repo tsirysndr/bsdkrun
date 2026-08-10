@@ -47,6 +47,21 @@ RUN set -eux; \
     for _ in $(seq 30); do [ -S /tmp/bootstrap.sock ] || break; sleep 1; done; \
     test ! -S /tmp/bootstrap.sock
 
+# Reset Aria to a virgin state: zerofill the Aria system tables (strips the
+# transaction ids and LSNs that tie them to this server's log -- the
+# documented procedure for moving Aria tables between servers) and delete the
+# log and its control file, which a fresh server recreates at startup.
+#
+# This is load-bearing, not tidying. Booted with the log present, mariadbd
+# under Unikraft enters "Aria engine: starting recovery ... transactions to
+# roll back: 1" and spins forever in userspace -- on a datadir that the same
+# binary on plain Linux opens with no recovery at all (verified byte-for-byte
+# identical via the guest's own syscall trace). Until that divergence is
+# understood, ship a datadir that gives Aria nothing to recover.
+RUN set -eux; \
+    aria_chk --zerofill /var/lib/mysql/mysql/*.MAI; \
+    rm -f /var/lib/mysql/aria_log.* /var/lib/mysql/aria_log_control
+
 # Assemble the root filesystem.
 #
 # The libraries are resolved with ldd rather than listed by hand: upstream

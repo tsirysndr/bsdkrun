@@ -72,8 +72,8 @@ const schema = z
             .split("\n")
             .map((l) => l.trim())
             .filter(Boolean)
-            .every((l) => /^\d+:\d+$/.test(l)),
-        "Each line must be HOST:GUEST (numbers)",
+            .every((l) => /^((\d{1,3}\.){3}\d{1,3}:)?\d+:\d+$/.test(l)),
+        "Each line must be HOST:GUEST or BIND:HOST:GUEST (e.g. 0.0.0.0:8080:80)",
       ),
     attachDisks: z.string(),
     diskSize: z

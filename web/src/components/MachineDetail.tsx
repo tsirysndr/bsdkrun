@@ -83,6 +83,14 @@ function Inspect({ m }: { m: Machine }) {
       <Row label="Memory" value={m.mem != null ? `${m.mem} MiB` : "—"} />
       <Row label="Volume" value={m.volume || "—"} />
       <Row
+        label="Ports"
+        value={
+          m.ports.length
+            ? m.ports.map((p) => `${p.bind}:${p.host}->${p.guest}/tcp`).join(", ")
+            : "—"
+        }
+      />
+      <Row
         label="Network"
         value={
           m.network

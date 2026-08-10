@@ -100,6 +100,15 @@ impl From<ops::Machine> for Machine {
             finished_at: m.finished_at,
             network: m.network,
             net_ip: m.net_ip,
+            ports: m
+                .ports
+                .into_iter()
+                .map(|p| PortForward {
+                    bind: p.bind.to_string(),
+                    host: p.host as u32,
+                    guest: p.guest as u32,
+                })
+                .collect(),
         }
     }
 }

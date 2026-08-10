@@ -83,6 +83,14 @@ pub struct Machine {
     pub finished_at: Option<String>,
     pub network: Option<String>,
     pub net_ip: Option<String>,
+    pub ports: Vec<PortForward>,
+}
+
+#[derive(SimpleObject)]
+pub struct PortForward {
+    pub bind: String,
+    pub host: i32,
+    pub guest: i32,
 }
 
 impl From<ops::Machine> for Machine {
@@ -106,6 +114,15 @@ impl From<ops::Machine> for Machine {
             finished_at: m.finished_at,
             network: m.network,
             net_ip: m.net_ip,
+            ports: m
+                .ports
+                .into_iter()
+                .map(|p| PortForward {
+                    bind: p.bind.to_string(),
+                    host: p.host as i32,
+                    guest: p.guest as i32,
+                })
+                .collect(),
         }
     }
 }

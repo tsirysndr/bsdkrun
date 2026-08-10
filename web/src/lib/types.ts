@@ -20,6 +20,13 @@ export interface Machine {
   finished_at: string | null;
   network: string | null;
   net_ip: string | null;
+  ports: PortForward[];
+}
+
+export interface PortForward {
+  bind: string;
+  host: number;
+  guest: number;
 }
 
 export interface Image {

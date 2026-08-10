@@ -50,6 +50,7 @@ function listen<T>(event: string, cb: (p: T) => void): Promise<UnlistenFn> {
 const MACHINE_FIELDS = `
   id name image kind command status running exitCode pid detached
   cpus mem volume stateDir createdAt finishedAt network netIp
+  ports { bind host guest }
 `;
 
 /**
@@ -77,6 +78,11 @@ function toMachine(m: any): Machine {
     finished_at: m.finishedAt ?? null,
     network: m.network ?? null,
     net_ip: m.netIp ?? null,
+    ports: (m.ports ?? []).map((p: any) => ({
+      bind: p.bind,
+      host: p.host,
+      guest: p.guest,
+    })),
   };
 }
 

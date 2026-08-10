@@ -88,6 +88,14 @@ message Machine {
   optional string finished_at = 16;
   optional string network = 17;
   optional string net_ip = 18;
+  repeated PortForward ports = 19;
+}
+
+// A single host->guest TCP forward, bound to a specific host interface.
+message PortForward {
+  string bind = 1;
+  uint32 host = 2;
+  uint32 guest = 3;
 }
 
 message ListMachinesRequest {

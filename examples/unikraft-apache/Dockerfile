@@ -31,6 +31,16 @@ FROM busybox:stable-musl AS shell
 # config actually loads (mpm_event, authz_core, mime, dir) too. In practice
 # all four only pull in libc; libpcre2/libaprutil/libapr/libexpat/libcrypt/
 # libuuid come from the main binary.
+#
+# libgcc_s.so.1 is copied separately because ldd never lists it: nothing in
+# apache2 or its modules has it as a DT_NEEDED entry. glibc's NPTL dlopen()s
+# it lazily, the first time something needs stack unwinding (pthread_exit()
+# among others) -- which is also exactly when its absence is discovered, as
+# a runtime message rather than a link-time error: "libgcc_s.so.1 must be
+# installed for pthread_exit to work", immediately followed by the guest
+# exiting. This bit x86_64 specifically -- CI's boot log shows apache2
+# getting past both APR_TCP_DEFER_ACCEPT warnings and the expected
+# `getpwuid` line (see below) and dying right there.
 FROM build AS rootfs
 COPY --from=shell /bin/busybox /bin/busybox.static
 RUN set -eu; \
@@ -48,6 +58,12 @@ RUN set -eu; \
           ldd "/usr/lib/apache2/modules/$mod"; \
       done; } \
       | grep -oE '/[^ ()]+' \
+      | sort -u \
+      | while read -r lib; do \
+            mkdir -p "/rootfs$(dirname "$lib")"; \
+            cp -L "$lib" "/rootfs$lib"; \
+        done; \
+    { find /usr/lib /lib -name 'libgcc_s.so*' 2>/dev/null || true; } \
       | sort -u \
       | while read -r lib; do \
             mkdir -p "/rootfs$(dirname "$lib")"; \

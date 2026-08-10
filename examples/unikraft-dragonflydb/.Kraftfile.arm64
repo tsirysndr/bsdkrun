@@ -1,18 +1,16 @@
 spec: v0.6
 
-name: postgres
+name: dragonflydb
 
-# Unikraft's prebuilt `base:latest` runtime is published for x86_64 only, and
-# libkrun on Apple Silicon runs arm64 guests only, so this Kraftfile builds that
-# same runtime (library/base in unikraft/catalog) from source. The kconfig block
+# Unikraft's prebuilt runtime is published for x86_64 only, and libkrun on
+# Apple Silicon runs arm64 guests only, so this Kraftfile builds that same
+# runtime (library/base in unikraft/catalog) from source. The kconfig block
 # below is therefore large: it is library/base's configuration plus the arm64
 # fixes described in ../../library/unikraft-base/README.md.
 #
-# Upstream's postgres example instead names `runtime: base-compat:latest`, a
-# Unikraft Cloud runtime with real processes. This one is the same `base` as
-# ../unikraft-expressjs and ../unikraft-bun plus three symbols, all below:
-# multiprocess support (which is what lets a postmaster spawn its children),
-# signalfd, and larger stacks. See README.md.
+# Dragonfly is the most speculative of these examples: its io backend wants
+# io_uring, which Unikraft does not have, so it is forced onto epoll on the
+# command line -- see `cmd` at the bottom and the README.
 unikraft:
   version: staging
   kconfig:
@@ -23,9 +21,11 @@ unikraft:
     # Let the application use FP/SIMD. This is arm64-only (`depends on
     # ARCH_ARM_64`) and `default n`, which is exactly why upstream's x86_64
     # base never sets it: on x86_64 the FPU is always there, but on arm64
-    # nothing clears CPACR_EL1.FPEN unless this is on. Without it, postgres
-    # traps on its first NEON instruction — ESR_EL1 EC=0x07, "SVE/AdvSIMD/FP
-    # access trapped" — before it prints a line. Ignored on the x86_64 target.
+    # nothing clears CPACR_EL1.FPEN unless this is on. Without it the
+    # application traps on its first NEON instruction — ESR_EL1 EC=0x07,
+    # "SVE/AdvSIMD/FP access trapped" — almost immediately, because memcpy and
+    # friends in glibc's aarch64 string routines use SIMD registers whether or
+    # not the program ever computes with floats. Ignored on the x86_64 target.
     CONFIG_FPSIMD: 'y'
 
     # Entropy from the host over virtio-rng. libkrun always creates this
@@ -70,34 +70,21 @@ unikraft:
     CONFIG_LIBPOSIX_POLL: 'y'
     CONFIG_LIBPOSIX_PROCESS: 'y'
     CONFIG_LIBPOSIX_PROCESS_MULTITHREADING: 'y'
-    # Real processes. Unikraft is single-address-space and has no fork(), but it
-    # does have vfork() + execve(), which is all PostgreSQL needs once it is
-    # built -DEXEC_BACKEND: the postmaster then creates every child -- the
-    # checkpointer, the WAL writer, one backend per connection -- by forking and
-    # immediately exec'ing `postgres --forkchild`, with the child's state handed
-    # over in a file. See lib/posix-process/README.md upstream, and the patches
-    # in this directory.
-    #
-    # Set through the loader's own symbol rather than
-    # CONFIG_LIBPOSIX_PROCESS_MULTIPROCESS directly: APPELFLOADER_MULTIPROCESS
-    # selects that plus LIBPOSIX_PROCESS_SIGNAL and LIBUKBOOT_INIT, and the init
-    # process is what reaps children and coordinates shutdown.
-    CONFIG_APPELFLOADER_MULTIPROCESS: 'y'
+    # Preempt application code on a timer tick, and give the guest more than
+    # the default 31 thread IDs. Neither is *known* to be required here the way
+    # both are for mysqld (see ../unikraft-mysql: InnoDB busy-waits for a
+    # thread it has just created, and a cooperative scheduler can never run
+    # it), but this server is threaded, every thread is one TID, and a
+    # busy-wait under a cooperative scheduler is a silent hang. Cheap insurance
+    # on an example that has not been through a debugging cycle yet.
+    CONFIG_UKPLAT_PREEMPT: 'y'
+    CONFIG_LIBPOSIX_PROCESS_MAX_PID: 1024
     # Deliver CPU faults to the application as signals. Runtimes that bundle
     # OpenSSL probe for CPU extensions by *executing* an instruction under
     # sigsetjmp and expecting SIGILL when it is unimplemented; without signal
     # delivery that probe is a fatal trap rather than a recoverable one. See
     # ../unikraft-expressjs/repro/README.md.
     CONFIG_LIBPOSIX_PROCESS_SIGNAL: 'y'
-    # The one symbol this example adds to library/base's configuration.
-    # PostgreSQL 13 and later read signals through a file descriptor rather than
-    # a self-pipe (`WAIT_USE_SIGNALFD` in src/backend/storage/ipc/latch.c), and
-    # it is not a fallback: the very first thing the backend does is
-    #
-    #   FATAL:  signalfd() failed
-    #
-    # and exit. Unikraft implements signalfd4() but leaves it off by default.
-    CONFIG_LIBPOSIX_PROCESS_SIGNALFD: 'y'
     CONFIG_LIBPOSIX_PROCESS_BRK: 'y'
     CONFIG_LIBPOSIX_SOCKET: 'y'
     CONFIG_LIBPOSIX_SYSINFO: 'y'
@@ -113,15 +100,20 @@ unikraft:
     CONFIG_LIBSYSCALL_SHIM_HANDLER_ULTLS: 'y'
     CONFIG_LIBSYSCALL_SHIM_HANDLER: 'y'
     CONFIG_LIBSYSCALL_SHIM_LEGACY_VERBOSE: 'y'
-    # Syscall tracing. 'y' is invaluable for debugging the guest (it prints via
-    # uk_printk(UK_PRINT_RAW), so the KLVL_ERR default does not swallow it) but
-    # it is very noisy and slows the boot down. Stated explicitly because kraft
-    # does not remove a symbol from an already-generated .config.
-    # TEMPORARY 'y': the x86_64 e2e crash (musl pthread_exit unlinking a
-    # kernel-heap TCB the moment the postmaster spawns its first child) can
-    # only be observed in CI -- this host has no KVM -- and the syscall trace
-    # is the missing evidence. Flip back to 'n' once that bug is closed.
-    CONFIG_LIBSYSCALL_SHIM_STRACE: 'y'
+    # Syscall tracing. Invaluable for debugging the guest, off because it is
+    # noisy and slows the boot down.
+    #
+    # Flipping this to 'y' does not enable it. The symbol is a `menuconfig`, and
+    # kraft neither applies it from a Kraftfile nor re-derives it once
+    # `.config.<target>` exists — nor does changing the `default n` in the
+    # fetched tree's lib/syscall_shim/Config.uk, since kconfig keeps the value
+    # already recorded. Edit the generated config directly:
+    #
+    #   sed -i '' \
+    #     -e 's/^# CONFIG_LIBSYSCALL_SHIM_STRACE is not set/CONFIG_LIBSYSCALL_SHIM_STRACE=y/' \
+    #     .config.dragonflydb_fc-arm64
+    #   SKIP_FETCH=1 ./build.sh arm64
+    CONFIG_LIBSYSCALL_SHIM_STRACE: 'n'
     CONFIG_LIBSYSCALL_SHIM: 'y'
     CONFIG_LIBUKALLOCPOOL: 'y'
     CONFIG_LIBUKBLKDEV_SYNC_IO_BLOCKED_WAITING: 'y'
@@ -165,26 +157,7 @@ unikraft:
     CONFIG_OPTIMIZE_DEADELIM: 'y'
     CONFIG_OPTIMIZE_LTO: 'y'
     CONFIG_PAGING: 'y'
-    # 2^9 * 4K = 2 MiB, against library/base's 4 (2^4 * 4K = 64 KiB — the
-    # comment upstream carries here, "128 * 4K = 512K", is arithmetic for an
-    # order it does not set).
-    #
-    # This is what PostgreSQL sees, and it has to be raised together with
-    # CONFIG_APPELFLOADER_STACK_NBPAGES below. `getrlimit(RLIMIT_STACK)` in
-    # lib/posix-process/deprecated.c answers __STACK_SIZE — the *thread* stack
-    # size — while the application actually runs on the stack app-elfloader
-    # allocated for it, so the two are unrelated numbers and only one of them
-    # is reported. PostgreSQL subtracts a fixed 512 KiB of slop from the
-    # reported limit and refuses to start if what remains is smaller than
-    # max_stack_depth, whose *minimum* is 100 KiB:
-    #
-    #   LOG:  invalid value for parameter "max_stack_depth": 100
-    #   DETAIL:  "max_stack_depth" must not exceed -448kB.
-    #   FATAL:  failed to initialize max_stack_depth to 100
-    #
-    # -448 KiB is 64 KiB minus the slop. Every value of max_stack_depth is
-    # rejected at that limit, so this is not tunable from postgresql.conf.
-    CONFIG_STACK_SIZE_PAGE_ORDER: 9 # 2^9 * 4K = 2M
+    CONFIG_STACK_SIZE_PAGE_ORDER: 4 # 128 * 4K = 512K
     CONFIG_UKPLAT_KSP_SIZE: 32768
     CONFIG_UKPLAT_MEMREGION_MAX_COUNT: 64
     CONFIG_LIBUKNETDEV: 'y'
@@ -209,18 +182,13 @@ libraries:
       # and the dynamic loader cannot resolve TLS relocations.
       CONFIG_LIBPOSIX_PROCESS_ARCH_PRCTL: 'y'
       CONFIG_APPELFLOADER_CUSTOMAPPNAME: 'y'
-      # Loader diagnostics: deliberately ON for this example, not just for
-      # debugging sessions. The "loaded to" lines are what lets the e2e
-      # workflow's crash symbolicator attribute an application-range address
-      # to postgres vs musl and compute the offset — without them a register
-      # dump from CI is unactionable hex. Costs ~10 console lines per exec.
-      CONFIG_APPELFLOADER_DEBUG: 'y'
-      # 2 MiB, matching CONFIG_STACK_SIZE_PAGE_ORDER above (base uses 128
-      # pages = 512 KiB). The kernel reports the *thread* stack size as
-      # RLIMIT_STACK but the application runs on this one, so raising only the
-      # reported number would hand PostgreSQL a limit it could overrun into
-      # whatever is mapped below the stack. Keep the two equal.
-      CONFIG_APPELFLOADER_STACK_NBPAGES: 512
+      # Loader diagnostics. Off by default; turn it on to get a placement
+      # trace. The messages are forced to error level (see app-elfloader-rs's
+      # glue/shim.c) because the kernel log level is a Kconfig `choice`, which
+      # a Kraftfile cannot set, so it stays at KLVL_ERR and would otherwise
+      # swallow all of them.
+      CONFIG_APPELFLOADER_DEBUG: 'n'
+      CONFIG_APPELFLOADER_STACK_NBPAGES: 128
       CONFIG_APPELFLOADER_VFSEXEC: 'y'
       CONFIG_APPELFLOADER_VFSEXEC_EXECBIT: 'y'
       CONFIG_APPELFLOADER_VFSEXEC_ENVPWD: 'y'
@@ -259,12 +227,15 @@ libraries:
 
 targets:
 - fc/arm64
-- fc/x86_64
 
 rootfs: ./Dockerfile
 
-# The postmaster: the real server, listening on 5432. Everything it needs to
-# spawn children is described in README.md.
+# Upstream starts this through a bash wrapper that mounts cgroup2 first; the
+# guest has no shell, no mount(8) and no cgroups, so the flags the wrapper
+# exists to support are passed directly instead:
 #
-# bsdkrun does not read this for a locally-built kernel; pass --cmdline.
-cmd: ["/usr/local/bin/postgres", "-D", "/var/lib/postgresql/data"]
+#   --force_epoll     io_uring does not exist under Unikraft; without this
+#                     dragonfly aborts at startup probing for it.
+#   --maxmemory       with no cgroup to read a limit from, dragonfly must be
+#                     told one instead of sizing itself off the host.
+cmd: ["/usr/bin/dragonfly", "--force_epoll", "--maxmemory=256mb"]

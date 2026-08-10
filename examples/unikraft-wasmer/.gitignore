@@ -1,0 +1,6 @@
+/app/target/
+/guest/target/
+/.unikraft/
+.config*
+.Kraftfile.*
+/.rootfs-*/

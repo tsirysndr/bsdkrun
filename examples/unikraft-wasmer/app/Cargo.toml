@@ -1,0 +1,19 @@
+[package]
+name = "wasmer-host"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "server"
+path = "src/main.rs"
+
+[dependencies]
+# sys-default pulls in cranelift; it is turned off in favor of singlepass —
+# see README.md for why.
+wasmer = { version = "7.2.1", default-features = false, features = ["sys", "singlepass"] }
+wasmer-wasix = "0.702.1"
+wasmer-types = "7.2.1"
+virtual-fs = "0.702.1"
+virtual-mio = "0.702.1"
+tokio = { version = "1", features = ["rt-multi-thread"] }

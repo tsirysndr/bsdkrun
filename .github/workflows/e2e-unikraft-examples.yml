@@ -36,6 +36,7 @@ on:
       - "examples/unikraft-mysql/**"
       - "examples/unikraft-elixir/**"
       - "examples/unikraft-gleam/**"
+      - "examples/unikraft-postgres/**"
       - "library/unikraft-base/**"
       - "src/**"
       - ".github/workflows/e2e-unikraft-examples.yml"
@@ -172,6 +173,34 @@ jobs:
             # Verified end to end on arm64/macOS; x86_64 has never been run, so
             # this job is the test. Non-strict until it passes.
             strict: false
+          - example: unikraft-postgres
+            kernel: postgres_fc-x86_64
+            # 55 MiB of root filesystem (an 8 MiB postgres, a 37 MiB cluster
+            # initialised at image build time, and busybox), resident twice.
+            mem: 2048
+            # A real postmaster, not single-user mode: PostgreSQL is built
+            # -DEXEC_BACKEND, so every child it starts -- checkpointer, WAL
+            # writer, one backend per connection -- is a spawn rather than a
+            # fork, which is what Unikraft supports. See
+            # examples/unikraft-postgres/README.md.
+            #
+            # No trailing argument is needed to absorb the hints libkrun
+            # appends: they arrive after `-D <dir>`, and PostgreSQL's getopt
+            # consumes the `--` it ends up with.
+            argv: /usr/local/bin/postgres -D /var/lib/postgresql/data
+            port: 5432
+            # Like mysql, this runs a real query rather than an HTTP request:
+            # a green run means the postmaster spawned a backend for the
+            # connection and that backend planned and executed SQL.
+            probe: postgres
+            expect: "unikraft-on-bsdkrun"
+            # Not yet expected to pass. On arm64 the postmaster starts, listens
+            # on 5432 and spawns children -- which took five fixes in
+            # library/unikraft-base/patches, including execve() entering the
+            # new program at the wrong register on arm64 -- but a child still
+            # faults during WAL recovery. x86_64 has never been run at all.
+            # This job is the tracker for both; see the README.
+            strict: false
     steps:
       - uses: actions/checkout@v4
 
@@ -299,6 +328,13 @@ jobs:
           command -v mysql \
             || sudo apt-get install -y --no-install-recommends mysql-client
 
+      - name: Install a PostgreSQL client
+        if: ${{ matrix.probe == 'postgres' }}
+        run: |
+          set -eux
+          command -v psql \
+            || sudo apt-get install -y --no-install-recommends postgresql-client
+
       # `<argv0> -- <application argv>`: everything before `--` is parsed as
       # kernel library parameters and the first word is skipped (Unikraft treats
       # it as the program name), so the placeholder is required.
@@ -378,6 +414,20 @@ jobs:
                            REPLACE INTO t VALUES (1, 'unikraft-on-bsdkrun');
                            SELECT name FROM t WHERE id = 1;" \
                        > body.txt 2>probe-err.txt; then
+                break
+              fi
+            elif [ "${{ matrix.probe }}" = postgres ]; then
+              # No password: the cluster was initialised with --auth=trust,
+              # because nothing in the guest can reach the server except
+              # through the forwarded port.
+              if psql -h 127.0.0.1 -p ${{ matrix.port }} -U postgres \
+                      -v ON_ERROR_STOP=1 --no-psqlrc -t \
+                      -c "CREATE TABLE IF NOT EXISTS t (
+                              id INT PRIMARY KEY, name TEXT);
+                          INSERT INTO t VALUES (1, 'unikraft-on-bsdkrun')
+                              ON CONFLICT (id) DO UPDATE SET name = excluded.name;
+                          SELECT name FROM t WHERE id = 1;" \
+                      postgres > body.txt 2>probe-err.txt; then
                 break
               fi
             elif curl -fsS --max-time 5 "http://127.0.0.1:${{ matrix.port }}/" -o body.txt; then

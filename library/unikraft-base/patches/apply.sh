@@ -1831,7 +1831,7 @@ fi
 # The uktlsp fallback covers a parent with no userland TLS at all.
 # ---------------------------------------------------------------------------
 CLONEC="$UK/lib/posix-process/clone.c"
-if [ -f "$CLONEC" ] && grep -q 'child->tlsp = child->uktlsp;' "$CLONEC"; then
+if [ -f "$CLONEC" ] && ! grep -q 'child is the parent for a moment' "$CLONEC"; then
 	echo "patching $CLONEC (vfork child inherits the parent's userland TLS)"
 	python3 - "$CLONEC" <<'PYEOF'
 import sys
@@ -1958,6 +1958,36 @@ open(p, "w").write(s)
 PYEOF
 else
 	echo "deliver.c altstack: already patched or absent, skipping"
+fi
+
+# ---------------------------------------------------------------------------
+# 23. brk() logs every successful call at error level.
+#
+# lib/posix-process/brk.c prints, unconditionally, on the way into every brk():
+#
+#     uk_pr_err("brk request=%p, base=%p, current=%p\n", ...);
+#
+# Nothing has gone wrong at that point -- it is the entry trace of a syscall
+# musl makes at least twice per process start. At KLVL_ERR (which is where the
+# level stays, since the kernel log level is a Kconfig `choice` a Kraftfile
+# cannot set) that is two error lines per process on the console, and a
+# multiprocess application makes it many more: PostgreSQL's postmaster plus its
+# aux processes and a backend per connection.
+#
+# Demote to debug, where the rest of this file's tracing already lives. Real
+# failures in brk() have their own messages and keep them.
+# ---------------------------------------------------------------------------
+BRK="$UK/lib/posix-process/brk.c"
+if [ -f "$BRK" ] && grep -q 'uk_pr_err("brk request=' "$BRK"; then
+	echo "patching $BRK (brk() entry trace is debug, not error)"
+	sed -i.bak 's|uk_pr_err("brk request=|uk_pr_debug("brk request=|' "$BRK"
+	rm -f "$BRK.bak"
+	grep -q 'uk_pr_debug("brk request=' "$BRK" || {
+		echo "failed to demote the brk trace" >&2
+		exit 1
+	}
+else
+	echo "brk() entry trace: already patched or absent, skipping"
 fi
 
 echo "patches applied."

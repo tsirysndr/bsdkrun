@@ -117,11 +117,7 @@ unikraft:
     # uk_printk(UK_PRINT_RAW), so the KLVL_ERR default does not swallow it) but
     # it is very noisy and slows the boot down. Stated explicitly because kraft
     # does not remove a symbol from an already-generated .config.
-    # TEMPORARY 'y': the x86_64 e2e crash (musl pthread_exit unlinking a
-    # kernel-heap TCB the moment the postmaster spawns its first child) can
-    # only be observed in CI -- this host has no KVM -- and the syscall trace
-    # is the missing evidence. Flip back to 'n' once that bug is closed.
-    CONFIG_LIBSYSCALL_SHIM_STRACE: 'y'
+    CONFIG_LIBSYSCALL_SHIM_STRACE: 'n'
     CONFIG_LIBSYSCALL_SHIM: 'y'
     CONFIG_LIBUKALLOCPOOL: 'y'
     CONFIG_LIBUKBLKDEV_SYNC_IO_BLOCKED_WAITING: 'y'
@@ -209,12 +205,12 @@ libraries:
       # and the dynamic loader cannot resolve TLS relocations.
       CONFIG_LIBPOSIX_PROCESS_ARCH_PRCTL: 'y'
       CONFIG_APPELFLOADER_CUSTOMAPPNAME: 'y'
-      # Loader diagnostics: deliberately ON for this example, not just for
-      # debugging sessions. The "loaded to" lines are what lets the e2e
-      # workflow's crash symbolicator attribute an application-range address
-      # to postgres vs musl and compute the offset — without them a register
-      # dump from CI is unactionable hex. Costs ~10 console lines per exec.
-      CONFIG_APPELFLOADER_DEBUG: 'y'
+      # Loader diagnostics. Off for a quiet console; flip to 'y' when
+      # chasing a crash — the "loaded to" lines are what lets the e2e
+      # workflow's symbolicator (.github/scripts/symbolicate-unikraft-crash.py)
+      # attribute an application-range address to postgres vs musl. That is
+      # how the vfork TLS bug (patch 22) was found.
+      CONFIG_APPELFLOADER_DEBUG: 'n'
       # 2 MiB, matching CONFIG_STACK_SIZE_PAGE_ORDER above (base uses 128
       # pages = 512 KiB). The kernel reports the *thread* stack size as
       # RLIMIT_STACK but the application runs on this one, so raising only the

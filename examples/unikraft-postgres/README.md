@@ -33,9 +33,10 @@ postgres=# SELECT name FROM t;
 | Clients over the forwarded port, one backend each | works — 10/10 sequential connections served |
 | `postgres --single` (SQL on the console)          | works    |
 
-arm64 on macOS/Hypervisor.framework is what was tested; x86_64 goes through
-`.github/workflows/e2e-unikraft-examples.yml` (non-strict until it passes, and
-the workflow symbolicates any guest crash against the built image's `.dbg`).
+**Both architectures.** arm64 on macOS/Hypervisor.framework, x86_64 under KVM in
+`.github/workflows/e2e-unikraft-examples.yml`, where the job is **strict**: it
+creates a table, inserts a row and reads it back, so a green run means the
+postmaster spawned a backend process and that backend planned and executed SQL.
 
 ## How a forking server runs on a kernel with no fork
 
@@ -72,11 +73,13 @@ small patches on the PostgreSQL side. The cluster is still initialised at image
 build time, because `initdb` runs `postgres --boot` and `postgres --single` as
 children and there is no reason to do at boot what can be done once.
 
-## What it took: five Unikraft fixes
+## What it took: six Unikraft fixes
 
 All are in `../../library/unikraft-base/patches/apply.sh`, and none of them is
 about PostgreSQL being unusual — each is a place where the guest is not Linux.
-Two of them mean **`execve()` had never worked on arm64 at all**.
+Three of them are kernel bugs no other example here exercises: two mean
+**`execve()` had never worked on arm64 at all**, and one meant **no
+`posix_spawn()` child could survive on x86_64**.
 
 | #  | what was wrong |
 |----|----------------------------------------------------------------------|
@@ -84,11 +87,14 @@ Two of them mean **`execve()` had never worked on arm64 at all**.
 | 18 | `execve()` sets every field of the binfmt loader's argument struct **except `argc`/`envc`**, which it leaves as stack garbage. A loader that believes them walks off the end of `argv` and dereferences whatever it finds. Nothing in-tree reads those counts, so upstream never noticed. |
 | 19 | **arm64 `execve()` enters the new program at the wrong register.** It writes the entry point to `LR`, but `ukarch_execenv_load()` restores `ELR_EL1` from the `PC` slot and leaves through `eret` — so the new program started at whatever was in freshly allocated stack memory, i.e. `0`. x86_64 sets `RIP` correctly, which is why an x86_64-only upstream never saw it. |
 | 20 | **A signal the current thread has blocked is run in it anyway.** Process-directed delivery looks for *any* thread that does not block the signal, then calls `do_deliver()` — which builds the frame on the *current* context. PostgreSQL blocks every signal while it installs handlers and only then initialises the latch they use, so a `SIGCHLD` arriving in that window ran `handle_pm_child_exit_signal` → `SetLatch(NULL)`. |
+| 22 | **A vfork child woke up with the kernel's TLS as its userland TLS.** `child->tlsp = child->uktlsp` — but vfork means the child *is* the parent for a moment, thread pointer included, and everything musl's `posix_spawn` child touches before `execve()` is TLS-relative (stack canary, errno, pthread self). arm64 absorbed it (thread pointer names the start of the block); x86_64 names the *end*, so the canary read at `%fs+0x28` landed past the allocation and the child died before its first syscall — silently, because its death woke the vfork parent and the status pipe read EOF, which `posix_spawn` reports as success. |
 | 21 | `setsid()` was a flat `return -EPERM` ("we have a single session with a single process" — written before multiprocess existed). Every PostgreSQL child calls it and dies with `FATAL: setsid() failed`. The neighbouring `getsid()` already reports `UNIKRAFT_SID` to anyone who asks, so refusing was inconsistent as well as fatal. |
 
-Findings 19 and 20 are worth restating: any multiprocess application on arm64
-hits 19 on its first `execve()`, and any daemon that blocks signals around its
-own startup hits 20.
+Findings 19, 20 and 22 are worth restating, because they are not about
+PostgreSQL: any multiprocess application on arm64 hits 19 on its first
+`execve()`; any daemon that blocks signals around its own startup hits 20; and
+anything calling `posix_spawn()` on x86_64 hits 22, which is every libc's
+`system()` and `popen()` too.
 
 ## What it took: four PostgreSQL patches
 
@@ -153,23 +159,22 @@ here: they arrive after `-D <dir>`, and PostgreSQL's `getopt` consumes the `--`.
 It does bite `postgres --single`, which takes a database name as a non-option
 argument — omit the name there and the stray word is absorbed instead.
 
-## What is left
+## Debugging a guest crash
 
-**One unexplained kernel behaviour, worked around rather than root-caused.**
-With the `popen("postgres -V")` version check still in place, a *later* exec'd
-child (the startup process) died in musl's allocator — `mov x0,#0; strb wzr,[x0];
-brk #0x3e8`, mallocng's deliberate abort on a failed heap-consistency check — a
-few syscalls into WAL recovery. Two extra process lifetimes before it were
-enough to corrupt state somewhere; ten backend lifetimes after it are not. The
-difference between those two shapes (a pipe and a `pclose`/`wait`, versus plain
-spawn-and-exit) is where the remaining bug lives, and it is in the kernel, not
-in PostgreSQL. `exec-backend-self-path.patch` removes the trigger and is the
-right change on its own merits; the underlying suspect is tracked separately.
+The e2e workflow resolves the addresses in a Unikraft crash banner to symbols
+(`.github/scripts/symbolicate-unikraft-crash.py`), which is how patch 22 was
+found: the banner's `rip` became `[ld-musl-x86_64.so.1] pthread_exit+0x17f`,
+the thread-list unlink, over a "self" pointer in the kernel heap.
 
-**x86_64 crashes earlier**, at a kernel-mode fault inside a `read()` — quite
-possibly the same popen-shaped trigger, since the postmaster reads the version
-string back over a pipe. The e2e job now symbolicates guest crashes, so the next
-CI run answers this.
+Two knobs in the `Kraftfile` make that work, both off by default because they
+are noisy:
+
+- `CONFIG_APPELFLOADER_DEBUG: 'y'` — the loader's `loaded to 0x…-0x…` lines,
+  which the symbolicator needs to attribute an application-range address to
+  postgres rather than musl and compute the offset.
+- `CONFIG_LIBSYSCALL_SHIM_STRACE: 'y'` — every syscall with arguments and
+  result. This is what showed the postmaster's spawn sequence ending in
+  `clone(CLONE_VM|CLONE_VFORK…)` with nothing after it.
 
 `postgres --single` — the whole server in one process, SQL on stdin, no
 postmaster and no children — also works on the same image, from a terminal

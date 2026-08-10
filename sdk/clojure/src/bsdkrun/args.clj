@@ -172,9 +172,9 @@
 (defn build-create-args
   "Build the full detached `create` argv for the given options.
 
-  `opts` is a map discriminated on `:os` (a string or keyword — `\"linux\"`,
-  `\"freebsd\"`, `\"netbsd\"`, `\"firmware\"`, `\"kernel\"`, `\"unikraft\"`,
-  `\"nanos\"`, `\"osv\"`).
+  `opts` is a map discriminated on `:os` (a keyword, or the equivalent
+  string — `:linux`, `:freebsd`, `:netbsd`, `:firmware`, `:kernel`,
+  `:unikraft`, `:nanos`, `:osv`).
 
   Throws `errors/unknown-os` on an unrecognized `:os`."
   [opts]

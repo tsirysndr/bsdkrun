@@ -98,8 +98,10 @@
     (is (= ["unikraft" "-d" "."] (build {:os "unikraft"})))))
 
 (deftest string-or-keyword-os
-  (is (= ["netbsd" "-d"] (build {:os "netbsd"})))
-  (is (= ["netbsd" "-d"] (build {:os :netbsd}))))
+  (is (= (build {:os "linux" :image "alpine"}) (build {:os :linux :image "alpine"})))
+  (is (= (build {:os "freebsd"}) (build {:os :freebsd})))
+  (is (= (build {:os "netbsd"}) (build {:os :netbsd})))
+  (is (= (build {:os "unikraft"}) (build {:os :unikraft}))))
 
 (deftest unknown-os-throws
   (is (thrown? clojure.lang.ExceptionInfo (build {:os "plan9"})))

@@ -510,8 +510,8 @@
     (get data "runLinux")))
 
 (defn run-bsd!
-  "Boot a FreeBSD/NetBSD guest. `:os` is `\"freebsd\"`/`\"netbsd\"` (or a
-  keyword). Returns the new machine's id."
+  "Boot a FreeBSD/NetBSD guest. `:os` is `:freebsd`/`:netbsd` (a keyword, or
+  the equivalent string). Returns the new machine's id."
   [client opts]
   (let [input {:os (bsd-os-enum (fetch! opts :os))
                :version (:version opts)

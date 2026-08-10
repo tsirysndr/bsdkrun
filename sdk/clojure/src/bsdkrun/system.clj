@@ -11,21 +11,22 @@
   (zero? (:exit-code (process/run ["probe"]))))
 
 (defn fetch-image!
-  "Download + prepare a BSD image ahead of time. `os` is \"freebsd\" or
-  \"netbsd\". `opts`: `:version`, `:force` (re-download even if cached).
-  Returns the command output."
+  "Download + prepare a BSD image ahead of time. `os` is `:freebsd` or
+  `:netbsd` (a keyword or a string). `opts`: `:version`, `:force`
+  (re-download even if cached). Returns the command output."
   ([os] (fetch-image! os {}))
   ([os {:keys [version force]}]
-   (let [argv (cond-> ["fetch" "--os" (str os)]
+   (let [argv (cond-> ["fetch" "--os" (name os)]
                 version (into ["--version" (str version)])
                 force (conj "--force"))]
      (:stdout (process/run! argv {:label "bsdkrun fetch"})))))
 
 (defn versions
-  "List the builds available to fetch for a BSD (`os` is \"freebsd\" or
-  \"netbsd\"), one version string per non-empty output line."
+  "List the builds available to fetch for a BSD (`os` is `:freebsd` or
+  `:netbsd` — a keyword or a string), one version string per non-empty
+  output line."
   [os]
-  (let [res (process/run! ["versions" "--os" (str os)] {:label "bsdkrun versions"})]
+  (let [res (process/run! ["versions" "--os" (name os)] {:label "bsdkrun versions"})]
     (->> (str/split (:stdout res) #"\n")
          (map str/trim)
          (remove empty?))))

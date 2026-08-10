@@ -15,7 +15,7 @@ and every namespace is a set of functions over plain maps.
 ```clojure
 (require '[bsdkrun.sandbox :as sandbox])
 
-(def box (sandbox/create! {:os "linux" :image "alpine"}))
+(def box (sandbox/create! {:os :linux :image "alpine"}))
 
 ;; exec argv directly, with env / stdin / a PTY / a working dir:
 (println (:stdout (sandbox/exec! box ["uname" "-a"])))
@@ -65,7 +65,7 @@ banner reported one, which only BSD guests do).
 
 ;; Linux OCI image (docker run-style)
 (sandbox/create!
- {:os "linux"
+ {:os :linux
   :image "ghcr.io/owner/name:tag"
   :cpus 2
   :mem 1024
@@ -75,16 +75,16 @@ banner reported one, which only BSD guests do).
   :command ["node" "server.js"]})            ; args after `--`
 
 ;; FreeBSD (EFI on macOS, PVH on Linux/amd64)
-(sandbox/create! {:os "freebsd" :version "14.3" :mem 2048})
+(sandbox/create! {:os :freebsd :version "14.3" :mem 2048})
 
 ;; NetBSD (direct-kernel boot everywhere)
-(sandbox/create! {:os "netbsd" :version "10.1" :volume "db"})
+(sandbox/create! {:os :netbsd :version "10.1" :volume "db"})
 
 ;; Boot a raw disk through its UEFI loader
-(sandbox/create! {:os "firmware" :firmware "KRUN_EFI.fd" :disk "disk.raw"})
+(sandbox/create! {:os :firmware :firmware "KRUN_EFI.fd" :disk "disk.raw"})
 
 ;; Boot a kernel directly, no bootloader
-(sandbox/create! {:os "kernel" :kernel "netbsd" :format "elf" :disk "root.raw"})
+(sandbox/create! {:os :kernel :kernel "netbsd" :format "elf" :disk "root.raw"})
 ```
 
 ## Running commands
@@ -123,8 +123,9 @@ call `(bsdkrun.types/throw-if-failed! result)` yourself).
 ```clojure
 (require '[bsdkrun.sandbox :as sandbox])
 
-(def box  (sandbox/create! {:os "linux" :image "alpine" :command ["sleep" "300"]}))
-(def same (sandbox/get (:id box)))          ; reconnect (prefix ok)
+(def box  (sandbox/create! {:os :linux :image "alpine" :name "web-1" :command ["sleep" "300"]}))
+(def same (sandbox/get (:id box)))          ; reconnect (id prefix ok)
+(def same (sandbox/get "web-1"))            ; ...or by its exact --name
 (def all  (sandbox/list {:all true}))       ; vector of sandbox-info maps
 
 (sandbox/status box)          ; sandbox-info map, or nil
@@ -135,6 +136,33 @@ call `(bsdkrun.types/throw-if-failed! result)` yourself).
 (sandbox/start! box)          ; restart in place — resumes its own disk/rootfs
 (sandbox/update! box {:cpus 4 :mem 2048})   ; applies on next start
 (sandbox/remove! box {:force true})
+```
+
+Every function above takes a `ref` — a sandbox map (`box`) **or** a bare
+id/name string — so you never have to reconnect first just to act on a
+machine you already know the name of:
+
+```clojure
+(sandbox/exec! "web-1" ["uname" "-a"])      ; no (sandbox/get "web-1") needed first
+(sandbox/stop! "web-1")
+```
+
+And since lifecycle functions with nothing interesting to return hand back
+`ref` itself instead of `nil`, they thread with `->` — and with `doto`, when
+you want the sandbox back at the end instead of the last call's result:
+
+```clojure
+;; -> : each step's result feeds the next; end on the exec output
+(-> (sandbox/get "web-1")
+    sandbox/start!
+    (sandbox/exec! ["uname" "-a"])
+    :stdout)
+
+;; doto : same box driven through every step; you get the box back
+(doto (sandbox/get "web-1")
+  sandbox/start!
+  (sandbox/exec! ["setup.sh"] {:throw-on-error true})
+  sandbox/stop!)
 ```
 
 Host-level namespaces:
@@ -150,15 +178,15 @@ Host-level namespaces:
 (volumes/list)                              ; vector of volume-info maps
 (volumes/remove! "web" {:force true})
 (networks/list)                             ; vector of network-info maps
-(system/fetch-image! "freebsd" {:version "14.3"})
-(system/versions "netbsd")                  ; vector of strings
+(system/fetch-image! :freebsd {:version "14.3"})
+(system/versions :netbsd)                   ; vector of strings
 ```
 
 ## Networking, SSH & Tailscale
 
 ```clojure
 ;; forward ports at create time
-(sandbox/create! {:os "linux" :image "alpine" :net {:ports ["2222:22"]}})
+(sandbox/create! {:os :linux :image "alpine" :net {:ports ["2222:22"]}})
 
 ;; agent-managed key-based SSH
 (sandbox/ssh-setup! box)                              ; install local ~/.ssh/*.pub keys
@@ -181,10 +209,10 @@ with internal DNS:
 (networks/create! "devnet")
 
 (def db (sandbox/create!
-         {:os "linux" :image "alpine" :name "db"
+         {:os :linux :image "alpine" :name "db"
           :net {:network "devnet"} :command ["sleep" "3600"]}))
 (def api (sandbox/create!
-          {:os "linux" :image "alpine" :name "api"
+          {:os :linux :image "alpine" :name "api"
            :net {:network "devnet"} :command ["sleep" "3600"]}))
 
 ;; api reaches db by name over the shared subnet
@@ -210,7 +238,7 @@ resolves via a synced `/etc/hosts` block — joins auto-sync, and
 
 ## Namespaces
 
-- `bsdkrun.sandbox` — the machine lifecycle: `create!`, `get`, `list`,
+- `bsdkrun.sandbox` — the machine lifecycle: `create!`, `get`, `list`, `id`,
   `exec!`, `run-command!`, `logs`, `shell!`, `status`, `running?`, `stop!`,
   `start!`, `remove!`, `update!`, `connect-network!`, `disconnect-network!`,
   `ssh-setup!`, `tailscale-up!`.

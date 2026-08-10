@@ -12,7 +12,7 @@
   ```clojure
   user=> (ps)                          ; every machine, exited ones included
   user=> (last-machine)                ; the newest one, or nil
-  user=> (sandbox/create! {:os \"linux\" :image \"alpine\"})
+  user=> (sandbox/create! {:os :linux :image \"alpine\"})
   user=> (def c (client/client-from-env))
   user=> (client/list-machines c)
   ```

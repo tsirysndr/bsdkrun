@@ -3,6 +3,26 @@
   `{:id \"abc123\" :ssh-port 2222}` — there is no object, no class. Create
   one with [[create!]], reconnect with [[get]], or enumerate with [[list]].
 
+  Every function below that acts on a machine takes a `ref` first: a sandbox
+  map, or a bare machine id/name string (see [[id]]) — `bsdkrun` itself
+  resolves a bare id prefix or exact name (`core/src/db.rs`'s
+  `find_machine`), so `(sandbox/stop! \"web-1\")` needs no lookup first. And
+  since every `ref`-taking function returns either its result or (for
+  lifecycle ops with nothing interesting to return) `ref` itself, they thread
+  with `->`/`doto`:
+
+  ```clojure
+  (-> (sandbox/get \"web-1\")
+      sandbox/start!
+      (sandbox/exec! [\"uname\" \"-a\"])
+      :stdout)
+
+  (doto (sandbox/get \"web-1\")   ; same vm through every step, vm back at the end
+    sandbox/start!
+    (sandbox/exec! [\"setup.sh\"])
+    sandbox/stop!)
+  ```
+
   Mirrors `sdk/ruby/lib/bsdkrun/sandbox.rb`."
   (:refer-clojure :exclude [get list])
   (:require [clojure.string :as str]
@@ -14,6 +34,13 @@
 
 (def ^:private id-re #"^[0-9a-f]{6,}$")
 (def ^:private ssh-port-re #"ssh -p (\d+)")
+
+(defn id
+  "The machine id/name to hand the CLI for `ref` — a sandbox map's `:id`, or
+  a bare id/name string, unchanged. Every function below that acts on a
+  machine accepts either."
+  [ref]
+  (if (map? ref) (:id ref) ref))
 
 (defn create!
   "Boot a new microVM and return `{:id ... :ssh-port ...}` (`:ssh-port` is
@@ -50,16 +77,27 @@
          res (process/run! argv {:label "bsdkrun ps"})]
      (mapv types/sandbox-info-from-row (types/read-json-rows (:stdout res))))))
 
+(defn- match-ref
+  "Find the row in `rows` (sandbox-info maps) matching `ref-str` — exact name
+  first (unambiguous, like `docker <name>`), then exact id, then a unique id
+  prefix (Docker-style short ids). Mirrors `core/src/db.rs`'s
+  `find_machine`."
+  [rows ref-str]
+  (or (some #(when (= (:name %) ref-str) %) rows)
+      (some #(when (= (:id %) ref-str) %) rows)
+      (some #(when (str/starts-with? (:id %) ref-str) %) rows)))
+
 (defn get
-  "Reconnect to an existing machine by id (a unique prefix is enough).
+  "Reconnect to an existing machine by id (a unique prefix is enough) or by
+  exact name. `ref` is a sandbox map or a bare id/name string (see [[id]]).
 
   Throws `errors/sandbox-not-found` if nothing matches."
-  [id]
-  (let [found (some (fn [m] (when (or (= (:id m) id) (str/starts-with? (:id m) id)) m))
-                     (list {:all true}))]
+  [ref]
+  (let [ref-str (id ref)
+        found (match-ref (list {:all true}) ref-str)]
     (if found
       {:id (:id found)}
-      (throw (errors/sandbox-not-found id)))))
+      (throw (errors/sandbox-not-found ref-str)))))
 
 (defn exec!
   "Run a command in the guest through its exec agent.
@@ -77,16 +115,16 @@
     `:log-level`       per-command bsdkrun log level
 
   Returns `{:stdout ... :stderr ... :exit-code ... :command \"...\"}`."
-  ([sandbox command] (exec! sandbox command {}))
-  ([sandbox command {:keys [args env tty stdin cwd throw-on-error log-level]
-                      :or {args [] env {} tty false throw-on-error false log-level 0}}]
+  ([ref command] (exec! ref command {}))
+  ([ref command {:keys [args env tty stdin cwd throw-on-error log-level]
+                 :or {args [] env {} tty false throw-on-error false log-level 0}}]
    (let [argv0 (if (sequential? command) (vec command) (into [command] args))
          argv (if cwd
                 (into ["/bin/sh" "-c" "cd \"$1\" && shift && exec \"$@\"" "sh" cwd] argv0)
                 argv0)
          cli (cond-> ["exec"] tty (conj "-t"))
          cli (into cli (mapcat (fn [[k v]] ["-e" (str (name k) "=" v)]) env))
-         cli (into cli (into [(:id sandbox)] argv))
+         cli (into cli (into [(id ref)] argv))
          res (process/run cli {:stdin stdin :log-level log-level})
          result {:stdout (:stdout res)
                  :stderr (:stderr res)
@@ -98,86 +136,89 @@
 
 (defn run-command!
   "Vercel-Sandbox-style alias for [[exec!]]: a program plus its args."
-  ([sandbox command] (run-command! sandbox command [] {}))
-  ([sandbox command args] (run-command! sandbox command args {}))
-  ([sandbox command args opts]
-   (exec! sandbox command (assoc opts :args args))))
+  ([ref command] (run-command! ref command [] {}))
+  ([ref command args] (run-command! ref command args {}))
+  ([ref command args opts]
+   (exec! ref command (assoc opts :args args))))
 
 (defn logs
   "Read the machine's console log. `{:boot true}` shows bsdkrun's own boot
   log instead of the console."
-  ([sandbox] (logs sandbox {}))
-  ([sandbox {:keys [boot]}]
+  ([ref] (logs ref {}))
+  ([ref {:keys [boot]}]
    (let [argv (cond-> ["logs"] boot (conj "--boot"))
-         argv (conj argv (:id sandbox))]
+         argv (conj argv (id ref))]
      (:stdout (process/run argv)))))
 
 (defn shell!
   "Attach an interactive shell to the machine (inherits the terminal).
   Returns true if the shell exited zero."
-  [sandbox]
-  (process/spawn-interactive! ["shell" (:id sandbox)]))
+  [ref]
+  (process/spawn-interactive! ["shell" (id ref)]))
 
 (defn status
-  "This machine's current status row, or nil if it's gone."
-  [sandbox]
-  (some (fn [m] (when (= (:id m) (:id sandbox)) m)) (list {:all true})))
+  "This machine's current status row, or nil if it's gone. `ref` may be a
+  sandbox map or a bare id/name string."
+  [ref]
+  (match-ref (list {:all true}) (id ref)))
 
 (defn running?
   "Whether the machine is currently running."
-  [sandbox]
-  (boolean (:running (status sandbox))))
+  [ref]
+  (boolean (:running (status ref))))
 
 (defn- lifecycle!
-  "Run a fire-and-forget lifecycle CLI command, throwing on failure."
-  [argv label]
+  "Run a fire-and-forget lifecycle CLI command, throwing on failure. Returns
+  `ref` unchanged (not its result) so lifecycle calls compose with
+  `->`/`doto` — see the namespace docstring."
+  [ref argv label]
   (process/run! argv {:label label})
-  nil)
+  ref)
 
 (defn stop!
   "Stop the machine. BSD guests are cleanly powered off; Linux is SIGTERM'd."
-  [sandbox]
-  (lifecycle! ["stop" (:id sandbox)] "bsdkrun stop"))
+  [ref]
+  (lifecycle! ref ["stop" (id ref)] "bsdkrun stop"))
 
 (defn start!
   "Restart a stopped machine in place (same id, disk/rootfs). Boots detached."
-  [sandbox]
-  (lifecycle! ["start" (:id sandbox)] "bsdkrun start"))
+  [ref]
+  (lifecycle! ref ["start" (id ref)] "bsdkrun start"))
 
 (defn remove!
   "Remove the machine and its state. `{:force true}` stops it first if
   running."
-  ([sandbox] (remove! sandbox {}))
-  ([sandbox {:keys [force]}]
+  ([ref] (remove! ref {}))
+  ([ref {:keys [force]}]
    (let [argv (cond-> ["rm"] force (conj "--force"))
-         argv (conj argv (:id sandbox))]
-     (lifecycle! argv "bsdkrun rm"))))
+         argv (conj argv (id ref))]
+     (lifecycle! ref argv "bsdkrun rm"))))
 
 (defn update!
   "Change the recorded vCPU / RAM. Applies on the next [[start!]]."
-  ([sandbox] (update! sandbox {}))
-  ([sandbox {:keys [cpus mem]}]
-   (let [argv (cond-> ["update" (:id sandbox)]
+  ([ref] (update! ref {}))
+  ([ref {:keys [cpus mem]}]
+   (let [argv (cond-> ["update" (id ref)]
                 (some? cpus) (into ["--cpus" (str cpus)])
                 (some? mem) (into ["--mem" (str mem)]))]
-     (lifecycle! argv "bsdkrun update"))))
+     (lifecycle! ref argv "bsdkrun update"))))
 
 (defn connect-network!
   "Join or switch this machine to a global network. Applies on next
   [[start!]]."
-  [sandbox network]
-  (lifecycle! ["network" "connect" (:id sandbox) network] "bsdkrun network connect"))
+  [ref network]
+  (lifecycle! ref ["network" "connect" (id ref) network] "bsdkrun network connect"))
 
 (defn disconnect-network!
   "Detach this machine from its network. Applies on next [[start!]]."
-  [sandbox]
-  (lifecycle! ["network" "disconnect" (:id sandbox)] "bsdkrun network disconnect"))
+  [ref]
+  (lifecycle! ref ["network" "disconnect" (id ref)] "bsdkrun network disconnect"))
 
 (defn- agent!
   "Run an in-guest agent CLI family (`ssh`, `tailscale`), throwing on
   failure."
-  [sandbox family action {:keys [env] :or {env {}}}]
-  (let [res (process/run (into [family (:id sandbox)] action) {:env env})
+  [ref family action {:keys [env] :or {env {}}}]
+  (let [res (process/run (into [family (id ref)] action) {:env env})
         result {:stdout (:stdout res)
                 :stderr (:stderr res)
                 :exit-code (:exit-code res)
@@ -190,11 +231,11 @@
 
   `opts`: `:user` (target user, default root), `:key` (a literal key or
   `.pub` path, or a vector of them)."
-  ([sandbox] (ssh-setup! sandbox {}))
-  ([sandbox {:keys [user key]}]
+  ([ref] (ssh-setup! ref {}))
+  ([ref {:keys [user key]}]
    (let [action (cond-> ["setup"] user (into ["--user" user]))
          action (into action (mapcat (fn [k] ["--key" k]) (util/as-seq key)))]
-     (agent! sandbox "ssh" action {}))))
+     (agent! ref "ssh" action {}))))
 
 (defn tailscale-up!
   "Put the guest on your tailnet (`tailscale setup`).
@@ -202,8 +243,8 @@
   `opts`: `:authkey` (tailnet auth key, sent as `TS_AUTHKEY`), `:hostname`
   (machine name on the tailnet), `:args` (extra args passed through to
   `tailscale up`)."
-  ([sandbox] (tailscale-up! sandbox {}))
-  ([sandbox {:keys [authkey hostname args]}]
+  ([ref] (tailscale-up! ref {}))
+  ([ref {:keys [authkey hostname args]}]
    (let [action (cond-> ["setup"] hostname (into ["--hostname" hostname]))
          action (into action (or args []))]
-     (agent! sandbox "tailscale" action {:env (if authkey {"TS_AUTHKEY" authkey} {})}))))
+     (agent! ref "tailscale" action {:env (if authkey {"TS_AUTHKEY" authkey} {})}))))

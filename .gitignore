@@ -11,3 +11,9 @@ node_modules/
 
 # Cross-compiled guest agent binaries — regenerate with `make agent`.
 /core/src/agent-bin/bsdkrun-agent.*
+
+# Unikraft example build artifacts.
+examples/**/.rootfs-arm64/
+examples/**/.rust-cache/
+examples/**/*.dbg
+examples/**/*.dbg.*

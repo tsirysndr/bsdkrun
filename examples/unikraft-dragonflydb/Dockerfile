@@ -17,8 +17,22 @@ USER root
 # the server. The guest has no shell, no mount(8) and no cgroups -- the flags
 # the wrapper exists to support are passed on the command line instead (see
 # the Kraftfile's cmd).
+# The /proc and /sys entries are plain files. Dragonfly aborts at startup if
+# it cannot read /proc/self/cgroup ("Check failed: cg.has_value()") -- that is
+# what upstream's wrapper mounts cgroup2 for. Unikraft has no procfs or
+# sysfs, which means nothing shadows these paths either: the ramfs the rootfs
+# is unpacked into serves whatever is at /proc/self/cgroup like any other
+# file. So the image carries the minimal cgroup2 surface dragonfly reads --
+# a v2 /proc/self/cgroup ("0::/") and unlimited memory/cpu at the
+# corresponding /sys/fs/cgroup paths.
 RUN set -eu; \
-    mkdir -p /rootfs/usr/bin /rootfs/data /rootfs/tmp; \
+    mkdir -p /rootfs/usr/bin /rootfs/data /rootfs/tmp \
+             /rootfs/proc/self /rootfs/sys/fs/cgroup; \
+    printf '0::/\n' > /rootfs/proc/self/cgroup; \
+    printf 'max\n' > /rootfs/sys/fs/cgroup/memory.max; \
+    printf 'max 100000\n' > /rootfs/sys/fs/cgroup/cpu.max; \
+    printf '0\n' > /rootfs/sys/fs/cgroup/cpuset.cpus; \
+    printf '0\n' > /rootfs/sys/fs/cgroup/cpuset.cpus.effective; \
     cp -L /usr/local/bin/dragonfly /rootfs/usr/bin/dragonfly; \
     ldd /usr/local/bin/dragonfly \
       | grep -oE '/[^ ()]+' \

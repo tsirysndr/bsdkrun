@@ -71,9 +71,7 @@ class TestHttpTransport(unittest.TestCase):
         self.server.respond(200, {"data": {}})
         http_request(self.server.url, "s3cr3t", "{ info { os } }", {"x": 1})
         self.assertEqual(self.server.httpd.last_headers["Authorization"], "Bearer s3cr3t")
-        self.assertEqual(
-            self.server.httpd.last_headers["Content-Type"], "application/json"
-        )
+        self.assertEqual(self.server.httpd.last_headers["Content-Type"], "application/json")
         self.assertEqual(
             self.server.httpd.last_request, {"query": "{ info { os } }", "variables": {"x": 1}}
         )
@@ -86,11 +84,7 @@ class TestHttpTransport(unittest.TestCase):
     def test_unauthenticated_extension_raises_auth_error(self):
         self.server.respond(
             200,
-            {
-                "errors": [
-                    {"message": "bad token", "extensions": {"code": "UNAUTHENTICATED"}}
-                ]
-            },
+            {"errors": [{"message": "bad token", "extensions": {"code": "UNAUTHENTICATED"}}]},
         )
         with self.assertRaises(AuthError) as ctx:
             http_request(self.server.url, "bad", "{ info { os } }")

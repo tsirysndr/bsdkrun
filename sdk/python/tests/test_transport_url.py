@@ -18,12 +18,8 @@ class TestNormalizeUrl(unittest.TestCase):
         self.assertEqual(normalize_url("http://host:50052///"), "http://host:50052/graphql")
 
     def test_leaves_existing_graphql_suffix(self):
-        self.assertEqual(
-            normalize_url("http://host:50052/graphql"), "http://host:50052/graphql"
-        )
-        self.assertEqual(
-            normalize_url("http://host:50052/graphql/"), "http://host:50052/graphql"
-        )
+        self.assertEqual(normalize_url("http://host:50052/graphql"), "http://host:50052/graphql")
+        self.assertEqual(normalize_url("http://host:50052/graphql/"), "http://host:50052/graphql")
 
     def test_preserves_https(self):
         self.assertEqual(normalize_url("https://host:50052"), "https://host:50052/graphql")

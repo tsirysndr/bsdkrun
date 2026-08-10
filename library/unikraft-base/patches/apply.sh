@@ -1869,4 +1869,95 @@ else
 	echo "clone.c vfork TLS: already patched or absent, skipping"
 fi
 
+
+# --- Patch 23: signal delivery must not assert on a busy alternate stack ---
+#
+# sigaltstack(2) is per *thread* in POSIX and in Linux. Unikraft keeps a single
+# stack_t in the process signal descriptor (struct uk_signal_pdesc), shared by
+# every thread -- so in a threaded program that installs an alternate stack and
+# marks any handler SA_ONSTACK, the second thread to take a signal walks into
+# one of two assertions and brings the guest down:
+#
+#   CRIT: [libposix_process] <deliver.c @ 124> Assertion failure: altstack->ss_sp
+#   CRIT: [libposix_process] <deliver.c @ 125> Assertion failure:
+#                                              !(altstack->ss_flags & 1)
+#
+# (1 is SS_ONSTACK: "somebody is already running on it".) mongod hits this on
+# every abort() -- see examples/unikraft-mongodb -- and because the guest dies
+# *inside* signal delivery, the diagnostic the application was in the middle of
+# printing is lost, which is the worse half of the bug.
+#
+# Linux does not treat either case as fatal. If the alternate stack is unusable
+# -- not installed, or already in use because the thread is nested inside a
+# handler -- it simply runs the handler on the stack the thread is already on
+# (kernel/signal.c, sigsp()/on_sig_stack()). Do the same, and only clear
+# SS_ONSTACK on the way out if this delivery is what set it.
+#
+# This is the conservative half of the fix: it makes delivery match Linux for
+# the cases that currently abort. The complete fix is to move `altstack` from
+# uk_signal_pdesc to uk_signal_tdesc so each thread gets its own, which is a
+# larger change to sigaltstack(2), clone() inheritance and thread init.
+f=$1/lib/posix-process/signal/deliver.c
+if [ -f "$f" ] && grep -q "UK_ASSERT(!(altstack->ss_flags & SS_ONSTACK));" "$f"; then
+	python3 - "$f" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+
+old_decl = """	struct posix_process *this_process;
+	stack_t *altstack;
+	__uptr ulsp;
+"""
+new_decl = """	struct posix_process *this_process;
+	stack_t *altstack;
+	int on_altstack = 0;
+	__uptr ulsp;
+"""
+
+old_head = """	if ((ks->ks_flags & SA_ONSTACK) && !(altstack->ss_flags & SS_DISABLE)) {
+		UK_ASSERT(altstack->ss_sp);
+		UK_ASSERT(!(altstack->ss_flags & SS_ONSTACK));
+
+		altstack->ss_flags |= SS_ONSTACK;
+"""
+new_head = """	/* Use the alternate stack only if it is actually usable: installed,
+	 * not disabled, and not already occupied. Unikraft shares one
+	 * alternate stack across the whole process where POSIX gives each
+	 * thread its own, so "already occupied" is reachable in any threaded
+	 * program -- and a handler running on a stack another thread is
+	 * using would corrupt it. Linux falls back to the interrupted
+	 * thread's own stack in exactly these cases (sigsp(), on_sig_stack())
+	 * rather than treating them as fatal.
+	 */
+	if ((ks->ks_flags & SA_ONSTACK) && !(altstack->ss_flags & SS_DISABLE) &&
+	    altstack->ss_sp && !(altstack->ss_flags & SS_ONSTACK)) {
+		altstack->ss_flags |= SS_ONSTACK;
+		on_altstack = 1;
+"""
+
+old_tail = """	if (ks->ks_flags & SA_ONSTACK) {
+		UK_ASSERT(altstack->ss_flags & SS_ONSTACK);
+		UK_ASSERT(!(altstack->ss_flags & SS_DISABLE));
+		altstack->ss_flags &= ~SS_ONSTACK;
+	}
+"""
+new_tail = """	/* Release the alternate stack only if this delivery claimed it. */
+	if (on_altstack) {
+		UK_ASSERT(altstack->ss_flags & SS_ONSTACK);
+		altstack->ss_flags &= ~SS_ONSTACK;
+	}
+"""
+
+for old, new, what in ((old_decl, new_decl, "declaration"),
+                       (old_head, new_head, "altstack selection"),
+                       (old_tail, new_tail, "altstack release")):
+    assert old in s, "deliver.c %s does not match the expected shape" % what
+    s = s.replace(old, new, 1)
+
+open(p, "w").write(s)
+PYEOF
+else
+	echo "deliver.c altstack: already patched or absent, skipping"
+fi
+
 echo "patches applied."

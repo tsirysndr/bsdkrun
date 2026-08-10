@@ -135,6 +135,7 @@ pub fn machine_with_live_process(id: &str) -> String {
             512,
             &dir,
             None,
+            None,
         );
     })
     .join()
@@ -162,6 +163,7 @@ pub fn seed(state: &Path) {
         1024,
         &state.join("machines/abc123").to_string_lossy(),
         None,
+        None,
     );
     db::record_machine(
         "bsd456789abc",
@@ -175,6 +177,7 @@ pub fn seed(state: &Path) {
         2,
         1024,
         &state.join("machines/bsd456789abc").to_string_lossy(),
+        None,
         None,
     );
     // One that is not running, so `all` has something to include.
@@ -190,6 +193,7 @@ pub fn seed(state: &Path) {
         1,
         512,
         &state.join("machines/dead00000001").to_string_lossy(),
+        None,
         None,
     );
 

@@ -240,35 +240,41 @@ jobs:
       - name: Package artifacts (bsdkrun + bundled libkrun)
         run: |
           set -eux
-          rm -rf dist pkg && mkdir -p dist pkg
+          rm -rf dist pkg sup && mkdir -p dist pkg sup
           cp target/release/bsdkrun pkg/bsdkrun
           cp target/release/bsdkrun-supervisor pkg/bsdkrun-supervisor
+          # Also staged standalone below, for a bsdkrund host that wants the
+          # supervisor without the rest of the CLI bundle (web UI etc).
+          cp target/release/bsdkrun-supervisor sup/bsdkrun-supervisor
 
           # Copy every non-system shared lib bsdkrun (transitively) needs — the
-          # ones we built into /usr/local — into pkg/ under their SONAME. ldd
+          # ones we built into /usr/local — into $1/ under their SONAME. ldd
           # resolves each object's deps; we follow only /usr/local ones (skipping
           # libc and friends) and recurse so libkrun's own dep on libkrunfw is
           # picked up too.
           copy_local_deps() {
+            dir=$(dirname "$1")
             ldd "$1" 2>/dev/null | awk '{print $3}' | grep -E '^/usr/local/' | while read -r p; do
               name=$(basename "$p")
-              if [ ! -e "pkg/$name" ]; then
-                cp -L "$p" "pkg/$name"
-                copy_local_deps "pkg/$name"
+              if [ ! -e "$dir/$name" ]; then
+                cp -L "$p" "$dir/$name"
+                copy_local_deps "$dir/$name"
               fi
             done
           }
           copy_local_deps pkg/bsdkrun
           copy_local_deps pkg/bsdkrun-supervisor
+          copy_local_deps sup/bsdkrun-supervisor
 
-          # Point bsdkrun and each bundled lib at their siblings ($ORIGIN = the
+          # Point each binary and bundled lib at their siblings ($ORIGIN = the
           # dir the object is loaded from). Single quotes: the linker, not the
           # shell, must see the literal $ORIGIN.
-          for f in pkg/*; do patchelf --set-rpath '$ORIGIN' "$f"; done
+          for f in pkg/* sup/*; do patchelf --set-rpath '$ORIGIN' "$f"; done
 
           echo "----- bundle contents -----"; ls -l pkg
           echo "----- bsdkrun deps after rpath rewrite -----"; ldd pkg/bsdkrun || true
           echo "----- supervisor deps -----"; ldd pkg/bsdkrun-supervisor || true
+          echo "----- standalone supervisor bundle -----"; ls -l sup
 
           # Pack the whole bundle (bsdkrun + bsdkrun-supervisor + *.so.*).
           # Postinstall extracts it all.
@@ -276,6 +282,13 @@ jobs:
           ( cd dist && shasum -a 256 "bsdkrun-${{ matrix.triple }}.tar.gz" \
               > "bsdkrun-${{ matrix.triple }}.tar.gz.sha256" )
           cat "dist/bsdkrun-${{ matrix.triple }}.tar.gz.sha256"
+
+          # The supervisor, packaged standalone too — mirrors the macOS release,
+          # where it ships as its own asset for a bsdkrund host to fetch alone.
+          tar -C sup -czf "dist/bsdkrun-supervisor-${{ matrix.triple }}.tar.gz" .
+          ( cd dist && shasum -a 256 "bsdkrun-supervisor-${{ matrix.triple }}.tar.gz" \
+              > "bsdkrun-supervisor-${{ matrix.triple }}.tar.gz.sha256" )
+          cat "dist/bsdkrun-supervisor-${{ matrix.triple }}.tar.gz.sha256"
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4

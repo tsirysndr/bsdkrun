@@ -10,6 +10,9 @@ defmodule Bsdkrun.Args do
   `Bsdkrun.Sandbox.create/1` for the full set of per-kind keys.
   """
 
+  @typedoc "The guest kind, discriminating `create/1` and mirrored by `SandboxInfo.kind`."
+  @type os :: :linux | :freebsd | :netbsd | :firmware | :kernel | :unikraft | :nanos | :osv
+
   @doc "Build the create argv (a list of strings) for the given options."
   @spec build_create([keyword() | map()]) :: [String.t()]
   def build_create(opts) do

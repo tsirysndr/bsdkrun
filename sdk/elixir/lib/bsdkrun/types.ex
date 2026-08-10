@@ -23,7 +23,7 @@ defmodule Bsdkrun.Types do
             id: String.t(),
             name: String.t() | nil,
             image: String.t(),
-            kind: String.t(),
+            kind: Bsdkrun.Args.os(),
             command: String.t(),
             status: String.t(),
             running: boolean(),
@@ -185,7 +185,7 @@ defmodule Bsdkrun.Types do
       id: to_string(row["id"]),
       name: row["name"],
       image: to_string(row["image"]),
-      kind: to_string(row["kind"]),
+      kind: kind_atom(row["kind"]),
       command: to_string(row["command"] || ""),
       status: if(running, do: "running", else: "exited"),
       running: running,
@@ -226,7 +226,7 @@ defmodule Bsdkrun.Types do
       id: to_string(row["id"]),
       name: row["name"],
       image: to_string(row["image"]),
-      kind: to_string(row["kind"]),
+      kind: kind_atom(row["kind"]),
       command: to_string(row["command"] || ""),
       status: to_string(row["status"]),
       running: truthy(row["running"]),
@@ -306,6 +306,13 @@ defmodule Bsdkrun.Types do
       created_at: num(row["created_at"])
     }
   end
+
+  # `kind` is one of bsdkrun's own guest kinds (`linux` / `freebsd` / `netbsd` /
+  # `firmware` / `kernel` / `unikraft` / `nanos` / `osv`) — a small, trusted
+  # vocabulary, not user input — so turning it into an atom (matching the
+  # `:os` atoms `create/1` already takes) can't exhaust the atom table.
+  defp kind_atom(nil), do: nil
+  defp kind_atom(kind), do: String.to_atom(to_string(kind))
 
   defp truthy(true), do: true
   defp truthy(_), do: false

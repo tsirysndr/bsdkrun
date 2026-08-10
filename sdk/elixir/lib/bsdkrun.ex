@@ -13,6 +13,14 @@ defmodule Bsdkrun do
       IO.puts(Bsdkrun.Types.Result.text(res))
       :ok = Bsdkrun.stop(box)
 
+  Or, with the bang variants, as one `|>` chain — see `Bsdkrun.Sandbox` for
+  the chaining rules:
+
+      Bsdkrun.create!(os: :linux, image: "alpine")
+      |> Bsdkrun.exec!(["uname", "-a"])
+      |> Bsdkrun.Types.Result.text()
+      |> IO.puts()
+
   The binary is resolved (in order) from `Bsdkrun.Binary.set_binary_path/1`, the
   `$BSDKRUN_BIN` env var, `bsdkrun` on `$PATH`, or an in-repo dev build. See
   `Bsdkrun.Binary`.
@@ -45,17 +53,32 @@ defmodule Bsdkrun do
   @doc "See `Bsdkrun.Sandbox.exec/3`."
   defdelegate exec(ref, command, opts \\ []), to: Sandbox
 
+  @doc "See `Bsdkrun.Sandbox.exec!/3`."
+  defdelegate exec!(ref, command, opts \\ []), to: Sandbox
+
   @doc "See `Bsdkrun.Sandbox.logs/2`."
   defdelegate logs(ref, opts \\ []), to: Sandbox
+
+  @doc "See `Bsdkrun.Sandbox.logs!/2`."
+  defdelegate logs!(ref, opts \\ []), to: Sandbox
 
   @doc "See `Bsdkrun.Sandbox.stop/1`."
   defdelegate stop(ref), to: Sandbox
 
+  @doc "See `Bsdkrun.Sandbox.stop!/1`."
+  defdelegate stop!(ref), to: Sandbox
+
   @doc "See `Bsdkrun.Sandbox.start/1`."
   defdelegate start(ref), to: Sandbox
 
+  @doc "See `Bsdkrun.Sandbox.start!/1`."
+  defdelegate start!(ref), to: Sandbox
+
   @doc "See `Bsdkrun.Sandbox.remove/2`."
   defdelegate remove(ref, opts \\ []), to: Sandbox
+
+  @doc "See `Bsdkrun.Sandbox.remove!/2`."
+  defdelegate remove!(ref, opts \\ []), to: Sandbox
 
   @doc "See `Bsdkrun.Binary.set_binary_path/1`."
   defdelegate set_binary_path(path), to: Bsdkrun.Binary

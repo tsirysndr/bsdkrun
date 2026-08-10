@@ -17,6 +17,15 @@ IO.puts(Bsdkrun.Types.Result.text(res))
 :ok = Bsdkrun.stop(box)
 ```
 
+Or, with the bang variants, as one `|>` chain:
+
+```elixir
+Bsdkrun.create!(os: :linux, image: "alpine")
+|> Bsdkrun.exec!(["uname", "-a"])
+|> Bsdkrun.Types.Result.text()
+|> IO.puts()
+```
+
 ## Install
 
 Add `:bsdkrun_ex` to your `mix.exs` deps:
@@ -115,6 +124,36 @@ Bsdkrun.stop(box)                # BSD guests clean-poweroff; Linux SIGTERM
 Bsdkrun.start(box)               # restart in place — resumes disk/rootfs
 Bsdkrun.Sandbox.update(box, cpus: 4, mem: 2048)  # applies on next start
 Bsdkrun.remove(box, force: true)
+```
+
+`SandboxInfo.kind` is an atom — `:linux`, `:freebsd`, `:netbsd`, `:firmware`,
+`:kernel`, `:unikraft`, `:nanos`, or `:osv` — the same vocabulary `create/1`
+takes for `:os`, so you can match on it directly:
+`case info.kind do :freebsd -> ...; :netbsd -> ...; _ -> ... end`.
+
+## Pipe-friendly / chainable
+
+Every `Bsdkrun.Sandbox` function has a bang (`!`) counterpart that unwraps
+`{:ok, value}` or raises `Bsdkrun.Error`. The lifecycle ones — `stop!/1`,
+`start!/1`, `remove!/2`, `update!/2`, `connect_network!/2`,
+`disconnect_network!/1` — return `ref` itself (not `:ok`), so they chain:
+
+```elixir
+Bsdkrun.create!(os: :linux, image: "alpine")
+|> Bsdkrun.exec!(["apk", "add", "curl"])
+|> Bsdkrun.stop!()
+```
+
+`exec!/3`, `logs!/2`, `status!/1`, `Sandbox.ssh_setup!/2` and
+`Sandbox.tailscale_up!/2` return their unwrapped value instead (a `Result`,
+a log string, ...) since that's the point of calling them — chain into
+`Bsdkrun.Types.Result` from there, or use `tap/2` to run one mid-pipeline
+without losing the sandbox:
+
+```elixir
+Bsdkrun.create!(os: :linux, image: "alpine")
+|> tap(&(Bsdkrun.exec!(&1, ["uname", "-a"]) |> Bsdkrun.Types.Result.text() |> IO.puts()))
+|> Bsdkrun.stop!()
 ```
 
 Host-level modules:
@@ -248,7 +287,10 @@ The `%Bsdkrun.Error{}` exception has a `:kind`:
 - `:config_error`      — invalid or missing `Bsdkrun.Client.from_env/0` configuration.
 
 The bang variants (`Bsdkrun.create!/1`, `Bsdkrun.Sandbox.get!/1`,
-`Bsdkrun.Sandbox.list!/1`) unwrap the value or `raise` the error.
+`Bsdkrun.Sandbox.list!/1`, `Bsdkrun.exec!/3`, `Bsdkrun.stop!/1`, ...) unwrap
+the value or `raise` the error — see
+[Pipe-friendly / chainable](#pipe-friendly--chainable) above for how the
+lifecycle ones return `ref` for chaining.
 
 ## Try it interactively
 

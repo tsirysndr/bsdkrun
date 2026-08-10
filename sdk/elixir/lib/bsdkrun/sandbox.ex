@@ -8,9 +8,25 @@ defmodule Bsdkrun.Sandbox do
       :ok = Bsdkrun.Sandbox.stop(box)
 
   Every fallible function returns `{:ok, value}` or `{:error, %Bsdkrun.Error{}}`,
-  with a bang counterpart (`create!/1`, `get!/1`, `list!/1`) that unwraps or
-  raises. Functions that act on a machine accept either a `%Bsdkrun.Sandbox{}`
-  struct or a bare id string.
+  with a bang counterpart that unwraps or raises. Functions that act on a
+  machine accept either a `%Bsdkrun.Sandbox{}` struct or a bare id string.
+
+  The bang lifecycle functions (`stop!/1`, `start!/1`, `remove!/2`,
+  `update!/2`, `connect_network!/2`, `disconnect_network!/1`) return `ref`
+  itself — not `:ok` — so they chain with `|>`:
+
+      Bsdkrun.create!(os: :linux, image: "alpine")
+      |> Bsdkrun.exec!(["apk", "add", "curl"])
+      |> Bsdkrun.stop!()
+
+  `exec!/3`, `logs!/2`, `status!/1`, `ssh_setup!/2` and `tailscale_up!/2`
+  return their unwrapped value instead (a `Result`, a string, ...), since
+  that value — not the sandbox — is the point of calling them. Reach for
+  `tap/2` to run one mid-chain without losing the sandbox:
+
+      Bsdkrun.create!(os: :linux, image: "alpine")
+      |> tap(&(Bsdkrun.exec!(&1, ["uname", "-a"]) |> Bsdkrun.Types.Result.text() |> IO.puts()))
+      |> Bsdkrun.stop!()
   """
 
   alias Bsdkrun.{Args, Cli, Error}
@@ -162,6 +178,10 @@ defmodule Bsdkrun.Sandbox do
     end
   end
 
+  @doc "Like `exec/3`, but returns the `Result` or raises `Bsdkrun.Error`."
+  @spec exec!(ref(), String.t() | [String.t()], keyword()) :: Result.t()
+  def exec!(ref, command, opts \\ []), do: unwrap!(exec(ref, command, opts))
+
   @doc "Read the machine's console log. Pass `boot: true` for bsdkrun's own boot log."
   @spec logs(ref(), keyword()) :: {:ok, String.t()} | {:error, Error.t()}
   def logs(ref, opts \\ []) do
@@ -172,15 +192,27 @@ defmodule Bsdkrun.Sandbox do
     end
   end
 
+  @doc "Like `logs/2`, but returns the log or raises `Bsdkrun.Error`."
+  @spec logs!(ref(), keyword()) :: String.t()
+  def logs!(ref, opts \\ []), do: unwrap!(logs(ref, opts))
+
   # --- lifecycle --------------------------------------------------------------
 
   @doc "Stop the machine (BSD guests clean-poweroff; Linux is SIGTERM'd)."
   @spec stop(ref()) :: :ok | {:error, Error.t()}
   def stop(ref), do: lifecycle(["stop", id(ref)], "bsdkrun stop")
 
+  @doc "Like `stop/1`, but raises on failure and returns `ref` (for chaining)."
+  @spec stop!(ref()) :: ref()
+  def stop!(ref), do: unwrap_ref!(ref, stop(ref))
+
   @doc "Restart a stopped machine in place — same id, disk/rootfs, resources."
   @spec start(ref()) :: :ok | {:error, Error.t()}
   def start(ref), do: lifecycle(["start", id(ref)], "bsdkrun start")
+
+  @doc "Like `start/1`, but raises on failure and returns `ref` (for chaining)."
+  @spec start!(ref()) :: ref()
+  def start!(ref), do: unwrap_ref!(ref, start(ref))
 
   @doc "Remove the machine and its state. `force: true` stops it first if running."
   @spec remove(ref(), keyword()) :: :ok | {:error, Error.t()}
@@ -188,6 +220,10 @@ defmodule Bsdkrun.Sandbox do
     args = if Keyword.get(opts, :force, false), do: ["rm", "--force", id(ref)], else: ["rm", id(ref)]
     lifecycle(args, "bsdkrun rm")
   end
+
+  @doc "Like `remove/2`, but raises on failure and returns `ref` (for chaining)."
+  @spec remove!(ref(), keyword()) :: ref()
+  def remove!(ref, opts \\ []), do: unwrap_ref!(ref, remove(ref, opts))
 
   @doc "Change the recorded vCPU / RAM (`:cpus`, `:mem`). Applies on next `start/1`."
   @spec update(ref(), keyword()) :: :ok | {:error, Error.t()}
@@ -200,17 +236,29 @@ defmodule Bsdkrun.Sandbox do
     lifecycle(args, "bsdkrun update")
   end
 
+  @doc "Like `update/2`, but raises on failure and returns `ref` (for chaining)."
+  @spec update!(ref(), keyword()) :: ref()
+  def update!(ref, opts), do: unwrap_ref!(ref, update(ref, opts))
+
   @doc "Join or switch this machine to a global network. Applies on next `start/1`."
   @spec connect_network(ref(), String.t()) :: :ok | {:error, Error.t()}
   def connect_network(ref, network) do
     lifecycle(["network", "connect", id(ref), network], "bsdkrun network connect")
   end
 
+  @doc "Like `connect_network/2`, but raises on failure and returns `ref` (for chaining)."
+  @spec connect_network!(ref(), String.t()) :: ref()
+  def connect_network!(ref, network), do: unwrap_ref!(ref, connect_network(ref, network))
+
   @doc "Detach this machine from its network. Applies on next `start/1`."
   @spec disconnect_network(ref()) :: :ok | {:error, Error.t()}
   def disconnect_network(ref) do
     lifecycle(["network", "disconnect", id(ref)], "bsdkrun network disconnect")
   end
+
+  @doc "Like `disconnect_network/1`, but raises on failure and returns `ref` (for chaining)."
+  @spec disconnect_network!(ref()) :: ref()
+  def disconnect_network!(ref), do: unwrap_ref!(ref, disconnect_network(ref))
 
   # --- status -----------------------------------------------------------------
 
@@ -223,6 +271,10 @@ defmodule Bsdkrun.Sandbox do
       {:ok, Enum.find(all, &(&1.id == machine_id))}
     end
   end
+
+  @doc "Like `status/1`, but returns the row (or `nil`) or raises `Bsdkrun.Error`."
+  @spec status!(ref()) :: SandboxInfo.t() | nil
+  def status!(ref), do: unwrap!(status(ref))
 
   @doc "Whether the machine is currently running (false if it can't be found)."
   @spec running?(ref()) :: boolean()
@@ -250,6 +302,10 @@ defmodule Bsdkrun.Sandbox do
     agent(ref, "ssh", args)
   end
 
+  @doc "Like `ssh_setup/2`, but returns the `Result` or raises `Bsdkrun.Error`."
+  @spec ssh_setup!(ref(), keyword()) :: Result.t()
+  def ssh_setup!(ref, opts \\ []), do: unwrap!(ssh_setup(ref, opts))
+
   @doc """
   Put the guest on your tailnet via the agent (`tailscale setup`). The
   `:authkey` is forwarded as `TS_AUTHKEY` (kept off the arg list). Opts:
@@ -265,6 +321,10 @@ defmodule Bsdkrun.Sandbox do
     env = if opts[:authkey], do: %{"TS_AUTHKEY" => opts[:authkey]}, else: %{}
     agent(ref, "tailscale", args, env)
   end
+
+  @doc "Like `tailscale_up/2`, but returns the `Result` or raises `Bsdkrun.Error`."
+  @spec tailscale_up!(ref(), keyword()) :: Result.t()
+  def tailscale_up!(ref, opts \\ []), do: unwrap!(tailscale_up(ref, opts))
 
   @doc """
   Attach an interactive shell to the machine, inheriting the current terminal.
@@ -349,4 +409,10 @@ defmodule Bsdkrun.Sandbox do
 
   defp unwrap!({:ok, value}), do: value
   defp unwrap!({:error, error}), do: raise(error)
+
+  # Lifecycle ops succeed with a bare `:ok`, not `{:ok, value}` — returning
+  # `ref` itself (the only "value" there is) is what makes the bang variants
+  # chainable with `|>`.
+  defp unwrap_ref!(ref, :ok), do: ref
+  defp unwrap_ref!(_ref, {:error, error}), do: raise(error)
 end

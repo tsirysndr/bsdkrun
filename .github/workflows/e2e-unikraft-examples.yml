@@ -44,6 +44,10 @@ on:
       - "examples/unikraft-php/**"
       - "examples/unikraft-ruby/**"
       - "examples/unikraft-rails/**"
+      - "examples/unikraft-caddy/**"
+      - "examples/unikraft-nginx/**"
+      - "examples/unikraft-apache/**"
+      - "examples/unikraft-wasmer/**"
       - "library/unikraft-base/**"
       - "src/**"
       - ".github/workflows/e2e-unikraft-examples.yml"
@@ -335,6 +339,63 @@ jobs:
             expect: "Hello, World!"
             # Never run on x86_64; this job is the test. Non-strict until it
             # passes.
+            strict: false
+          - example: unikraft-caddy
+            kernel: caddy_fc-x86_64
+            # A statically-linked Go binary; ~512 covers it comfortably.
+            mem: 512
+            # No trampoline: caddy's cobra-based CLI tolerates the words
+            # libkrun appends past the kernel cmdline's `--` stop, unlike
+            # nginx/apache below. See examples/unikraft-caddy/README.md.
+            argv: /usr/bin/caddy run --config /etc/caddy/Caddyfile
+            port: 2015
+            expect: "Hello, world!"
+            # Verified end to end on arm64/macOS; x86_64 has never been run,
+            # so this job is the test. Non-strict until it passes.
+            strict: false
+          - example: unikraft-nginx
+            kernel: nginx_fc-x86_64
+            mem: 512
+            # `sh /start.sh`: nginx's getopt-based argv parser rejects the
+            # positional junk libkrun appends ("invalid option"), so the
+            # script absorbs it and exec()s nginx with a clean argv, the same
+            # pattern as unikraft-redis. See examples/unikraft-nginx/README.md.
+            argv: /bin/sh /start.sh
+            port: 8080
+            expect: "Welcome to nginx!"
+            # Verified end to end on arm64/macOS; x86_64 has never been run,
+            # so this job is the test. Non-strict until it passes.
+            strict: false
+          - example: unikraft-apache
+            kernel: apache_fc-x86_64
+            mem: 512
+            # `sh /start.sh`: same argv-trampoline reason as nginx.
+            argv: /bin/sh /start.sh
+            port: 8080
+            expect: "Hello from Apache on Unikraft!"
+            # Known-failing, not merely unverified: apache2's unconditional
+            # PID-file write calls chmod()/fchmodat(), which this kernel does
+            # not implement (ENOSYS) -- the same gap
+            # examples/unikraft-postgres/README.md already documents for Unix
+            # sockets. apache2 exits before it ever binds a listener, on both
+            # architectures, until that gap is patched. See
+            # examples/unikraft-apache/README.md. Left non-strict so this
+            # documents the failure instead of blocking the workflow; flip to
+            # strict once library/unikraft-base implements chmod().
+            strict: false
+          - example: unikraft-wasmer
+            kernel: wasmer_fc-x86_64
+            # A native Rust host plus a JIT (wasmer singlepass) compiling a
+            # tiny wasm module on every request; 512 was enough on arm64.
+            mem: 512
+            # No trampoline: the host binary's own argv parsing ignores
+            # anything libkrun appends -- see
+            # examples/unikraft-wasmer/README.md.
+            argv: /server
+            port: 8080
+            expect: "Hello from Wasmer on Unikraft!"
+            # Verified end to end on arm64/macOS; x86_64 has never been run,
+            # so this job is the test. Non-strict until it passes.
             strict: false
     steps:
       - uses: actions/checkout@v4

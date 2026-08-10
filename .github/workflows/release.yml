@@ -79,8 +79,27 @@ jobs:
       - name: Build the web UI
         run: cd web && bun install --frozen-lockfile && bun run build
 
+      # `bsdkrun pack` (pack/) is compiled by core/build.rs and embedded into
+      # the bsdkrun binary at this step — an end user installing the released
+      # tarball never needs Go themselves, but *this* build does. Pinned via
+      # pack/go.mod rather than a hardcoded version so the two can't drift.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: pack/go.mod
+
       - name: Build + sign bsdkrun (release)
         run: make release
+
+      # build.rs degrades gracefully (a warning, not a build failure) when Go
+      # is missing, so a contributor's local build never breaks over it — but
+      # a *release* binary silently missing pack support would only surface
+      # when a user who just ran `brew install bsdkrun` typed `bsdkrun pack`.
+      # Fail the release build loudly instead.
+      - name: Verify bsdkrun pack was embedded
+        run: |
+          set -eux
+          test -s core/src/pack-bin/bsdkrun-pack
+          target/release/bsdkrun pack --help
 
       # `bsdkrun-supervisor` is what bsdkrund uses to boot a machine. It has the
       # CLI's dependency profile — it links libkrun — so it ships here rather
@@ -224,8 +243,22 @@ jobs:
       - name: Build the web UI
         run: cd web && bun install --frozen-lockfile && bun run build
 
+      # See the macOS job for why this is pinned via pack/go.mod: end users
+      # never need Go, but embedding `bsdkrun pack` into the release binary does.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: pack/go.mod
+
       - name: Build bsdkrun (release)
         run: cargo build --release
+
+      # As on macOS: a release binary must never silently ship without pack
+      # support just because this runner happened to lack Go.
+      - name: Verify bsdkrun pack was embedded
+        run: |
+          set -eux
+          test -s core/src/pack-bin/bsdkrun-pack
+          target/release/bsdkrun pack --help
 
       # Same libkrun dependency as the CLI, so it is bundled the same way below
       # rather than shipped with the (deliberately static) daemon.

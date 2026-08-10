@@ -272,11 +272,15 @@ Error kinds:
 
 ## Development
 
+Needs a JDK (21+) and the [Clojure CLI](https://clojure.org/guides/install_clojure)
+— pinned via [`mise`](https://mise.jdx.dev) (`mise install`).
+
 ```sh
-clj -M:test           # run the test suite
-clj -T:build jar      # build target/bsdkrun-<version>.jar
-clj -T:build install  # install to the local ~/.m2
-clj -T:build deploy   # deploy to Clojars (needs CLOJARS_USERNAME / CLOJARS_PASSWORD)
+mise install          # JDK 21 + the Clojure CLI (or install them yourself)
+clj -M:test            # run the test suite
+clj -T:build jar       # build target/bsdkrun-<version>.jar
+clj -T:build install   # install to the local ~/.m2
+clj -T:build deploy    # deploy to Clojars (needs CLOJARS_USERNAME / CLOJARS_PASSWORD)
 ```
 
 Tests are unit tests only — argv building, JSON-row decoding, and binary

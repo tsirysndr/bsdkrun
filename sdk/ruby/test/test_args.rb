@@ -129,7 +129,8 @@ class TestArgs < Minitest::Test
       "command" => "sleep 300", "running" => true, "exit_code" => nil, "pid" => 42,
       "detached" => true, "cpus" => 2, "mem" => 512, "volume" => nil,
       "state_dir" => "/s", "network" => "devnet", "net_ip" => "10.0.0.2",
-      "created_at" => 1_700_000_000, "finished_at" => nil
+      "created_at" => 1_700_000_000, "finished_at" => nil,
+      "ports" => [{ "bind" => "127.0.0.1", "host" => 8080, "guest" => 80 }]
     )
     assert_equal("abc123", info.id)
     assert_equal("running", info.status)
@@ -137,5 +138,14 @@ class TestArgs < Minitest::Test
     assert_nil info.exit_code
     assert_equal(42, info.pid)
     assert_equal("devnet", info.network)
+    assert_equal(1, info.ports.length)
+    assert_equal("127.0.0.1", info.ports.first.bind)
+    assert_equal(8080, info.ports.first.host)
+    assert_equal(80, info.ports.first.guest)
+  end
+
+  def test_sandbox_info_from_row_defaults_ports_to_empty_array
+    info = Bsdkrun::SandboxInfo.from_row("id" => "abc123")
+    assert_equal([], info.ports)
   end
 end

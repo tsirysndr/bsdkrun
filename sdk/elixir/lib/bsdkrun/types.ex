@@ -4,6 +4,18 @@ defmodule Bsdkrun.Types do
   turn a decoded `--json` row (string keys) into the corresponding struct.
   """
 
+  defmodule PortForward do
+    @moduledoc "A host->guest TCP port forward, as reported by `bsdkrun ps --json`."
+
+    @type t :: %__MODULE__{
+            bind: String.t(),
+            host: integer(),
+            guest: integer()
+          }
+
+    defstruct [:bind, :host, :guest]
+  end
+
   defmodule SandboxInfo do
     @moduledoc "A machine as reported by `bsdkrun ps --json`."
 
@@ -25,7 +37,8 @@ defmodule Bsdkrun.Types do
             network: String.t() | nil,
             net_ip: String.t() | nil,
             created_at: integer(),
-            finished_at: integer() | nil
+            finished_at: integer() | nil,
+            ports: [PortForward.t()]
           }
 
     defstruct [
@@ -46,7 +59,8 @@ defmodule Bsdkrun.Types do
       :network,
       :net_ip,
       :created_at,
-      :finished_at
+      :finished_at,
+      :ports
     ]
   end
 
@@ -155,7 +169,18 @@ defmodule Bsdkrun.Types do
       network: row["network"],
       net_ip: row["net_ip"],
       created_at: num(row["created_at"]),
-      finished_at: num(row["finished_at"])
+      finished_at: num(row["finished_at"]),
+      ports: (row["ports"] || []) |> Enum.map(&port_forward/1)
+    }
+  end
+
+  @doc "Map a `ports` row (from a `ps --json` row) to a `PortForward`."
+  @spec port_forward(map()) :: PortForward.t()
+  def port_forward(row) do
+    %PortForward{
+      bind: row["bind"],
+      host: num(row["host"]),
+      guest: num(row["guest"])
     }
   end
 

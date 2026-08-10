@@ -11,6 +11,11 @@ import gleam/option.{type Option}
 import gleam/result
 import gleam/string
 
+/// A host->guest TCP port forward, as reported by `bsdkrun ps --json`.
+pub type PortForward {
+  PortForward(bind: String, host: Int, guest: Int)
+}
+
 /// A machine, as reported by `bsdkrun ps --json`.
 pub type SandboxInfo {
   SandboxInfo(
@@ -31,6 +36,7 @@ pub type SandboxInfo {
     net_ip: Option(String),
     created_at: Int,
     finished_at: Option(Int),
+    ports: List(PortForward),
   )
 }
 
@@ -132,6 +138,15 @@ fn field_or(
   decode.optional_field(name, default, inner, next)
 }
 
+/// Decoder for one `ports` entry of a `ps --json` row.
+pub fn port_forward_decoder() -> Decoder(PortForward) {
+  use bind <- field_or("bind", "", decode.string)
+  use host <- field_or("host", 0, lenient_int())
+  use guest <- field_or("guest", 0, lenient_int())
+
+  decode.success(PortForward(bind:, host:, guest:))
+}
+
 /// Decoder for one `ps --json` row.
 pub fn sandbox_info_decoder() -> Decoder(SandboxInfo) {
   use id <- field_or("id", "", decode.string)
@@ -151,6 +166,7 @@ pub fn sandbox_info_decoder() -> Decoder(SandboxInfo) {
   use net_ip <- optional_field("net_ip", decode.string)
   use created_at <- field_or("created_at", 0, lenient_int())
   use finished_at <- optional_field("finished_at", lenient_int())
+  use ports <- field_or("ports", [], decode.list(port_forward_decoder()))
 
   decode.success(SandboxInfo(
     id:,
@@ -170,6 +186,7 @@ pub fn sandbox_info_decoder() -> Decoder(SandboxInfo) {
     net_ip:,
     created_at:,
     finished_at:,
+    ports:,
   ))
 }
 

@@ -126,7 +126,8 @@ pub fn decode_sandbox_rows_test() {
   let raw =
     "[{\"id\":\"abc123\",\"name\":\"web\",\"image\":\"alpine\",\"kind\":\"linux\","
     <> "\"command\":\"sh\",\"running\":true,\"cpus\":2,\"mem\":1024,"
-    <> "\"state_dir\":\"/tmp/x\",\"created_at\":1700000000,\"network\":\"lab\"}]"
+    <> "\"state_dir\":\"/tmp/x\",\"created_at\":1700000000,\"network\":\"lab\","
+    <> "\"ports\":[{\"bind\":\"127.0.0.1\",\"host\":8080,\"guest\":80}]}]"
 
   let assert Ok([row]) =
     types.decode_rows(raw, "ps", types.sandbox_info_decoder())
@@ -137,10 +138,12 @@ pub fn decode_sandbox_rows_test() {
   row.cpus |> should.equal(2)
   row.network |> should.equal(Some("lab"))
   row.exit_code |> should.equal(None)
+  row.ports |> should.equal([types.PortForward("127.0.0.1", 8080, 80)])
   types.status(row) |> should.equal("running")
 }
 
-/// Absent optional keys decode as `None` rather than failing the whole row.
+/// Absent optional keys decode as `None` (or `[]` for `ports`) rather than
+/// failing the whole row.
 pub fn decode_sparse_row_test() {
   let assert Ok([row]) =
     types.decode_rows("[{\"id\":\"abc\"}]", "ps", types.sandbox_info_decoder())
@@ -149,6 +152,7 @@ pub fn decode_sparse_row_test() {
   row.name |> should.equal(None)
   row.running |> should.equal(False)
   row.cpus |> should.equal(0)
+  row.ports |> should.equal([])
   types.status(row) |> should.equal("exited")
 }
 

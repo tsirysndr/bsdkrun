@@ -1,6 +1,26 @@
 # frozen_string_literal: true
 
 module Bsdkrun
+  # A host->guest TCP port forward, as reported by +bsdkrun ps --json+.
+  #
+  # @!attribute [r] bind
+  #   @return [String] host interface, e.g. "127.0.0.1" or "0.0.0.0".
+  # @!attribute [r] host
+  #   @return [Integer] host port.
+  # @!attribute [r] guest
+  #   @return [Integer] guest port.
+  PortForward = Data.define(:bind, :host, :guest) do
+    # @param row [Hash]
+    # @return [PortForward]
+    def self.from_row(row)
+      new(
+        bind: row["bind"].to_s,
+        host: row["host"].to_i,
+        guest: row["guest"].to_i
+      )
+    end
+  end
+
   # A machine as reported by +bsdkrun ps --json+.
   #
   # @!attribute [r] id
@@ -9,10 +29,12 @@ module Bsdkrun
   #   @return [String, nil] DNS name on a network, or nil if unnamed.
   # @!attribute [r] status
   #   @return [String] "running" or "exited" (derived from +running+).
+  # @!attribute [r] ports
+  #   @return [Array<PortForward>] host<->guest TCP port forwards.
   SandboxInfo = Data.define(
     :id, :name, :image, :kind, :command, :status, :running, :exit_code,
     :pid, :detached, :cpus, :mem, :volume, :state_dir, :network, :net_ip,
-    :created_at, :finished_at
+    :created_at, :finished_at, :ports
   ) do
     # Map a +ps --json+ row (String keys) to a typed instance.
     # @param row [Hash]
@@ -37,7 +59,8 @@ module Bsdkrun
         network: row["network"],
         net_ip: row["net_ip"],
         created_at: row["created_at"].to_i,
-        finished_at: to_i_or_nil(row["finished_at"])
+        finished_at: to_i_or_nil(row["finished_at"]),
+        ports: (row["ports"] || []).map { |p| PortForward.from_row(p) }
       )
     end
 

@@ -6,8 +6,8 @@ defmodule Bsdkrun.GraphQLSocket do
   share one socket per client. Started lazily on the first subscription,
   under `Bsdkrun.Client.SocketSupervisor` (a `DynamicSupervisor`), and
   registered in `Bsdkrun.Client.Registry` by `{url, token}` so every caller
-  using the same `Bsdkrun.Client` finds the same socket. See
-  `Bsdkrun.Client.ensure_conn/1`.
+  using the same `Bsdkrun.Client` finds the same socket. See the private
+  `ensure_conn/1` function in `Bsdkrun.Client`.
 
   Two protocol layers are hand-rolled here, per the daemon's contract
   (`daemon/README.md`, `web/src/lib/graphql.ts`) — no hex dependency for

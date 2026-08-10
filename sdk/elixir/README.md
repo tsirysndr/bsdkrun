@@ -225,7 +225,8 @@ Like the rest of this SDK, the remote client adds no new dependency —
 runs over Erlang/OTP's built-in `:httpc`, and subscriptions (used by `exec`/
 `shell`/`follow_logs`) run over a hand-rolled `graphql-transport-ws` client
 on `:gen_tcp`/`:ssl`, all part of the standard Erlang distribution — plus a
-small supervision tree (`Bsdkrun.Application`) giving each `Client`'s shared
+small supervision tree (Bsdkrun.Application, an internal, undocumented app
+module) giving each `Client`'s shared
 socket somewhere to live.
 
 `Client.new/1`/`from_env/0` both reject a URL configured without a token

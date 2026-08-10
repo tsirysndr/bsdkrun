@@ -208,12 +208,15 @@ with internal DNS:
 
 (networks/create! "devnet")
 
+;; either set :net directly, or build it up with with-volume / with-network
+;; while chaining into create! — handy alongside other with-* / opts wrangling:
 (def db (sandbox/create!
          {:os :linux :image "alpine" :name "db"
           :net {:network "devnet"} :command ["sleep" "3600"]}))
-(def api (sandbox/create!
-          {:os :linux :image "alpine" :name "api"
-           :net {:network "devnet"} :command ["sleep" "3600"]}))
+(def api (-> {:os :linux :image "alpine" :name "api" :command ["sleep" "3600"]}
+             (sandbox/with-volume "api-data")   ; persistent rootfs — create-time only
+             (sandbox/with-network "devnet")    ; joins the shared subnet at boot
+             sandbox/create!))
 
 ;; api reaches db by name over the shared subnet
 (sandbox/exec! api ["ping" "-c1" "db"] {:throw-on-error true})
@@ -236,12 +239,20 @@ Names resolve on Linux and FreeBSD via the network's DNS; **NetBSD**
 resolves via a synced `/etc/hosts` block — joins auto-sync, and
 `networks/sync!` refreshes an existing network without restarting members.
 
+`with-network` sets `:net {:network ...}` on a *create-options* map, for
+chaining into a not-yet-created machine; `connect-network!`/
+`disconnect-network!` edit an *existing* machine's membership instead (both
+apply on the machine's next `start!`, since a VM's NIC is fixed at boot).
+There is no `with-*` equivalent for `:attach-disk`/volumes beyond `create!`
+— `bsdkrun` has no way to attach a volume to an already-booted machine, only
+to choose one (`with-volume`, or a literal `:volume`) before it boots.
+
 ## Namespaces
 
 - `bsdkrun.sandbox` — the machine lifecycle: `create!`, `get`, `list`, `id`,
-  `exec!`, `run-command!`, `logs`, `shell!`, `status`, `running?`, `stop!`,
-  `start!`, `remove!`, `update!`, `connect-network!`, `disconnect-network!`,
-  `ssh-setup!`, `tailscale-up!`.
+  `with-volume`, `with-network`, `exec!`, `run-command!`, `logs`, `shell!`,
+  `status`, `running?`, `stop!`, `start!`, `remove!`, `update!`,
+  `connect-network!`, `disconnect-network!`, `ssh-setup!`, `tailscale-up!`.
 - `bsdkrun.images` / `bsdkrun.volumes` / `bsdkrun.networks` / `bsdkrun.system`
   — host-level inventory and toolchain operations.
 - `bsdkrun.args` — the pure argv-builder behind `sandbox/create!`

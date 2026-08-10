@@ -218,13 +218,18 @@ defmodule Bsdkrun.Args do
     end
   end
 
-  # Accept keyword lists or maps (with atom or string keys); return an
-  # atom-keyed map for uniform access.
-  defp normalize(opts) when is_list(opts) do
+  @doc """
+  Accept a keyword list or a map (atom or string keys) and return an
+  atom-keyed map for uniform access. Exposed for `Bsdkrun.Sandbox.Builder`,
+  which normalizes `:net` the same way `create/1`'s options are normalized
+  here.
+  """
+  @spec normalize(keyword() | map()) :: map()
+  def normalize(opts) when is_list(opts) do
     if Keyword.keyword?(opts), do: Map.new(opts), else: opts
   end
 
-  defp normalize(opts) when is_map(opts) do
+  def normalize(opts) when is_map(opts) do
     Map.new(opts, fn
       {k, v} when is_binary(k) -> {String.to_atom(k), v}
       {k, v} -> {k, v}

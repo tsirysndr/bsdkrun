@@ -43,17 +43,40 @@ defmodule Bsdkrun.Sandbox do
   @id_re ~r/^[0-9a-f]{6,}$/
   @ssh_port_re ~r/ssh -p (\d+)/
 
+  defmodule Builder do
+    @moduledoc """
+    A pipe-friendly, pure builder for `Bsdkrun.Sandbox.create/1`'s options —
+    volumes, mounts, ports and the like are only ever bound at boot (the
+    `bsdkrun` CLI has no runtime "attach" for them), so building the spec up
+    with `with_*/2` calls before `create/1` is how a volume or network gets
+    attached "by pipe":
+
+        Bsdkrun.Sandbox.new(os: :linux, image: "alpine")
+        |> Bsdkrun.Sandbox.with_volume("web")
+        |> Bsdkrun.Sandbox.with_network("devnet")
+        |> Bsdkrun.Sandbox.with_port("8080:80")
+        |> Bsdkrun.Sandbox.create!()
+
+    Nothing is sent to `bsdkrun` until `create/1` (or `create!/1`) runs.
+    """
+
+    @type t :: %__MODULE__{opts: map()}
+    defstruct opts: %{}
+  end
+
   # --- construction / discovery ----------------------------------------------
 
   @doc """
   Boot a new microVM (detached) and return a handle to it.
 
-  `opts` is a keyword list or map discriminated on `:os`
-  (`:linux`, `:freebsd`, `:netbsd`, `:firmware`, `:kernel`), plus the per-kind
-  keys accepted by `Bsdkrun.Args`. `:log_level` (default `1`) controls boot
-  diagnostics.
+  `opts` is a keyword list, a map, or a `Bsdkrun.Sandbox.Builder` (see
+  `new/1`), discriminated on `:os` (`:linux`, `:freebsd`, `:netbsd`,
+  `:firmware`, `:kernel`), plus the per-kind keys accepted by
+  `Bsdkrun.Args`. `:log_level` (default `1`) controls boot diagnostics.
   """
-  @spec create(keyword() | map()) :: {:ok, t()} | {:error, Error.t()}
+  @spec create(keyword() | map() | Builder.t()) :: {:ok, t()} | {:error, Error.t()}
+  def create(%Builder{opts: opts}), do: create(opts)
+
   def create(opts) do
     log_level = opt(opts, :log_level, 1)
     res = Cli.run(Args.build_create(opts), log_level: log_level)
@@ -77,8 +100,63 @@ defmodule Bsdkrun.Sandbox do
   end
 
   @doc "Like `create/1`, but returns the sandbox or raises `Bsdkrun.Error`."
-  @spec create!(keyword() | map()) :: t()
+  @spec create!(keyword() | map() | Builder.t()) :: t()
   def create!(opts), do: unwrap!(create(opts))
+
+  @doc """
+  Start building `create/1` options via `|>` (`with_*/2` calls), finished
+  with `create/1` or `create!/1`. See `Bsdkrun.Sandbox.Builder`.
+  """
+  @spec new(keyword() | map()) :: Builder.t()
+  def new(opts \\ []), do: %Builder{opts: Args.normalize(opts)}
+
+  @doc "Set the persistent volume to boot from/into (`-v`)."
+  @spec with_volume(Builder.t(), String.t()) :: Builder.t()
+  def with_volume(%Builder{} = b, name), do: put_opt(b, :volume, name)
+
+  @doc "Add a host<->guest mount (repeatable) — `\"~/project:/src\"` or `\"~/data:/data:ro\"`."
+  @spec with_mount(Builder.t(), String.t()) :: Builder.t()
+  def with_mount(%Builder{} = b, spec), do: append_opt(b, :mounts, spec)
+
+  @doc "Add several mounts at once — see `with_mount/2`."
+  @spec with_mounts(Builder.t(), [String.t()]) :: Builder.t()
+  def with_mounts(%Builder{} = b, specs), do: Enum.reduce(specs, b, &with_mount(&2, &1))
+
+  @doc "Join a global network on boot (like `--network`; see `Bsdkrun.Networks`)."
+  @spec with_network(Builder.t(), String.t()) :: Builder.t()
+  def with_network(%Builder{} = b, network), do: put_net(b, :network, network)
+
+  @doc "Add a host<->guest port forward (repeatable) — `\"8080:80\"`, `{2222, 22}`, or `%{host: 2222, guest: 22}`."
+  @spec with_port(Builder.t(), String.t() | {integer(), integer()} | map()) :: Builder.t()
+  def with_port(%Builder{} = b, port), do: append_net(b, :ports, port)
+
+  @doc "Add several port forwards at once — see `with_port/2`."
+  @spec with_ports(Builder.t(), [String.t() | {integer(), integer()} | map()]) :: Builder.t()
+  def with_ports(%Builder{} = b, ports), do: Enum.reduce(ports, b, &with_port(&2, &1))
+
+  @doc "Attach an extra raw disk as virtio-blk (repeatable) — a path, optionally `\"path:ro\"`."
+  @spec with_disk(Builder.t(), String.t()) :: Builder.t()
+  def with_disk(%Builder{} = b, path), do: append_opt(b, :attach_disk, path)
+
+  @doc "Set the vCPU count."
+  @spec with_cpus(Builder.t(), pos_integer()) :: Builder.t()
+  def with_cpus(%Builder{} = b, n), do: put_opt(b, :cpus, n)
+
+  @doc "Set the guest RAM, in MiB."
+  @spec with_mem(Builder.t(), pos_integer()) :: Builder.t()
+  def with_mem(%Builder{} = b, mb), do: put_opt(b, :mem, mb)
+
+  @doc "Set the machine's name."
+  @spec with_name(Builder.t(), String.t()) :: Builder.t()
+  def with_name(%Builder{} = b, name), do: put_opt(b, :name, name)
+
+  @doc "Set the command run after `--` (Linux / firmware / kernel guests)."
+  @spec with_command(Builder.t(), [String.t()]) :: Builder.t()
+  def with_command(%Builder{} = b, cmd), do: put_opt(b, :command, cmd)
+
+  @doc "Set an arbitrary `create/1` option — the escape hatch for anything not wrapped above."
+  @spec with_opt(Builder.t(), atom(), term()) :: Builder.t()
+  def with_opt(%Builder{} = b, key, value) when is_atom(key), do: put_opt(b, key, value)
 
   @doc "Reconnect to an existing machine by id (a unique prefix is enough)."
   @spec get(String.t()) :: {:ok, t()} | {:error, Error.t()}
@@ -406,6 +484,25 @@ defmodule Bsdkrun.Sandbox do
 
   defp opt(opts, key, default) when is_list(opts), do: Keyword.get(opts, key, default)
   defp opt(opts, key, default) when is_map(opts), do: Map.get(opts, key, default)
+
+  # --- Builder internals -------------------------------------------------------
+
+  defp put_opt(%Builder{opts: opts} = b, key, value), do: %{b | opts: Map.put(opts, key, value)}
+
+  defp append_opt(%Builder{opts: opts} = b, key, value) do
+    %{b | opts: Map.update(opts, key, [value], &(&1 ++ [value]))}
+  end
+
+  defp put_net(%Builder{opts: opts} = b, key, value) do
+    net = Args.normalize(opts[:net] || %{})
+    %{b | opts: Map.put(opts, :net, Map.put(net, key, value))}
+  end
+
+  defp append_net(%Builder{opts: opts} = b, key, value) do
+    net = Args.normalize(opts[:net] || %{})
+    updated = Map.update(net, key, [value], &(&1 ++ [value]))
+    %{b | opts: Map.put(opts, :net, updated)}
+  end
 
   defp unwrap!({:ok, value}), do: value
   defp unwrap!({:error, error}), do: raise(error)

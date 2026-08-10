@@ -42,6 +42,37 @@
   [ref]
   (if (map? ref) (:id ref) ref))
 
+(defn with-volume
+  "Set the persistent volume a machine's rootfs is cloned onto/reused from
+  (`-v`/`--volume`) on a *create-options* map — `:volume` is a create-time
+  choice, fixed for the machine's lifetime, so this composes with `->`
+  before [[create!]], not after it:
+
+  ```clojure
+  (-> {:os :linux :image \"alpine\"}
+      (sandbox/with-volume \"web\")
+      sandbox/create!)
+  ```"
+  [opts volume]
+  (assoc opts :volume volume))
+
+(defn with-network
+  "Join a *create-options* map's guest to a global network (`--network`) —
+  merges into `:net` rather than replacing it, so it composes with other
+  `:net` keys (e.g. `:ports`, `:mac`) already set on `opts`. Composes with
+  `->` before [[create!]]:
+
+  ```clojure
+  (-> {:os :linux :image \"alpine\"}
+      (sandbox/with-network \"devnet\")
+      sandbox/create!)
+  ```
+
+  To move an *existing* machine between networks, use [[connect-network!]]
+  instead (applies on its next [[start!]])."
+  [opts network]
+  (assoc-in opts [:net :network] network))
+
 (defn create!
   "Boot a new microVM and return `{:id ... :ssh-port ...}` (`:ssh-port` is
   nil unless the boot banner reported one, which only BSD guests do).

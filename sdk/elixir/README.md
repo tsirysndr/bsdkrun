@@ -144,6 +144,38 @@ Bsdkrun.create!(os: :linux, image: "alpine")
 |> Bsdkrun.stop!()
 ```
 
+An already-created machine can be joined to (or dropped from) a network the
+same way — `Sandbox.connect_network!/2` and `Sandbox.disconnect_network!/1`
+also return `ref`, so a network hop is one more link in the chain (it takes
+effect on the next `start!/1`, same as `connect_network/2`):
+
+```elixir
+Bsdkrun.create!(os: :linux, image: "alpine")
+|> Bsdkrun.Sandbox.connect_network!("devnet")
+|> Bsdkrun.start!()
+```
+
+A **volume**, on the other hand, only ever gets attached at *boot* — the
+`bsdkrun` CLI has no "attach to a running VM" for it (same for mounts,
+ports, and extra disks). `Bsdkrun.Sandbox.new/1` plus `with_*/2` build up
+those `create/1` options by pipe instead, so attaching a volume still reads
+as one chain — it just ends at `create!/1` rather than starting from it:
+
+```elixir
+Bsdkrun.Sandbox.new(os: :linux, image: "alpine")
+|> Bsdkrun.Sandbox.with_volume("web")
+|> Bsdkrun.Sandbox.with_network("devnet")
+|> Bsdkrun.Sandbox.with_port("8080:80")
+|> Bsdkrun.Sandbox.create!()
+|> Bsdkrun.exec!(["uname", "-a"])
+```
+
+Nothing is sent to `bsdkrun` until `create/1`/`create!/1` runs. Besides
+`with_volume/2`, `with_network/2` and `with_port(s)/2` above, there's
+`with_mount(s)/2`, `with_disk/2`, `with_cpus/2`, `with_mem/2`, `with_name/2`,
+`with_command/2`, and `with_opt/3` as an escape hatch for any other
+`create/1` option.
+
 `exec!/3`, `logs!/2`, `status!/1`, `Sandbox.ssh_setup!/2` and
 `Sandbox.tailscale_up!/2` return their unwrapped value instead (a `Result`,
 a log string, ...) since that's the point of calling them — chain into

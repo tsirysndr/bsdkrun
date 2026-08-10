@@ -1,0 +1,11 @@
+# Only what the shipped index.html needs, plus a handful of common static
+# types for anything added to DocumentRoot later. Debian's full
+# /etc/mime.types is ~1000 lines; mod_mime's TypesConfig just needs to point
+# somewhere that exists.
+text/html			html htm
+text/css			css
+text/plain			txt
+image/png			png
+image/jpeg			jpg jpeg
+image/svg+xml			svg
+application/javascript		js

@@ -1761,7 +1761,7 @@ fi
 # existing one; there are no such collisions here.)
 # ---------------------------------------------------------------------------
 DEPR="$UK/lib/posix-process/deprecated.c"
-if [ -f "$DEPR" ] && grep -q 'return (pid_t) -EPERM;' "$DEPR"; then
+if [ -f "$DEPR" ] && ! grep -q 'single session and every process' "$DEPR"; then
 	echo "patching $DEPR (setsid() reports the one session instead of EPERM)"
 	python3 - "$DEPR" <<'PYEOF'
 import sys
@@ -1789,6 +1789,84 @@ open(p, "w").write(s.replace(old, new, 1))
 PYEOF
 else
 	echo "setsid(): already patched or absent, skipping"
+fi
+
+# ---------------------------------------------------------------------------
+# 22. A vfork child starts with the kernel's TLS as its userland TLS.
+#
+# lib/posix-process/clone.c, in the CLONE_VFORK branch:
+#
+#     /* We will be blocking the parent and pass control to the child
+#      * via the scheduler. Therefore we need to set the child's TLS
+#      * pointer the Unikraft TLS.
+#      */
+#     child->tlsp = child->uktlsp;
+#
+# tlsp is what the child wakes up with in its TLS register (the arch code
+# copies it into FSBASE / TPIDR_EL0), so this starts the child in *userland*
+# with the kernel's TLS block. vfork semantics are the opposite: the child is
+# the parent, briefly -- on Linux it inherits the parent's registers including
+# the thread pointer -- and everything musl's posix_spawn child() touches
+# before execve() is TLS-relative: the stack-protector canary (%fs:0x28),
+# errno, the pthread self pointer.
+#
+# The damage is architecture-lopsided. On arm64 the thread pointer names the
+# START of the TLS block, so those accesses land inside the (wrong, kernel)
+# block and are absorbed; that is the only reason PostgreSQL's spawns worked
+# there. On x86_64 the thread pointer names the END (TLS variant 2), so the
+# same accesses reach past the allocation: the child faults on its very first
+# instructions, before its first syscall, and dies silently. Its death wakes
+# the vfork parent, the status pipe reads EOF -- which posix_spawn interprets
+# as success -- and the postmaster continues around a corpse. That shows up
+# later, as a crash in pthread_exit's thread-list unlink over a kernel-heap
+# "self" with garbage links, which is how it was found:
+#
+#   rip: 0x1001acb190 -> [ld-musl] pthread_exit+0x17f  (the unlink store)
+#   rbx (self): 0x400713060                            (kernel heap)
+#
+# The fix is to give the child the parent's userland TLS, exactly as Linux
+# does. The kernel-side Unikraft TLS is untouched: the child's uktlsp keeps
+# serving syscall entry, and the scheduler's switch-in loads tlsp like it
+# does for every SETTLS pthread -- which already works on both architectures.
+# The uktlsp fallback covers a parent with no userland TLS at all.
+# ---------------------------------------------------------------------------
+CLONEC="$UK/lib/posix-process/clone.c"
+if [ -f "$CLONEC" ] && grep -q 'child->tlsp = child->uktlsp;' "$CLONEC"; then
+	echo "patching $CLONEC (vfork child inherits the parent's userland TLS)"
+	python3 - "$CLONEC" <<'PYEOF'
+import sys
+
+p = sys.argv[1]
+s = open(p).read()
+
+old = """		/* We will be blocking the parent and pass control to the child
+		 * via the scheduler. Therefore we need to set the child's TLS
+		 * pointer the Unikraft TLS.
+		 */
+		child->tlsp = child->uktlsp;
+"""
+new = """		/* The child must wake up with the *parent's* userland TLS:
+		 * under vfork the child is the parent for a moment -- Linux
+		 * hands it the parent's registers, thread pointer included --
+		 * and everything the libc touches before execve() is
+		 * TLS-relative (stack canary, errno, the pthread self
+		 * pointer). Starting it on the Unikraft TLS instead faults on
+		 * x86_64 before the first syscall: the thread pointer names
+		 * the END of the block there (TLS variant 2), so the canary
+		 * read at %fs+0x28 lands beyond the allocation.
+		 *
+		 * The kernel-side TLS is unaffected: uktlsp keeps serving
+		 * syscall entry, same as for a SETTLS pthread.
+		 */
+		child->tlsp = uk_lcpu_sysctx_get(execenv->sysctx, TLSP);
+		if (!child->tlsp)
+			child->tlsp = child->uktlsp;
+"""
+assert old in s, "clone.c vfork TLS does not match the expected shape"
+open(p, "w").write(s.replace(old, new, 1))
+PYEOF
+else
+	echo "clone.c vfork TLS: already patched or absent, skipping"
 fi
 
 echo "patches applied."

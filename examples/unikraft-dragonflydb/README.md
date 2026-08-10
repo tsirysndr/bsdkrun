@@ -8,7 +8,7 @@ to build for **arm64** as well as x86_64 and boot under bsdkrun.
 ```sh
 ./build.sh                    # host arch; or: ./build.sh x86_64
 bsdkrun unikraft . --mem 1024 --port 6379:6379 \
-  --cmdline "elfloader -- /usr/bin/dragonfly --force_epoll --maxmemory=256mb"
+  --cmdline "elfloader -- /usr/bin/dragonfly --force_epoll --maxmemory=256mb --alsologtostderr"
 ```
 
 Dragonfly speaks the Redis protocol:
@@ -20,25 +20,41 @@ OK
 
 ## Status
 
-Untested as of this writing, and the most speculative example in this
-directory: Dragonfly's io layer ("helio") is built around io_uring, which
-Unikraft does not have. `--force_epoll` selects its epoll backend instead,
-but that backend still expects a fairly modern Linux underneath — this
-example is how we find out whether Unikraft's syscall surface is enough.
-x86_64 runs in `.github/workflows/e2e-unikraft-examples.yml` as
-`strict: false`; arm64 is exercised by hand on macOS/Hypervisor.framework.
+**arm64 works.** The unikernel boots, DHCPs an address, dragonfly's epoll
+proactor comes up ("Host OS: Unikraft 5.15.148-Ijiraq arm64 with 1 threads"),
+it listens on 6379 and answers SET/GET over the forwarded port — despite its
+io layer ("helio") being built around io_uring, which Unikraft does not have.
+Getting there took the two adaptations below (`--force_epoll`, and a fake
+cgroup2 file surface). x86_64 has never been run;
+`.github/workflows/e2e-unikraft-examples.yml` runs it as `strict: false`
+until its first green run.
 
 ## Differences from upstream
 
-**No wrapper script, no shell, no cgroups.** Upstream boots
-`bash wrapper.sh`, which mounts cgroup2 and then starts the server — Unikraft
-has no mount(8) and no cgroups to mount. The two things the wrapper's
-environment provided are passed as flags instead:
+**No wrapper script, no shell — a fake cgroup2 surface instead.** Upstream
+boots `bash wrapper.sh`, which mounts cgroup2 and then starts the server.
+Unikraft has no mount(8) and no cgroups — and without them dragonfly aborts
+at its first startup check:
+
+```
+F19700101 00:00:01.025056  2 dfly_main.cc:361] Check failed: cg.has_value()
+Failed to read /proc/self/cgroup
+```
+
+But no procfs also means nothing *shadows* `/proc`: the ramfs the rootfs is
+unpacked into serves `/proc/self/cgroup` like any other path. So the image
+bakes the minimal cgroup2 surface dragonfly reads — `0::/` there, and
+unlimited `memory.max`/`cpu.max` under `/sys/fs/cgroup` — and the check
+passes without a wrapper, a shell, or a mount. The flags the wrapper's
+environment used to provide are passed directly:
 
 - `--force_epoll` — there is no io_uring to probe; without this dragonfly
   aborts at startup.
-- `--maxmemory=256mb` — with no cgroup limit to read, dragonfly must be told
-  its budget rather than sizing itself off the machine.
+- `--maxmemory=256mb` — with no real cgroup limit to read, dragonfly must be
+  told its budget rather than sizing itself off the machine.
+- `--alsologtostderr` — glog writes to files under `/tmp` by default, where
+  nobody will ever read them; this mirrors the server's log to the guest
+  console.
 
 Unlike redis-server (see `../unikraft-redis`), dragonfly's abseil flag parser
 treats unrecognised bare words as positional arguments and ignores them, so

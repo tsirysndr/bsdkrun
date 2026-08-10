@@ -164,7 +164,17 @@ unikraft:
     CONFIG_OPTIMIZE_DEADELIM: 'y'
     CONFIG_OPTIMIZE_LTO: 'y'
     CONFIG_PAGING: 'y'
-    CONFIG_STACK_SIZE_PAGE_ORDER: 4 # 128 * 4K = 512K
+    # 2^8 = 256 pages = 1 MiB, not library/base's order 4 (64 KiB). This is
+    # not tuning: posix-process answers getrlimit(RLIMIT_STACK) with
+    # __STACK_SIZE, and glibc's nptl sizes every default pthread stack from
+    # RLIMIT_STACK. mysqld and node set explicit per-thread stack sizes so
+    # they never notice, but mongod creates threads with the default
+    # attributes -- each got a 64 KiB stack and startup overflowed one
+    # immediately: "Guard page 0x... of stack VMA ... hit!", followed by a
+    # crash in signal delivery (the SIGSEGV then has no usable alternate
+    # stack: "Assertion failure: altstack->ss_sp"). 1 MiB matches mongod's
+    # own documented 1 MiB-per-connection-thread expectation.
+    CONFIG_STACK_SIZE_PAGE_ORDER: 8
     CONFIG_UKPLAT_KSP_SIZE: 32768
     CONFIG_UKPLAT_MEMREGION_MAX_COUNT: 64
     CONFIG_LIBUKNETDEV: 'y'

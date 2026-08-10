@@ -224,8 +224,10 @@ jobs:
             # parsed RESP and round-tripped a value.
             probe: redis
             expect: "unikraft-on-bsdkrun"
-            # Never run on x86_64; this job is the test. Non-strict until it
-            # passes.
+            # Verified end to end on arm64/macOS (which is where the argv
+            # trampoline and the ARM64-COW-BUG ignore were established -- see
+            # the README); x86_64 has never been run, so this job is the
+            # test. Non-strict until it passes.
             strict: false
           - example: unikraft-dragonflydb
             kernel: dragonflydb_fc-x86_64
@@ -234,16 +236,20 @@ jobs:
             # --force_epoll: there is no io_uring under Unikraft, and without
             # the flag dragonfly aborts probing for it. --maxmemory: with no
             # cgroup to read a limit from, dragonfly must be told its budget.
+            # --alsologtostderr: glog otherwise writes to /tmp inside the
+            # guest, and the uploaded console artifact would say nothing.
             # No trampoline script: abseil's flag parser ignores the
             # positional junk libkrun appends to argv.
-            argv: /usr/bin/dragonfly --force_epoll --maxmemory=256mb
+            argv: /usr/bin/dragonfly --force_epoll --maxmemory=256mb --alsologtostderr
             port: 6379
             # Dragonfly speaks the Redis protocol, so it shares the redis
             # probe.
             probe: redis
             expect: "unikraft-on-bsdkrun"
-            # The most speculative example of the set -- dragonfly's epoll
-            # backend still expects a modern Linux underneath; see the README.
+            # Verified end to end on arm64/macOS (it needed the epoll flag and
+            # a fake cgroup2 file surface baked into the image -- see the
+            # README); x86_64 has never been run, so this job is the test.
+            # Non-strict until it passes.
             strict: false
           - example: unikraft-mariadb
             kernel: mariadb_fc-x86_64
@@ -287,8 +293,8 @@ jobs:
             argv: /usr/local/bin/php /usr/src/server.php
             port: 8080
             expect: "Hello, World!"
-            # Never run on x86_64; this job is the test. Non-strict until it
-            # passes.
+            # Verified end to end on arm64/macOS; x86_64 has never been run,
+            # so this job is the test. Non-strict until it passes.
             strict: false
           - example: unikraft-ruby
             kernel: ruby_fc-x86_64
@@ -299,8 +305,8 @@ jobs:
             argv: /usr/bin/ruby /src/server.rb
             port: 8080
             expect: "Hello, World!"
-            # Never run on x86_64; this job is the test. Non-strict until it
-            # passes.
+            # Verified end to end on arm64/macOS; x86_64 has never been run,
+            # so this job is the test. Non-strict until it passes.
             strict: false
           - example: unikraft-rails
             kernel: rails_fc-x86_64

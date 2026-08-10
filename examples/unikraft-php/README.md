@@ -18,10 +18,10 @@ Hello, World!
 
 ## Status
 
-Untested as of this writing. x86_64 runs in
-`.github/workflows/e2e-unikraft-examples.yml` as `strict: false` until it has
-its first green run; arm64 is exercised by hand on
-macOS/Hypervisor.framework.
+**arm64 works.** The unikernel boots, DHCPs an address, the server starts and
+answers over the forwarded port with `Hello, World!`. x86_64 has never been
+run; `.github/workflows/e2e-unikraft-examples.yml` runs it as `strict: false`
+until its first green run.
 
 `server.php` is upstream's, verbatim: a single process accepting one
 connection at a time over the `sockets` extension. Extra words in `$argv`

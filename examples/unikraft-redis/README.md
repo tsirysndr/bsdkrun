@@ -20,14 +20,16 @@ $ redis-cli -p 6379 GET greeting
 
 ## Status
 
-Untested as of this writing. x86_64 runs in
-`.github/workflows/e2e-unikraft-examples.yml` as `strict: false` (the check
-runs and reports, but does not fail the job) until it has its first green run;
-arm64 is exercised by hand on macOS/Hypervisor.framework.
+**arm64 works.** The unikernel boots, DHCPs an address, the start script
+execs redis-server, and SET/GET round-trip over the forwarded port. x86_64
+has never been run; `.github/workflows/e2e-unikraft-examples.yml` runs it as
+`strict: false` (the check runs and reports, but does not fail the job) until
+its first green run.
 
 Of the servers in this examples directory, redis asks the least of the kernel:
 one process, a handful of threads, no fork at runtime (see below), no
-filesystem beyond a scratch directory.
+filesystem beyond a scratch directory. Two things still bit on the way to a
+first PONG — the argv trampoline and the ARM64-COW-BUG probe, both below.
 
 ## Differences from upstream
 
@@ -73,6 +75,20 @@ alternative does not exist: BGSAVE and AOF rewrite both `fork()`, which
 Unikraft does not have. The default save schedule would eventually kill the
 server. The data directory is a ramfs anyway -- nothing written there survives
 a reboot.
+
+**`ignore-warnings ARM64-COW-BUG`.** On arm64, redis tests for the Linux
+ARM64 copy-on-write bug by actually fork()ing — and treats the probe itself
+failing as if the bug were present:
+
+```
+[libposix_process] CLONE_VM not set: Multiple address spaces are not supported
+# Failed to test the kernel for a bug that could lead to data corruption
+  during background save. ... Redis will now exit
+```
+
+The bug it guards against only matters during a background save, which the
+persistence settings above make impossible, so the config tells redis to skip
+the verdict. Ignored on x86_64.
 
 ## Layout
 

@@ -235,8 +235,12 @@ rootfs: ./Dockerfile
 # guest has no shell, no mount(8) and no cgroups, so the flags the wrapper
 # exists to support are passed directly instead:
 #
-#   --force_epoll     io_uring does not exist under Unikraft; without this
-#                     dragonfly aborts at startup probing for it.
-#   --maxmemory       with no cgroup to read a limit from, dragonfly must be
-#                     told one instead of sizing itself off the host.
-cmd: ["/usr/bin/dragonfly", "--force_epoll", "--maxmemory=256mb"]
+#   --force_epoll       io_uring does not exist under Unikraft; without this
+#                       dragonfly aborts at startup probing for it.
+#   --maxmemory         with no cgroup to read a limit from, dragonfly must
+#                       be told one instead of sizing itself off the host.
+#   --alsologtostderr   glog writes to files under /tmp by default, where no
+#                       one will ever read them; mirroring to stderr puts the
+#                       server's own startup log on the guest console.
+cmd: ["/usr/bin/dragonfly", "--force_epoll", "--maxmemory=256mb",
+      "--alsologtostderr"]

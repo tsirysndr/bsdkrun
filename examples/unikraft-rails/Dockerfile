@@ -11,7 +11,12 @@ RUN gem install rails -v '~> 7.1.0'
 # A stock application, generated at image build time exactly as upstream does
 # it, then overlaid with the four files this example actually cares about
 # (controller, view, routes, and a dev-environment tweak).
-RUN rails new /app --skip-git
+#
+# --skip-docker is not cosmetic: the Dockerfile generator runs `bundle lock
+# --add-platform=x86_64-linux`, a full second dependency resolution against
+# rubygems.org that has been observed to hang the build for an hour+. Nothing
+# here uses the generated Dockerfile.
+RUN rails new /app --skip-git --skip-docker
 WORKDIR /app
 RUN rails generate controller hello
 

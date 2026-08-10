@@ -117,8 +117,15 @@ async fn machines_are_camel_cased_for_the_frontend() {
     let d = h
         .query("{ machines(all: true) { id name running netIp stateDir createdAt } }")
         .await;
-    let m = &json(&d)["machines"][0];
-    assert_eq!(m["id"], "abc123");
+    // Picked out by id, not by position: other tests record machines of their
+    // own into the shared state and run alongside this one.
+    let all = json(&d);
+    let m = all["machines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "abc123")
+        .expect("the seeded machine is listed");
     assert_eq!(m["name"], "web");
     assert_eq!(m["running"], true);
     // snake_case in the CLI's JSON, camelCase in the schema.

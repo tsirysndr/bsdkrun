@@ -62,15 +62,6 @@ RUN set -eux; \
     # safe to make. Every fork_process() call site in the tree is inside
     # `#else /* !EXEC_BACKEND */`, so this leaves none behind.
     export CPPFLAGS="-DEXEC_BACKEND"; \
-    # ac_cv_func_setsid=no below tells configure the function is absent.
-    # PostgreSQL calls setsid() in every child it spawns, to put it in its own
-    # session, and Unikraft answers EPERM:
-    #
-    #   FATAL:  setsid() failed: Operation not permitted
-    #
-    # Sessions and controlling terminals mean nothing in a unikernel, so the
-    # call has nothing to accomplish here. All three uses are guarded by
-    # HAVE_SETSID, so this compiles them out rather than patching them.
     ./configure \
         --enable-option-checking=fatal \
         --prefix=/usr/local \
@@ -81,7 +72,6 @@ RUN set -eux; \
         --without-zlib \
         --without-lz4 \
         --without-zstd \
-        ac_cv_func_setsid=no \
     ; \
     make -j "$(nproc)"; \
     make install

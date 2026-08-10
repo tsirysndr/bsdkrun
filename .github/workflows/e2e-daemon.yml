@@ -248,7 +248,15 @@ jobs:
             -H 'content-type: application/json' \
             -H 'authorization: Bearer ci-secret-token' \
             -d '{"query":"{ info { daemonVersion cliVersion os arch } }"}' | tee /tmp/info.json
-          grep -q "9.9.9-stub" /tmp/info.json
+          # Both versions are compiled in — the daemon links the engine rather
+          # than asking another binary — so assert their shape, not a stub the
+          # supervisor could never have supplied.
+          grep -q '"daemonVersion":"[0-9]' /tmp/info.json
+          grep -q '"cliVersion":"[0-9]' /tmp/info.json
+          grep -q '"os":"linux"' /tmp/info.json
+          grep -q '"arch":"' /tmp/info.json
+          # GraphQL reports failures with a 200, so curl -sf would not catch one.
+          ! grep -q '"errors"' /tmp/info.json
 
       - name: GraphiQL is served anonymously
         run: |

@@ -1732,4 +1732,63 @@ else
 	echo "deliver.c cross-thread delivery: already patched or absent, skipping"
 fi
 
+# ---------------------------------------------------------------------------
+# 21. setsid() always fails, so no daemon can start a child process.
+#
+# lib/posix-process/deprecated.c:
+#
+#     UK_SYSCALL_R_DEFINE(pid_t, setsid)
+#     {
+#             /* We have a single "session" with a single "process" */
+#             return (pid_t) -EPERM;
+#     }
+#
+# That comment describes a Unikraft without multiprocess support. With
+# CONFIG_LIBPOSIX_PROCESS_MULTIPROCESS there are several processes, and putting
+# a freshly spawned one "in its own session" is the first thing a well-behaved
+# daemon child does. PostgreSQL does it in every child it spawns:
+#
+#   FATAL:  setsid() failed: Operation not permitted
+#
+# and the child exits before doing any work.
+#
+# Refusing is also inconsistent with the neighbouring getsid(), which reports
+# UNIKRAFT_SID for whoever asks. There is exactly one session, every process is
+# already in it, and the caller's request is therefore already satisfied --
+# which is a success, not a permission error. Report the session it is in, as
+# setsid(2) does. (Linux returns EPERM only when the caller is already a
+# process group leader, i.e. when the new session would collide with an
+# existing one; there are no such collisions here.)
+# ---------------------------------------------------------------------------
+DEPR="$UK/lib/posix-process/deprecated.c"
+if [ -f "$DEPR" ] && grep -q 'return (pid_t) -EPERM;' "$DEPR"; then
+	echo "patching $DEPR (setsid() reports the one session instead of EPERM)"
+	python3 - "$DEPR" <<'PYEOF'
+import sys
+
+p = sys.argv[1]
+s = open(p).read()
+
+old = """UK_SYSCALL_R_DEFINE(pid_t, setsid)
+{
+	/* We have a single "session" with a single "process" */
+	return (pid_t) -EPERM;
+}"""
+new = """UK_SYSCALL_R_DEFINE(pid_t, setsid)
+{
+	/* There is a single session and every process is already in it, so the
+	 * caller's request is satisfied by construction. Report that session,
+	 * as setsid(2) does, rather than failing: a daemon that spawns children
+	 * calls this in each one, and EPERM stops it dead. Consistent with
+	 * getsid() below, which answers UNIKRAFT_SID for any process.
+	 */
+	return (pid_t) UNIKRAFT_SID;
+}"""
+assert old in s, "setsid() does not match the expected shape"
+open(p, "w").write(s.replace(old, new, 1))
+PYEOF
+else
+	echo "setsid(): already patched or absent, skipping"
+fi
+
 echo "patches applied."

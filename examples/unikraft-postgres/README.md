@@ -2,226 +2,183 @@
 
 **PostgreSQL 16.4 as a Unikraft unikernel**, ported from
 [`unikraft-cloud/examples`'s `postgres`](https://github.com/unikraft-cloud/examples/tree/main/postgres)
-to build for **arm64** and boot under bsdkrun.
+to build for **arm64** and boot under bsdkrun — with a **real postmaster**, not
+single-user mode.
 
 ```sh
 ./build.sh                    # host arch; or: ./build.sh x86_64
-bsdkrun unikraft . --mem 2048 \
-  --cmdline "elfloader -- /usr/local/bin/postgres --single -D /var/lib/postgresql/data"
+bsdkrun unikraft . --mem 2048 --port 5432:5432 \
+  --cmdline "elfloader -- /usr/local/bin/postgres -D /var/lib/postgresql/data"
 ```
 
 ```console
-PostgreSQL stand-alone backend 16.4
-backend> LOG:  checkpoint starting: shutdown immediate
-LOG:  checkpoint complete: wrote 3 buffers (0.1%); ... lsn=0/147F5B8
+LOG:  starting PostgreSQL 16.4 on aarch64-unknown-linux-musl, compiled by gcc 13.2.1, 64-bit
+LOG:  listening on IPv4 address "0.0.0.0", port 5432
+LOG:  database system was shut down at 2026-08-09 21:17:19 UTC
 ```
 
 ## Status
 
-**The server starts, opens the cluster and answers as a stand-alone backend.**
-Getting there took five fixes, each described below; two problems remain, both
-outside PostgreSQL.
+| what                                              | state                                        |
+|---------------------------------------------------|----------------------------------------------|
+| Builds and boots (arm64)                          | works                                        |
+| Postmaster starts and listens on 5432             | works                                        |
+| Spawns child processes (`posix_spawn` + `execve`) | works                                        |
+| Startup process opens the cluster, reads WAL      | works                                        |
+| Accepting client connections                      | **not yet** — a child faults during recovery |
+| `postgres --single` (SQL on the console)          | works end to end                             |
 
-| what                                     | state                                       |
-|------------------------------------------|---------------------------------------------|
-| PostgreSQL 16.4 builds and boots (arm64) | works                                       |
-| Cluster mounts, recovers, checkpoints    | works                                       |
-| SQL typed at the console                 | **untested** — no TTY in this session       |
-| SQL piped in (`< demo.sql`)              | **does not work** — the guest reads EOF     |
-| A postmaster listening on 5432           | **impossible** — no `fork()`                |
+arm64 on macOS/Hypervisor.framework is what was tested; x86_64 goes through
+`.github/workflows/e2e-unikraft-examples.yml` (non-strict until it passes).
 
-arm64 on macOS/Hypervisor.framework is what was tested. x86_64 is not built
-here; it goes through the e2e workflow.
-
-## No fork, so no postmaster
+## How a forking server runs on a kernel with no fork
 
 Upstream's Kraftfile names `runtime: base-compat:latest`, a Unikraft Cloud
-runtime with real processes. On stock Unikraft there is no `fork()` at all —
-`lib/posix-process/clone.c` rejects any clone that does not share the address
-space:
-
-```c
-if (unlikely(!(flags & CLONE_VM))) {
-        uk_pr_err("CLONE_VM not set: Multiple address spaces are not supported\n");
-        return -ENOTSUP;
-}
-```
-
-`vfork()` exists (`CLONE_VM | CLONE_VFORK`, for `exec`), and `CONFIG_LIBPOSIX_-
-PROCESS_MULTIPROCESS` adds processes that share the one address space — neither
-is `fork()`, and PostgreSQL needs the real thing. The postmaster forks the
-checkpointer, the background writer, the WAL writer and the autovacuum launcher
-*before* it accepts a connection, then a backend per client. None of that is
-optional and none of it can be configured away.
-
-What is left is **single-user mode**: `postgres --single` is the whole server in
-one process, reading SQL from stdin, with no postmaster, no listener and no
-forks. That is the shape this example takes, and it is why the cluster is
-initialised at image build time — `initdb` is itself multi-process (it runs
-`postgres --boot` and `postgres --single` as children), so it could not run in
-the guest even if there were a shell to start it from.
-
-## What it took to get there
-
-Five things, in the order they were hit. None of them is about PostgreSQL being
-unusual; each is a place where the guest is not Linux.
-
-### 1. The root filesystem may not contain hard links
-
-`ramfs_link` in Unikraft is literally `vfscore_vop_eperm` — the filesystem the
-image is unpacked into has no `link()`. PostgreSQL's bundled timezone database
-is built almost entirely out of hard links, so the boot dies in the extractor:
+runtime. This example runs on stock Unikraft, where there is no `fork()` at all
+— `lib/posix-process/clone.c` rejects any clone that does not share the address
+space, because there is only ever one address space:
 
 ```
-ERR:  [libukcpio] Failed to create new hard link
-      /./usr/local/share/postgresql/timezone/Africa/Accra
-      (from /./usr/local/share/postgresql/timezone/Africa/Abidjan).
-CRIT: [libvfscore] Failed to extract cpio archive to /: -11
+ERR: [libposix_process] CLONE_VM not set: Multiple address spaces are not supported
 ```
 
-`build.sh` replaces each one with a private copy (about 500 KiB in total). It
-has to do that **after** `docker export`, not in the Dockerfile: BuildKit
-deduplicates identical files into hard links as it writes each `COPY`, so a tree
-that leaves the build stage with none arrives in the image with 245.
+What Unikraft *does* have is `vfork()` + `execve()`, and its own documentation
+points at the way through
+([`lib/posix-process/README.md`](https://github.com/unikraft/unikraft/blob/staging/lib/posix-process/README.md)):
 
-### 2. `signalfd` cannot be built on arm64 (upstream fix)
+> Fortunately it is common that applications spawn new processes by calling
+> `fork()` immediately followed by an `execve()` […] Applications can use the
+> `posix_spawn()` libc function that spawns a process using `vfork()` in a safe
+> way.
 
-PostgreSQL 13 and later read signals through a file descriptor
-(`WAIT_USE_SIGNALFD` in `src/backend/storage/ipc/latch.c`), and it is not a
-fallback — without it the backend prints `FATAL: signalfd() failed` and exits.
+PostgreSQL already has exactly that mode. **`EXEC_BACKEND`** — what it uses on
+Windows, and supports on Unix for testing — makes the postmaster fork and
+immediately `exec` `postgres --forkchild` for *every* child, handing the child
+its state through a file instead of through inherited memory. Every
+`fork_process()` call site in the tree is inside `#else /* !EXEC_BACKEND */`, so
+building `-DEXEC_BACKEND` leaves none behind, and
+`exec-backend-posix-spawn.patch` turns the one remaining fork+exec into the
+`posix_spawn()` that Unikraft supports.
 
-Turning `CONFIG_LIBPOSIX_PROCESS_SIGNALFD` on does not build:
+So the shape is: `CONFIG_APPELFLOADER_MULTIPROCESS` on the kernel side (which
+pulls in multiprocess, signals and an init process), `-DEXEC_BACKEND` plus four
+small patches on the PostgreSQL side. The cluster is still initialised at image
+build time, because `initdb` runs `postgres --boot` and `postgres --single` as
+children and there is no reason to do at boot what can be done once.
+
+## What it took: five Unikraft fixes
+
+All are in `../../library/unikraft-base/patches/apply.sh`, and none of them is
+about PostgreSQL being unusual — each is a place where the guest is not Linux.
+Two of them mean **`execve()` had never worked on arm64 at all**.
+
+| #  | what was wrong |
+|----|----------------------------------------------------------------------|
+| 16 | `signalfd` is defined but not on the shim's legacy list, and arm64 has no `__NR_signalfd` — so `CONFIG_LIBPOSIX_PROCESS_SIGNALFD` could not be built. PostgreSQL 13+ reads signals through a file descriptor and exits with `FATAL: signalfd() failed` without it. |
+| 18 | `execve()` sets every field of the binfmt loader's argument struct **except `argc`/`envc`**, which it leaves as stack garbage. A loader that believes them walks off the end of `argv` and dereferences whatever it finds. Nothing in-tree reads those counts, so upstream never noticed. |
+| 19 | **arm64 `execve()` enters the new program at the wrong register.** It writes the entry point to `LR`, but `ukarch_execenv_load()` restores `ELR_EL1` from the `PC` slot and leaves through `eret` — so the new program started at whatever was in freshly allocated stack memory, i.e. `0`. x86_64 sets `RIP` correctly, which is why an x86_64-only upstream never saw it. |
+| 20 | **A signal the current thread has blocked is run in it anyway.** Process-directed delivery looks for *any* thread that does not block the signal, then calls `do_deliver()` — which builds the frame on the *current* context. PostgreSQL blocks every signal while it installs handlers and only then initialises the latch they use, so a `SIGCHLD` arriving in that window ran `handle_pm_child_exit_signal` → `SetLatch(NULL)`. |
+| 21 | `setsid()` was a flat `return -EPERM` ("we have a single session with a single process" — written before multiprocess existed). Every PostgreSQL child calls it and dies with `FATAL: setsid() failed`. The neighbouring `getsid()` already reports `UNIKRAFT_SID` to anyone who asks, so refusing was inconsistent as well as fatal. |
+
+Findings 19 and 20 are worth restating: any multiprocess application on arm64
+hits 19 on its first `execve()`, and any daemon that blocks signals around its
+own startup hits 20.
+
+## What it took: four PostgreSQL patches
+
+| file | why |
+|-------------------------------|--------------------------------------------|
+| `allow-root.patch`            | Upstream's, trimmed to the two programs this image ships. A unikernel has one user, uid 0, and nothing to drop privileges to. |
+| `no-sysv-ipc.patch`           | There is no System V IPC, so `shmget()` answers `ENOSYS`. Anonymous memory is not a downgrade here: one page table means an anonymous mapping is shared between the postmaster and its children by construction, at the same address — which is exactly what the segment was for. The second hunk is the child side, where re-attaching is a no-op. |
+| `dsm-single-address-space.patch` | Dynamic shared memory cannot be turned off (PostgreSQL 12 removed `none`) and maps a *file* `MAP_SHARED`, which Unikraft supports only for anonymous mappings. The rewrite demotes the file from storage to a name: it records the address of an anonymous mapping, and attaching becomes a lookup. |
+| `exec-backend-posix-spawn.patch` | The fork+exec in `internal_forkexec()` becomes one `posix_spawn()`. Hand-writing `vfork()` here would be undefined behaviour — `fork_process()` assigns to globals that would land in the *parent's* memory — and musl's `posix_spawn()` is precisely this sequence done safely. |
+
+Three more things are configuration rather than patches, all in the
+`Dockerfile`:
+
+- **No Unix-domain socket.** Binding one ends in `chmod()`, which the guest does
+  not implement (`could not create any Unix-domain sockets`). Clients arrive
+  over the forwarded TCP port anyway.
+- **`max_stack_depth = 1MB`**, against the 2 MiB stacks the Kraftfile sets — see
+  below.
+- **Background workers off.** Each one is another process to spawn; the aux
+  processes the postmaster always starts are not covered by those settings and
+  do run.
+
+## Other things worth knowing
+
+**The root filesystem may not contain hard links.** `ramfs_link` is literally
+`vfscore_vop_eperm`, and PostgreSQL's bundled timezone database is built almost
+entirely out of them, so the cpio extractor stops the boot dead. `build.sh`
+replaces each with a private copy — and has to do it **after** `docker export`,
+because BuildKit deduplicates identical files into hard links as it writes each
+`COPY`: a tree that leaves the build stage with none arrives in the image with
+245.
+
+**`RLIMIT_STACK` describes the wrong stack.** `getrlimit()` answers
+`__STACK_SIZE`, the *thread* stack size, while the application runs on the stack
+app-elfloader allocated for it. PostgreSQL subtracts a fixed 512 KiB from the
+reported value and refuses to start if what is left is under `max_stack_depth`,
+whose minimum is 100 KiB — so with the default 64 KiB no value is accepted:
 
 ```
-uk/bits/syscall_provided.h:898:2: error: #error Failed to map system call
-'signalfd': No system call number available
-```
-
-`lib/posix-process` defines both `signalfd4()` and the three-argument legacy
-`signalfd()`, but the shim's legacy list never mentions the latter, and arm64 is
-one of the architectures that has no `__NR_signalfd`. The list exists for
-exactly this case — `eventfd`, `epoll_create`, `poll` and a dozen others are
-already on it — so the fix is the missing line, added as **patch 16** in
-`../../library/unikraft-base/patches/apply.sh`.
-
-### 3. `RLIMIT_STACK` describes the wrong stack
-
-`getrlimit(RLIMIT_STACK)` answers `__STACK_SIZE`, the *thread* stack size, while
-the application runs on the stack app-elfloader allocated for it. They are
-unrelated numbers and only one is reported. PostgreSQL subtracts a fixed 512 KiB
-of slop from it, and refuses to start if what is left is under `max_stack_depth`
-— whose minimum is 100 KiB:
-
-```
-LOG:  invalid value for parameter "max_stack_depth": 100
 DETAIL:  "max_stack_depth" must not exceed -448kB.
-FATAL:  failed to initialize max_stack_depth to 100
 ```
 
--448 KiB is 64 KiB (`CONFIG_STACK_SIZE_PAGE_ORDER: 4`) minus the slop, so no
-value of `max_stack_depth` is accepted. The Kraftfile raises both stacks to
-2 MiB — the reported one *and* the real one, since raising only the report hands
-PostgreSQL a limit it could overrun.
+The Kraftfile raises both stacks to 2 MiB: the reported one *and* the real one,
+since raising only the report hands PostgreSQL a limit it could overrun.
 
 > `kraft` will not change a symbol in an already-generated `.config`. After
 > editing kconfig in the Kraftfile, `rm .config.postgres_fc-*` or the build
 > silently keeps the old values.
 
-### 4. No System V IPC (`no-sysv-ipc.patch`)
+**There is a shell in the image.** Before the postmaster execs a child it
+version-checks the binary with `popen("… -V")`, which needs `/bin/sh`. busybox
+is 800 KiB, already links against this image's musl, and — the part that matters
+— is a PIE, which `execve()` requires on a single-address-space kernel: the
+loader has to place it somewhere other than where the caller is running.
 
-```
-FATAL:  could not create shared memory segment: Function not implemented
-DETAIL:  Failed system call was shmget(key=749, size=56, 03600).
-```
+**libkrun appends words to the application's argv** (`earlycon=`, `tsi_hijack`,
+a bare `--`), because they land after the `--` stop sequence. It does not bite
+here: they arrive after `-D <dir>`, and PostgreSQL's `getopt` consumes the `--`.
+It does bite `postgres --single`, which takes a database name as a non-option
+argument — omit the name there and the stray word is absorbed instead.
 
-`shared_memory_type = mmap` is not enough: that moves the *real* shared memory
-to an anonymous mapping but PostgreSQL still creates a 56-byte SysV segment,
-whose only job is to stop a second postmaster from attaching to the same data
-directory. A unikernel cannot have a second postmaster, so the patch hands back
-anonymous memory when `shmget()` answers `ENOSYS` and the interlock becomes
-vacuous rather than broken.
+## What is left
 
-### 5. No file-backed `MAP_SHARED` (`dsm-private-mmap.patch`)
+A child process faults during WAL recovery, after the startup process has opened
+the cluster and read `pg_control`, so the server never reaches "ready to accept
+connections". Everything before that works, including the parts that looked
+impossible.
 
-```
-ERR: [libposix_mmap] mmap(addr=0, len=8192, prot=3, flags=1, fd=5, offset=0) failed: -95
-FATAL:  could not map shared memory segment "pg_dynshmem/mmap.3858750128": Not supported
-```
+`postgres --single` — the whole server in one process, SQL on stdin, no
+postmaster and no children — works end to end on the same image:
 
-Unikraft supports `MAP_SHARED` for anonymous mappings only, and dynamic shared
-memory maps a file. It cannot be switched off either — PostgreSQL 12 removed
-`dynamic_shared_memory_type = none`, and the control segment is created during
-startup whether or not anything uses it. The patch maps those segments
-`MAP_PRIVATE`: the only thing `MAP_SHARED` buys is coherence with other
-processes mapping the same segment, and there are none.
-
-## Two things that still do not work
-
-**The VMM appends words to the application's argv.** libkrun adds its own tokens
-to the end of the kernel command line, which is *after* the `--` stop sequence —
-so they are not kernel parameters, they are the last words of `argv`. Three
-sources, all in libkrun: the `earlycon=` console hint, `tsi_hijack` from the
-default TSI vsock, and a bare `--` from
-`epilog: Some(format!(" -- {}", ctx_cfg.get_args()))`. node and bun carry the
-extra word without noticing; PostgreSQL validates its own argv:
-
-```
-FATAL:  postgres: invalid command-line argument: earlycon=pl011,mmio32,0x0a001000
-FATAL:  postgres: invalid command-line argument: --
+```sh
+bsdkrun unikraft . --mem 2048 \
+  --cmdline "elfloader -- /usr/local/bin/postgres --single -D /var/lib/postgresql/data"
 ```
 
-`bsdkrun` now sets `KRUN_NO_EARLYCON=1` for unikraft guests (it already did for
-OSv), which removes the first — but that gate only exists in a libkrun newer
-than the installed dylib, and the other two have no gate at all. The workaround
-in the command above is to **omit the database name**, so the stray word is
-absorbed: `getopt` swallows a bare `--`, and the database then defaults to the
-user's name. It is a coincidence, not a design; the real fix is for libkrun to
-leave the command line alone when the payload is an explicitly-set kernel.
-
-**Console input never reaches the guest.** Single-user mode reads SQL from
-stdin, and a piped stdin does not arrive — the backend reads EOF immediately,
-prints one `backend>` prompt and shuts the cluster down cleanly:
-
-```console
-PostgreSQL stand-alone backend 16.4
-backend> LOG:  checkpoint starting: shutdown immediate
-```
-
-That is with data already waiting on the pipe and the pipe held open, so it is
-not a race. Typing at a real terminal was not tested here (this session has no
-TTY) and may well work — libkrun puts the controlling TTY into raw mode, which
-is why `src/tty.rs` exists. `demo.sql` is there for when it does.
+Piped stdin does not reach the guest (the console reads EOF immediately), so
+single-user mode is only useful from a terminal.
 
 ## Differences from upstream
 
-**No `runtime: base-compat:latest`.** That runtime is Unikraft Cloud's and is
+**No `runtime: base-compat:latest`** — that runtime is Unikraft Cloud's and is
 not published for arm64, so this Kraftfile builds `library/base` from source
-like the other examples here. The only kconfig this example adds to that base is
-`CONFIG_LIBPOSIX_PROCESS_SIGNALFD` and the two stack sizes.
+like the other examples here, plus multiprocess, signalfd and larger stacks.
 
-**No `wrapper.sh`.** Upstream boots into a bash port of docker-library's
-entrypoint, which runs `initdb`, starts a temporary server through `pg_ctl`,
-creates the database with `psql`, then `exec`s postgres. Every step is a
-separate process. Here `initdb` runs in the Dockerfile and the finished data
-directory is baked into the image, so the guest starts where upstream's wrapper
-finishes.
+**No `wrapper.sh`** — upstream boots into a bash port of docker-library's
+entrypoint, which runs `initdb`, starts a temporary server through `pg_ctl` and
+creates the database with `psql`. All of that happens in the Dockerfile here, so
+the guest starts where upstream's wrapper finishes.
 
-**No `pg_ukc_scaletozero`.** It is a Unikraft Cloud scale-to-zero integration
-and has nothing to do with booting.
+**No `pg_ukc_scaletozero`** — a Unikraft Cloud scale-to-zero integration, with
+nothing to do with booting.
 
-**A much smaller build.** ICU, readline, zlib, lz4, libxml and libxslt are all
-configured out — about 40 MiB, doubled, because a Unikraft root filesystem is
-resident twice (embedded in the kernel image and unpacked into ramfs). The image
-is still 55 MiB, 37 MiB of which is the cluster.
-
-**`allow-root.patch` is upstream's**, trimmed to the two programs this image
-ships. A unikernel has one user, uid 0, and nothing to drop privileges to.
-
-## Memory
-
-`--mem 2048`. The rootfs is resident twice before `shared_buffers` is allocated;
-the defaults in `postgresql.conf` are trimmed to match (32 MiB buffers, 10
-connections, all worker processes off — those are forks).
+**A much smaller build** — ICU, readline, zlib, lz4, libxml and libxslt are
+configured out, about 40 MiB, doubled: a Unikraft root filesystem is resident
+twice (embedded in the kernel image and unpacked into ramfs).
 
 ## `--cmdline` is required
 

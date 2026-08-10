@@ -117,7 +117,7 @@ unikraft:
     # uk_printk(UK_PRINT_RAW), so the KLVL_ERR default does not swallow it) but
     # it is very noisy and slows the boot down. Stated explicitly because kraft
     # does not remove a symbol from an already-generated .config.
-    CONFIG_LIBSYSCALL_SHIM_STRACE: 'y'
+    CONFIG_LIBSYSCALL_SHIM_STRACE: 'n'
     CONFIG_LIBSYSCALL_SHIM: 'y'
     CONFIG_LIBUKALLOCPOOL: 'y'
     CONFIG_LIBUKBLKDEV_SYNC_IO_BLOCKED_WAITING: 'y'
@@ -210,7 +210,7 @@ libraries:
       # (see app-elfloader-rs's glue/shim.c) because the kernel log level is a
       # Kconfig `choice`, which a Kraftfile cannot set, so it stays at
       # KLVL_ERR and would otherwise swallow all of them.
-      CONFIG_APPELFLOADER_DEBUG: 'y'
+      CONFIG_APPELFLOADER_DEBUG: 'n'
       # 2 MiB, matching CONFIG_STACK_SIZE_PAGE_ORDER above (base uses 128
       # pages = 512 KiB). The kernel reports the *thread* stack size as
       # RLIMIT_STACK but the application runs on this one, so raising only the

@@ -7,13 +7,9 @@
 // in library/unikraft-base/patches/apply.sh, or it dies formatting its own
 // output) shows the runtime reading /proc/self/maps last, then failing.
 //
-// Supplying that file is NOT enough, which was tested rather than assumed:
-// the rootfs now carries a static one, the trace shows the open succeed
-// and all of it read back, and CoreCLR still fails identically. Two
-// shapes were tried — a full description of the address space, and a
-// sparse one naming only libcoreclr.so — with no difference. So the
-// missing file was the last interesting thing before the failure rather
-// than the cause of it.
+// Supplying that file is NOT enough, which was tested rather than assumed.
+// So the missing file was the last interesting thing before the failure
+// rather than the cause of it.
 //
 // Ruled out, each with evidence rather than argument:
 //   - Guest RAM: 3 GiB fails identically to 1 GiB.
@@ -24,7 +20,15 @@
 //   - CPU count: sched_getaffinity reports CPU0 correctly, even though
 //     /proc/stat and /sys/devices/system/cpu/possible are both absent.
 //   - getsid() returning ESRCH: a real bug, since fixed, and unrelated.
-//   - /proc/self/maps missing: supplied, read, still fails.
+//   - /proc/self/maps missing: supplied, read back in full, still fails.
+//     Two shapes were tried, a full description of the address space and a
+//     sparse one naming only libcoreclr.so, with no difference.
+//   - procfs generally: /proc/self/exe, /proc/self/mountinfo, /proc/stat,
+//     /proc/meminfo and /sys/devices/system/cpu/* were all supplied at
+//     once, every one of them a path the trace showed being tried. Still
+//     fails identically. They are not in the rootfs any more: fabricating
+//     a meminfo that claims 1 GiB whatever --mem says is worse than not
+//     having one, when it buys nothing.
 //
 // What is left is to find which PAL call actually returns the failure.
 // The trace narrows it to CoreCLR's own initialisation, after the maps
@@ -117,26 +121,9 @@ func (p *Provider) Plan(dir string, arch plan.Arch) (*plan.Plan, error) {
     -p:PublishTrimmed=false -p:PublishSingleFile=false \
     -o /tmp/publish
 
-mkdir -p /out/rootfs/usr/src/app /out/rootfs/tmp /out/rootfs/proc/self
+mkdir -p /out/rootfs/usr/src/app /out/rootfs/tmp
 cp -a /tmp/publish/. /out/rootfs/usr/src/app/
 
-# CoreCLR reads /proc/self/maps while placing its executable heap, and
-# reports a failure to read it as E_OUTOFMEMORY -- an error that says
-# nothing about the actual problem. Unikraft has no procfs, so this is a
-# static stand-in.
-#
-# Deliberately small. The file's job is to name libcoreclr.so so the
-# runtime can anchor its heap near it; every *other* range listed is one
-# the runtime believes is taken. An expansive description of the address
-# space is worse than a sparse one, because the free space it is looking
-# for is whatever the file does not mention.
-#
-# The address matches where app-elfloader maps the application (observed
-# in a --strace trace). It describes the layout rather than reporting it,
-# which is the honest limit of writing this at build time.
-cat > /out/rootfs/proc/self/maps <<'MAPS'
-1000000000-1000100000 r-xp 00000000 00:00 0                              /usr/src/app/libcoreclr.so
-MAPS
 
 if [ ! -f /out/rootfs/usr/src/app/%s ]; then
     echo "published output has no %s apphost; is <OutputType>Exe</OutputType> set?" >&2

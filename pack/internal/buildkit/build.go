@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/distribution/reference"
@@ -56,7 +57,7 @@ func HostPlatform(goarch string) (Platform, error) {
 // build progresses — vertex started/completed, log lines, byte counters —
 // so a caller (internal/tui) can render it live instead of waiting for
 // Build to return.
-func Build(ctx context.Context, addr, srcDir string, p *plan.Plan, platform Platform, outDir string, excludes []string, onStatus func(*bkclient.SolveStatus)) error {
+func Build(ctx context.Context, addr, srcDir string, p *plan.Plan, platform Platform, outDir string, excludes []string, cacheDir string, onStatus func(*bkclient.SolveStatus)) error {
 	c, err := bkclient.New(ctx, addr)
 	if err != nil {
 		return fmt.Errorf("connecting to buildkitd at %s: %w", addr, err)
@@ -145,12 +146,32 @@ func Build(ctx context.Context, addr, srcDir string, p *plan.Plan, platform Plat
 		return gw.Solve(ctx, gwclient.SolveRequest{Definition: def.ToPB()})
 	}
 
-	_, err = c.Build(ctx, bkclient.SolveOpt{
+	solveOpt := bkclient.SolveOpt{
 		LocalMounts: map[string]fsutil.FS{"context": contextFS},
 		Exports: []bkclient.ExportEntry{
 			{Type: bkclient.ExporterLocal, OutputDir: outDir},
 		},
-	}, "bsdkrun-pack", buildFn, statusCh)
+	}
+	// A local cache directory, when asked for, makes the build survive the
+	// daemon: buildkitd's own cache lives inside its container and is lost
+	// whenever that container is (every CI job, for instance). Importing is
+	// conditional on the directory existing, since BuildKit treats a missing
+	// import source as an error rather than a cold cache.
+	if cacheDir != "" {
+		if _, err := os.Stat(cacheDir); err == nil {
+			solveOpt.CacheImports = []bkclient.CacheOptionsEntry{
+				{Type: "local", Attrs: map[string]string{"src": cacheDir}},
+			}
+		}
+		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+			return fmt.Errorf("creating build cache dir %s: %w", cacheDir, err)
+		}
+		solveOpt.CacheExports = []bkclient.CacheOptionsEntry{
+			{Type: "local", Attrs: map[string]string{"dest": cacheDir, "mode": "max"}},
+		}
+	}
+
+	_, err = c.Build(ctx, solveOpt, "bsdkrun-pack", buildFn, statusCh)
 	<-statusDone
 	if err != nil {
 		return fmt.Errorf("buildkit solve: %w", err)

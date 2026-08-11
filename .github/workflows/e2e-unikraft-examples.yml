@@ -117,8 +117,6 @@ jobs:
             strict: false
           - example: unikraft-clojure
             kernel: clojure_fc-x86_64
-            pack: true
-            placeholder: clojure
             # A jlink'ed runtime and one uberjar come to 37 MiB, so unlike node
             # and Deno this boots in the default 512 MiB even with the rootfs
             # resident twice. 1024 here only because x86_64 has never been
@@ -502,6 +500,21 @@ jobs:
       # `bsdkrun pack` detects the project, builds the rootfs with BuildKit
       # and generates the Kraftfile. The rest still build the checked-in
       # Kraftfile through their own build.sh.
+      # BuildKit's cache lives inside the buildkitd container, which is new
+      # every job — so without persisting it here, every run rebuilds every
+      # base image and every build step from cold. Keyed per example so one
+      # entry cannot be clobbered by another's; restore-keys lets a changed
+      # provider still start from the last good cache rather than nothing.
+      - name: Cache the pack build (BuildKit)
+        if: ${{ matrix.pack }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/bsdkrun/build-cache
+          key: pack-buildkit-x86_64-${{ matrix.example }}-${{ hashFiles('pack/internal/providers/**') }}
+          restore-keys: |
+            pack-buildkit-x86_64-${{ matrix.example }}-
+            pack-buildkit-x86_64-
+
       - name: Build the example (bsdkrun pack)
         if: ${{ matrix.pack }}
         run: |
@@ -511,6 +524,7 @@ jobs:
           ls -l examples/${{ matrix.example }}/.unikraft/build/${{ matrix.kernel }}
         env:
           KRAFTKIT_NO_PROMPT: "1"
+          BSDKRUN_PACK_BUILD_CACHE: /home/runner/.cache/bsdkrun/build-cache
 
       - name: Build the example (build.sh)
         if: ${{ !matrix.pack }}

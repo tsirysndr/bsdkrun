@@ -168,6 +168,21 @@ jobs:
       # not through the debian container pack uses on macOS, since this
       # runner already has everything (kraft, cargo, a Linux toolchain) —
       # same reasoning as build.sh's own Linux path.
+      # BuildKit's cache lives inside the buildkitd container, which is new
+      # every job — so without persisting it here, every run rebuilds every
+      # base image and every build step from cold. Keyed per example so one
+      # entry cannot be clobbered by another's; restore-keys lets a changed
+      # provider still start from the last good cache rather than nothing.
+      - name: Cache the pack build (BuildKit)
+        if: ${{ true }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/bsdkrun/build-cache
+          key: pack-buildkit-x86_64-unikraft-go-${{ hashFiles('pack/internal/providers/**') }}
+          restore-keys: |
+            pack-buildkit-x86_64-unikraft-go-
+            pack-buildkit-x86_64-
+
       - name: pack — detect, build rootfs, generate Kraftfile, kraft build
         run: |
           set -eux
@@ -175,6 +190,7 @@ jobs:
           ls -l examples/unikraft-go/.unikraft/build/hello_fc-x86_64
         env:
           KRAFTKIT_NO_PROMPT: "1"
+          BSDKRUN_PACK_BUILD_CACHE: /home/runner/.cache/bsdkrun/build-cache
           STRACE_FLAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.strace) && '--strace' || '' }}
           LOADER_DEBUG_FLAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.loader_debug) && '--loader-debug' || '' }}
 

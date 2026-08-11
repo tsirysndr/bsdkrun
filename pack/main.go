@@ -42,6 +42,12 @@ import (
 // needing shell quoting belongs in a Procfile, not here.
 const StartCmdEnv = "BSDKRUN_START_CMD"
 
+// BuildCacheEnv points at a directory BuildKit imports from and exports to,
+// so a build survives the daemon that ran it. Unset means the daemon's own
+// cache only, which is right for a workstation (where buildkitd is
+// long-lived) and useless in CI (where it is not).
+const BuildCacheEnv = "BSDKRUN_PACK_BUILD_CACHE"
+
 func main() {
 	fs := flag.NewFlagSet("bsdkrun-pack", flag.ContinueOnError)
 	target := fs.String("target", "", "guest architecture to build for: arm64 or x86_64 (default: this host's)")
@@ -59,6 +65,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "\nEnvironment:")
 		fmt.Fprintf(os.Stderr, "  %s   override the start command (beats %s and a Procfile)\n",
 			StartCmdEnv, config.FileName)
+		fmt.Fprintf(os.Stderr, "  %s  directory for a BuildKit cache that outlives the daemon\n", BuildCacheEnv)
 		fmt.Fprintln(os.Stderr, "\nConfig:")
 		fmt.Fprintf(os.Stderr, "  %s   provider, packages, buildAptPackages, deploy.startCommand\n", config.FileName)
 	}
@@ -396,7 +403,11 @@ fi
 		extraExcludes = cfg.Exclude
 	}
 	excludes := ignore.Read(absPath, extraExcludes)
-	if err := buildkit.Build(ctx, addr, absPath, p, platform, rootfsDir, excludes, onStatus); err != nil {
+	// A persistent BuildKit cache, when pointed at one. buildkitd's own
+	// cache lives inside its container, so CI — which gets a fresh one every
+	// job — otherwise rebuilds from scratch every time.
+	buildCache := os.Getenv(BuildCacheEnv)
+	if err := buildkit.Build(ctx, addr, absPath, p, platform, rootfsDir, excludes, buildCache, onStatus); err != nil {
 		err = fmt.Errorf("building rootfs: %w", err)
 		r.PhaseError(report.PhaseRootfs, err)
 		return "", err

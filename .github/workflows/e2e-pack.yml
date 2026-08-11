@@ -204,7 +204,18 @@ jobs:
             --port 8080:8080 \
             --cmdline "hello -- /hello" \
             examples/unikraft-go | tee id.txt
-          sleep 20
+          OUT=uk-unikraft-go.out
+          # Wait for the boot banner rather than sleeping a fixed 20s: a
+          # unikernel reaches it in about a second, and the HTTP check below
+          # already retries for the application itself. Polling to a cap
+          # means the quick examples stop waiting immediately while the
+          # heavy ones (mysql, postgres, mongodb, mariadb) still get more
+          # headroom than the old fixed sleep gave them.
+          for i in $(seq 1 60); do
+            ./target/release/bsdkrun logs "$(cat id.txt)" > "$OUT" 2>/dev/null || true
+            grep -q "Powered by Unikraft" "$OUT" && break
+            sleep 1
+          done
           ./target/release/bsdkrun ps -a
           ./target/release/bsdkrun logs "$(cat id.txt)" | tee uk-unikraft-go.out
           cp -v "$HOME/.local/state/bsdkrun/machines/$(cat id.txt)/bsdkrun.log" \

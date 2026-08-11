@@ -587,7 +587,18 @@ jobs:
             --port ${{ matrix.port }}:${{ matrix.port }} \
             --cmdline "${{ matrix.placeholder || 'elfloader' }} -- ${{ matrix.argv }}" \
             examples/${{ matrix.example }} | tee id.txt
-          sleep 20
+          OUT=uk-${{ matrix.example }}.out
+          # Wait for the boot banner rather than sleeping a fixed 20s: a
+          # unikernel reaches it in about a second, and the HTTP check below
+          # already retries for the application itself. Polling to a cap
+          # means the quick examples stop waiting immediately while the
+          # heavy ones (mysql, postgres, mongodb, mariadb) still get more
+          # headroom than the old fixed sleep gave them.
+          for i in $(seq 1 60); do
+            ./target/release/bsdkrun logs "$(cat id.txt)" > "$OUT" 2>/dev/null || true
+            grep -q "Powered by Unikraft" "$OUT" && break
+            sleep 1
+          done
           ./target/release/bsdkrun ps -a
           ./target/release/bsdkrun logs "$(cat id.txt)" | tee uk-${{ matrix.example }}.out
           # bsdkrun's own log records the assembled kernel command line. On

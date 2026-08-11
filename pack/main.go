@@ -44,7 +44,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "\nArguments:")
 		fmt.Fprintln(os.Stderr, "  path   project directory to pack (default \".\")")
 	}
-	if err := fs.Parse(os.Args[1:]); err != nil {
+	if err := fs.Parse(permuteArgs(fs, os.Args[1:])); err != nil {
 		if err == flag.ErrHelp {
 			os.Exit(0)
 		}
@@ -70,6 +70,7 @@ func main() {
 		p := report.NewPlain()
 		var final string
 		final, err = runPipeline(p, path, *target, *strace, *loaderDebug)
+		fmt.Printf("\ntotal %s\n", report.FormatDuration(p.Elapsed()))
 		if err == nil {
 			fmt.Println(final)
 		}
@@ -78,6 +79,51 @@ func main() {
 		fmt.Fprintf(os.Stderr, "bsdkrun pack: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// permuteArgs moves flags ahead of positional arguments.
+//
+// Go's flag package stops parsing at the first non-flag argument, so
+// `bsdkrun pack . --strace` would silently ignore --strace — the exact
+// ordering this command's own usage line shows, and the natural one to
+// type. (It cost a full CI round trip and two wrong conclusions before
+// being spotted: both debug flags read as `false` while appearing to be
+// set.) Everything after a bare `--` is left alone, as a positional.
+func permuteArgs(fs *flag.FlagSet, args []string) []string {
+	var flags, positional []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		if len(a) < 2 || a[0] != '-' {
+			positional = append(positional, a)
+			continue
+		}
+		flags = append(flags, a)
+		name := strings.TrimLeft(a, "-")
+		if strings.ContainsRune(name, '=') {
+			continue // --flag=value carries its own value
+		}
+		// A non-boolean flag takes the next argument as its value, so that
+		// argument has to travel with it rather than becoming positional.
+		if f := fs.Lookup(name); f != nil {
+			if b, ok := f.Value.(interface{ IsBoolFlag() bool }); !ok || !b.IsBoolFlag() {
+				if i+1 < len(args) {
+					i++
+					flags = append(flags, args[i])
+				}
+			}
+		}
+	}
+	if len(positional) == 0 {
+		return flags
+	}
+	// The `--` is re-emitted, not just consumed: without it the flag package
+	// would parse a positional that happens to start with `-` as a flag,
+	// which is the very thing `--` exists to prevent.
+	return append(append(flags, "--"), positional...)
 }
 
 // runPipeline is the pack pipeline itself: detect -> plan -> build rootfs ->

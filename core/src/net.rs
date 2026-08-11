@@ -534,6 +534,76 @@ fn control_post_to(control_socket: &Path, path: &str, body: &str) -> Result<Stri
     }
 }
 
+/// The four bytes gvproxy's vfkit listener expects before any frame, as its
+/// "this end is a VM" handshake.
+const VFKIT_MAGIC: &[u8; 4] = b"VFKT";
+
+/// Connect a datagram socket to gvproxy's vfkit listener and hand back the
+/// socket, ready to be passed to a guest process as a file descriptor.
+///
+/// libkrun does this internally for every other guest here (see
+/// `krun::Ctx::add_net_gvproxy`). The Solo5 tender is a separate process, so
+/// bsdkrun has to be the one holding the socket: the tender takes a network
+/// as `--net:NAME=@<fd>` and reads and writes **raw Ethernet frames**, one per
+/// `read`/`write` — which is exactly the framing gvproxy's vfkit mode uses.
+/// The virtio-net header libkrun deals with is added on its side of the wire,
+/// not on the socket, so nothing has to be reframed here.
+///
+/// `local` is where this end binds. A unix datagram socket has no reply
+/// address unless it is bound, so without this gvproxy would receive the
+/// guest's frames and have nowhere to send answers — the guest's DHCP request
+/// goes out and nothing ever comes back.
+pub fn vfkit_connect(vfkit_socket: &Path, local: &Path) -> Result<UnixDatagram> {
+    // A leftover from a VM that was SIGKILLed would fail the bind.
+    let _ = std::fs::remove_file(local);
+    let sock = UnixDatagram::bind(local).with_context(|| {
+        format!(
+            "binding the guest's end of the network at {}",
+            local.display()
+        )
+    })?;
+    sock.connect(vfkit_socket).with_context(|| {
+        format!(
+            "connecting to gvproxy's vfkit socket {}",
+            vfkit_socket.display()
+        )
+    })?;
+
+    // Sized so a full-MTU frame always fits: on macOS the send buffer of a
+    // unix datagram socket caps the datagram size outright rather than just
+    // queueing less, so a small one silently truncates frames instead of
+    // slowing them down. Best-effort — a kernel that refuses the size still
+    // carries standard 1500-byte MTU traffic on its default.
+    set_socket_buf(&sock, libc::SO_SNDBUF, 1 << 16);
+    set_socket_buf(&sock, libc::SO_RCVBUF, 1 << 20);
+
+    sock.send(VFKIT_MAGIC)
+        .context("sending the vfkit handshake to gvproxy")?;
+    Ok(sock)
+}
+
+/// Best-effort `setsockopt` for a buffer size, warning rather than failing.
+fn set_socket_buf(sock: &UnixDatagram, opt: libc::c_int, size: libc::c_int) {
+    use std::os::fd::AsRawFd;
+    let rc = unsafe {
+        libc::setsockopt(
+            sock.as_raw_fd(),
+            libc::SOL_SOCKET,
+            opt,
+            &size as *const _ as *const libc::c_void,
+            std::mem::size_of_val(&size) as libc::socklen_t,
+        )
+    };
+    if rc != 0 {
+        debug!(
+            option = opt,
+            size,
+            error = %std::io::Error::last_os_error(),
+            "could not resize the network socket buffer"
+        );
+    }
+}
+
 impl Drop for Gvproxy {
     fn drop(&mut self) {
         // Clear the published pid first so the signal handler won't also try to

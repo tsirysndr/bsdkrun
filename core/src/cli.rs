@@ -112,6 +112,14 @@ pub enum Command {
     /// `capstan`).
     Osv(OsvArgs),
 
+    /// Run a Solo5 unikernel — MirageOS and anything else built for the `hvt`
+    /// target — with the embedded `solo5-hvt` tender.
+    ///
+    /// Aliased as `mirage`, since that is what most people are running.
+    #[cfg(feature = "solo5")]
+    #[command(visible_alias = "mirage")]
+    Solo5(Solo5Args),
+
     /// List machines.
     Ps(PsArgs),
 
@@ -996,6 +1004,50 @@ pub struct UnikraftArgs {
 
     #[command(flatten)]
     pub vm: VmConfig,
+}
+
+/// Options for the `solo5` command.
+///
+/// Deliberately small. A Solo5 unikernel declares the devices it wants in its
+/// own binary (the `MFT1` manifest note), so bsdkrun reads the network and
+/// block device *names* from there rather than asking for them — see
+/// [`crate::solo5`]. What is left is what only the host can know: how much
+/// memory to give it, what to back a block device with, and which ports to
+/// forward.
+#[cfg(feature = "solo5")]
+#[derive(Parser, Serialize, Deserialize)]
+pub struct Solo5Args {
+    /// The unikernel to run: a `.hvt` binary, or a project directory whose
+    /// `dist/` holds one (where `mirage build` leaves it).
+    #[arg(value_name = "UNIKERNEL|DIR", default_value = ".")]
+    pub path: PathBuf,
+
+    /// Back a declared block device with a file, as NAME=FILE (repeatable).
+    /// The NAME= may be omitted when the unikernel declares exactly one.
+    #[arg(long = "block", value_name = "NAME=FILE")]
+    pub block: Vec<String>,
+
+    /// Run a different `solo5-hvt` tender instead of the embedded one — for
+    /// testing a tender build without rebuilding bsdkrun.
+    #[arg(long, value_name = "PATH")]
+    pub tender: Option<PathBuf>,
+
+    /// Run in the background and print the machine id (like `docker run -d`).
+    /// Use `logs`/`stop` afterwards — a unikernel has no shell, so
+    /// `shell`/`exec` do not apply.
+    #[arg(short = 'd', long)]
+    pub detach: bool,
+
+    #[command(flatten)]
+    pub net: NetConfig,
+
+    #[command(flatten)]
+    pub vm: VmConfig,
+
+    /// Arguments passed to the unikernel itself. Put them after `--`, since
+    /// MirageOS options look like this CLI's own: `-- --ipv4=10.0.0.2/24`.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub args: Vec<String>,
 }
 
 #[derive(Parser, Serialize, Deserialize)]

@@ -34,6 +34,12 @@ ui = ["dep:actix-web", "dep:rust-embed", "dep:mime_guess"]
 # build.rs and embedded here with rust-embed; off by default for the same
 # reason as `ui`.
 pack = ["dep:rust-embed"]
+# `bsdkrun solo5` — run a Solo5 unikernel (MirageOS and friends). The tender
+# is a C program built from the pinned `library/solo5` submodule by build.rs
+# and embedded here with rust-embed, exactly like pack's Go binary. Off by
+# default for the same reason: it needs a C toolchain on the build host, and
+# the daemon has no use for it.
+solo5 = ["dep:rust-embed"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

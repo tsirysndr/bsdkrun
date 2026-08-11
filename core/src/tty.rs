@@ -12,7 +12,7 @@
 
 use std::mem::MaybeUninit;
 use std::ptr::{addr_of, addr_of_mut};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 /// Whether [`SAVED_TERMIOS`] holds a valid snapshot to restore.
 static TERMIOS_SAVED: AtomicBool = AtomicBool::new(false);
@@ -57,10 +57,39 @@ pub fn restore_stdin_termios() {
 /// Only async-signal-safe operations are used.
 extern "C" fn handle_signal(sig: i32) {
     restore_stdin_termios();
+    kill_tracked_child();
     crate::net::kill_tracked_gvproxy();
     // Conventional 128+signum status. `_exit` skips (non-signal-safe) atexit
     // hooks; the OS reclaims fds and the socket dir is swept on the next launch.
     unsafe { libc::_exit(128 + sig) };
+}
+
+/// PID of a child process that *is* the running guest, or `-1` for none.
+///
+/// Every libkrun guest runs inside this process, so killing bsdkrun kills the
+/// VM. The Solo5 tender does not: it is a separate process bsdkrun spawns and
+/// waits on ([`crate::commands::solo5`]). Without this, a `stop` or a Ctrl-C
+/// would reap bsdkrun and leave the tender running the guest, holding its
+/// ports, with nothing left that knows its id.
+static CHILD_PID: AtomicI32 = AtomicI32::new(-1);
+
+/// Track `pid` as the guest process to kill on an interrupting signal.
+pub fn track_child(pid: i32) {
+    CHILD_PID.store(pid, Ordering::SeqCst);
+}
+
+/// Stop tracking a child that has already exited, so its (possibly reused) pid
+/// is never signalled.
+pub fn untrack_child() {
+    CHILD_PID.store(-1, Ordering::SeqCst);
+}
+
+/// Kill the tracked guest process, if any. Async-signal-safe.
+fn kill_tracked_child() {
+    let pid = CHILD_PID.load(Ordering::SeqCst);
+    if pid > 0 {
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
 }
 
 fn install_signal_handlers() {

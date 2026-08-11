@@ -1,0 +1,232 @@
+name: e2e (Solo5 / MirageOS)
+
+# Builds examples/mirage-hello with the MirageOS toolchain and runs it under
+# `bsdkrun solo5` on KVM, asserting on the HTTP body the unikernel serves.
+#
+# This guest does not go through libkrun at all: `solo5-hvt` is the hypervisor
+# front end, driving KVM here and Hypervisor.framework on macOS. libkrun is
+# still built below because `bsdkrun` itself links it — every other guest needs
+# it, so the binary under test cannot be produced without it.
+#
+# Two things this job is really testing, beyond "it boots":
+#
+#   * that `core/build.rs` builds the tender out of the `library/solo5`
+#     submodule — hence `submodules: recursive` below. Without it the checkout
+#     has an empty `library/solo5`, bsdkrun is built with no tender embedded,
+#     and `bsdkrun solo5` fails with "built without solo5 support" rather than
+#     anything about the unikernel.
+#   * that the network reaches the guest: bsdkrun connects to gvproxy itself
+#     and hands the tender the descriptor, which is a code path libkrun guests
+#     never take. A unikernel that boots but leases no address still prints a
+#     banner and looks fine — only the curl below distinguishes them.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - "main"
+    paths:
+      - "examples/mirage-hello/**"
+      - "core/src/solo5.rs"
+      - "core/src/commands/solo5.rs"
+      - "core/src/net.rs"
+      - "core/build.rs"
+      - "library/solo5"
+      - "src/**"
+      - ".github/workflows/e2e-solo5.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  boot:
+    name: mirage-hello (x86_64, KVM)
+    runs-on: ubuntu-latest # x86_64; has /dev/kvm
+    timeout-minutes: 90
+    steps:
+      # The tender is built from the pinned submodule at `cargo build` time —
+      # a shallow checkout without it produces a bsdkrun that cannot run this
+      # example at all.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Solo5 is pinned twice: as a submodule (what `cargo build` compiles the
+      # tender from) and as a flake input (what a nix build uses, since flakes
+      # do not fetch submodules). They must name the same commit, or a nix
+      # build and a cargo build ship different tenders — which is the kind of
+      # difference that only shows up as a guest behaving differently.
+      - name: Check the submodule and flake.lock agree on solo5
+        run: |
+          set -eu
+          sub=$(git rev-parse HEAD:library/solo5)
+          lock=$(python3 -c "import json; print(json.load(open('flake.lock'))['nodes']['solo5']['locked']['rev'])")
+          echo "submodule:  $sub"
+          echo "flake.lock: $lock"
+          if [ "$sub" != "$lock" ]; then
+            echo "solo5 pins have drifted — bump both:"
+            echo "  git submodule update --remote library/solo5"
+            echo "  nix flake update solo5"
+            exit 1
+          fi
+
+      - name: Enable KVM
+        run: |
+          set -eux
+          test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 0666 /dev/kvm
+          ls -l /dev/kvm
+
+      # libseccomp-dev and pkg-config are the tender's own build deps: the hvt
+      # tender installs a seccomp filter on Linux (hvt_seccomp_linux.c), and
+      # solo5's configure.sh fails outright without the headers.
+      - name: Install build deps (bsdkrun, libkrun/libkrunfw, solo5 tender)
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl ca-certificates xz-utils python3 \
+            python3-pyelftools pkg-config patchelf patch cpio kmod rsync zstd \
+            flex bison bc libelf-dev libssl-dev libncurses-dev libyaml-dev \
+            uuid-runtime unzip wget clang libclang-dev llvm-dev \
+            libseccomp-dev llvm lld
+
+      # `--port` is user-mode networking; without gvproxy on PATH the guest
+      # gets no NIC and the HTTP check below has nothing to talk to.
+      - name: Install gvproxy (user-mode networking)
+        run: |
+          set -eux
+          sudo curl -fL -o /usr/local/bin/gvproxy \
+            https://github.com/containers/gvisor-tap-vsock/releases/latest/download/gvproxy-linux-amd64
+          sudo chmod +x /usr/local/bin/gvproxy
+          gvproxy --help >/dev/null 2>&1 || which gvproxy
+
+      # Same cache key as the other e2e workflows on purpose: a hit from any of
+      # them saves the ~15-20 min libkrunfw kernel compile.
+      - name: Restore libkrun build
+        id: libkrun-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v16
+
+      - name: Build libkrun (cache miss)
+        if: steps.libkrun-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          git clone --depth 1 -b v5.5.0 https://github.com/containers/libkrunfw
+          ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
+          git clone --depth 1 -b feat/pvh-boot https://github.com/tsirysndr/libkrun
+          ( cd libkrun && make -j"$(nproc)" BLK=1 NET=1 )
+
+      - name: Save libkrun build
+        if: steps.libkrun-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v16
+
+      - name: Install libkrun
+        run: |
+          set -eux
+          ( cd libkrunfw && sudo make install )
+          ( cd libkrun && sudo make install BLK=1 NET=1 )
+          echo "PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo /usr/local/lib64 | sudo tee /etc/ld.so.conf.d/libkrun.conf
+          sudo ldconfig
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build bsdkrun (builds and embeds the solo5 tender)
+        run: cargo build --release
+
+      # If the submodule were missing, build.rs would only emit a warning and
+      # carry on — so check the tender is really in the binary before spending
+      # half an hour on the MirageOS toolchain to find out.
+      # The manifest parser and the --block matching are pure functions with
+      # unit tests, and `solo5` is not a default feature — so without naming it
+      # here they are compiled by nothing in CI and tested by nothing at all.
+      - name: Unit tests
+        run: cargo test -p bsdkrun-core --features solo5 --lib
+
+      - name: Check the tender was embedded
+        run: |
+          set -eux
+          test -s core/src/solo5-bin/solo5-hvt \
+            || { echo "no tender was built — is library/solo5 checked out?"; exit 1; }
+          ./target/release/bsdkrun solo5 --help >/dev/null
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2"
+
+      - name: Install the MirageOS toolchain
+        run: opam install -y mirage
+
+      # `make depends` pulls this unikernel's sources into duniverse/ and
+      # installs the ocaml-solo5 cross-compiler; `make build` cross-compiles
+      # the unikernel to an ELF binary for the hvt target.
+      - name: Build the unikernel
+        working-directory: examples/mirage-hello
+        run: |
+          set -eux
+          opam exec -- ./build.sh
+          ls -l dist/hello.hvt
+
+      # The assertion is the response body, not the exit status: a unikernel
+      # that boots and never leases an address exits 0 with a console full of
+      # banner, and `bsdkrun solo5` returns whatever the tender returned.
+      - name: e2e — serve HTTP from the unikernel
+        working-directory: examples/mirage-hello
+        run: |
+          set -eux
+          id=$(../../target/release/bsdkrun --log-level 5 solo5 dist/hello.hvt \
+            --mem 128 --port 18080:8080 -d)
+          echo "machine: $id"
+
+          # Retry rather than sleep: the unikernel is up in about a second, but
+          # a fixed wait either flakes or wastes a minute on every run.
+          body=""
+          for _ in $(seq 1 30); do
+            body=$(curl -fsS --max-time 5 http://127.0.0.1:18080/ || true)
+            [ -n "$body" ] && break
+            sleep 2
+          done
+
+          ../../target/release/bsdkrun logs "$id" > console.out 2>&1 || true
+          ../../target/release/bsdkrun stop "$id" || true
+
+          echo "--- console ---"
+          cat console.out || true
+          echo "--- body ---"
+          echo "$body"
+
+          case "$body" in
+            *"Hello from MirageOS on bsdkrun"*)
+              echo "🎉 MirageOS unikernel served its response under bsdkrun solo5" ;;
+            *)
+              echo "the unikernel did not serve the expected body — console above is the artifact to read"
+              exit 1 ;;
+          esac
+
+          # The body proves the whole path already; this pins the *reason* a
+          # future regression fails, by naming the step that broke.
+          grep -aq "Lease obtained" console.out \
+            || echo "note: no DHCP lease line in the console — check gvproxy's addressing"
+
+      - name: Upload console output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mirage-hello-console
+          path: examples/mirage-hello/console.out
+          if-no-files-found: ignore

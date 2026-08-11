@@ -25,7 +25,12 @@ jobs:
     runs-on: ubuntu-latest # x86_64; has /dev/kvm
     timeout-minutes: 45
     steps:
+      # `submodules` for library/solo5: core/build.rs builds the Solo5
+      # tender from it, and without it the build merely warns — so the
+      # binary under test would quietly differ from the one that ships.
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Enable KVM
         run: |
@@ -42,11 +47,13 @@ jobs:
         run: |
           set -eux
           sudo apt-get update
+          # libseccomp-dev: the Solo5 tender installs a seccomp filter on
+          # Linux, and solo5's configure.sh fails without the headers.
           sudo apt-get install -y --no-install-recommends \
             build-essential git curl ca-certificates xz-utils python3 \
             python3-pyelftools pkg-config patchelf patch cpio kmod rsync zstd \
             flex bison bc libelf-dev libssl-dev libncurses-dev libyaml-dev \
-            uuid-runtime unzip wget clang libclang-dev llvm-dev
+            uuid-runtime unzip wget clang libclang-dev llvm-dev libseccomp-dev
 
       # Same build + cache shape as e2e-linux.yml, and deliberately the same key:
       # a hit from either workflow saves the ~15-20 min libkrunfw kernel compile.

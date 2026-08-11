@@ -89,7 +89,25 @@
         "crane": "crane",
         "flake-utils": "flake-utils",
         "libkrun-pvh": "libkrun-pvh",
-        "nixpkgs": "nixpkgs_2"
+        "nixpkgs": "nixpkgs_2",
+        "solo5": "solo5"
+      }
+    },
+    "solo5": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1786144622,
+        "narHash": "sha256-VhQZh6B6Wq2hqTJwBQKJoLwd33tvHeWeef4RamZ7zZ0=",
+        "owner": "tsirysndr",
+        "repo": "solo5",
+        "rev": "994556ca8b727f905a5040cfff42ff0e4daeddd3",
+        "type": "github"
+      },
+      "original": {
+        "owner": "tsirysndr",
+        "ref": "hvf-macos-aarch64",
+        "repo": "solo5",
+        "type": "github"
       }
     },
     "systems": {

@@ -3,6 +3,11 @@
 *.log
 .DS_Store
 
+# `nix build` output symlinks — `result` by default, `result-<name>` wherever
+# a workflow passes --out-link (nix.yml builds several packages per run).
+/result
+/result-*
+
 /agent/target
 /daemon/target
 
@@ -18,6 +23,24 @@ node_modules/
 # Stray local build output from `go build` inside pack/ (e.g. `go build .`
 # with no -o) — the real output always goes through core/build.rs above.
 /pack/pack
+
+# The Solo5 hvt tender, built from the library/solo5 submodule by
+# core/build.rs and embedded via rust_embed — same deal as the pack binary.
+/core/src/solo5-bin/solo5-hvt
+
+# MirageOS example build artifacts. `mirage configure` generates the whole
+# dune/opam scaffolding — only config.ml and unikernel.ml are written by hand,
+# and a committed Makefile would pin the mirage version the example builds with.
+examples/**/dist/
+examples/**/duniverse/
+examples/**/mirage/
+examples/mirage-*/_build/
+examples/mirage-*/Makefile
+examples/mirage-*/dune
+examples/mirage-*/dune-project
+examples/mirage-*/dune-workspace
+examples/mirage-*/dune.build
+examples/mirage-*/dune.config
 
 # Unikraft example build artifacts.
 examples/**/.rootfs-arm64/

@@ -30,6 +30,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag != '' && inputs.tag || github.ref }}
+          # library/solo5, which core/build.rs builds the Solo5 tender from.
+          # A release built without it ships a bsdkrun whose `solo5`
+          # subcommand reports itself as unsupported.
+          submodules: recursive
 
       # libkrun provides the C ABI bsdkrun links against (build.rs finds it via
       # `brew --prefix libkrun`). It lives in a third-party tap, which Homebrew
@@ -100,6 +104,16 @@ jobs:
           set -eux
           test -s core/src/pack-bin/bsdkrun-pack
           target/release/bsdkrun pack --help
+
+      # Same rule as pack above: build.rs only warns when it cannot build the
+      # tender, which is right for a contributor and wrong for a release —
+      # `bsdkrun solo5` would report itself unsupported on a binary a user
+      # just installed. Fail here instead.
+      - name: Verify the solo5 tender was embedded
+        run: |
+          set -eux
+          test -s core/src/solo5-bin/solo5-hvt
+          target/release/bsdkrun solo5 --help
 
       # `bsdkrun-supervisor` is what bsdkrund uses to boot a machine. It has the
       # CLI's dependency profile — it links libkrun — so it ships here rather
@@ -173,6 +187,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag != '' && inputs.tag || github.ref }}
+          # library/solo5, which core/build.rs builds the Solo5 tender from.
+          # A release built without it ships a bsdkrun whose `solo5`
+          # subcommand reports itself as unsupported.
+          submodules: recursive
 
       # build.rs links libkrun; libkrun links libkrunfw (a from-source kernel).
       # Same deps the KVM e2e job uses.
@@ -184,7 +202,7 @@ jobs:
             build-essential git curl ca-certificates xz-utils python3 \
             python3-pyelftools pkg-config patchelf patch cpio kmod rsync zstd \
             flex bison bc libelf-dev libssl-dev \
-            clang libclang-dev llvm-dev
+            clang libclang-dev llvm-dev libseccomp-dev
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -259,6 +277,16 @@ jobs:
           set -eux
           test -s core/src/pack-bin/bsdkrun-pack
           target/release/bsdkrun pack --help
+
+      # Same rule as pack above: build.rs only warns when it cannot build the
+      # tender, which is right for a contributor and wrong for a release —
+      # `bsdkrun solo5` would report itself unsupported on a binary a user
+      # just installed. Fail here instead.
+      - name: Verify the solo5 tender was embedded
+        run: |
+          set -eux
+          test -s core/src/solo5-bin/solo5-hvt
+          target/release/bsdkrun solo5 --help
 
       # Same libkrun dependency as the CLI, so it is bundled the same way below
       # rather than shipped with the (deliberately static) daemon.

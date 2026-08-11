@@ -24,7 +24,7 @@ description = "A Firecracker-style microVM launcher for BSD and Linux (OCI) gues
 
 [dependencies]
 # The engine. This crate is the command-line front end over it and nothing more.
-bsdkrun-core = { path = "core", features = ["ui", "pack"] }
+bsdkrun-core = { path = "core", features = ["ui", "pack", "solo5"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

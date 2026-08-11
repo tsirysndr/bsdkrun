@@ -140,6 +140,19 @@ What that split costs, and what pays for it:
   it the build only warns, and `bsdkrun solo5` reports the missing tender —
   but a *stale* `core/src/solo5-bin/solo5-hvt` from an earlier build is still
   embedded, so the failure can be silence rather than an error.
+- **Solo5 is pinned twice, deliberately.** The submodule is what `cargo build`
+  compiles; the `solo5` flake input (`flake = false`, so solo5 needs no flake
+  of its own) is what nix builds, because a flake does not fetch submodules and
+  `?submodules=1` on every command is not a thing to ask of users. Bump both:
+  `git submodule update --remote library/solo5 && nix flake update solo5`.
+  `e2e-solo5` fails if they drift. Under nix the tender is a separate
+  derivation copied into `core/src/solo5-bin` by `preBuild`, exactly as
+  `pack` is — build.rs then finds no `library/solo5` in crane's cleaned source
+  and leaves it alone instead of clobbering it.
+- **Sign in `postFixup`, not at link time, under nix.** darwin's fixupPhase
+  re-signs everything in `$out` ad-hoc and silently drops entitlements, so a
+  tender signed by its own makefile installs fine and dies at `hv_vm_create`.
+  The `bsdkrun` package already had this comment; the tender needed it too.
 - **The tender must stay signed on macOS.** Hypervisor.framework refuses a VM
   to a process without `com.apple.security.hypervisor`, and an entitlement only
   counts inside a signature. It is signed at link time and re-signed on

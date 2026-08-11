@@ -49,6 +49,7 @@ image** (`bsdkrun linux alpine` pulls it from any registry, extracts the rootfs,
   - [`linux`](#linux--run-an-oci-image-as-a-microvm)
   - [`unikraft`](#unikraft--boot-a-unikraft-unikernel)
   - [`nanos`](#nanos--boot-a-nanos-nanovms-unikernel)
+  - [`solo5` / `mirage`](#solo5--mirage--run-a-mirageos-solo5-unikernel)
 - [Managing machines](#managing-machines)
 - [Flavors — preconfigured environments & snapshots](#flavors--preconfigured-environments--snapshots)
 - [Networking](#networking)
@@ -150,7 +151,8 @@ nix run    --impure github:tsirysndr/bsdkrun -- linux alpine
 
 The flake wraps the runtime tools (`curl`, `tar`, `gzip`, `xz`, `cpio`, `gvproxy`, …) onto `PATH`,
 and `nix develop` adds the Rust toolchain plus `zig`/`cargo-zigbuild` for cross-building the guest
-agents. To hack on bsdkrun without Nix, build from source — see [Prerequisites](#prerequisites) and
+agents. The Solo5 tender is built from a pinned flake input, so a nix build needs **no**
+`?submodules=1` — `nix build .#solo5-hvt` builds just the tender if that is all you want. To hack on bsdkrun without Nix, build from source — see [Prerequisites](#prerequisites) and
 [Build](#build).
 
 ---
@@ -239,9 +241,19 @@ automatically when needed.
 ## Build
 
 ```sh
+git submodule update --init library/solo5   # the Solo5 tender is built from source
 make build      # cargo build (debug)  [+ codesign on macOS]
 make release    # cargo build --release [+ codesign on macOS]
 ```
+
+The submodule is only needed for `bsdkrun solo5`, and only for a `cargo` build — the Nix flake
+pins the same commit as a flake input instead. Without it the build still succeeds: it prints a
+warning and leaves the tender out, and `bsdkrun solo5` then says so rather than failing
+obscurely. Building the tender needs `make` and, on Linux, `libseccomp` headers.
+
+> The two pins must name the same commit. Bump them together with
+> `git submodule update --remote library/solo5 && nix flake update solo5`; the `e2e-solo5`
+> workflow fails if they drift.
 
 `make run ARGS="..."` builds and runs in one step.
 
@@ -653,6 +665,73 @@ bsdkrun nanos ~/.ops/images/nanos-hello    # explicit image path
 bsdkrun nanos -d nanos-hello --no-net      # detached; use logs/stop/rm
 bsdkrun nanos nanos-hello --kernel ~/.ops/0.1.55/kernel.img
 ```
+
+---
+
+### `solo5` / `mirage` — run a MirageOS (Solo5) unikernel
+
+[MirageOS](https://mirage.io) unikernels run on [Solo5](https://github.com/Solo5/solo5), whose
+`hvt` **tender** is itself the hypervisor front end. So this guest is the one exception in
+bsdkrun: it does not go through libkrun. bsdkrun builds the tender from the pinned
+`library/solo5` submodule at compile time and embeds it, so **running** a unikernel needs no
+Solo5 install of your own — only building one does.
+
+```sh
+cd examples/mirage-hello && ./build.sh          # needs opam + mirage
+bsdkrun solo5 dist/hello.hvt --mem 128 --port 18080:8080
+curl http://127.0.0.1:18080/                    # Hello from MirageOS on bsdkrun
+```
+
+`bsdkrun mirage` is a visible alias for the same command.
+
+Note what the command line does *not* carry: no device names, no MAC, no IP, no gateway. Every
+Solo5 unikernel declares the devices it wants in its own binary (the `MFT1` ELF note), and the
+tender refuses to boot unless each one is attached — so bsdkrun reads the manifest and attaches
+them itself:
+
+```
+INFO running Solo5 unikernel id=4bc3fd4a9851 image=hello.hvt nets=["service"] blocks=[]
+```
+
+The network reaches the outside through gvproxy. bsdkrun opens that socket itself and hands the
+tender the descriptor (`--net:service=@3`) — on macOS this is the only way to attach a network
+at all, there being no TAP device — and pins the guest's MAC so gvproxy's DHCP lease always
+lands on the address `--port` forwards to.
+
+A declared block device is backed with `--block`:
+
+```sh
+bsdkrun solo5 dist/store.hvt --block storage=disk.img
+```
+
+Leave it out and bsdkrun names the missing device before starting anything.
+
+Like every unikernel, a Solo5 guest has no shell and no agent: `exec` and `shell` do not apply;
+`ps`, `logs`, `stop` and `rm` work as usual, and `stop` kills the tender rather than just
+bsdkrun, so nothing is left holding the ports.
+
+#### Status
+
+- **macOS/arm64 (Hypervisor.framework)** — verified: builds, boots, leases a DHCP address and
+  serves over a forwarded port. The HVF backend comes from
+  [tsirysndr/solo5](https://github.com/tsirysndr/solo5) `hvf-macos-aarch64`, which upstream
+  Solo5 does not have. Two gaps it documents rather than papers over: the tender drops no
+  privileges on macOS (no seccomp/pledge/capsicum equivalent), and there is no
+  `solo5-hvt-debug` — the gdb and dumpcore backends are unported.
+- **Linux (KVM)** — the upstream backend, exercised by the `e2e-solo5` workflow, which asserts
+  on the HTTP body the unikernel serves.
+
+#### Usage
+
+```sh
+bsdkrun solo5 dist/hello.hvt                  # explicit unikernel
+bsdkrun solo5 .                               # a project dir; finds dist/*.hvt
+bsdkrun mirage dist/hello.hvt --port 8080:8080
+bsdkrun solo5 -d dist/hello.hvt               # detached; use logs/stop/rm
+bsdkrun solo5 dist/hello.hvt -- --extra-arg   # arguments for the unikernel itself
+```
+
+See [`examples/mirage-hello`](examples/mirage-hello/README.md) for the full walkthrough.
 
 ---
 

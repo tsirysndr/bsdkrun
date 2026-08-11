@@ -20,6 +20,11 @@ pub mod machines;
 pub mod pack;
 #[cfg(feature = "boot")]
 pub mod probe;
+/// Needs `boot` as well as `solo5`: a build that cannot start a machine has no
+/// `dispatch` to reach this from, and it shares the console and machine-record
+/// machinery with the libkrun boot paths.
+#[cfg(all(feature = "solo5", feature = "boot"))]
+pub mod solo5;
 #[cfg(target_os = "macos")]
 pub mod store;
 pub mod volumes;

@@ -45,6 +45,20 @@ jobs:
           brew trust libkrun/krun || true
           brew install libkrun
 
+      # Built on its own first, though `.#bsdkrun` would pull it in anyway: the
+      # tender is C built by solo5's own configure/make, and a failure there is
+      # far easier to read on its own than buried in a Rust build. The smoke
+      # test is what proves the darwin signing worked — an unentitled tender
+      # builds and installs fine and only fails at `hv_vm_create`.
+      #
+      # No submodule checkout is needed: the flake takes solo5 from a pinned
+      # input rather than from library/solo5.
+      - name: nix build (solo5 tender)
+        run: nix build -L --out-link result-solo5 .#solo5-hvt
+
+      - name: Smoke-test the solo5 tender
+        run: ./result-solo5/bin/solo5-hvt --version
+
       # BSDKRUN_IMPURE=1 makes the flake import Homebrew's libkrun into the store
       # for the (impure) darwin build. On Linux it's inert: no --impure is passed,
       # so builtins.getEnv returns "" and the Linux path uses nixpkgs' libkrun.

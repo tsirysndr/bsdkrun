@@ -44,6 +44,9 @@ pub mod osv;
 /// The case-sensitive store only exists to work around case-insensitive APFS;
 /// Linux filesystems are case-sensitive already, so nix guests work there
 /// out of the box and the module is not compiled.
+/// Solo5 unikernels (MirageOS). Unlike every other guest here, these run in a
+/// separate process — the `solo5-hvt` tender — rather than through libkrun.
+pub mod solo5;
 #[cfg(target_os = "macos")]
 pub mod store;
 pub mod tty;
@@ -107,6 +110,8 @@ pub fn dispatch(cmd: Command) -> Result<()> {
         Command::Unikraft(args) => commands::boot::boot_unikraft(args),
         Command::Nanos(args) => commands::boot::boot_nanos(args),
         Command::Osv(args) => commands::boot::boot_osv(args),
+        #[cfg(feature = "solo5")]
+        Command::Solo5(args) => commands::solo5::cmd_solo5(args),
         Command::Ps(args) => commands::machines::cmd_ps(args.all, args.json),
         Command::Images(args) => commands::images::cmd_images(args.json),
         Command::Stop(args) => commands::machines::cmd_stop(&args.id),

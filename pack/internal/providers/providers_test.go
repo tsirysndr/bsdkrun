@@ -180,3 +180,70 @@ func TestRubyWalksStdlibExtensions(t *testing.T) {
 		t.Errorf("stdlib .so files must be ldd-walked too:\n%s", p.Script)
 	}
 }
+
+// The examples these providers were ported from keep their sources under
+// app/ or carry no dependency-manifest at all. A provider that only looked
+// in the project root would build an image with no program in it — and it
+// would fail in the guest, not here, so pin the real layouts.
+func TestRealExampleLayouts(t *testing.T) {
+	t.Run("node finds app/index.js with no package.json main", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "package.json", `{"dependencies":{"express":"^4.18.2"}}`)
+		if err := os.Mkdir(filepath.Join(dir, "app"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		write(t, dir, "app/index.js", "")
+		p, err := Get("node").Plan(dir, plan.ArchArm64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(p.Cmd, " "); !strings.Contains(got, "/usr/src/app/index.js") {
+			t.Errorf("Cmd = %q, want it to run app/index.js", got)
+		}
+	})
+
+	t.Run("deno finds app/server.js", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "deno.json", "{}")
+		if err := os.Mkdir(filepath.Join(dir, "app"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		write(t, dir, "app/server.js", "")
+		p, err := Get("deno").Plan(dir, plan.ArchArm64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Join(p.Cmd, " "); !strings.Contains(got, "/usr/src/app/server.js") {
+			t.Errorf("Cmd = %q, want it to run app/server.js", got)
+		}
+	})
+
+	// examples/unikraft-ruby is a bare server.rb: no Gemfile, no
+	// .ruby-version, no config.ru.
+	t.Run("ruby detects a bare server.rb", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "server.rb", "")
+		p, err := Find(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Name() != "ruby" {
+			t.Fatalf("detected %q, want ruby", p.Name())
+		}
+	})
+
+	// php.ini is load-bearing (it is what enables the sockets extension),
+	// and must land where PHP reads it rather than beside the sources.
+	t.Run("php places php.ini where PHP reads it", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "server.php", "")
+		write(t, dir, "php.ini", "[PHP]\nextension=sockets\n")
+		p, err := Get("php").Plan(dir, plan.ArchArm64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(p.Script, "/out/rootfs/usr/local/etc/php/php.ini") {
+			t.Errorf("php.ini must go to PHP's config dir:\n%s", p.Script)
+		}
+	})
+}

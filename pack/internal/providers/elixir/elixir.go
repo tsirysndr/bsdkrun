@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"regexp"
 
-	"github.com/tsirysndr/bsdkrun/pack/internal/mise"
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/beam"
+	"github.com/tsirysndr/bsdkrun/pack/internal/versions"
 )
 
 const defaultVersion = "1.16.2"
@@ -40,7 +40,7 @@ func (p *Provider) Plan(dir string, _ plan.Arch) (*plan.Plan, error) {
 	app, version := appAndVersion(filepath.Join(dir, "mix.exs"))
 
 	elixirVersion := defaultVersion
-	if v, ok := mise.Read(dir).Version("elixir"); ok {
+	if v, ok := versions.Read(dir).Version("elixir"); ok {
 		elixirVersion = v
 	}
 

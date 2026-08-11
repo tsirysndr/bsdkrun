@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/tsirysndr/bsdkrun/pack/internal/mise"
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
+	"github.com/tsirysndr/bsdkrun/pack/internal/versions"
 )
 
 // amd64TextAddr is where a packed Go binary's text is linked on amd64: 1
@@ -48,7 +48,7 @@ func (p *Provider) Plan(dir string, arch plan.Arch) (*plan.Plan, error) {
 	}
 
 	version := defaultVersion
-	if v, ok := mise.Read(dir).Major("go"); ok {
+	if v, ok := versions.Read(dir).Major("go"); ok {
 		version = v
 	}
 

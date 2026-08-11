@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"regexp"
 
-	"github.com/tsirysndr/bsdkrun/pack/internal/mise"
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/beam"
+	"github.com/tsirysndr/bsdkrun/pack/internal/versions"
 )
 
 const defaultVersion = "1.18.0"
@@ -39,7 +39,7 @@ func (p *Provider) Plan(dir string, _ plan.Arch) (*plan.Plan, error) {
 	name := projectName(filepath.Join(dir, "gleam.toml"))
 
 	version := defaultVersion
-	if v, ok := mise.Read(dir).Version("gleam"); ok {
+	if v, ok := versions.Read(dir).Version("gleam"); ok {
 		version = v
 	}
 

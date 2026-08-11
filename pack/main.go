@@ -24,6 +24,7 @@ import (
 
 	"github.com/tsirysndr/bsdkrun/pack/internal/buildkit"
 	"github.com/tsirysndr/bsdkrun/pack/internal/cachedir"
+	"github.com/tsirysndr/bsdkrun/pack/internal/config"
 	"github.com/tsirysndr/bsdkrun/pack/internal/kraft"
 	"github.com/tsirysndr/bsdkrun/pack/internal/kraftfile"
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
@@ -32,6 +33,11 @@ import (
 	"github.com/tsirysndr/bsdkrun/pack/internal/report"
 	"github.com/tsirysndr/bsdkrun/pack/internal/tui"
 )
+
+// StartCmdEnv overrides the start command for a build, beating both the
+// provider's inference and any Procfile. Split on whitespace — a command
+// needing shell quoting belongs in a Procfile, not here.
+const StartCmdEnv = "BSDKRUN_START_CMD"
 
 func main() {
 	fs := flag.NewFlagSet("bsdkrun-pack", flag.ContinueOnError)
@@ -44,6 +50,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "\nPackage a project as a bootable Unikraft unikernel.")
 		fmt.Fprintln(os.Stderr, "\nArguments:")
 		fmt.Fprintln(os.Stderr, "  path   project directory to pack (default \".\")")
+		fmt.Fprintln(os.Stderr, "\nEnvironment:")
+		fmt.Fprintf(os.Stderr, "  %s   override the start command (beats %s and a Procfile)\n",
+			StartCmdEnv, config.FileName)
+		fmt.Fprintln(os.Stderr, "\nConfig:")
+		fmt.Fprintf(os.Stderr, "  %s   provider, packages, buildAptPackages, deploy.startCommand\n", config.FileName)
 	}
 	if err := fs.Parse(permuteArgs(fs, os.Args[1:])); err != nil {
 		if err == flag.ErrHelp {
@@ -149,13 +160,38 @@ func runPipeline(r report.Reporter, path, targetFlag string, strace, loaderDebug
 		return "", err
 	}
 
-	r.PhaseStart(report.PhaseDetect)
-	prov, err := providers.Find(absPath)
+	// railpack.json, if present, is the project overriding what pack would
+	// infer. A malformed one is an error rather than a shrug: silently
+	// ignoring config someone wrote is worse than refusing to build.
+	cfg, err := config.Read(absPath)
 	if err != nil {
 		r.PhaseError(report.PhaseDetect, err)
 		return "", err
 	}
-	r.PhaseDone(report.PhaseDetect, fmt.Sprintf("provider: %s", prov.Name()))
+
+	r.PhaseStart(report.PhaseDetect)
+	var prov providers.Provider
+	if cfg != nil && cfg.Provider != nil && *cfg.Provider != "" {
+		if prov = providers.Get(*cfg.Provider); prov == nil {
+			err := fmt.Errorf("%s names provider %q, which does not exist",
+				config.FileName, *cfg.Provider)
+			r.PhaseError(report.PhaseDetect, err)
+			return "", err
+		}
+	} else if prov, err = providers.Find(absPath); err != nil {
+		r.PhaseError(report.PhaseDetect, err)
+		return "", err
+	}
+	detail := "provider: " + prov.Name()
+	if cfg != nil && cfg.Provider != nil {
+		detail += " (from " + config.FileName + ")"
+	}
+	r.PhaseDone(report.PhaseDetect, detail)
+	// Name what will not be honoured, rather than dropping it quietly.
+	if unsupported := cfg.Unsupported(); len(unsupported) > 0 {
+		r.Log(report.PhaseDetect, config.FileName+": ignoring "+
+			strings.Join(unsupported, ", ")+" (pack builds one script per provider)")
+	}
 
 	r.PhaseStart(report.PhasePlan)
 	p, err := prov.Plan(absPath, plan.Arch(platform))
@@ -163,10 +199,13 @@ func runPipeline(r report.Reporter, path, targetFlag string, strace, loaderDebug
 		r.PhaseError(report.PhasePlan, err)
 		return "", err
 	}
-	// A Procfile is the project stating what to run, which beats anything
-	// the provider inferred. Only one process type can run in a unikernel,
-	// so say plainly which ones are being dropped rather than ignoring them
-	// silently.
+	// Start command, lowest precedence first: what the provider inferred,
+	// then the project's Procfile, then an explicit env override. The
+	// override is last because it is the one a person typed deliberately at
+	// the point of building.
+	//
+	// A unikernel runs exactly one process, so the Procfile's other entries
+	// are named as dropped rather than ignored silently.
 	if pf := procfile.Read(absPath); pf != nil {
 		if cmd, ok := pf.Web(); ok {
 			p.Cmd = strings.Fields(cmd)
@@ -176,6 +215,27 @@ func runPipeline(r report.Reporter, path, targetFlag string, strace, loaderDebug
 			r.Log(report.PhasePlan, "Procfile: ignoring "+strings.Join(ignored, ", ")+
 				" (a unikernel runs one process)")
 		}
+	}
+	if cfg != nil && cfg.Deploy != nil && strings.TrimSpace(cfg.Deploy.StartCommand) != "" {
+		p.Cmd = strings.Fields(cfg.Deploy.StartCommand)
+		r.Log(report.PhasePlan, config.FileName+": "+cfg.Deploy.StartCommand)
+	}
+	if cmd := strings.TrimSpace(os.Getenv(StartCmdEnv)); cmd != "" {
+		p.Cmd = strings.Fields(cmd)
+		r.Log(report.PhasePlan, StartCmdEnv+": "+cmd)
+	}
+	// Build-time packages, prepended so they are present before the
+	// provider's script runs. apt-get or apk depending on the base image —
+	// providers pick both Debian and Alpine bases.
+	if cfg != nil && len(cfg.BuildAptPackages) > 0 {
+		pkgs := strings.Join(cfg.BuildAptPackages, " ")
+		p.Script = fmt.Sprintf(`if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -qq && apt-get install -y -qq --no-install-recommends %s
+else
+    apk add --no-cache %s
+fi
+`, pkgs, pkgs) + p.Script
+		r.Log(report.PhasePlan, config.FileName+": build packages "+pkgs)
 	}
 	r.PhaseDone(report.PhasePlan, fmt.Sprintf("name: %s, build image: %s", p.Name, p.BuildImage))
 

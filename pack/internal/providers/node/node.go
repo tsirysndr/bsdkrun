@@ -8,8 +8,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/tsirysndr/bsdkrun/pack/internal/mise"
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/entry"
+	"github.com/tsirysndr/bsdkrun/pack/internal/versions"
 )
 
 const defaultVersion = "24"
@@ -39,7 +40,7 @@ func (p *Provider) Plan(dir string, _ plan.Arch) (*plan.Plan, error) {
 	entry := mainEntry(dir)
 
 	version := defaultVersion
-	if v, ok := mise.Read(dir).Major("node"); ok {
+	if v, ok := versions.Read(dir).Major("node"); ok {
 		version = v
 	}
 
@@ -74,18 +75,20 @@ rm -rf /out/rootfs/usr/src/node_modules/.cache
 	}, nil
 }
 
-// mainEntry reads package.json's "main", falling back to server.js — the
-// same default npm itself documents.
+// mainEntry prefers package.json's "main", then looks for a conventional
+// entrypoint in the root, app/ and src/. package.json often omits "main"
+// entirely (examples/unikraft-expressjs's does), so the search is what
+// actually finds the program most of the time.
 func mainEntry(dir string) string {
 	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
-	if err != nil {
-		return "server.js"
+	if err == nil {
+		var pkg struct {
+			Main string `json:"main"`
+		}
+		if json.Unmarshal(data, &pkg) == nil && pkg.Main != "" {
+			return pkg.Main
+		}
 	}
-	var pkg struct {
-		Main string `json:"main"`
-	}
-	if err := json.Unmarshal(data, &pkg); err != nil || pkg.Main == "" {
-		return "server.js"
-	}
-	return pkg.Main
+	return entry.FindOr(dir,
+		[]string{"server.js", "index.js", "app.js", "main.js"}, "server.js")
 }

@@ -6,8 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/tsirysndr/bsdkrun/pack/internal/mise"
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/entry"
+	"github.com/tsirysndr/bsdkrun/pack/internal/versions"
 )
 
 const defaultVersion = "3.2"
@@ -28,24 +29,24 @@ func (p *Provider) Detect(dir string) (bool, error) {
 			return false, err
 		}
 	}
-	return false, nil
+	// A single-file Ruby service need not carry any of those — this repo's
+	// own examples/unikraft-ruby is just server.rb — so a conventional
+	// entrypoint counts as a marker in its own right.
+	_, ok := entry.Find(dir, scripts)
+	return ok, nil
 }
+
+var scripts = []string{"server.rb", "app.rb", "main.rb", "config.ru"}
 
 func (p *Provider) StartCommandHelp() string {
 	return `Ruby runs server.rb (or config.ru's app). A Procfile "web:" line overrides it.`
 }
 
 func (p *Provider) Plan(dir string, _ plan.Arch) (*plan.Plan, error) {
-	entry := "server.rb"
-	for _, c := range []string{"server.rb", "app.rb", "main.rb"} {
-		if _, err := os.Stat(filepath.Join(dir, c)); err == nil {
-			entry = c
-			break
-		}
-	}
+	main := entry.FindOr(dir, scripts, "server.rb")
 
 	version := defaultVersion
-	if v, ok := mise.Read(dir).Version("ruby"); ok {
+	if v, ok := versions.Read(dir).Version("ruby"); ok {
 		version = v
 	}
 
@@ -76,6 +77,6 @@ fi
 cp -a . /out/rootfs/src/ 2>/dev/null || true
 chmod 1777 /out/rootfs/tmp
 `, plan.LddIntoRootfs),
-		Cmd: []string{"/usr/bin/ruby", "/src/" + entry},
+		Cmd: []string{"/usr/bin/ruby", "/src/" + main},
 	}, nil
 }

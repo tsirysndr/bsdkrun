@@ -6,8 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/tsirysndr/bsdkrun/pack/internal/mise"
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/entry"
+	"github.com/tsirysndr/bsdkrun/pack/internal/versions"
 )
 
 const defaultVersion = "8.2"
@@ -36,15 +37,11 @@ func (p *Provider) StartCommandHelp() string {
 }
 
 func (p *Provider) Plan(dir string, _ plan.Arch) (*plan.Plan, error) {
-	entry := "server.php"
-	if _, err := os.Stat(filepath.Join(dir, "server.php")); err != nil {
-		if _, err := os.Stat(filepath.Join(dir, "index.php")); err == nil {
-			entry = "index.php"
-		}
-	}
+	main := entry.FindOr(dir,
+		[]string{"server.php", "index.php", "app.php", "main.php"}, "server.php")
 
 	version := defaultVersion
-	if v, ok := mise.Read(dir).Version("php"); ok {
+	if v, ok := versions.Read(dir).Version("php"); ok {
 		version = v
 	}
 
@@ -75,8 +72,12 @@ if [ -f composer.json ] && command -v composer >/dev/null 2>&1; then
     composer install --no-dev --no-interaction || true
 fi
 cp -a . /out/rootfs/usr/src/ 2>/dev/null || true
+# A project php.ini has to land where PHP reads it, not beside the sources.
+# It is usually load-bearing: examples/unikraft-php's is what enables the
+# sockets extension the server needs.
+[ -f php.ini ] && cp php.ini /out/rootfs/usr/local/etc/php/php.ini || true
 chmod 1777 /out/rootfs/tmp
 `, plan.LddIntoRootfs),
-		Cmd: []string{"/usr/local/bin/php", "/usr/src/" + entry},
+		Cmd: []string{"/usr/local/bin/php", "/usr/src/" + main},
 	}, nil
 }

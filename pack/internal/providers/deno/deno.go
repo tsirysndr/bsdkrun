@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/entry"
 )
 
 type Provider struct{}
@@ -33,13 +34,9 @@ func (p *Provider) StartCommandHelp() string {
 }
 
 func (p *Provider) Plan(dir string, _ plan.Arch) (*plan.Plan, error) {
-	entry := "server.js"
-	for _, c := range []string{"main.ts", "server.ts", "main.js", "server.js"} {
-		if _, err := os.Stat(filepath.Join(dir, c)); err == nil {
-			entry = c
-			break
-		}
-	}
+	main := entry.FindOr(dir,
+		[]string{"main.ts", "server.ts", "main.js", "server.js", "index.ts", "index.js"},
+		"server.js")
 
 	// denoland/deno's Debian image, not its "alpine" one: that tag does not
 	// ship a musl Deno, it runs the glibc binary through a glibc shim whose
@@ -58,6 +55,6 @@ cp -a . /out/rootfs/usr/src/ 2>/dev/null || true
 		// --quiet is required, not cosmetic: Deno's progress bar otherwise
 		// redraws in a tight loop and starves the thread doing the real
 		// work.
-		Cmd: []string{"/usr/bin/deno", "run", "--quiet", "--allow-net", "/usr/src/" + entry},
+		Cmd: []string{"/usr/bin/deno", "run", "--quiet", "--allow-net", "/usr/src/" + main},
 	}, nil
 }

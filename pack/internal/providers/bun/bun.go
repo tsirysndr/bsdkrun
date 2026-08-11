@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/entry"
 )
 
 type Provider struct{}
@@ -33,13 +34,9 @@ func (p *Provider) StartCommandHelp() string {
 }
 
 func (p *Provider) Plan(dir string, _ plan.Arch) (*plan.Plan, error) {
-	entry := "server.js"
-	for _, c := range []string{"index.ts", "server.ts", "index.js", "server.js"} {
-		if _, err := os.Stat(filepath.Join(dir, c)); err == nil {
-			entry = c
-			break
-		}
-	}
+	main := entry.FindOr(dir,
+		[]string{"index.ts", "server.ts", "index.js", "server.js", "main.ts", "main.js"},
+		"server.js")
 
 	// Bun's Alpine image is a genuine musl build — unlike Deno's, which is
 	// glibc behind a shim — so there is no reason to prefer Debian here.
@@ -73,6 +70,6 @@ ln -sf /usr/bin/bun /out/rootfs/proc/self/exe
 			// runtimes get by default.
 			"CONFIG_APPELFLOADER_STACK_NBPAGES": "2048",
 		},
-		Cmd: []string{"/usr/bin/bun", "run", "/usr/src/" + entry},
+		Cmd: []string{"/usr/bin/bun", "run", "/usr/src/" + main},
 	}, nil
 }

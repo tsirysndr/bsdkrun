@@ -8,8 +8,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/tsirysndr/bsdkrun/pack/internal/mise"
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
+	"github.com/tsirysndr/bsdkrun/pack/internal/versions"
 )
 
 const defaultVersion = "1.75"
@@ -42,7 +42,7 @@ func (p *Provider) Plan(dir string, _ plan.Arch) (*plan.Plan, error) {
 	}
 
 	version := defaultVersion
-	if v, ok := mise.Read(dir).Version("rust"); ok {
+	if v, ok := versions.Read(dir).Version("rust"); ok {
 		version = v
 	}
 

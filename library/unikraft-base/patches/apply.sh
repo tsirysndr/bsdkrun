@@ -2543,4 +2543,88 @@ else
 	echo "getsid/getpgid/setpgid pid checks: already patched or absent, skipping"
 fi
 
+# ---------------------------------------------------------------------------
+# Bound the tracer's %s
+#
+# uk_prsyscall.c prints a char* syscall argument with %s, which walks guest
+# memory until it finds a NUL. The argument is whatever the application
+# passed, so that walk can run off the end of what is mapped and fault --
+# inside the tracer, while formatting the line meant to explain the
+# application. The guest dies with a data abort in vsnprintf/memchr that
+# reads as the application crashing at a fixed point.
+#
+# .NET traces ended this way every time, at the same line, which is what
+# made it look like an application failure rather than a tracer one.
+#
+# Only built into --strace images, so this cannot affect an ordinary build.
+# ---------------------------------------------------------------------------
+PRSC="$UK/lib/syscall_shim/uk_prsyscall.c"
+if [ -f "$PRSC" ] && ! grep -q 'prsyscall_charp' "$PRSC"; then
+	echo "patching $PRSC (bound the tracer's string printing)"
+	python3 - "$PRSC" <<'BSDKRUN_PRSC_EOF'
+import sys
+
+path = sys.argv[1]
+src = open(path).read()
+
+helper = r"""#include <uk/streambuf.h>
+
+#if CONFIG_LIBUKVMEM
+#include <uk/vmem.h>
+#endif /* CONFIG_LIBUKVMEM */
+
+/* bsdkrun: how much of a string argument to print.
+ *
+ * The %s below walks guest memory until it finds a NUL. A syscall argument
+ * is whatever the application passed, so that walk can run off the end of
+ * what is mapped and fault -- inside the tracer, while formatting the line
+ * that was meant to explain the application. The guest then dies with a
+ * data abort in vsnprintf/memchr that looks like the application crashing
+ * at a fixed point, which is a memorably unhelpful way to be misled.
+ */
+#define PRSYSCALL_STRMAX 128
+
+static void prsyscall_charp(struct uk_streambuf *sb, const char *s)
+{
+	__sz max = PRSYSCALL_STRMAX;
+#if CONFIG_LIBUKVMEM
+	const struct uk_vma *vma;
+
+	/* An address in no VMA cannot be read at all: print the pointer,
+	 * which is more than a crash would have told anyone.
+	 */
+	vma = uk_vma_find(uk_vas_get_active(), (__vaddr_t) s);
+	if (unlikely(!vma)) {
+		uk_streambuf_printf(sb, "0x%lx", (unsigned long) s);
+		return;
+	}
+
+	/* Stop at the end of the mapping the string starts in, so an
+	 * unterminated string cannot walk into the next one.
+	 */
+	if ((__sz)(vma->end - (__vaddr_t) s) < max)
+		max = (__sz)(vma->end - (__vaddr_t) s);
+#endif /* CONFIG_LIBUKVMEM */
+
+	/* %.*s still stops at a NUL; the precision only bounds how far it
+	 * will look for one.
+	 */
+	uk_streambuf_printf(sb, "\"%.*s\"", (int) max, s);
+}"""
+
+anchor = "#include <uk/streambuf.h>"
+assert src.count(anchor) == 1, "include anchor moved"
+src = src.replace(anchor, helper, 1)
+
+call = '			uk_streambuf_printf(sb, "\\"%s\\"", (const char *) param);'
+assert src.count(call) == 1, "PT_CHARP print site moved"
+src = src.replace(call, '			prsyscall_charp(sb, (const char *) param);', 1)
+
+open(path, "w").write(src)
+BSDKRUN_PRSC_EOF
+	grep -q 'prsyscall_charp' "$PRSC" || { echo "failed to bound the tracer's %s" >&2; exit 1; }
+else
+	echo "tracer string bounding: already patched or absent, skipping"
+fi
+
 echo "patches applied."

@@ -42,6 +42,14 @@ on:
       - "examples/unikraft-mariadb/**"
       - "examples/unikraft-mongodb/**"
       - "examples/unikraft-php/**"
+      - "examples/unikraft-python/**"
+      - "examples/unikraft-static/**"
+      - "examples/unikraft-crystal/**"
+      - "examples/unikraft-zig/**"
+      - "examples/unikraft-java/**"
+      - "examples/unikraft-scala/**"
+      - "examples/unikraft-swift/**"
+      - "examples/unikraft-dotnet/**"
       - "examples/unikraft-ruby/**"
       - "examples/unikraft-rails/**"
       - "examples/unikraft-caddy/**"
@@ -326,6 +334,84 @@ jobs:
             expect: "Hello, World!"
             # Verified end to end on arm64/macOS; x86_64 has never been run,
             # so this job is the test. Non-strict until it passes.
+            strict: false
+          - example: unikraft-python
+            kernel: python_fc-x86_64
+            pack: true
+            placeholder: python
+            # CPython's prefix is ~90 MiB of rootfs, resident twice at boot.
+            mem: 1024
+            argv: /opt/python/bin/python3 -u /src/main.py
+            port: 8080
+            expect: "Hello from Python on Unikraft!"
+            # Verified end to end on arm64/macOS; x86_64 has never been run,
+            # so this job is the test. Non-strict until it passes.
+            strict: false
+          - example: unikraft-static
+            kernel: static_fc-x86_64
+            pack: true
+            placeholder: static
+            mem: 512
+            argv: /usr/bin/caddy run --config /etc/caddy/Caddyfile
+            port: 8080
+            expect: "Hello from a static site on Unikraft!"
+            strict: false
+          - example: unikraft-crystal
+            kernel: crystal_fc-x86_64
+            pack: true
+            placeholder: crystal
+            mem: 512
+            argv: /usr/bin/server
+            port: 8080
+            expect: "Hello from Crystal on Unikraft!"
+            strict: false
+          - example: unikraft-zig
+            kernel: zig_fc-x86_64
+            pack: true
+            placeholder: zig
+            mem: 512
+            argv: /usr/bin/server
+            port: 8080
+            expect: "Hello from Zig on Unikraft!"
+            strict: false
+          - example: unikraft-java
+            kernel: java_fc-x86_64
+            pack: true
+            placeholder: java
+            # A jlink'd JRE plus the shaded jar.
+            mem: 1024
+            argv: /opt/jre/bin/java -XX:+UseSerialGC -XX:ActiveProcessorCount=1 -XX:-UseContainerSupport -XX:-UsePerfData -XX:TieredStopAtLevel=1 -Xmx256m -jar /usr/src/server.jar
+            port: 8080
+            expect: "Hello from Java on Unikraft!"
+            # Never run on either architecture yet: this job is the test.
+            strict: false
+          - example: unikraft-scala
+            kernel: scala_fc-x86_64
+            pack: true
+            placeholder: scala
+            mem: 1024
+            argv: /opt/jre/bin/java -XX:+UseSerialGC -XX:ActiveProcessorCount=1 -XX:-UseContainerSupport -XX:-UsePerfData -XX:TieredStopAtLevel=1 -Xmx256m -jar /usr/src/server.jar
+            port: 8080
+            expect: "Hello from Scala on Unikraft!"
+            strict: false
+          - example: unikraft-swift
+            kernel: swift_fc-x86_64
+            pack: true
+            placeholder: swift
+            mem: 512
+            argv: /usr/bin/server
+            port: 8080
+            expect: "Hello from Swift on Unikraft!"
+            strict: false
+          - example: unikraft-dotnet
+            kernel: dotnet_fc-x86_64
+            pack: true
+            placeholder: dotnet
+            # The self-contained runtime ships with the app.
+            mem: 1024
+            argv: /usr/src/app/server
+            port: 8080
+            expect: "Hello from C# on Unikraft!"
             strict: false
           - example: unikraft-rails
             kernel: rails_fc-x86_64

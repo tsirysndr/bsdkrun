@@ -117,16 +117,15 @@ jobs:
             strict: false
           - example: unikraft-clojure
             kernel: clojure_fc-x86_64
+            pack: true
+            placeholder: clojure
             # A jlink'ed runtime and one uberjar come to 37 MiB, so unlike node
             # and Deno this boots in the default 512 MiB even with the rootfs
             # resident twice. 1024 here only because x86_64 has never been
             # measured; arm64 was.
             mem: 1024
             # The JVM flags are load-bearing, not tuning -- see the Kraftfile.
-            argv: >-
-              /opt/jre/bin/java -XX:+UseSerialGC -XX:ActiveProcessorCount=1
-              -XX:-UseContainerSupport -XX:-UsePerfData -XX:TieredStopAtLevel=1
-              -Xmx256m -jar /usr/src/server.jar
+            argv: /opt/jre/bin/java -XX:+UseSerialGC -XX:ActiveProcessorCount=1 -XX:-UseContainerSupport -XX:-UsePerfData -XX:TieredStopAtLevel=1 -Xmx256m -jar /usr/src/server.jar
             port: 3000
             expect: "Hello from Clojure on Unikraft!"
             # Verified end to end on arm64/macOS; x86_64 has never been run, so

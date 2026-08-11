@@ -39,19 +39,15 @@ const staticBuilderTag = "static-builder-musl-1.12.6"
 // ExtensionsEnv overrides the extensions compiled into a FrankenPHP binary.
 const ExtensionsEnv = "BSDKRUN_PHP_EXTENSIONS"
 
-// defaultExtensions is what gets compiled in when the project says nothing.
+// The extension set is left to the builder, which infers it from the
+// project's composer.json. Curating one here went badly: adding curl pulled
+// in an SPC curl build that wants libssh2, and the link failed on symbols
+// no PHP application here asked for. Inference gets the dependency graph
+// right; what it cannot know is what a framework uses without declaring —
+// so an application that reaches for an extension should require it, the
+// way examples/unikraft-symfony now requires ext-filter.
 //
-// With an embedded app the builder infers the set from composer.json, and
-// what a framework *declares* is not what it *uses*: Symfony reaches for
-// FILTER_VALIDATE_INT without requiring ext-filter, so an inferred build
-// serves one request and dies on an undefined constant. The builder's own
-// default is the opposite problem — sixty extensions including imagick,
-// ldap and amqp, most of which no unikernel here will ever call.
-//
-// This is the middle: what a web application actually touches.
-const defaultExtensions = "ctype,curl,dom,fileinfo,filter,iconv,mbstring," +
-	"opcache,openssl,pdo,pdo_mysql,pdo_pgsql,pdo_sqlite,phar,posix,session," +
-	"simplexml,sockets,sodium,sqlite3,tokenizer,xml,xmlreader,xmlwriter,zip,zlib"
+// BSDKRUN_PHP_EXTENSIONS overrides it outright when that is not enough.
 
 type Provider struct{}
 
@@ -237,10 +233,9 @@ func frankenPHPPlan(docroot string, arch plan.Arch) (*plan.Plan, error) {
 			// now wants a newer one than the image has. "auto" lets Go
 			// fetch the toolchain the modules ask for instead of failing.
 			"GOTOOLCHAIN": "auto",
-			// See defaultExtensions: left to itself the builder infers
-			// these from composer.json and misses what frameworks use
-			// without declaring.
-			"PHP_EXTENSIONS": extensions(),
+			// Empty leaves the builder to infer from composer.json; see
+			// the note above ExtensionsEnv.
+			"PHP_EXTENSIONS": os.Getenv(ExtensionsEnv),
 		},
 		Script: fmt.Sprintf(`set -eu
 if [ -f composer.json ]; then
@@ -272,14 +267,6 @@ chmod 1777 /out/rootfs/tmp
 			"--root", "/app/" + docroot,
 		},
 	}, nil
-}
-
-// extensions is the extension set for a FrankenPHP build.
-func extensions() string {
-	if v := os.Getenv(ExtensionsEnv); v != "" {
-		return v
-	}
-	return defaultExtensions
 }
 
 // command is the guest argv: the built-in server for a framework's public/

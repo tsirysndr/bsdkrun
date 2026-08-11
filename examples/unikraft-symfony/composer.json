@@ -3,6 +3,7 @@
   "description": "A Symfony HTTP service running as a Unikraft unikernel",
   "require": {
     "php": ">=8.2",
+    "ext-filter": "*",
     "symfony/http-foundation": "^7.0",
     "symfony/routing": "^7.0"
   },

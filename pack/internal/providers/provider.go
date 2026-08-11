@@ -18,8 +18,12 @@ import (
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/bun"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/deno"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/elixir"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/gleam"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/golang"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/node"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/php"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/ruby"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/rust"
 )
 
@@ -51,6 +55,10 @@ func All() []Provider {
 	return []Provider{
 		golang.New(),
 		rust.New(),
+		elixir.New(),
+		gleam.New(),
+		php.New(),
+		ruby.New(),
 		deno.New(),
 		bun.New(),
 		node.New(),

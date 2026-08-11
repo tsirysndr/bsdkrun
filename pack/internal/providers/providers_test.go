@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,6 +33,10 @@ func TestDetectionOrder(t *testing.T) {
 			"deno.json": "{}", "package.json": "{}"}, "deno"},
 		{"bun beats node", map[string]string{
 			"bun.lockb": "", "package.json": "{}"}, "bun"},
+		{"elixir", map[string]string{"mix.exs": `app: :myapp, version: "1.2.3"`}, "elixir"},
+		{"gleam", map[string]string{"gleam.toml": `name = "wisp_demo"`}, "gleam"},
+		{"php", map[string]string{"composer.json": "{}"}, "php"},
+		{"ruby", map[string]string{"Gemfile": "source 'x'"}, "ruby"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -116,5 +121,62 @@ func TestGoRelocatesAmd64Only(t *testing.T) {
 	}
 	if amd64.Name != "widget" {
 		t.Errorf("Name = %q, want widget", amd64.Name)
+	}
+}
+
+// The BEAM providers boot beam.smp directly — there is no shell in the guest
+// to run a release's start script — so erlexec's environment has to be baked
+// into the kernel config, and the release version ends up inside the boot
+// argv. Both are silent failures if wrong.
+func TestBeamProviders(t *testing.T) {
+	t.Run("elixir reads app and version from mix.exs", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "mix.exs", "def project do\n[app: :myapp, version: \"1.2.3\"]\nend")
+		p, err := Get("elixir").Plan(dir, plan.ArchArm64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Name != "myapp" {
+			t.Errorf("Name = %q, want myapp", p.Name)
+		}
+		joined := strings.Join(p.Cmd, " ")
+		if !strings.Contains(joined, "/srv/releases/1.2.3/start") {
+			t.Errorf("boot argv should name the release version:\n%s", joined)
+		}
+		for _, k := range []string{"ROOTDIR", "BINDIR", "EMU", "PROGNAME"} {
+			if !strings.Contains(fmt.Sprint(p.Kconfig), k) {
+				t.Errorf("missing erlexec env %s: %v", k, p.Kconfig)
+			}
+		}
+	})
+
+	t.Run("gleam calls its own entrypoint module", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "gleam.toml", `name = "wisp_demo"`)
+		p, err := Get("gleam").Plan(dir, plan.ArchArm64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(strings.Join(p.Cmd, " "), "wisp_demo@@main:run(wisp_demo)") {
+			t.Errorf("wrong entrypoint: %v", p.Cmd)
+		}
+		if p.Kconfig["CONFIG_LIBPOSIX_ENVIRON_ENVP8"] != `"ERL_LIBS=/srv"` {
+			t.Errorf("ERL_LIBS replaces gleam's 21-argument -pa expansion: %v", p.Kconfig)
+		}
+	})
+}
+
+// Ruby's stdlib ships native extensions, so resolving only the interpreter's
+// own libraries leaves the first `require` of an extension failing in the
+// guest.
+func TestRubyWalksStdlibExtensions(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "Gemfile", "source 'https://rubygems.org'")
+	p, err := Get("ruby").Plan(dir, plan.ArchArm64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p.Script, "find /usr/local/lib/ruby -name '*.so'") {
+		t.Errorf("stdlib .so files must be ldd-walked too:\n%s", p.Script)
 	}
 }

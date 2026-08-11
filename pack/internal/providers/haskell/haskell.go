@@ -82,13 +82,18 @@ func (p *Provider) Plan(dir string, arch plan.Arch) (*plan.Plan, error) {
 		Env: map[string]string{
 			"STACK_ROOT": "/tmp/stack",
 		},
+		// compiler-check: newer-minor, because a Stackage snapshot names an
+		// exact GHC and the image ships whatever its tag last built with —
+		// lts-22.28 wants 9.6.6 and haskell:9.6 carries 9.6.7, which without
+		// this is a hard "No compiler found" rather than a warning.
+		//
 		// No apt-get here: the image already carries the certificates Stack
 		// needs to reach Hackage. That matters more than it looks — 9.4 is
 		// Debian buster, whose repositories are archived, so `apt-get
 		// update` there fails outright and took the build with it.
 		Script: fmt.Sprintf(`set -eu
 %sif [ ! -f stack.yaml ]; then
-    printf 'resolver: %s\n' > stack.yaml
+    printf 'resolver: %s\ncompiler-check: newer-minor\n' > stack.yaml
 fi
 
 stack build --system-ghc --no-install-ghc%s --copy-bins --local-bin-path /tmp/bin

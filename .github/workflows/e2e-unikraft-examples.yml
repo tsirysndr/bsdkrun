@@ -43,6 +43,9 @@ on:
       - "examples/unikraft-mongodb/**"
       - "examples/unikraft-php/**"
       - "examples/unikraft-python/**"
+      - "examples/unikraft-haskell/**"
+      - "examples/unikraft-laravel/**"
+      - "examples/unikraft-symfony/**"
       - "examples/unikraft-static/**"
       - "examples/unikraft-crystal/**"
       - "examples/unikraft-zig/**"
@@ -346,6 +349,37 @@ jobs:
             expect: "Hello from Python on Unikraft!"
             # Verified end to end on arm64/macOS; x86_64 has never been run,
             # so this job is the test. Non-strict until it passes.
+            strict: false
+          - example: unikraft-haskell
+            kernel: haskell_fc-x86_64
+            pack: true
+            placeholder: haskell
+            mem: 512
+            argv: /usr/bin/server
+            port: 8080
+            expect: "Hello from Haskell on Unikraft!"
+            strict: false
+          - example: unikraft-symfony
+            kernel: php_fc-x86_64
+            pack: true
+            placeholder: php
+            # php plus vendor/; the front controller is served by php -S.
+            mem: 512
+            argv: /usr/local/bin/php -S 0.0.0.0:8080 -t /usr/src/public /usr/src/public/index.php
+            port: 8080
+            expect: "Hello from Symfony on Unikraft!"
+            # Verified end to end on arm64/macOS; x86_64 has never been run,
+            # so this job is the test. Non-strict until it passes.
+            strict: false
+          - example: unikraft-laravel
+            kernel: php_fc-x86_64
+            pack: true
+            placeholder: php
+            # The full framework plus its vendor tree.
+            mem: 1024
+            argv: /usr/local/bin/php -S 0.0.0.0:8080 -t /usr/src/public /usr/src/public/index.php
+            port: 8080
+            expect: "Hello from Laravel on Unikraft!"
             strict: false
           - example: unikraft-static
             kernel: static_fc-x86_64

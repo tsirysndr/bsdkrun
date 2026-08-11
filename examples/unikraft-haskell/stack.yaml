@@ -1,3 +1,8 @@
 resolver: lts-22.28
+
+# The snapshot names an exact GHC (9.6.6) and the haskell:9.6 image ships
+# whatever its tag last built with (9.6.7). Without this that mismatch is a
+# hard "No compiler found", not a warning.
+compiler-check: newer-minor
 packages:
   - .

@@ -2073,4 +2073,106 @@ else
 	echo "sigaltstack.c SS_DISABLE: already patched or absent, skipping"
 fi
 
+# ---------------------------------------------------------------------------
+# 26. fchmodat() is not implemented, so chmod() always fails on arm64.
+#
+# arm64's Linux syscall ABI dropped every "legacy" path syscall x86_64 still
+# carries -- chmod(2) is one of them (there is no SYS_chmod on arm64 at all).
+# glibc and musl paper over that the same way they do for open -> openat,
+# mkdir -> mkdirat, unlink -> unlinkat: chmod(path, mode) is implemented as
+# fchmodat(AT_FDCWD, path, mode, 0). vfscore already has all three of those
+# *at replacements, and its `chmod` UK_SYSCALL_R_DEFINE (lib/vfscore/main.c)
+# is itself a fully working implementation -- sys_chmod() -> vn_setmode() ->
+# ramfs_setattr() sets the mode bits and returns success -- but on arm64
+# nothing ever reaches it, because that entry point is registered under a
+# syscall number (SYS_chmod) that does not exist on this architecture. Only
+# fchmodat was ever missing; `fchmodat-4` was never declared as a provided
+# syscall and no UK_SYSCALL_R_DEFINE for it exists, so every call -- from
+# any program, not a specific one -- fell straight through to "no such
+# syscall" (ENOSYS).
+#
+# This was found chasing ../../examples/unikraft-apache: apache2 calls
+# chmod() unconditionally on every startup, while writing its pid file
+# (ap_log_pid() in server/log.c), and APR turns the ENOSYS into a fatal
+# "Failed creating pid file" -- see that example's README for the trace. But
+# the gap is generic: any arm64 program calling chmod() hits it identically,
+# the same way ../../examples/unikraft-bun hit a missing mremap.
+#
+# What this does not handle: AT_SYMLINK_NOFOLLOW. Linux's own fchmodat
+# rejects that flag too (ENOTSUP; changing a symlink's own mode is not
+# supported on Linux at all), so refusing anything but flags == 0 here is not
+# a narrower contract than upstream, just an unimplemented corner nothing in
+# this repo's examples exercises.
+# ---------------------------------------------------------------------------
+MAINC="$UK/lib/vfscore/main.c"
+if [ -f "$MAINC" ] && ! grep -q ', fchmodat,' "$MAINC"; then
+	echo "patching $MAINC (implement fchmodat)"
+	python3 - "$MAINC" <<'PYEOF'
+import sys
+
+p = sys.argv[1]
+s = open(p).read()
+
+anchor = """UK_TRACEPOINT(trace_vfs_chmod, "\\"%s\\" 0%0o", const char*, mode_t);
+UK_TRACEPOINT(trace_vfs_chmod_ret, "");
+UK_TRACEPOINT(trace_vfs_chmod_err, "%d", int);
+
+UK_SYSCALL_R_DEFINE(int, chmod, const char*, pathname, mode_t, mode)"""
+assert anchor in s, "main.c does not contain the expected chmod definition"
+
+impl = """UK_TRACEPOINT(trace_vfs_fchmodat, "%d \\"%s\\" 0%0o %d", int, const char*, mode_t, int);
+UK_TRACEPOINT(trace_vfs_fchmodat_ret, "");
+UK_TRACEPOINT(trace_vfs_fchmodat_err, "%d", int);
+
+UK_SYSCALL_R_DEFINE(int, fchmodat, int, dirfd, const char*, pathname,
+		    mode_t, mode, int, flags)
+{
+	struct task *t = main_task;
+	char path[PATH_MAX];
+	int error;
+
+	trace_vfs_fchmodat(dirfd, pathname, mode, flags);
+
+	if (unlikely(flags != 0)) {
+		error = -EINVAL;
+		goto out_error;
+	}
+
+	if ((error = taskat_conv(t, dirfd, pathname, path)) != 0)
+		goto out_error;
+
+	error = sys_chmod(path, mode & UK_ALLPERMS);
+	if (error)
+		goto out_error;
+
+	trace_vfs_fchmodat_ret();
+	return 0;
+
+out_error:
+	trace_vfs_fchmodat_err(error);
+	return error < 0 ? error : -error;
+}
+
+"""
+
+open(p, "w").write(s.replace(anchor, impl + anchor, 1))
+PYEOF
+else
+	echo "fchmodat: already patched or absent, skipping"
+fi
+
+# Registered separately, same reasoning as mremap above: without the
+# declaration the shim generates no table entry regardless of whether the
+# handler function is compiled in.
+VFSMK="$UK/lib/vfscore/Makefile.uk"
+if [ -f "$VFSMK" ] && ! grep -q 'fchmodat-4' "$VFSMK"; then
+	echo "patching $VFSMK (declare fchmodat-4)"
+	sed -i.bak 's#^UK_PROVIDED_SYSCALLS-$(CONFIG_LIBVFSCORE) += chmod-2$#&\
+UK_PROVIDED_SYSCALLS-$(CONFIG_LIBVFSCORE) += fchmodat-4#' "$VFSMK"
+	rm -f "$VFSMK.bak"
+	grep -q 'fchmodat-4' "$VFSMK" || { echo "failed to register fchmodat" >&2; exit 1; }
+else
+	echo "fchmodat syscall registration: already patched or absent, skipping"
+fi
+
 echo "patches applied."

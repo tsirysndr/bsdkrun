@@ -56,11 +56,21 @@ type Plan struct {
 	KconfigExtra map[string]string
 }
 
+// Arch is the guest architecture the plan targets, in Docker/OCI spelling
+// ("amd64"/"arm64"). A plain string rather than buildkit.Platform because
+// internal/buildkit imports this package, not the other way round.
+type Arch string
+
+const (
+	ArchAmd64 Arch = "amd64"
+	ArchArm64 Arch = "arm64"
+)
+
 // Build dispatches to the provider-specific plan builder.
-func Build(d *detect.Detection) (*Plan, error) {
+func Build(d *detect.Detection, arch Arch) (*Plan, error) {
 	switch d.Provider {
 	case detect.Go:
-		return goPlan(d.Dir)
+		return goPlan(d.Dir, arch)
 	case detect.Rust:
 		return rustPlan(d.Dir)
 	default:

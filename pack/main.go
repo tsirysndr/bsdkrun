@@ -157,7 +157,7 @@ func runPipeline(r report.Reporter, path, targetFlag string, strace, loaderDebug
 	r.PhaseDone(report.PhaseDetect, fmt.Sprintf("provider: %s", d.Provider))
 
 	r.PhaseStart(report.PhasePlan)
-	p, err := plan.Build(d)
+	p, err := plan.Build(d, plan.Arch(platform))
 	if err != nil {
 		r.PhaseError(report.PhasePlan, err)
 		return "", err

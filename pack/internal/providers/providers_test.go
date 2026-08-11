@@ -247,3 +247,19 @@ func TestRealExampleLayouts(t *testing.T) {
 		}
 	})
 }
+
+// llb.Image carries an image's filesystem but not its config, so any ENV a
+// build depends on has to be restated by the provider. PHP_INI_DIR is the
+// one that bites: docker-php-ext-enable writes "$PHP_INI_DIR/conf.d/...",
+// which without it becomes /conf.d and fails the whole build.
+func TestPHPRestatesImageEnv(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "server.php", "")
+	p, err := Get("php").Plan(dir, plan.ArchArm64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Env["PHP_INI_DIR"] != "/usr/local/etc/php" {
+		t.Errorf("PHP_INI_DIR must be set for docker-php-ext-enable: %v", p.Env)
+	}
+}

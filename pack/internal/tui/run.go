@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"strings"
+
 	tea "github.com/charmbracelet/bubbletea"
 	bkclient "github.com/moby/buildkit/client"
 
@@ -21,6 +23,15 @@ func (r *reporter) PhaseError(phase string, err error) {
 func (r *reporter) Log(phase, line string) { r.p.Send(logMsg{phase, line}) }
 func (r *reporter) BuildKitStatus(phase string, s *bkclient.SolveStatus) {
 	r.p.Send(buildkitMsg{phase, s})
+	// Surface the build step's own output too, so a failing script says why
+	// rather than just dying with an exit code.
+	for _, l := range s.Logs {
+		for _, line := range strings.Split(strings.TrimRight(string(l.Data), "\n"), "\n") {
+			if line != "" {
+				r.p.Send(logMsg{phase, line})
+			}
+		}
+	}
 }
 
 // Pipeline is what Run drives: the actual pack pipeline, reporting its

@@ -2,6 +2,7 @@ package report
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	bkclient "github.com/moby/buildkit/client"
@@ -57,6 +58,19 @@ func (p *Plain) BuildKitStatus(phase string, s *bkclient.SolveStatus) {
 		if v.Started != nil && !p.active[string(v.Digest)] {
 			p.active[string(v.Digest)] = true
 			fmt.Printf("      [buildkit] %s\n", v.Name)
+		}
+		if v.Error != "" {
+			fmt.Printf("      [buildkit] FAILED %s: %s\n", v.Name, v.Error)
+		}
+	}
+	// The build step's own output. Without this a failing provider script
+	// reports nothing but an exit code — the shell's actual complaint, which
+	// is the only thing that says *why*, is thrown away.
+	for _, l := range s.Logs {
+		for _, line := range strings.Split(strings.TrimRight(string(l.Data), "\n"), "\n") {
+			if line != "" {
+				fmt.Println("      | " + line)
+			}
 		}
 	}
 }

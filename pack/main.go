@@ -25,6 +25,7 @@ import (
 
 	"github.com/tsirysndr/bsdkrun/pack/internal/buildkit"
 	"github.com/tsirysndr/bsdkrun/pack/internal/cachedir"
+	"github.com/tsirysndr/bsdkrun/pack/internal/clean"
 	"github.com/tsirysndr/bsdkrun/pack/internal/config"
 	"github.com/tsirysndr/bsdkrun/pack/internal/kraft"
 	"github.com/tsirysndr/bsdkrun/pack/internal/kraftfile"
@@ -45,10 +46,12 @@ func main() {
 	target := fs.String("target", "", "guest architecture to build for: arm64 or x86_64 (default: this host's)")
 	plainOutput := fs.Bool("plain", false, "plain sequential output instead of the animated TUI")
 	strace := fs.Bool("strace", false, "trace every guest syscall to the console (very noisy; for a guest that boots but doesn't behave)")
+	doClean := fs.Bool("clean", false, "remove the build artifacts pack generated in this project, then exit")
+	doPrune := fs.Bool("prune", false, "with --clean, also remove the shared buildkitd container, its build cache, and the kraft builder image")
 	planOnly := fs.Bool("plan", false, "resolve the plan and print it as JSON, without building")
 	loaderDebug := fs.Bool("loader-debug", false, "trace the ELF loader placing the binary, before it runs (says where a guest that dies before its first syscall got to)")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: bsdkrun pack [path] [--target arm64|x86_64] [--plan] [--plain] [--strace] [--loader-debug]")
+		fmt.Fprintln(os.Stderr, "usage: bsdkrun pack [path] [--target arm64|x86_64] [--plan] [--clean [--prune]] [--plain] [--strace] [--loader-debug]")
 		fmt.Fprintln(os.Stderr, "\nPackage a project as a bootable Unikraft unikernel.")
 		fmt.Fprintln(os.Stderr, "\nArguments:")
 		fmt.Fprintln(os.Stderr, "  path   project directory to pack (default \".\")")
@@ -74,6 +77,15 @@ func main() {
 	// (a log file, CI, `| tee build.log`) falls back to the plain printer —
 	// every test run in this repo's own development used exactly that path.
 	useTUI := !*plainOutput && isatty.IsTerminal(os.Stdout.Fd())
+
+	// --clean short-circuits too: nothing is built, things are removed.
+	if *doClean {
+		if err := runClean(path, *doPrune); err != nil {
+			fmt.Fprintf(os.Stderr, "bsdkrun pack: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// --plan short-circuits everything below: no Docker, no BuildKit, no
 	// kraft. Useful on its own to see what pack decided, and it is how CI
@@ -195,6 +207,35 @@ func applyStartCommand(p *plan.Plan, dir string, cfg *config.Config, r report.Re
 // the leading placeholder is required even though it is discarded.
 func bootCmdline(p *plan.Plan) string {
 	return p.Name + " -- " + strings.Join(p.Cmd, " ")
+}
+
+// runClean removes pack's build artifacts. Project-local by default;
+// --prune additionally removes the Docker resources shared across every
+// project on this host, which are expensive to rebuild and so are not
+// bundled into an ordinary clean.
+func runClean(path string, prune bool) error {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("cleaning %s\n", displayPath(absPath))
+	removed, err := clean.Project(absPath)
+	if err != nil {
+		return err
+	}
+	fmt.Print(removed.Report("  "))
+
+	if prune {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		fmt.Println("pruning shared caches")
+		shared, err := clean.Shared(ctx)
+		if err != nil {
+			return err
+		}
+		fmt.Print(shared.Report("  "))
+	}
+	return nil
 }
 
 // printPlan resolves a plan and prints it, without building anything.

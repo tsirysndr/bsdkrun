@@ -198,22 +198,33 @@ fn ensure_pack_binary() {
 
     // CGO_ENABLED=0: a fully static binary with no libc dependency, which is
     // what makes it safe to embed and exec on any host of this same triple.
-    let status = Command::new("go")
+    // `output()` rather than `status()`: cargo captures a build script's
+    // stdio, so with `status()` the compiler's actual complaint is swallowed
+    // and all that survives is "exited with 1" — which is useless precisely
+    // when it matters. Re-emit each line as a cargo warning so a broken
+    // `pack/` says why.
+    let out = Command::new("go")
         .current_dir(&pack_src)
         .env("CGO_ENABLED", "0")
         .args(["build", "-trimpath", "-ldflags", "-s -w", "-o"])
         .arg(&out_bin)
         .arg(".")
-        .status();
+        .output();
 
-    match status {
-        Ok(s) if s.success() => {}
+    match out {
+        Ok(o) if o.status.success() => {}
         // Leave any previously-built binary in place rather than deleting a
         // working one over a transient failure.
-        Ok(s) => println!(
-            "cargo:warning=`go build` for bsdkrun pack exited with {s}; \
-             keeping the previously embedded binary, if any"
-        ),
+        Ok(o) => {
+            println!(
+                "cargo:warning=`go build` for bsdkrun pack exited with {}; \
+                 keeping the previously embedded binary, if any",
+                o.status
+            );
+            for line in String::from_utf8_lossy(&o.stderr).lines() {
+                println!("cargo:warning=  go: {line}");
+            }
+        }
         Err(e) => println!("cargo:warning=failed to run `go build` for bsdkrun pack: {e}"),
     }
 }

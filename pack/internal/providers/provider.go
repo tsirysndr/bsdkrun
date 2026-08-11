@@ -17,6 +17,7 @@ import (
 
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/bun"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/clojure"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/deno"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/elixir"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/gleam"
@@ -55,6 +56,7 @@ func All() []Provider {
 	return []Provider{
 		golang.New(),
 		rust.New(),
+		clojure.New(),
 		elixir.New(),
 		gleam.New(),
 		php.New(),

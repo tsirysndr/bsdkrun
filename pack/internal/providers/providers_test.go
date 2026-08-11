@@ -263,3 +263,34 @@ func TestPHPRestatesImageEnv(t *testing.T) {
 		t.Errorf("PHP_INI_DIR must be set for docker-php-ext-enable: %v", p.Env)
 	}
 }
+
+// Clojure is the one provider that has to *replace* a base kconfig entry
+// rather than add one: libjvm.so lives in the jlink'd JRE, not the system
+// library path. A duplicate mapping key would be last-wins at best and a
+// parse error at worst, so the generated Kraftfile must contain exactly one.
+func TestClojureOverridesLibraryPath(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "deps.edn", "{}")
+
+	p, err := Find(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Name() != "clojure" {
+		t.Fatalf("detected %q, want clojure", p.Name())
+	}
+	pl, err := p.Plan(dir, plan.ArchArm64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(pl.Kconfig["CONFIG_LIBPOSIX_ENVIRON_ENVP1"], "/opt/jre/lib/server") {
+		t.Errorf("LD_LIBRARY_PATH must point at the jlink'd JRE: %v", pl.Kconfig)
+	}
+	// jlink is what makes a JVM fit an image that is resident twice at boot.
+	if !strings.Contains(pl.Script, "jlink") {
+		t.Errorf("expected a jlink'd runtime:\n%s", pl.Script)
+	}
+	if !strings.Contains(strings.Join(pl.Cmd, " "), "-XX:ActiveProcessorCount=1") {
+		t.Errorf("the JVM flags are load-bearing on a single-CPU guest: %v", pl.Cmd)
+	}
+}

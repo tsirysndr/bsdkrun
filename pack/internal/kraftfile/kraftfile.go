@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"text/template"
 
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
@@ -276,7 +277,43 @@ func Generate(p *plan.Plan, opts Options) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("rendering Kraftfile: %w", err)
 	}
-	return buf.String(), nil
+	return overrideBaseKconfig(buf.String(), keys), nil
+}
+
+// overrideBaseKconfig drops a base kconfig line when a provider set the same
+// symbol, so the provider's value is the only one left.
+//
+// Needed because the base block is written out verbatim — its per-line
+// comments carry why each symbol is set, which is worth keeping — while
+// providers append theirs afterwards. A symbol in both would appear twice,
+// and a duplicate mapping key is at best last-wins and at worst a parse
+// error. The Clojure provider hits this: it has to point LD_LIBRARY_PATH at
+// the jlink'd JRE, replacing the base ENVP1 rather than adding to it.
+func overrideBaseKconfig(rendered string, overridden []string) string {
+	for _, key := range overridden {
+		prefix := "    " + key + ":"
+		lines := strings.Split(rendered, "\n")
+		last := -1
+		count := 0
+		for i, l := range lines {
+			if strings.HasPrefix(l, prefix) {
+				count++
+				last = i
+			}
+		}
+		if count < 2 {
+			continue
+		}
+		kept := make([]string, 0, len(lines))
+		for i, l := range lines {
+			if strings.HasPrefix(l, prefix) && i != last {
+				continue
+			}
+			kept = append(kept, l)
+		}
+		rendered = strings.Join(kept, "\n")
+	}
+	return rendered
 }
 
 // Write renders p's Kraftfile and writes it to dir/Kraftfile.

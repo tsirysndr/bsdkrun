@@ -37,6 +37,19 @@ func TestDetectionOrder(t *testing.T) {
 		{"gleam", map[string]string{"gleam.toml": `name = "wisp_demo"`}, "gleam"},
 		{"php", map[string]string{"composer.json": "{}"}, "php"},
 		{"ruby", map[string]string{"Gemfile": "source 'x'"}, "ruby"},
+		{"python", map[string]string{"requirements.txt": "flask\n"}, "python"},
+		{"python via pyproject", map[string]string{
+			"pyproject.toml": "[project]\nname = \"w\"\n"}, "python"},
+		{"python via Pipfile", map[string]string{"Pipfile": "[packages]\n"}, "python"},
+		{"static", map[string]string{"index.html": "<h1>hi</h1>"}, "static"},
+		// A real project keeps its own provider even when it looks like a
+		// site: shipping an index.html or a built public/ is what most web
+		// frameworks do, and serving those as flat files instead of running
+		// the app would be a silent, total failure.
+		{"node beats static", map[string]string{
+			"package.json": `{"main":"app.js"}`, "index.html": "<h1>"}, "node"},
+		{"python beats static", map[string]string{
+			"requirements.txt": "flask\n", "index.html": "<h1>"}, "python"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

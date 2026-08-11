@@ -18,14 +18,22 @@ import (
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/bun"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/clojure"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/crystal"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/deno"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/dotnet"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/elixir"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/gleam"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/golang"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/java"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/node"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/php"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/python"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/ruby"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/rust"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/scala"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/static"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/swift"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/zig"
 )
 
 // Provider builds one language's plan. Mirrors railpack's Provider
@@ -57,13 +65,23 @@ func All() []Provider {
 		golang.New(),
 		rust.New(),
 		clojure.New(),
+		scala.New(),
+		java.New(),
+		crystal.New(),
+		zig.New(),
+		swift.New(),
+		dotnet.New(),
 		elixir.New(),
 		gleam.New(),
 		php.New(),
+		python.New(),
 		ruby.New(),
 		deno.New(),
 		bun.New(),
 		node.New(),
+		// Last: a real project may well carry an index.html or a public/
+		// directory, and its own language provider should claim it first.
+		static.New(),
 	}
 }
 

@@ -59,6 +59,13 @@ type Plan struct {
 	// directory, into the final scratch image.
 	Script string
 
+	// Tools are files copied into the build stage from other images,
+	// before the script runs. That is how a build gets a tool its base
+	// image does not ship — PHP's composer, say — without fetching an
+	// installer over the network mid-build: the copy is a normal BuildKit
+	// input, so it is pinned by the image ref and cached like any layer.
+	Tools []ToolCopy
+
 	// Cmd is the Kraftfile `cmd:` — the guest's argv.
 	Cmd []string
 
@@ -70,6 +77,14 @@ type Plan struct {
 	// kconfig block, e.g. Bun needs CONFIG_APPELFLOADER_STACK_NBPAGES at
 	// 2048 rather than the default 128.
 	ElfloaderKconfig map[string]string
+}
+
+// ToolCopy is one file lifted out of Image at Src and placed at Dst in the
+// build stage.
+type ToolCopy struct {
+	Image string
+	Src   string
+	Dst   string
 }
 
 // LddIntoRootfs is the shell fragment that copies a dynamically linked

@@ -1,0 +1,8 @@
+.unikraft
+.rootfs-*
+.Kraftfile.*
+.config.*
+__pycache__
+*.pyc
+.venv
+venv

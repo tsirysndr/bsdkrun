@@ -63,8 +63,13 @@ func (p *Provider) Plan(dir string, _ plan.Arch) (*plan.Plan, error) {
 			"PHP_INI_DIR": "/usr/local/etc/php",
 			"PATH":        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		},
+		Tools: []plan.ToolCopy{
+			{Image: "composer:2", Src: "/usr/bin/composer", Dst: "/usr/local/bin/composer"},
+		},
 		Script: fmt.Sprintf(`set -eu
-%sdocker-php-ext-install sockets >/dev/null
+%sapt-get update -qq
+apt-get install -y -qq --no-install-recommends ca-certificates >/dev/null
+docker-php-ext-install sockets >/dev/null
 mkdir -p /out/rootfs/usr/local/bin /out/rootfs/usr/local/etc/php /out/rootfs/usr/src /out/rootfs/tmp
 cp /usr/local/bin/php /out/rootfs/usr/local/bin/php
 ext_dir=$(php -r 'echo ini_get("extension_dir");')
@@ -78,8 +83,19 @@ ext_dir=$(php -r 'echo ini_get("extension_dir");')
     done
 mkdir -p "/out/rootfs$ext_dir"
 cp -a "$ext_dir"/. "/out/rootfs$ext_dir/"
-if [ -f composer.json ] && command -v composer >/dev/null 2>&1; then
-    composer install --no-dev --no-interaction || true
+# Dependencies, when the project declares any. Composer is copied in from
+# its own image (see Tools) because the php image does not ship it -- the
+# check here used to be for the composer command, which was never present,
+# so a project with a composer.json silently got no vendor/ at all and its
+# first require() failed in the guest.
+#
+# unzip and git are what composer uses to fetch packages (dist and source
+# form respectively). No "|| true": a project that declares dependencies
+# and cannot install them is a broken build, and should say so here rather
+# than in a unikernel.
+if [ -f composer.json ]; then
+    apt-get install -y -qq --no-install-recommends unzip git >/dev/null
+    composer install --no-dev --optimize-autoloader --no-interaction --no-progress
 fi
 cp -a . /out/rootfs/usr/src/ 2>/dev/null || true
 # A project php.ini has to land where PHP reads it, not beside the sources.

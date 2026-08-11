@@ -125,6 +125,14 @@ func Build(ctx context.Context, addr, srcDir string, p *plan.Plan, platform Plat
 		build := base.
 			File(llb.Copy(src, "/", "/src", &llb.CopyInfo{CreateDestPath: true}))
 
+		// Tools the base image does not ship, taken from images that do.
+		for _, t := range p.Tools {
+			build = build.File(llb.Copy(
+				llb.Image(t.Image, llb.Platform(ociPlatform)), t.Src, t.Dst,
+				&llb.CopyInfo{CreateDestPath: true},
+			))
+		}
+
 		// Optional first stage, in its own image; its /out/stage lands at
 		// /stage here.
 		if p.BuilderImage != "" {

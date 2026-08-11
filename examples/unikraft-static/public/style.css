@@ -1,0 +1,17 @@
+:root { color-scheme: light dark; }
+
+body {
+  font: 16px/1.6 system-ui, sans-serif;
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  margin: 0;
+}
+
+main { max-width: 34rem; padding: 2rem; }
+
+code {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+}

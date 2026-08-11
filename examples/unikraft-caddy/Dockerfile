@@ -14,15 +14,27 @@ WORKDIR /caddy
 # static build (CGO_ENABLED=0) needs none: no C toolchain to cross-compile,
 # and the result has no ELF interpreter or dynamic libraries to resolve with
 # ldd, unlike ../unikraft-php and ../unikraft-redis.
+#
+# -T on amd64 is not tuning, it is what makes this boot at all there. `go
+# build` emits a non-PIE ET_EXEC whose load addresses are fixed, starting at
+# 0x400000 (4 MiB) — and the Unikraft fc kernel links at ~1 MiB and grows
+# past 4 MiB with the rootfs embedded, so the loader maps caddy over the
+# running kernel and the guest dies mute while mapping the writable segment.
+# 1 GiB clears the kernel while staying below the heap base (16 GiB) and
+# ukvmem's application range (64 GiB). arm64 links at 0x10000 with the kernel
+# 2 GiB away and needs no such move. See ../unikraft-go/README.md for the
+# loader trace that shows the failure.
 RUN --mount=type=cache,target=/root/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     set -xe; \
     apt-get update; \
     apt-get install -y --no-install-recommends git; \
     git clone --depth=1 --branch v${CADDY_VERSION} https://github.com/caddyserver/caddy.git /caddy; \
+    LDFLAGS="-s -w"; \
+    if [ "${TARGETARCH}" = amd64 ]; then LDFLAGS="$LDFLAGS -T 0x40000000"; fi; \
     CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
       -tags netgo \
-      -ldflags "-s -w" \
+      -ldflags "$LDFLAGS" \
       -o /caddy/caddy cmd/caddy/main.go
 
 RUN set -eu; \

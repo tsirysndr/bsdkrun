@@ -22,37 +22,40 @@ $ curl -d ping localhost:18080/echo  ping
 
 ## Status
 
-**arm64 works** — verified on macOS/Hypervisor.framework: builds, boots, gets
-a network interface, and serves all three routes above over a forwarded port.
+**Both architectures work.** arm64 is verified on macOS/Hypervisor.framework;
+x86_64 is verified on every push by `.github/workflows/e2e-pack.yml`, which
+packs this example with `bsdkrun pack` and boots it under KVM. Both serve all
+three routes above over a forwarded port.
 
-**x86_64 boots but does not answer yet.** `.github/workflows/e2e-pack.yml`
-runs this example (via `bsdkrun pack`, not a checked-in Kraftfile) on every
-push; the kernel builds, boots, and gets a network interface there too, but
-the Go server never answers over the forwarded port — the retry loop times
-out with the guest's TCP stack resetting every connection.
+x86_64 did not work until the `-T` relocation in
+`pack/internal/plan/go.go`. It is worth recording why, because it affects any
+Go binary here and it fails in a way that leaves no evidence at all.
 
-Diagnosed with `bsdkrun pack --strace` (`workflow_dispatch` input `strace`,
-which sets `CONFIG_LIBSYSCALL_SHIM_STRACE: 'y'` — see
-`pack/internal/kraftfile/kraftfile.go`): **zero syscalls are traced**, not
-even the ones a Go binary makes during its own runtime bootstrap, before
-`main` runs. That rules out a `net/http`- or networking-specific bug — the
-guest never gets that far. Nothing else appears on the console either (no
-`Unikraft Crash` banner, so `Symbolicate a guest crash` in the workflow is a
-no-op here), which points at something failing silently very early: most
-likely app-elfloader-rs's ELF loading or entry-point handoff not agreeing
-with a Go binary's unusual static-binary layout (Go sets up its own stack,
-TLS and signal handling in assembly before making any libc-shaped syscall,
-unlike Rust or C binaries this loader is proven against). Not yet root-caused
-further — that needs interactive debugging on x86_64/KVM, which this
-investigation didn't have.
+`go build` emits a **non-PIE `ET_EXEC`**, so its load addresses are fixed
+rather than relocatable, and on amd64 they start at `0x400000` (4 MiB). The
+Unikraft `fc` kernel links at ~1 MiB and grows past 4 MiB once the rootfs is
+embedded into the image — so the loader maps the application on top of the
+running kernel. `bsdkrun pack . --loader-debug` showed it getting exactly
+two segments in:
 
-This is unverified territory, not a regression: `../unikraft-caddy` (also a
-statically-linked Go binary) has never answered on x86_64 either — see its
-README, "x86_64 has never been run". Nothing in this repo has yet confirmed a
-Go binary actually running under app-elfloader-rs on x86_64, only that the
-kernel and network stack around it work. The HTTP check runs as
-`continue-on-error` in the workflow until it passes; see the job summary for
-the current state.
+```
+loading /hello as hello
+app: segment 2 r-x -> 0x400000..0x621000
+app: segment 3 r-- -> 0x621000..0x858000
+                      <- segment 4 (rw-) never mapped
+```
+
+It survives the two read-only segments and dies on the writable one, whose
+BSS is zero-filled — over the kernel itself. Nothing is ever printed and no
+crash screen appears, because what would print them is what got overwritten.
+
+arm64 links at `0x10000` with the kernel 2 GiB away, which is why Go always
+worked there. Every *other* example works on x86_64 because they are all
+dynamically linked, so the loader relocates them freely into ukvmem's range.
+Only a static non-PIE binary demands a fixed low address, and Go is the only
+thing here that produces one — `../unikraft-caddy` is built the hand-written
+way and hits the same wall (still unfixed there, and still `strict: false` in
+`e2e-unikraft-examples.yml`), so this was never specific to `pack`.
 
 ## `--cmdline` is required
 

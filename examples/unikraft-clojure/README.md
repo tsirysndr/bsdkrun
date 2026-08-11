@@ -7,7 +7,7 @@ to build for **arm64**, boot under bsdkrun, and run Clojure on top of the JVM
 rather than a bare `SimpleHttpServer.java`.
 
 ```sh
-./build.sh                    # host arch; or: ./build.sh x86_64
+bsdkrun pack .                # host arch; or: bsdkrun pack . --target x86_64
 bsdkrun unikraft . --port 3000:3000 \
   --cmdline "elfloader -- /opt/jre/bin/java -XX:+UseSerialGC -XX:ActiveProcessorCount=1 -XX:-UseContainerSupport -XX:-UsePerfData -XX:TieredStopAtLevel=1 -Xmx256m -jar /usr/src/server.jar"
 ```
@@ -141,7 +141,7 @@ so changing one of the `CONFIG_*` values here has no effect on a rebuild until
 the stale file is gone:
 
 ```sh
-rm -f .config* && SKIP_FETCH=1 ./build.sh
+rm -f .config* && SKIP_FETCH=1 bsdkrun pack .
 ```
 
 Without the `rm` the kernel builds cleanly and boots with the *old* value,

@@ -165,9 +165,23 @@ jobs:
             || { echo "no tender was built — is library/solo5 checked out?"; exit 1; }
           ./target/release/bsdkrun solo5 --help >/dev/null
 
+      # 5.4.1 exactly, and not a looser "5.4": `ocaml-solo5` — the cross
+      # compiler that turns the unikernel into an ELF binary — pins an exact
+      # OCaml version, so the compiler chosen here silently decides which
+      # cross compiler the solver installs:
+      #
+      #   ocaml-solo5 1.0.1  requires OCaml = 5.2.1
+      #   ocaml-solo5 1.1.0  requires OCaml = 5.3.0
+      #   ocaml-solo5 1.2.0  requires OCaml = 5.3.0 | 5.4.0
+      #   ocaml-solo5 1.2.2  requires OCaml = 5.4.1
+      #
+      # Asking for 5.2 pulled ocaml-solo5 1.0.1, whose build cannot configure
+      # its own target: "Invalid configuration 'x86_64-solo5-ocaml': OS
+      # 'ocaml' not recognized". 5.4.1 is what the example is verified against
+      # on macOS/arm64, so this keeps CI on the same toolchain.
       - uses: ocaml/setup-ocaml@v3
         with:
-          ocaml-compiler: "5.2"
+          ocaml-compiler: "5.4.1"
 
       # `conf-pkg-config.4`, not the newest, on purpose. Version 5 carries two
       # unconditional `extra-source` entries — mingw-w64 shims fetched from

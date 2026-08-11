@@ -24,3 +24,13 @@ examples/**/.rootfs-arm64/
 examples/**/.rust-cache/
 examples/**/*.dbg
 examples/**/*.dbg.*
+
+# `bsdkrun pack` writes a Kraftfile into the project it packs. For an example
+# that keeps a hand-written one, running pack there overwrites it — and a
+# `git add -A` then commits the generated file over the original, silently
+# replacing a tuned Kraftfile with a default one. Ignore pack's other
+# outputs everywhere so that mistake cannot spread; the Kraftfile itself is
+# tracked per-example (unikraft-go ignores it, the hand-written ones do not).
+examples/**/.rootfs-*/
+examples/**/.Kraftfile.*
+examples/**/.config.*

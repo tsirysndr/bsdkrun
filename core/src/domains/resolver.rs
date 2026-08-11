@@ -36,7 +36,10 @@ pub fn gui_escalation_available() -> bool {
     if std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some() {
         return false;
     }
-    match Command::new("stat").args(["-f", "%Su", "/dev/console"]).output() {
+    match Command::new("stat")
+        .args(["-f", "%Su", "/dev/console"])
+        .output()
+    {
         Ok(o) => {
             let owner = String::from_utf8_lossy(&o.stdout);
             let owner = owner.trim();
@@ -183,7 +186,9 @@ pub fn setup(tld: &str, port: u16) -> Result<()> {
 
     // Fast path: already root / writable.
     if fs::create_dir_all(dir).is_ok() && fs::write(RESOLVED_DROPIN, &contents).is_ok() {
-        let _ = Command::new("systemctl").args(["restart", "systemd-resolved"]).status();
+        let _ = Command::new("systemctl")
+            .args(["restart", "systemd-resolved"])
+            .status();
         let _ = Command::new("resolvectl").arg("flush-caches").status();
         return Ok(());
     }
@@ -207,12 +212,13 @@ pub fn teardown(_tld: &str) -> Result<()> {
         return Ok(());
     }
     if fs::remove_file(RESOLVED_DROPIN).is_ok() {
-        let _ = Command::new("systemctl").args(["restart", "systemd-resolved"]).status();
+        let _ = Command::new("systemctl")
+            .args(["restart", "systemd-resolved"])
+            .status();
         return Ok(());
     }
-    let script = format!(
-        "rm -f {RESOLVED_DROPIN} && {{ systemctl restart systemd-resolved || true; }}"
-    );
+    let script =
+        format!("rm -f {RESOLVED_DROPIN} && {{ systemctl restart systemd-resolved || true; }}");
     run_as_admin(&script).with_context(|| format!("could not remove {RESOLVED_DROPIN}"))
 }
 
@@ -229,7 +235,10 @@ pub fn ok(tld: &str, port: u16) -> bool {
 /// for a masked unit and errors for an unknown one.
 #[cfg(target_os = "linux")]
 fn resolved_available() -> bool {
-    match Command::new("systemctl").args(["is-enabled", "systemd-resolved"]).output() {
+    match Command::new("systemctl")
+        .args(["is-enabled", "systemd-resolved"])
+        .output()
+    {
         Ok(o) => {
             let state = String::from_utf8_lossy(&o.stdout);
             let state = state.trim();

@@ -30,7 +30,10 @@ pub fn locate() -> Result<PathBuf> {
         if p.is_file() {
             return Ok(p);
         }
-        bail!("BSDKRUN_CADDY points at {}, which does not exist", p.display());
+        bail!(
+            "BSDKRUN_CADDY points at {}, which does not exist",
+            p.display()
+        );
     }
     let out = Command::new("/usr/bin/which").arg("caddy").output();
     if let Ok(o) = out {
@@ -118,7 +121,10 @@ pub fn render_caddyfile(machines: &[api::Machine], s: &Settings) -> Result<Strin
 pub fn write_caddyfile(contents: &str) -> Result<bool> {
     let path = caddyfile_path()?;
     std::fs::create_dir_all(proxy_dir()?)?;
-    if std::fs::read_to_string(&path).map(|c| c == contents).unwrap_or(false) {
+    if std::fs::read_to_string(&path)
+        .map(|c| c == contents)
+        .unwrap_or(false)
+    {
         return Ok(false);
     }
     std::fs::write(&path, contents).with_context(|| format!("writing {}", path.display()))?;

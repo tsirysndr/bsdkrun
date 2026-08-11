@@ -292,13 +292,19 @@ fn worker(rx: mpsc::Receiver<Action>, tx: mpsc::Sender<Msg>) {
             Some(Action::Refresh) | None => {}
             Some(Action::Stop(id)) => {
                 let r = api::stop(&id).map_err(|e| e.to_string());
-                if tx.send(Msg::Done(r.map(|id| format!("stopped {id}")))).is_err() {
+                if tx
+                    .send(Msg::Done(r.map(|id| format!("stopped {id}"))))
+                    .is_err()
+                {
                     return;
                 }
             }
             Some(Action::Remove(id)) => {
                 let r = api::remove_machine(&id, true).map_err(|e| e.to_string());
-                if tx.send(Msg::Done(r.map(|id| format!("removed {id}")))).is_err() {
+                if tx
+                    .send(Msg::Done(r.map(|id| format!("removed {id}"))))
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -375,7 +381,10 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> Outcome {
         return Outcome::Handled;
     }
     if app.help {
-        if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')) {
+        if matches!(
+            key.code,
+            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')
+        ) {
             app.help = false;
         }
         return Outcome::Handled;
@@ -451,7 +460,11 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> Outcome {
                     prompt: format!(
                         "Remove {}{}? This deletes its state.",
                         display_name(m),
-                        if m.running { " (running — will be killed)" } else { "" }
+                        if m.running {
+                            " (running — will be killed)"
+                        } else {
+                            ""
+                        }
                     ),
                     id: m.id.clone(),
                 });
@@ -510,9 +523,7 @@ fn handle_wizard_key(app: &mut App, key: crossterm::event::KeyEvent) {
     match key.code {
         KeyCode::Esc => app.wizard = None,
         KeyCode::Tab | KeyCode::Down => w.field = (w.field + 1) % Wizard::FIELDS,
-        KeyCode::BackTab | KeyCode::Up => {
-            w.field = (w.field + Wizard::FIELDS - 1) % Wizard::FIELDS
-        }
+        KeyCode::BackTab | KeyCode::Up => w.field = (w.field + Wizard::FIELDS - 1) % Wizard::FIELDS,
         KeyCode::Backspace => {
             w.field_mut().pop();
         }
@@ -545,11 +556,19 @@ fn handle_settings_key(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Esc => app.settings = None,
         KeyCode::Tab | KeyCode::Down | KeyCode::BackTab | KeyCode::Up => s.field ^= 1,
         KeyCode::Backspace => {
-            let f = if s.field == 0 { &mut s.cpus } else { &mut s.mem };
+            let f = if s.field == 0 {
+                &mut s.cpus
+            } else {
+                &mut s.mem
+            };
             f.pop();
         }
         KeyCode::Char(c) if c.is_ascii_digit() => {
-            let f = if s.field == 0 { &mut s.cpus } else { &mut s.mem };
+            let f = if s.field == 0 {
+                &mut s.cpus
+            } else {
+                &mut s.mem
+            };
             f.push(c);
         }
         KeyCode::Enter => {

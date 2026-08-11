@@ -83,11 +83,7 @@ impl SearchModal {
             self.entries.push(Entry {
                 panel: Panel::Volumes,
                 index: i,
-                display: format!(
-                    "volume  {}  {}",
-                    v.name,
-                    v.guest.as_deref().unwrap_or("-")
-                ),
+                display: format!("volume  {}  {}", v.name, v.guest.as_deref().unwrap_or("-")),
             });
         }
         for (i, n) in app.snap.networks.iter().enumerate() {
@@ -111,14 +107,12 @@ impl SearchModal {
                 indices: Vec::new(),
             }));
         } else {
-            let pattern =
-                Pattern::parse(&self.query, CaseMatching::Ignore, Normalization::Smart);
+            let pattern = Pattern::parse(&self.query, CaseMatching::Ignore, Normalization::Smart);
             let mut buf = Vec::new();
             for (i, e) in self.entries.iter().enumerate() {
                 let mut indices = Vec::new();
                 let haystack = Utf32Str::new(&e.display, &mut buf);
-                if let Some(score) = pattern.indices(haystack, &mut self.matcher, &mut indices)
-                {
+                if let Some(score) = pattern.indices(haystack, &mut self.matcher, &mut indices) {
                     self.hits.push(Hit {
                         entry: i,
                         score,
@@ -195,8 +189,16 @@ mod tests {
     #[test]
     fn fuzzy_query_ranks_the_tight_match_first() {
         let mut m = modal_with(vec![
-            ("machine  brave_darwin  running  postgres:16", Panel::Machines, 0),
-            ("machine  tidy_turing  running  nginx:alpine", Panel::Machines, 1),
+            (
+                "machine  brave_darwin  running  postgres:16",
+                Panel::Machines,
+                0,
+            ),
+            (
+                "machine  tidy_turing  running  nginx:alpine",
+                Panel::Machines,
+                1,
+            ),
             ("image  nginx:alpine  abc123", Panel::Images, 0),
         ]);
         m.query = "ttur".into();
@@ -204,7 +206,10 @@ mod tests {
         assert!(!m.hits.is_empty());
         let top = &m.entries[m.hits[0].entry];
         assert_eq!((top.panel, top.index), (Panel::Machines, 1));
-        assert!(!m.hits[0].indices.is_empty(), "match positions for highlighting");
+        assert!(
+            !m.hits[0].indices.is_empty(),
+            "match positions for highlighting"
+        );
     }
 
     #[test]

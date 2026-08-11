@@ -82,8 +82,7 @@ pub fn dns_label(name: &str) -> String {
 /// normalization: the oldest machine keeps the bare label, later ones get a
 /// `-<id prefix>` suffix. Deterministic, so the Caddyfile is too.
 pub fn dns_labels(machines: &[api::Machine]) -> Vec<(String, &api::Machine)> {
-    let mut named: Vec<&api::Machine> =
-        machines.iter().filter(|m| m.name.is_some()).collect();
+    let mut named: Vec<&api::Machine> = machines.iter().filter(|m| m.name.is_some()).collect();
     // list_machines returns newest first; oldest first keeps labels stable as
     // new machines appear.
     named.sort_by(|a, b| a.created_at.cmp(&b.created_at));
@@ -280,8 +279,7 @@ pub fn disable(purge: bool) -> Result<()> {
         resolver::teardown(&s.tld)?;
         let dir = caddy::proxy_dir()?;
         if dir.exists() {
-            std::fs::remove_dir_all(&dir)
-                .with_context(|| format!("removing {}", dir.display()))?;
+            std::fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
         }
     }
     Ok(())
@@ -387,12 +385,18 @@ mod tests {
         let mut no_ports = m.clone();
         no_ports.ports.clear();
         assert_eq!(machine_url(&no_ports, &s), None);
-        let alt = Settings { https_port: 8443, ..s.clone() };
+        let alt = Settings {
+            https_port: 8443,
+            ..s.clone()
+        };
         assert_eq!(
             machine_url(&m, &alt).as_deref(),
             Some("https://tidy-turing.bsdk:8443")
         );
-        let off = Settings { enabled: false, ..s };
+        let off = Settings {
+            enabled: false,
+            ..s
+        };
         assert_eq!(machine_url(&m, &off), None);
     }
 

@@ -14,8 +14,8 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::cli::TuiArgs;
-use crate::tui::{self, ui, App, Outcome};
 use crate::tty;
+use crate::tui::{self, ui, App, Outcome};
 
 /// Put the terminal back: leave the alternate screen, show the cursor, cook
 /// the tty. Idempotent, so every exit path can call it.
@@ -95,11 +95,7 @@ fn run(app: &mut App) -> Result<()> {
 /// Suspend the dashboard, hand the real terminal to `bsdkrun shell <id>`, and
 /// resume. The shell path drives the guest agent (or the raw console) with its
 /// own raw-mode handling, so the TUI must be fully out of the way.
-fn shell_into(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    app: &mut App,
-    id: &str,
-) {
+fn shell_into(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut App, id: &str) {
     let _ = disable_raw_mode();
     let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
     let status = std::env::current_exe()

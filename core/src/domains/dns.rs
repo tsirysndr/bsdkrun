@@ -310,9 +310,15 @@ mod tests {
 
     #[test]
     fn zone_matching_is_case_insensitive_and_dot_tolerant() {
-        assert_eq!(ancount(&handle_query(&query("A.BSDK", TYPE_A), "bsdk.").unwrap()), 1);
+        assert_eq!(
+            ancount(&handle_query(&query("A.BSDK", TYPE_A), "bsdk.").unwrap()),
+            1
+        );
         // The bare zone apex resolves too.
-        assert_eq!(ancount(&handle_query(&query("bsdk", TYPE_A), "bsdk").unwrap()), 1);
+        assert_eq!(
+            ancount(&handle_query(&query("bsdk", TYPE_A), "bsdk").unwrap()),
+            1
+        );
     }
 
     #[test]

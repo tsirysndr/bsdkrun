@@ -89,8 +89,7 @@ fn render_panels(f: &mut Frame, app: &App, area: Rect) {
     } else {
         // Machines get the top; the other three share the bottom row.
         let [top, bottom] =
-            Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)])
-                .areas(area);
+            Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(area);
         render_machines(f, app, top);
         let [i, v, n] = Layout::horizontal([
             Constraint::Percentage(40),
@@ -126,13 +125,7 @@ fn panel_block(app: &App, panel: Panel) -> Block<'static> {
 }
 
 /// Render a panel's rows with selection + scroll-into-view.
-fn render_rows(
-    f: &mut Frame,
-    app: &App,
-    panel: Panel,
-    area: Rect,
-    rows: Vec<Line<'static>>,
-) {
+fn render_rows(f: &mut Frame, app: &App, panel: Panel, area: Rect, rows: Vec<Line<'static>>) {
     let block = panel_block(app, panel);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -188,10 +181,7 @@ fn machine_row(app: &App, m: &api::Machine) -> Line<'static> {
             format!("  {:<10}", crate::commands::truncate(&m.kind, 10)),
             Style::default().fg(MUTED),
         ),
-        Span::raw(format!(
-            "  {:<24}",
-            crate::commands::truncate(&m.image, 24)
-        )),
+        Span::raw(format!("  {:<24}", crate::commands::truncate(&m.image, 24))),
         Span::styled(
             format!("  {:<16}", crate::commands::truncate(&ports, 16)),
             Style::default().fg(MUTED),
@@ -238,10 +228,7 @@ fn render_volumes(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|v| {
             Line::from(vec![
-                Span::raw(format!(
-                    "{:<20}",
-                    crate::commands::truncate(&v.name, 20)
-                )),
+                Span::raw(format!("{:<20}", crate::commands::truncate(&v.name, 20))),
                 Span::styled(
                     format!("  {}", v.size.as_deref().unwrap_or("-")),
                     Style::default().fg(MUTED),
@@ -263,10 +250,7 @@ fn render_networks(f: &mut Frame, app: &App, area: Rect) {
                     if n.up { "● " } else { "○ " },
                     Style::default().fg(if n.up { GREEN } else { MUTED }),
                 ),
-                Span::raw(format!(
-                    "{:<16}",
-                    crate::commands::truncate(&n.name, 16)
-                )),
+                Span::raw(format!("{:<16}", crate::commands::truncate(&n.name, 16))),
                 Span::styled(
                     format!("  {} up/{}", n.running, n.members),
                     Style::default().fg(MUTED),
@@ -383,7 +367,10 @@ fn render_confirm(f: &mut Frame, c: &super::Confirm, area: Rect) {
             Span::raw("/Esc cancel"),
         ]),
     ];
-    f.render_widget(Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: true }), inner);
+    f.render_widget(
+        Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: true }),
+        inner,
+    );
 }
 
 fn field_line(label: &str, value: &str, focused: bool) -> Line<'static> {
@@ -451,13 +438,13 @@ fn render_settings(f: &mut Frame, s: &super::SettingsModal, area: Rect) {
 }
 
 fn render_log(f: &mut Frame, _app: &App, log: &super::logs::LogModal, area: Rect) {
-    let rect = centered(area, area.width.saturating_sub(6), area.height.saturating_sub(4));
-    f.render_widget(Clear, rect);
-    let title = format!(
-        "{}{}",
-        log.title,
-        if log.live { " (live)" } else { "" }
+    let rect = centered(
+        area,
+        area.width.saturating_sub(6),
+        area.height.saturating_sub(4),
     );
+    f.render_widget(Clear, rect);
+    let title = format!("{}{}", log.title, if log.live { " (live)" } else { "" });
     let block = modal_block(&title);
     let inner = block.inner(rect);
     f.render_widget(block, rect);
@@ -484,8 +471,7 @@ fn render_search(f: &mut Frame, s: &super::search::SearchModal, area: Rect) {
     let block = modal_block("search");
     let inner = block.inner(rect);
     f.render_widget(block, rect);
-    let [input, list] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
+    let [input, list] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
 
     f.render_widget(
         Paragraph::new(Line::from(vec![

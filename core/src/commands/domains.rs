@@ -36,7 +36,10 @@ pub(crate) fn cmd_status(json: bool) -> Result<()> {
         return Ok(());
     }
     let yn = |b: bool| if b { "ok" } else { "NOT OK" };
-    println!("machine domains: {}", if st.enabled { "enabled" } else { "disabled" });
+    println!(
+        "machine domains: {}",
+        if st.enabled { "enabled" } else { "disabled" }
+    );
     println!("{:<12}  {:<8}  {}", "COMPONENT", "STATE", "DETAIL");
     println!(
         "{:<12}  {:<8}  127.0.0.1:{} answering *.{}",
@@ -64,9 +67,7 @@ pub(crate) fn cmd_status(json: bool) -> Result<()> {
         "local CA in the system trust store"
     );
     println!("{} machine domain(s) served", st.domains);
-    if st.enabled
-        && !(st.dns_running && st.resolver_ok && st.caddy_running && st.ca_trusted)
-    {
+    if st.enabled && !(st.dns_running && st.resolver_ok && st.caddy_running && st.ca_trusted) {
         println!("run `bsdkrun domains enable` again to repair");
     }
     Ok(())

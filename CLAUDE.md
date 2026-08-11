@@ -114,12 +114,55 @@ edit landed. Two patches here exist because a guest died before `main()`:
   exclude its own stack pointer. CoreCLR died on this as `E_OUTOFMEMORY`; the
   dotnet provider's `/proc/self/maps` `[stack]` line is the other half.
 
+- Wall clock from `epoch.boot=<unix seconds>` — the guest has no working
+  source of wall time (January 1970 on arm64, a stale RTC on x86_64), which
+  makes every TLS certificate on earth "not yet valid". bsdkrun injects the
+  parameter into every unikraft cmdline that has a `--` separator; the patched
+  posix-time offsets its wall clock by it. Old kernels ignore it.
+
 When a guest boots and then dies on something that reads like an application
 fault, check whether the syscall is a stub before blaming the application.
 When nothing at the syscall boundary fails, **differential-trace it**: run the
 same binary under Docker with strace, align the two traces, and read what the
 good run does next at the point where the guest dies. That is what solved
 .NET after seven single-hypothesis attempts failed.
+
+## `bsdkrun solo5` — the guest that isn't a libkrun guest
+
+MirageOS/Solo5 unikernels run under `solo5-hvt`, a **tender that is itself the
+hypervisor front end** (Hypervisor.framework on macOS, KVM on Linux). libkrun is
+not involved. `core/build.rs` builds it from the `library/solo5` submodule and
+embeds it; `commands/solo5.rs` supervises it as a child process.
+
+What that split costs, and what pays for it:
+
+- **A fresh clone needs `git submodule update --init library/solo5`.** Without
+  it the build only warns, and `bsdkrun solo5` reports the missing tender —
+  but a *stale* `core/src/solo5-bin/solo5-hvt` from an earlier build is still
+  embedded, so the failure can be silence rather than an error.
+- **The tender must stay signed on macOS.** Hypervisor.framework refuses a VM
+  to a process without `com.apple.security.hypervisor`, and an entitlement only
+  counts inside a signature. It is signed at link time and re-signed on
+  extraction. An entitled `bsdkrun` can only exec a validly signed child —
+  the same trap `pack` documents, one severity worse: unsigned is SIGKILL
+  before `main()`, un-entitled fails later at `hv_vm_create` and reads like a
+  hypervisor bug.
+- **Kill the tender with us.** `tty::track_child` hands its pid to the signal
+  handler; without it Ctrl-C reaps bsdkrun and leaves a VM holding its ports
+  that nothing knows the id of.
+- **Devices come from the binary.** Every unikernel declares its net/block
+  devices in an `MFT1` ELF note, and the tender will not boot with one
+  unattached. `solo5.rs` parses it, so no device flags are needed. Note the
+  four bytes of padding between the ELF descriptor and `struct mft`
+  (`MFT1_NOTE_ALIGN`) — reading the descriptor directly yields a manifest
+  shifted by one `uint32_t`, which parses into plausible nonsense.
+- **Pin the guest MAC.** The tender generates a random one per boot; gvproxy
+  then leases `.3`, `.4`, … and `--port`, which forwards to the fixed guest
+  address, points at nobody. `--net-mac:NAME=` fixes it.
+- **DHCP, not flags.** A MirageOS `generic_stackv4v6` reads a `--dhcp` runtime
+  key defaulting to *false*, so it comes up on mirage's built-in 10.0.0.2 and
+  answers nothing. Pin it at configure time (`~dhcp_key:(Key.pure true)`)
+  rather than passing `--ipv4=`/`--ipv4-gateway=` on every boot.
 
 ## Verifying
 

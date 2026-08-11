@@ -234,8 +234,47 @@ pub fn volume_tag(i: usize) -> String {
 /// `lib/vfscore/automount.c`); `virtiofs` is the driver name registered by
 /// `lib/ukfs-virtiofs`, and `<dev>` is the virtio-fs tag.
 pub fn build_cmdline(user_cmdline: &str, vols: &[Volume], progname: &str) -> String {
+    build_cmdline_at(user_cmdline, vols, progname, unix_now())
+}
+
+/// Seconds since the epoch, for the guest's wall clock.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The testable core of `build_cmdline`: `epoch` is a parameter so tests
+/// do not depend on the actual clock.
+fn build_cmdline_at(user_cmdline: &str, vols: &[Volume], progname: &str, epoch: u64) -> String {
+    // The guest has no working source of wall time: CLOCK_REALTIME starts
+    // near zero, so it is January 1970 on arm64 and whatever a stale RTC
+    // says on x86_64. In 1970 every TLS certificate on earth is "not yet
+    // valid", so the host passes the time it already knows as a libparam,
+    // and the patched posix-time offsets its wall clock by it.
+    //
+    // It goes before the `--`, where libparams live; a kernel built before
+    // the patch ignores the unknown parameter. A cmdline with no `--` is
+    // left untouched rather than guessed at — every cmdline pack prints
+    // has the separator, and rewriting one that does not risks feeding the
+    // parameter to the application as argv.
+    let epoch_param = format!("epoch.boot={epoch}");
+    let user = user_cmdline.trim();
+
     if vols.is_empty() {
-        return user_cmdline.to_string();
+        if user.contains("epoch.boot=") {
+            // An explicit epoch in the cmdline is the user overriding the
+            // clock on purpose (reproducing a bug, testing expiry).
+            return user.to_string();
+        }
+        if let Some((head, tail)) = user.split_once(" -- ") {
+            return format!("{head} {epoch_param} -- {tail}");
+        }
+        if let Some(head) = user.strip_suffix(" --") {
+            return format!("{head} {epoch_param} --");
+        }
+        return user.to_string();
     }
     let mut entries: Vec<String> = Vec::new();
     // A mountpoint has to exist before anything can be mounted on it, and a
@@ -255,7 +294,7 @@ pub fn build_cmdline(user_cmdline: &str, vols: &[Volume], progname: &str) -> Str
             format!("\"{}:{}:virtiofs:::mkmp\"", volume_tag(i), v.guest)
         }
     }));
-    let fstab = format!("vfs.fstab=[ {} ]", entries.join(" "));
+    let fstab = format!("vfs.fstab=[ {} ] {epoch_param}", entries.join(" "));
 
     // Split the user's line into argv[0] and the rest; fall back to the image
     // name when they gave nothing, since the slot cannot be left empty.
@@ -326,8 +365,34 @@ mod tests {
     /// table, and no `--` that would turn their first word into a parameter.
     #[test]
     fn no_volumes_leaves_the_cmdline_alone() {
-        assert_eq!(build_cmdline("app -v", &[], "img"), "app -v");
-        assert_eq!(build_cmdline("", &[], "img"), "");
+        // No `--` separator: rewriting would risk feeding the parameter to
+        // the application as argv, so the line stays untouched.
+        assert_eq!(build_cmdline_at("app -v", &[], "img", 42), "app -v");
+        assert_eq!(build_cmdline_at("", &[], "img", 42), "");
+    }
+
+    /// The wall-clock epoch lands with the other libparams, before the
+    /// `--`, so the patched posix-time can pick it up. The guest is
+    /// otherwise in January 1970, where every TLS certificate on earth is
+    /// "not yet valid".
+    #[test]
+    fn the_epoch_is_injected_before_the_separator() {
+        assert_eq!(
+            build_cmdline_at("php -- /usr/bin/x", &[], "img", 42),
+            "php epoch.boot=42 -- /usr/bin/x"
+        );
+        assert_eq!(build_cmdline_at("app --", &[], "img", 42), "app epoch.boot=42 --");
+    }
+
+    /// An explicit epoch in the cmdline is the user overriding the clock on
+    /// purpose (reproducing a bug, testing certificate expiry) — theirs
+    /// wins.
+    #[test]
+    fn a_user_epoch_is_not_overridden() {
+        assert_eq!(
+            build_cmdline_at("app epoch.boot=7 -- x", &[], "img", 42),
+            "app epoch.boot=7 -- x"
+        );
     }
 
     /// The three things that silently mount nothing if they are wrong: a
@@ -336,8 +401,8 @@ mod tests {
     #[test]
     fn volumes_build_a_mount_table_after_a_program_name() {
         assert_eq!(
-            build_cmdline("", &[vol("/data")], "myimg"),
-            "myimg vfs.fstab=[ \"ramfs:/:ramfs\" \"vol0:/data:virtiofs:::mkmp\" ] --"
+            build_cmdline_at("", &[vol("/data")], "myimg", 42),
+            "myimg vfs.fstab=[ \"ramfs:/:ramfs\" \"vol0:/data:virtiofs:::mkmp\" ] epoch.boot=42 --"
         );
     }
 
@@ -346,8 +411,8 @@ mod tests {
     #[test]
     fn the_users_argv0_is_preserved_around_the_table() {
         assert_eq!(
-            build_cmdline("app one two", &[vol("/data")], "img"),
-            "app vfs.fstab=[ \"ramfs:/:ramfs\" \"vol0:/data:virtiofs:::mkmp\" ] -- one two"
+            build_cmdline_at("app one two", &[vol("/data")], "img", 42),
+            "app vfs.fstab=[ \"ramfs:/:ramfs\" \"vol0:/data:virtiofs:::mkmp\" ] epoch.boot=42 -- one two"
         );
     }
 
@@ -356,8 +421,8 @@ mod tests {
     #[test]
     fn a_volume_at_the_root_replaces_the_ramfs() {
         assert_eq!(
-            build_cmdline("", &[vol("/")], "img"),
-            "img vfs.fstab=[ \"vol0:/:virtiofs\" ] --"
+            build_cmdline_at("", &[vol("/")], "img", 42),
+            "img vfs.fstab=[ \"vol0:/:virtiofs\" ] epoch.boot=42 --"
         );
     }
 

@@ -2656,5 +2656,71 @@ else
 	echo "RLIMIT_STACK: already patched or absent, skipping"
 fi
 
+# ---------------------------------------------------------------------------
+# Wall clock from the host: epoch.boot=<unix seconds>
+#
+# The guest has no working source of wall time — CLOCK_REALTIME starts near
+# zero, so it is January 1970 on arm64 and whatever a stale RTC says on
+# x86_64 (1999, on CI). That is fatal for TLS certificate validation
+# everywhere: in 1970, every certificate on earth is "not yet valid", which
+# also forbids in-guest ACME.
+#
+# bsdkrun knows the wall time at launch and already composes the kernel
+# cmdline, so it passes `epoch.boot=<seconds>` as a libparam and posix-time
+# offsets every wall-clock read by it. Hypervisor-agnostic, identical on
+# both architectures, no RTC emulation involved. An image built without
+# this patch ignores the unknown parameter.
+#
+# The replacements run BEFORE the helper is inserted: the helper's own body
+# calls ukplat_wall_clock(), and replacing after inserting would turn it
+# into a call to itself.
+# ---------------------------------------------------------------------------
+PTIME="$UK/lib/posix-time/time.c"
+if [ -f "$PTIME" ] && ! grep -q 'bsdkrun_wall' "$PTIME"; then
+	echo "patching $PTIME (wall clock from epoch.boot libparam)"
+	python3 - "$PTIME" <<'BSDKRUN_EPOCH_EOF'
+import sys
+
+path = sys.argv[1]
+src = open(path).read()
+
+assert src.count("ukplat_wall_clock()") == 3, "wall-clock call sites moved"
+src = src.replace("ukplat_wall_clock()", "bsdkrun_wall()")
+
+helper = """#include <uk/syscall.h>
+
+/* bsdkrun: wall clock = monotonic time + the epoch the host passed at
+ * boot. Without it the guest thinks it is January 1970 (or whatever a
+ * stale RTC claims), and TLS certificate validation is impossible: every
+ * certificate on earth is "not yet valid". The host injects
+ * `epoch.boot=<unix seconds>` into the cmdline at launch; a boot without
+ * the parameter leaves the offset at zero, which is the old behaviour.
+ */
+#define UK_LIBPARAM_LIBPREFIX epoch
+#include <uk/libparam.h>
+
+static __u64 bsdkrun_epoch; /* unix seconds at boot; 0 = not provided */
+
+#if CONFIG_LIBUKLIBPARAM
+UK_LIBPARAM_PARAM_ALIAS(boot, &bsdkrun_epoch, __u64,
+			"wall clock at boot (unix seconds)");
+#endif /* CONFIG_LIBUKLIBPARAM */
+
+static inline __nsec bsdkrun_wall(void)
+{
+	return ukplat_wall_clock() + ukarch_time_sec_to_nsec(bsdkrun_epoch);
+}"""
+
+anchor = "#include <uk/syscall.h>"
+assert src.count(anchor) == 1, "include anchor moved"
+src = src.replace(anchor, helper, 1)
+
+open(path, "w").write(src)
+BSDKRUN_EPOCH_EOF
+	grep -q 'bsdkrun_wall' "$PTIME" || { echo "failed to patch the wall clock" >&2; exit 1; }
+else
+	echo "wall clock epoch: already patched or absent, skipping"
+fi
+
 echo "patches applied."
 

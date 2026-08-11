@@ -2519,5 +2519,29 @@ else
 	echo "POSIX timers: already patched or absent, skipping"
 fi
 
+# ---------------------------------------------------------------------------
+# getsid/getpgid/setpgid for the caller's own pid
+#
+# These answer -ESRCH for any pid that is not 0, including the caller's own
+# — so getsid(getpid()) fails even though that process is the only one there
+# is, and is the caller. Nothing about "no such process" is true there.
+#
+# .NET's PAL does exactly that pair during startup (getpid, then getsid on
+# the result) and faults on the unexpected failure; the guest dies with a
+# data abort right after the failing call.
+#
+# 0 already means "me". This adds the caller's real pid as a second spelling
+# of the same thing, which is what Linux does.
+# ---------------------------------------------------------------------------
+DEPR="$UK/lib/posix-process/deprecated.c"
+if [ -f "$DEPR" ] && ! grep -q 'uk_sys_getpid()' "$DEPR"; then
+	echo "patching $DEPR (getsid/getpgid/setpgid accept the caller's own pid)"
+	sed -i.bak 's|^	if (pid != 0) {$|	if (pid != 0 \&\& pid != uk_sys_getpid()) {|' "$DEPR"
+	rm -f "$DEPR.bak"
+	grep -q 'uk_sys_getpid()' "$DEPR" || { echo "failed to relax the pid checks" >&2; exit 1; }
+else
+	echo "getsid/getpgid/setpgid pid checks: already patched or absent, skipping"
+fi
+
 echo "patches applied."
 

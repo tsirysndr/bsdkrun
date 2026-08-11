@@ -6,7 +6,7 @@ unikernel. Ported from [`unikraft-cloud/examples`'s
 to build for **arm64** as well as x86_64 and boot under bsdkrun.
 
 ```sh
-./build.sh                    # host arch; or: ./build.sh x86_64
+bsdkrun pack .                # host arch; or: bsdkrun pack . --target x86_64
 bsdkrun unikraft . --mem 512 --port 8080:8080 \
   --cmdline "elfloader -- /usr/bin/ruby /src/server.rb"
 ```
@@ -48,7 +48,4 @@ reports it with its full path.
 
 | file         | role                                                      |
 |--------------|-----------------------------------------------------------|
-| `Dockerfile` | rootfs: `ruby`, the stdlib, libraries (via `ldd`)         |
 | `server.rb`  | upstream's TCPServer HTTP loop, verbatim                  |
-| `Kraftfile`  | the from-source base runtime + elfloader                  |
-| `build.sh`   | two-phase build; see `../unikraft-postgres/build.sh`      |

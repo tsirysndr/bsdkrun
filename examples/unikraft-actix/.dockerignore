@@ -1,6 +1,0 @@
-target/
-/.unikraft/
-/Dockerfile
-/Kraftfile
-/README.md
-/build.sh

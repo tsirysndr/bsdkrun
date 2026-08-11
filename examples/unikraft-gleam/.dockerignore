@@ -1,7 +1,0 @@
-# The Dockerfile only ever COPYs gleam.toml, manifest.toml and src/. Everything
-# else here is build output -- and .unikraft/ is a full Unikraft source tree
-# plus object files -- so without this the build context alone is gigabytes.
-*
-!gleam.toml
-!manifest.toml
-!src

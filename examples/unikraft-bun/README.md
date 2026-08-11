@@ -13,7 +13,7 @@ $ curl http://127.0.0.1:3000/info
 ```
 
 ```sh
-./build.sh
+bsdkrun pack .
 bsdkrun unikraft . --mem 2048 --port 3000:3000 \
     --cmdline "elfloader -- /usr/bin/bun run /usr/src/server.js"
 ```

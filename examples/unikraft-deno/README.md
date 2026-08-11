@@ -4,7 +4,7 @@
 unikernel.
 
 ```sh
-./build.sh                    # host arch; or: ./build.sh x86_64
+bsdkrun pack .                # host arch; or: bsdkrun pack . --target x86_64
 bsdkrun unikraft . --mem 2048 --port 3000:3000 \
     --cmdline "elfloader -- /usr/bin/deno run --quiet --allow-net /usr/src/server.js"
 ```

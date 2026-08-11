@@ -2,10 +2,15 @@ package buildkit
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 
+	"github.com/distribution/reference"
 	bkclient "github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/client/llb"
+	"github.com/moby/buildkit/client/llb/sourceresolver"
+	gwclient "github.com/moby/buildkit/frontend/gateway/client"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/tonistiigi/fsutil"
 
@@ -59,35 +64,7 @@ func Build(ctx context.Context, addr, srcDir string, p *plan.Plan, platform Plat
 	defer c.Close()
 
 	ociPlatform := platform.ociPlatform()
-
-	base := llb.Image(p.BuildImage, llb.Platform(ociPlatform))
-	for k, v := range p.Env {
-		base = base.AddEnv(k, v)
-	}
 	src := llb.Local("context", llb.WithCustomName("load "+srcDir))
-
-	build := base.
-		File(llb.Copy(src, "/", "/src", &llb.CopyInfo{CreateDestPath: true})).
-		Dir("/src").
-		Run(
-			llb.Args([]string{"sh", "-c", p.Script}),
-			llb.WithCustomName(fmt.Sprintf("build %s (%s)", p.Name, p.Provider)),
-		).
-		Root()
-
-	// CopyDirContentsOnly: without it, Copy nests the source directory itself
-	// under the destination (/out/rootfs/hello ends up at /rootfs/hello, not
-	// /hello) — see llb.CopyInfo's doc for why.
-	final := llb.Scratch().
-		File(llb.Copy(build, "/out/rootfs", "/", &llb.CopyInfo{
-			CreateDestPath:      true,
-			CopyDirContentsOnly: true,
-		}))
-
-	def, err := final.Marshal(ctx, llb.Platform(ociPlatform))
-	if err != nil {
-		return fmt.Errorf("marshaling LLB graph: %w", err)
-	}
 
 	contextFS, err := fsutil.NewFS(srcDir)
 	if err != nil {
@@ -107,15 +84,101 @@ func Build(ctx context.Context, addr, srcDir string, p *plan.Plan, platform Plat
 		}
 	}()
 
-	_, err = c.Solve(ctx, def, bkclient.SolveOpt{
+	// c.Build rather than c.Solve: only a gateway client can answer
+	// ResolveImageConfig, and without the image's own config the build runs
+	// with none of the ENV the image sets. That is not a detail — it cost
+	// four separate CI failures before this existed (PATH/GOPATH for Go,
+	// CARGO_HOME for Rust, PHP_INI_DIR for PHP, JAVA_HOME for Clojure),
+	// each surfacing as an unrelated-looking error deep in a build script.
+	buildFn := func(ctx context.Context, gw gwclient.Client) (*gwclient.Result, error) {
+		base := llb.Image(p.BuildImage, llb.Platform(ociPlatform))
+
+		// Inherit the image's ENV, then let the provider override it: the
+		// image knows where its own toolchain lives, the provider knows
+		// what its build needs.
+		env, err := imageEnv(ctx, gw, p.BuildImage, ociPlatform)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range env {
+			base = base.AddEnv(k, v)
+		}
+		for k, v := range p.Env {
+			base = base.AddEnv(k, v)
+		}
+
+		build := base.
+			File(llb.Copy(src, "/", "/src", &llb.CopyInfo{CreateDestPath: true})).
+			Dir("/src").
+			Run(
+				llb.Args([]string{"sh", "-c", p.Script}),
+				llb.WithCustomName(fmt.Sprintf("build %s (%s)", p.Name, p.Provider)),
+			).
+			Root()
+
+		// CopyDirContentsOnly: without it, Copy nests the source directory
+		// itself under the destination.
+		final := llb.Scratch().
+			File(llb.Copy(build, "/out/rootfs", "/", &llb.CopyInfo{
+				CreateDestPath:      true,
+				CopyDirContentsOnly: true,
+			}))
+
+		def, err := final.Marshal(ctx, llb.Platform(ociPlatform))
+		if err != nil {
+			return nil, fmt.Errorf("marshaling LLB graph: %w", err)
+		}
+		return gw.Solve(ctx, gwclient.SolveRequest{Definition: def.ToPB()})
+	}
+
+	_, err = c.Build(ctx, bkclient.SolveOpt{
 		LocalMounts: map[string]fsutil.FS{"context": contextFS},
 		Exports: []bkclient.ExportEntry{
 			{Type: bkclient.ExporterLocal, OutputDir: outDir},
 		},
-	}, statusCh)
+	}, "bsdkrun-pack", buildFn, statusCh)
 	<-statusDone
 	if err != nil {
 		return fmt.Errorf("buildkit solve: %w", err)
 	}
 	return nil
+}
+
+// imageEnv reads the ENV a base image declares in its own config.
+//
+// llb.Image pulls in an image's filesystem but not its config, so anything
+// the image sets — PATH entries for its toolchain, JAVA_HOME, PHP_INI_DIR —
+// is simply absent unless asked for. Asking the daemon means a provider no
+// longer has to restate what its image already says.
+func imageEnv(ctx context.Context, gw gwclient.Client, ref string, platform specs.Platform) (map[string]string, error) {
+	// Normalize first: BuildKit wants a fully-qualified reference, and a
+	// short one like "clojure:temurin-21-..." parses as host:port ("invalid
+	// port after host") rather than as repository:tag.
+	named, err := reference.ParseNormalizedNamed(ref)
+	if err != nil {
+		return nil, fmt.Errorf("parsing image reference %s: %w", ref, err)
+	}
+	full := reference.TagNameOnly(named).String()
+
+	_, _, cfgBytes, err := gw.ResolveImageConfig(ctx, full, sourceresolver.Opt{
+		Platform: &platform,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("resolving config for %s: %w", ref, err)
+	}
+	var img struct {
+		Config struct {
+			Env []string `json:"Env"`
+		} `json:"config"`
+	}
+	if err := json.Unmarshal(cfgBytes, &img); err != nil {
+		return nil, fmt.Errorf("parsing image config for %s: %w", ref, err)
+	}
+	env := make(map[string]string, len(img.Config.Env))
+	for _, kv := range img.Config.Env {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			env[k] = v
+		}
+	}
+	return env, nil
 }

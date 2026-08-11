@@ -53,6 +53,13 @@ func (p *Provider) Plan(dir string, _ plan.Arch) (*plan.Plan, error) {
 	// unpacked into ramfs), so only the modules the server actually needs
 	// are linked in.
 	script := fmt.Sprintf(`set -eu
+# jlink --strip-debug shells out to objcopy, which the -slim image does not
+# carry. The example got it for free by running jlink in the fuller
+# eclipse-temurin JDK image; a single-stage build has to install it, or
+# jlink dies with 'Cannot run program "objcopy"'.
+if ! command -v objcopy >/dev/null 2>&1; then
+    apt-get update -qq && apt-get install -y -qq --no-install-recommends binutils >/dev/null
+fi
 export CLJ_CONFIG=/tmp/clj GITLIBS=/tmp/gitlibs
 clojure -P
 clojure -P -T:build

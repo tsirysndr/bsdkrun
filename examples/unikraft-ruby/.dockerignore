@@ -1,9 +1,0 @@
-# Build products, not rootfs inputs: without this a rebuild ships the fetched
-# Unikraft tree, the unpacked rootfs and the Rust cache (hundreds of MB) to
-# the docker daemon as build context.
-.unikraft/
-.rootfs-*/
-.rust-cache/
-.Kraftfile.*
-.config.*
-*.log

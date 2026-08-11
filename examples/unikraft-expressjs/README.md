@@ -6,7 +6,7 @@ unikernel. Ported from [`unikraft/catalog`'s
 to build for **arm64** and boot under bsdkrun.
 
 ```sh
-./build.sh                    # host arch; or: ./build.sh x86_64
+bsdkrun pack .                # host arch; or: bsdkrun pack . --target x86_64
 bsdkrun unikraft . --mem 2048 --cmdline "elfloader -- /usr/bin/node /usr/src/server.js"
 ```
 

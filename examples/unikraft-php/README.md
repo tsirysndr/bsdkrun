@@ -6,7 +6,7 @@ unikernel. Ported from [`unikraft-cloud/examples`'s
 to build for **arm64** as well as x86_64 and boot under bsdkrun.
 
 ```sh
-./build.sh                    # host arch; or: ./build.sh x86_64
+bsdkrun pack .                # host arch; or: bsdkrun pack . --target x86_64
 bsdkrun unikraft . --mem 512 --port 8080:8080 \
   --cmdline "elfloader -- /usr/local/bin/php /usr/src/server.php"
 ```
@@ -50,8 +50,5 @@ at boot (embedded in the kernel image, unpacked into ramfs).
 
 | file         | role                                                        |
 |--------------|-------------------------------------------------------------|
-| `Dockerfile` | rootfs: `php`, extensions, libraries (via `ldd`)            |
 | `php.ini`    | loads the sockets extension; compiled-in defaults otherwise |
 | `server.php` | upstream's socket-loop HTTP server, verbatim                |
-| `Kraftfile`  | the from-source base runtime + elfloader                    |
-| `build.sh`   | two-phase build; see `../unikraft-postgres/build.sh`        |

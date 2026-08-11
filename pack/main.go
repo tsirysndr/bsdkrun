@@ -35,6 +35,7 @@ import (
 	"github.com/tsirysndr/bsdkrun/pack/internal/procfile"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers"
 	"github.com/tsirysndr/bsdkrun/pack/internal/report"
+	"github.com/tsirysndr/bsdkrun/pack/internal/tools"
 	"github.com/tsirysndr/bsdkrun/pack/internal/tui"
 )
 
@@ -384,6 +385,42 @@ func runPipeline(r report.Reporter, path, targetFlag, pushRef string, strace, lo
 		return "", err
 	}
 	applyStartCommand(p, absPath, cfg, r)
+
+	// Secrets, guest environment and build-time variables from
+	// railpack.json.
+	if cfg != nil {
+		if names := cfg.SecretNames(); len(names) > 0 {
+			p.Secrets = names
+			r.Log(report.PhasePlan, config.FileName+": secrets "+strings.Join(names, " "))
+		}
+		if cfg.Deploy != nil && len(cfg.Deploy.Variables) > 0 {
+			p.GuestEnv = cfg.Deploy.Variables
+			r.Log(report.PhasePlan, fmt.Sprintf("%s: %d guest variable(s)",
+				config.FileName, len(cfg.Deploy.Variables)))
+		}
+		// Build-time variables become environment for the build image, on
+		// top of what the image itself declares and what the provider set.
+		if vars := cfg.BuildVariables(); len(vars) > 0 {
+			if p.Env == nil {
+				p.Env = map[string]string{}
+			}
+			for k, v := range vars {
+				p.Env[k] = v
+			}
+			r.Log(report.PhasePlan, fmt.Sprintf("%s: %d build variable(s)",
+				config.FileName, len(vars)))
+		}
+	}
+	// Extra tools the project asked for, installed with mise and put on
+	// PATH before anything else runs — a build tool is no use after the
+	// build. What the provider already resolved for itself is skipped.
+	if extra := tools.Extra(absPath, p.Provider); len(extra) > 0 {
+		p.Script = tools.Script(extra) + p.Script
+		if p.BuilderScript != "" {
+			p.BuilderScript = tools.Script(extra) + p.BuilderScript
+		}
+		r.Log(report.PhasePlan, "mise: "+strings.Join(extra, " "))
+	}
 	// Build-time packages, prepended so they are present before the
 	// provider's script runs. apt-get or apk depending on the base image —
 	// providers pick both Debian and Alpine bases.

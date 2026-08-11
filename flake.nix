@@ -101,6 +101,41 @@
         };
 
         # The built SPA. Embedded into the bsdkrun binary at compile time.
+        # ---- bsdkrun pack: the Go half ------------------------------------
+        # Built as its own derivation and copied into core/src/pack-bin
+        # before cargo runs, exactly as webUi is copied into web/dist.
+        #
+        # core/build.rs would otherwise run `go build` itself, which cannot
+        # work here: a nix build has no network, so fetching modules fails
+        # and build.rs degrades to shipping a binary with no pack support at
+        # all. buildGoModule fetches them in a fixed-output derivation
+        # instead, which is the one place a nix build is allowed to.
+        #
+        # vendorHash covers those modules. If a dependency changes, nix will
+        # report the expected value; regenerate it with:
+        #   cd pack && go mod vendor -o /tmp/v && nix hash path --sri /tmp/v
+        packBin = pkgs.buildGoModule {
+          pname = "bsdkrun-pack";
+          version = "0.1.0";
+
+          src = ./pack;
+          vendorHash = "sha256-c1/3o8pfZ3td2iXE+o3r2aE3i8PuSLe0IEkIisgvR0A=";
+
+          # Matches what core/build.rs builds: a static binary with no libc
+          # dependency, which is what makes it safe to embed and exec.
+          env.CGO_ENABLED = "0";
+          ldflags = [ "-s" "-w" ];
+
+          # The binary has to carry the name rust_embed looks for.
+          postInstall = ''
+            mv $out/bin/pack $out/bin/bsdkrun-pack 2>/dev/null || true
+          '';
+
+          # There are tests, but they shell out to docker for the buildkit
+          # ones; the unit tests that matter run in CI.
+          doCheck = false;
+        };
+
         webUi = pkgs.stdenv.mkDerivation {
           pname = "bsdkrun-web";
           version = "0.1.0";
@@ -202,6 +237,13 @@
             mkdir -p web
             cp -r ${webUi} web/dist
             chmod -R u+w web/dist
+
+            # rust_embed embeds whatever is here. build.rs finds no `go` on
+            # PATH and leaves this alone rather than overwriting it, so the
+            # binary that lands in bsdkrun is the one nix built.
+            mkdir -p core/src/pack-bin
+            cp ${packBin}/bin/bsdkrun-pack core/src/pack-bin/bsdkrun-pack
+            chmod -R u+w core/src/pack-bin
           '';
         };
 
@@ -375,7 +417,8 @@
           packages = with pkgs;
             # protobuf so the daemon's build script can run protoc too.
             # bun + node to build the web UI (`make web`).
-            [ pkg-config llvmPackages.llvm cargo-zigbuild zig protobuf bun nodejs ]
+            # go builds pack/, which core/build.rs compiles and embeds.
+            [ pkg-config llvmPackages.llvm cargo-zigbuild zig protobuf bun nodejs go ]
             ++ lib.optionals (!isDarwin) [ libkrun ]
             ++ runtimeDeps;
         };

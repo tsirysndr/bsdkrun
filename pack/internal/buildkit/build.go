@@ -12,6 +12,8 @@ import (
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/client/llb/sourceresolver"
 	gwclient "github.com/moby/buildkit/frontend/gateway/client"
+	"github.com/moby/buildkit/session"
+	"github.com/moby/buildkit/session/secrets/secretsprovider"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/tonistiigi/fsutil"
 
@@ -147,13 +149,16 @@ func Build(ctx context.Context, addr, srcDir string, p *plan.Plan, platform Plat
 			for k, v := range p.Env {
 				builder = builder.AddEnv(k, v)
 			}
+			builderOpts := []llb.RunOption{
+				llb.Args([]string{"sh", "-c", p.BuilderScript}),
+				llb.WithCustomName(fmt.Sprintf("build %s (%s, stage 1)", p.Name, p.Provider)),
+			}
+			builderOpts = append(builderOpts, secretMounts(p.Secrets)...)
+
 			staged := builder.
 				File(llb.Copy(src, "/", "/src", &llb.CopyInfo{CreateDestPath: true})).
 				Dir("/src").
-				Run(
-					llb.Args([]string{"sh", "-c", p.BuilderScript}),
-					llb.WithCustomName(fmt.Sprintf("build %s (%s, stage 1)", p.Name, p.Provider)),
-				).
+				Run(builderOpts...).
 				Root()
 			build = build.File(llb.Copy(staged, "/out/stage", "/stage", &llb.CopyInfo{
 				CreateDestPath:      true,
@@ -161,12 +166,15 @@ func Build(ctx context.Context, addr, srcDir string, p *plan.Plan, platform Plat
 			}))
 		}
 
+		runOpts := []llb.RunOption{
+			llb.Args([]string{"sh", "-c", p.Script}),
+			llb.WithCustomName(fmt.Sprintf("build %s (%s)", p.Name, p.Provider)),
+		}
+		runOpts = append(runOpts, secretMounts(p.Secrets)...)
+
 		build = build.
 			Dir("/src").
-			Run(
-				llb.Args([]string{"sh", "-c", p.Script}),
-				llb.WithCustomName(fmt.Sprintf("build %s (%s)", p.Name, p.Provider)),
-			).
+			Run(runOpts...).
 			Root()
 
 		// CopyDirContentsOnly: without it, Copy nests the source directory
@@ -196,6 +204,7 @@ func Build(ctx context.Context, addr, srcDir string, p *plan.Plan, platform Plat
 		Exports: []bkclient.ExportEntry{
 			{Type: bkclient.ExporterLocal, OutputDir: outDir},
 		},
+		Session: secretSession(p.Secrets),
 	}
 	// A local cache directory, when asked for, makes the build survive the
 	// daemon: buildkitd's own cache lives inside its container and is lost
@@ -222,6 +231,43 @@ func Build(ctx context.Context, addr, srcDir string, p *plan.Plan, platform Plat
 		return fmt.Errorf("buildkit solve: %w", err)
 	}
 	return nil
+}
+
+// secretSession supplies the values for the secrets the build mounts.
+//
+// Each is read from the environment variable of the same name, which is how
+// the same secret reaches a local run and a CI job without a second
+// mechanism: `export NPM_TOKEN=...` locally, a repository secret exported
+// in the workflow. A name with nothing behind it is left out rather than
+// passed as empty, so the mount is simply absent and the build script's own
+// check for it does the right thing.
+func secretSession(names []string) []session.Attachable {
+	values := map[string][]byte{}
+	for _, name := range names {
+		if v, ok := os.LookupEnv(name); ok {
+			values[name] = []byte(v)
+		}
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	return []session.Attachable{secretsprovider.FromMap(values)}
+}
+
+// secretMounts mounts each named secret at /run/secrets/<name>.
+//
+// A secret mount is not a layer: the file exists only while the command
+// runs, so a token used to fetch a private dependency does not end up
+// readable in the image afterwards. That matters more here than in an
+// ordinary container build, because the result is a unikernel that gets
+// pushed to a registry whole.
+func secretMounts(names []string) []llb.RunOption {
+	opts := make([]llb.RunOption, 0, len(names))
+	for _, name := range names {
+		opts = append(opts, llb.AddSecret("/run/secrets/"+name,
+			llb.SecretID(name), llb.SecretOptional))
+	}
+	return opts
 }
 
 // imageEnv reads the ENV a base image declares in its own config.

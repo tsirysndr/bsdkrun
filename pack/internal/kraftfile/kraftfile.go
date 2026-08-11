@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -249,6 +250,8 @@ type Options struct {
 
 // Generate renders p's Kraftfile.
 func Generate(p *plan.Plan, opts Options) (string, error) {
+	applyGuestEnv(p)
+
 	keys := make([]string, 0, len(p.Kconfig))
 	for k := range p.Kconfig {
 		keys = append(keys, k)
@@ -288,6 +291,84 @@ func Generate(p *plan.Plan, opts Options) (string, error) {
 		return "", fmt.Errorf("rendering Kraftfile: %w", err)
 	}
 	return overrideBaseKconfig(buf.String(), keys), nil
+}
+
+// baseEnvpCount is how many ENVP entries the base kconfig block defines
+// (ENVP0..ENVP3: PATH, LD_LIBRARY_PATH, HOME, PWD).
+const baseEnvpCount = 4
+
+// applyGuestEnv turns the project's deploy.variables into ENVP entries.
+//
+// The indices have to be allocated rather than fixed: providers already
+// claim them from ENVP4 up — beam takes 4 through 7, gleam 8 and 9 — so a
+// project variable written to a fixed offset would silently overwrite
+// ROOTDIR or BINDIR and break the guest in a way that looks nothing like a
+// config mistake. This starts after the highest index anyone has taken.
+//
+// A variable that names one the provider or the base block already set
+// replaces it in place, so a project can override PATH without ending up
+// with two PATH entries and no say in which wins.
+func applyGuestEnv(p *plan.Plan) {
+	if len(p.GuestEnv) == 0 {
+		return
+	}
+	if p.Kconfig == nil {
+		p.Kconfig = map[string]string{}
+	}
+
+	// Where each name currently lives, and the first free index.
+	at := map[string]string{}
+	next := baseEnvpCount
+	for key, value := range p.Kconfig {
+		idx, ok := envpIndex(key)
+		if !ok {
+			continue
+		}
+		if idx >= next {
+			next = idx + 1
+		}
+		if name, _, found := strings.Cut(strings.Trim(value, `"`), "="); found {
+			at[name] = key
+		}
+	}
+	for i, name := range baseEnvpNames {
+		if _, taken := at[name]; !taken {
+			at[name] = fmt.Sprintf("CONFIG_LIBPOSIX_ENVIRON_ENVP%d", i)
+		}
+	}
+
+	names := make([]string, 0, len(p.GuestEnv))
+	for name := range p.GuestEnv {
+		names = append(names, name)
+	}
+	sort.Strings(names) // deterministic output
+
+	for _, name := range names {
+		key, exists := at[name]
+		if !exists {
+			key = fmt.Sprintf("CONFIG_LIBPOSIX_ENVIRON_ENVP%d", next)
+			next++
+		}
+		p.Kconfig[key] = strconv.Quote(name + "=" + p.GuestEnv[name])
+	}
+}
+
+// baseEnvpNames are the variables the base kconfig block sets, in index
+// order, so that overriding one replaces it rather than adding a duplicate.
+var baseEnvpNames = []string{"PATH", "LD_LIBRARY_PATH", "HOME", "PWD"}
+
+// envpIndex reads the N out of CONFIG_LIBPOSIX_ENVIRON_ENVP<N>.
+func envpIndex(key string) (int, bool) {
+	const prefix = "CONFIG_LIBPOSIX_ENVIRON_ENVP"
+	rest, ok := strings.CutPrefix(key, prefix)
+	if !ok {
+		return 0, false
+	}
+	idx, err := strconv.Atoi(rest)
+	if err != nil {
+		return 0, false
+	}
+	return idx, true
 }
 
 // overrideBaseKconfig drops a base kconfig line when a provider set the same

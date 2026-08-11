@@ -66,6 +66,18 @@ type Plan struct {
 	// input, so it is pinned by the image ref and cached like any layer.
 	Tools []ToolCopy
 
+	// GuestEnv is the environment the application runs with in the guest,
+	// from railpack.json's deploy.variables. It becomes kconfig, since a
+	// unikernel has no shell to export anything.
+	GuestEnv map[string]string
+
+	// Secrets are names of secrets the build script may read, from
+	// railpack.json's `secrets`. Each is mounted at /run/secrets/<name>
+	// for the duration of the command that needs it and never lands in a
+	// layer — which is the whole point: a token baked into a rootfs is in
+	// the image forever, and this image gets pushed to a registry.
+	Secrets []string
+
 	// Cmd is the Kraftfile `cmd:` — the guest's argv.
 	Cmd []string
 

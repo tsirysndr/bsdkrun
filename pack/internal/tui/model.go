@@ -7,6 +7,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -54,6 +55,12 @@ type stepState struct {
 	status status
 	detail string
 	err    error
+
+	// started is when the step entered `running`; elapsed is frozen from it
+	// the moment the step finishes. While running, the duration shown is
+	// recomputed from started on every frame, so it ticks live.
+	started time.Time
+	elapsed time.Duration
 }
 
 // vertex is one BuildKit LLB op, tracked only while report.PhaseRootfs is
@@ -77,6 +84,15 @@ type model struct {
 
 	logTail []string
 
+	// width is the terminal width the step durations are right-aligned
+	// against; 0 until the first tea.WindowSizeMsg arrives.
+	width int
+
+	// started/elapsed time the run as a whole, the same way stepState does
+	// one step: elapsed is frozen when doneMsg arrives.
+	started time.Time
+	elapsed time.Duration
+
 	spinner  spinner.Model
 	quitting bool
 	err      error
@@ -96,6 +112,7 @@ func newModel() model {
 	return model{
 		state:    state,
 		vertices: map[string]*vertex{},
+		started:  time.Now(),
 		spinner:  s,
 	}
 }
@@ -113,13 +130,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		return m, nil
+
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 
 	case phaseStartMsg:
-		m.state[msg.phase].status = running
+		s := m.state[msg.phase]
+		s.status = running
+		s.started = time.Now()
 		m.current = msg.phase
 		m.logTail = nil
 		m.vertexOrder = nil
@@ -130,12 +153,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s := m.state[msg.phase]
 		s.status = done
 		s.detail = msg.detail
+		s.elapsed = time.Since(s.started)
 		return m, nil
 
 	case phaseErrorMsg:
 		s := m.state[msg.phase]
 		s.status = failed
 		s.err = msg.err
+		s.elapsed = time.Since(s.started)
 		return m, nil
 
 	case logMsg:
@@ -161,6 +186,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case doneMsg:
 		m.err = msg.err
 		m.final = msg.final
+		m.elapsed = time.Since(m.started)
 		m.quitting = true
 		return m, tea.Quit
 	}
@@ -173,22 +199,23 @@ func (m model) View() string {
 		s := m.state[name]
 		switch s.status {
 		case done:
-			b.WriteString(styleDone.Render("✓ " + name))
+			left := styleDone.Render("✓ " + name)
 			if s.detail != "" {
-				b.WriteString(styleDetail.Render("  " + s.detail))
+				left += styleDetail.Render("  " + s.detail)
 			}
-			b.WriteByte('\n')
+			b.WriteString(m.rightAlign(left, report.FormatDuration(s.elapsed), styleDetail))
 		case running:
-			b.WriteString(m.spinner.View())
-			b.WriteString(styleRunning.Render(" " + name))
-			b.WriteByte('\n')
+			left := m.spinner.View() + styleRunning.Render(" "+name)
+			// Recomputed every frame rather than read from s.elapsed, which
+			// is what makes a running step's duration count up live.
+			b.WriteString(m.rightAlign(left, report.FormatDuration(time.Since(s.started)), styleRunning))
 			b.WriteString(m.renderNested())
 		case failed:
-			b.WriteString(styleError.Render("✗ " + name))
+			left := styleError.Render("✗ " + name)
 			if s.err != nil {
-				b.WriteString(styleDetail.Render("  " + s.err.Error()))
+				left += styleDetail.Render("  " + s.err.Error())
 			}
-			b.WriteByte('\n')
+			b.WriteString(m.rightAlign(left, report.FormatDuration(s.elapsed), styleDetail))
 		default:
 			b.WriteString(stylePending.Render("· " + name))
 			b.WriteByte('\n')
@@ -196,6 +223,8 @@ func (m model) View() string {
 	}
 
 	if m.quitting {
+		b.WriteByte('\n')
+		b.WriteString(m.rightAlign(styleDetail.Render("total"), report.FormatDuration(m.elapsed), styleFinal))
 		if m.err != nil {
 			b.WriteByte('\n')
 			b.WriteString(styleError.Render(fmt.Sprintf("error: %v", m.err)))
@@ -207,6 +236,23 @@ func (m model) View() string {
 		}
 	}
 	return b.String()
+}
+
+// rightAlign renders one step line: left as given, then dur pushed against
+// the right edge of the terminal. Widths are measured with lipgloss.Width so
+// the ANSI colour escapes in both halves don't count toward the padding.
+func (m model) rightAlign(left, dur string, durStyle lipgloss.Style) string {
+	width := m.width
+	if width <= 0 {
+		// Before the first tea.WindowSizeMsg (and in any terminal that never
+		// sends one) fall back to the conventional 80 columns.
+		width = 80
+	}
+	pad := width - lipgloss.Width(left) - lipgloss.Width(dur)
+	if pad < 1 {
+		pad = 1
+	}
+	return left + strings.Repeat(" ", pad) + durStyle.Render(dur) + "\n"
 }
 
 // renderNested draws whichever live detail the currently-running step has:

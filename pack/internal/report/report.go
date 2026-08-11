@@ -5,7 +5,12 @@
 // bubbletea TUI (internal/tui).
 package report
 
-import bkclient "github.com/moby/buildkit/client"
+import (
+	"fmt"
+	"time"
+
+	bkclient "github.com/moby/buildkit/client"
+)
 
 // Phase names, shared by both renderers and by main.go's pipeline — the
 // single source of truth for what "the 6 steps" are.
@@ -17,6 +22,21 @@ const (
 	PhaseFetch      = "fetch + patch Unikraft"
 	PhaseKraftBuild = "kraft build"
 )
+
+// FormatDuration renders an elapsed time the way both renderers show it at
+// the right of a step: "4.5s", and "2m04.5s" once a step runs past a minute
+// (kraft build routinely does).
+func FormatDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	secs := d.Seconds()
+	if secs < 60 {
+		return fmt.Sprintf("%.1fs", secs)
+	}
+	m := int(secs) / 60
+	return fmt.Sprintf("%dm%04.1fs", m, secs-float64(m*60))
+}
 
 // Reporter receives progress events as the pipeline runs.
 type Reporter interface {

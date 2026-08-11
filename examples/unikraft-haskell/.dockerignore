@@ -1,0 +1,5 @@
+.unikraft
+.rootfs-*
+.Kraftfile.*
+.config.*
+.stack-work

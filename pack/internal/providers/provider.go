@@ -24,6 +24,7 @@ import (
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/elixir"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/gleam"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/golang"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers/haskell"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/java"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/node"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers/php"
@@ -68,6 +69,7 @@ func All() []Provider {
 		scala.New(),
 		java.New(),
 		crystal.New(),
+		haskell.New(),
 		zig.New(),
 		swift.New(),
 		dotnet.New(),

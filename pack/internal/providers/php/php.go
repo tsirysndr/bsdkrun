@@ -33,12 +33,27 @@ func (p *Provider) Detect(dir string) (bool, error) {
 }
 
 func (p *Provider) StartCommandHelp() string {
-	return `PHP runs server.php (or index.php). A Procfile "web:" line overrides it.`
+	return `PHP runs server.php (or index.php); a public/index.php is served by php -S on :8080. A Procfile "web:" line overrides it.`
 }
 
 func (p *Provider) Plan(dir string, _ plan.Arch) (*plan.Plan, error) {
 	main := entry.FindOr(dir,
 		[]string{"server.php", "index.php", "app.php", "main.php"}, "server.php")
+
+	// A public/ document root is the framework convention — Laravel,
+	// Symfony and anything built on them put their front controller there
+	// and nothing else above it. Those apps expect a web SAPI: their
+	// index.php reads the request from superglobals and never listens on a
+	// socket, so running it as a CLI script produces one response to a
+	// request that never came, and exits.
+	//
+	// PHP's built-in server supplies the SAPI. It is single-process, which
+	// suits a guest that is a single CPU, and it is the same server
+	// `php artisan serve` and `symfony serve` wrap.
+	docroot := ""
+	if _, err := os.Stat(filepath.Join(dir, "public", "index.php")); err == nil {
+		docroot = "public"
+	}
 
 	version := defaultVersion
 	if v, ok := versions.Read(dir).Version("php"); ok {
@@ -104,6 +119,20 @@ cp -a . /out/rootfs/usr/src/ 2>/dev/null || true
 [ -f php.ini ] && cp php.ini /out/rootfs/usr/local/etc/php/php.ini || true
 chmod 1777 /out/rootfs/tmp
 `, plan.LddIntoRootfs),
-		Cmd: []string{"/usr/local/bin/php", "/usr/src/" + main},
+		Cmd: command(docroot, main),
 	}, nil
+}
+
+// command is the guest argv: the built-in server for a framework's public/
+// document root, or the script itself for a single-file service that does
+// its own listening.
+func command(docroot, main string) []string {
+	if docroot != "" {
+		return []string{
+			"/usr/local/bin/php", "-S", "0.0.0.0:8080",
+			"-t", "/usr/src/" + docroot,
+			"/usr/src/" + docroot + "/index.php",
+		}
+	}
+	return []string{"/usr/local/bin/php", "/usr/src/" + main}
 }

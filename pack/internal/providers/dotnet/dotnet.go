@@ -58,6 +58,20 @@ func (p *Provider) Plan(dir string, arch plan.Arch) (*plan.Plan, error) {
 			"CONFIG_LIBPOSIX_ENVIRON_ENVP5": `"DOTNET_gcServer=0"`,
 			"CONFIG_LIBPOSIX_ENVIRON_ENVP6": `"DOTNET_TieredCompilation=0"`,
 			"CONFIG_LIBPOSIX_ENVIRON_ENVP7": `"DOTNET_EnableDiagnostics=0"`,
+			// The default GC reserves its heap as one enormous virtual
+			// range (regions, 256 GiB on 64-bit). Unikraft cannot serve a
+			// reservation of that size, and CoreCLR reports the failure as
+			// E_OUTOFMEMORY during startup — before a line of managed code
+			// runs, and regardless of how much RAM the guest actually has.
+			//
+			// libclrgc.so is the segments-based collector .NET ships for
+			// exactly this: constrained environments where the regions
+			// reservation cannot be satisfied. It is in every self-contained
+			// publish already.
+			"CONFIG_LIBPOSIX_ENVIRON_ENVP8": `"DOTNET_GCName=libclrgc.so"`,
+			// A hard limit keeps the segments GC from sizing itself against
+			// a machine it cannot see.
+			"CONFIG_LIBPOSIX_ENVIRON_ENVP9": `"DOTNET_GCHeapHardLimit=0x10000000"`,
 		},
 		// --self-contained, so the runtime ships with the app: there is no
 		// package manager in the guest to install one, and a

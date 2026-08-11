@@ -2708,7 +2708,17 @@ UK_LIBPARAM_PARAM_ALIAS(boot, &bsdkrun_epoch, __u64,
 
 static inline __nsec bsdkrun_wall(void)
 {
-	return ukplat_wall_clock() + ukarch_time_sec_to_nsec(bsdkrun_epoch);
+	/* time since boot + the host's wall time at boot. Deliberately NOT
+	 * ukplat_wall_clock(): on x86_64 the platform reads a real (often
+	 * stale) RTC, so adding the host epoch on top double-counts and lands
+	 * the guest ~30 years in the future. The monotonic clock starts at
+	 * zero on every platform, so this is correct on both arm64 (where the
+	 * platform wall clock was ~0 anyway) and x86_64 (where it was not).
+	 * With no epoch passed, fall back to the platform's own answer.
+	 */
+	if (!bsdkrun_epoch)
+		return ukplat_wall_clock();
+	return ukplat_monotonic_clock() + ukarch_time_sec_to_nsec(bsdkrun_epoch);
 }"""
 
 anchor = "#include <uk/syscall.h>"
@@ -2720,6 +2730,53 @@ BSDKRUN_EPOCH_EOF
 	grep -q 'bsdkrun_wall' "$PTIME" || { echo "failed to patch the wall clock" >&2; exit 1; }
 else
 	echo "wall clock epoch: already patched or absent, skipping"
+fi
+
+# ---------------------------------------------------------------------------
+# SO_REUSEPORT -> SO_REUSEADDR
+#
+# lwip does not implement SO_REUSEPORT, so setsockopt for it returns
+# ENOPROTOOPT ("protocol not available"). Caddy/quic-go set it while
+# opening the HTTP/3 UDP listener and log an ERROR when it fails; more
+# generally, any server that hardcodes SO_REUSEPORT for its listen socket
+# gets a failure it did not expect.
+#
+# SO_REUSEPORT's real job is spreading one port across several listener
+# sockets for kernel-side load balancing. A unikernel is a single process
+# with a single listener, so there is nothing to balance and the closest
+# honest behaviour is SO_REUSEADDR — which lwip does implement, and which
+# is what the caller almost always actually wanted (rebind without waiting
+# out TIME_WAIT). Rewriting it here, at the posix-socket layer, keeps the
+# fetched lwip source untouched.
+# ---------------------------------------------------------------------------
+SOCKC="$UK/lib/posix-socket/socket.c"
+if [ -f "$SOCKC" ] && ! grep -q 'bsdkrun: SO_REUSEPORT' "$SOCKC"; then
+	echo "patching $SOCKC (SO_REUSEPORT -> SO_REUSEADDR)"
+	python3 - "$SOCKC" <<'BSDKRUN_REUSEPORT_EOF'
+import sys
+path = sys.argv[1]
+src = open(path).read()
+
+anchor = """	if (unlikely(!optval))
+		return -EFAULT;
+"""
+assert src.count(anchor) == 1, "setsockopt optval check moved"
+
+inject = anchor + """
+	/* bsdkrun: SO_REUSEPORT -> SO_REUSEADDR. lwip has no SO_REUSEPORT, and a
+	 * single-listener unikernel has nothing to load-balance across, so the
+	 * address-reuse the caller wanted is the honest stand-in. See
+	 * patches/apply.sh.
+	 */
+	if (level == SOL_SOCKET && optname == 15 /* SO_REUSEPORT */)
+		optname = SO_REUSEADDR;
+"""
+src = src.replace(anchor, inject, 1)
+open(path, "w").write(src)
+BSDKRUN_REUSEPORT_EOF
+	grep -q 'bsdkrun: SO_REUSEPORT' "$SOCKC" || { echo "failed to patch SO_REUSEPORT" >&2; exit 1; }
+else
+	echo "SO_REUSEPORT: already patched or absent, skipping"
 fi
 
 echo "patches applied."

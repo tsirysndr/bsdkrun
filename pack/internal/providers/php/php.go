@@ -25,6 +25,16 @@ const defaultVersion = "8.2"
 // the same problem, being one process that serves PHP with threads.
 const ServerEnv = "BSDKRUN_PHP_SERVER"
 
+// TLSEnv turns on TLS for the FrankenPHP server. Set it to a domain to
+// serve a certificate for that name; set it to "self-signed" (or "1") for a
+// baked self-signed certificate, which is what a demo or a guest behind a
+// terminating proxy wants.
+//
+// Only FrankenPHP: PHP's built-in server speaks no TLS at all, so the knob
+// would be a silent no-op there. The wall-clock fix (epoch.boot) is what
+// makes any of this work — a certificate is "not yet valid" in 1970.
+const TLSEnv = "BSDKRUN_PHP_TLS"
+
 // frankenPHPTextAddr relinks FrankenPHP away from the Unikraft fc kernel.
 // It is a Go binary, so it has exactly the load-address collision on x86_64
 // that providers/golang and providers/static describe — and being cgo, it
@@ -194,6 +204,24 @@ chmod 1777 /out/rootfs/tmp
 //
 // `builtin` remains the default because it is what is verified.
 func frankenPHPPlan(docroot string, arch plan.Arch) (*plan.Plan, error) {
+	tls := os.Getenv(TLSEnv) != ""
+
+	// A self-signed certificate generated at build time. openssl is in the
+	// static-builder image (it builds PHP's openssl extension). The cert is
+	// dated from the epoch so it is valid the moment the guest boots,
+	// whatever the guest's clock reads — the same reasoning as the guest
+	// wall-clock fix, applied to the artifact instead of the reader.
+	tlsScript := ""
+	if tls {
+		cn := os.Getenv(TLSEnv)
+		if cn == "self-signed" || cn == "1" || cn == "true" {
+			cn = "localhost"
+		}
+		tlsScript = fmt.Sprintf(`openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1     -keyout /tmp/k.pem -out /tmp/c.pem -days 3650 -nodes     -subj "/CN=%s" -addext "subjectAltName=DNS:%s,DNS:localhost,IP:127.0.0.1"
+cat /tmp/c.pem /tmp/k.pem > /out/rootfs/etc/frankenphp/tls.pem
+`, cn, cn)
+	}
+
 	extldflags := ""
 	if arch == plan.ArchAmd64 {
 		extldflags = fmt.Sprintf(` -extldflags "-Wl,-Ttext-segment=%s"`, frankenPHPTextAddr)
@@ -256,17 +284,39 @@ if [ -z "$binary" ]; then
     exit 1
 fi
 
-mkdir -p /out/rootfs/usr/bin /out/rootfs/tmp
+mkdir -p /out/rootfs/usr/bin /out/rootfs/tmp /out/rootfs/etc/frankenphp
 cp "$binary" /out/rootfs/usr/bin/frankenphp
 chmod +x /out/rootfs/usr/bin/frankenphp
 chmod 1777 /out/rootfs/tmp
-`),
-		Cmd: []string{
+%s`, tlsScript),
+		Cmd: frankenPHPCommand(docroot, tls),
+	}, nil
+}
+
+// frankenPHPCommand is the guest argv for the FrankenPHP server.
+//
+// Caddy's own automatic HTTPS is deliberately not used: it would try to
+// reach an ACME server (the guest cannot, in most deployments) and manage
+// certificate storage on a writable path the ramfs does not persist. A
+// certificate baked into the rootfs, named explicitly, is what a unikernel
+// wants — TLS terminates here, and h2 comes with it, without the guest
+// talking to a CA.
+func frankenPHPCommand(docroot string, tls bool) []string {
+	if !tls {
+		return []string{
 			"/usr/bin/frankenphp", "php-server",
 			"--listen", "0.0.0.0:8080",
 			"--root", "/app/" + docroot,
-		},
-	}, nil
+		}
+	}
+	return []string{
+		"/usr/bin/frankenphp", "php-server",
+		"--listen", "0.0.0.0:8443",
+		"--root", "/app/" + docroot,
+		// The baked certificate. --tls on its own would trigger Caddy's
+		// internal CA and ACME machinery; a named cert keeps it offline.
+		"--tls", "/etc/frankenphp/tls.pem",
+	}
 }
 
 // command is the guest argv: the built-in server for a framework's public/

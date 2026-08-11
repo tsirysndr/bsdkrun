@@ -73,13 +73,22 @@ pub(crate) fn cmd_pack(args: &[String]) -> Result<()> {
 /// libkrun), so an ad-hoc signature is sufficient.
 #[cfg(target_os = "macos")]
 fn sign_adhoc(bin: &std::path::Path) -> Result<()> {
-    let status = Command::new("codesign")
+    // `output()` rather than `status()`: codesign chatters "replacing
+    // existing signature" on every run, which would land in the middle of
+    // whatever `bsdkrun pack` itself is printing — including `--plan`'s
+    // JSON. Keep it unless it actually fails.
+    let out = Command::new("codesign")
         .args(["--force", "-s", "-"])
         .arg(bin)
-        .status()
+        .output()
         .with_context(|| format!("running codesign on {}", bin.display()))?;
-    if !status.success() {
-        bail!("codesign {} failed: {status}", bin.display());
+    if !out.status.success() {
+        bail!(
+            "codesign {} failed: {}\n{}",
+            bin.display(),
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     Ok(())
 }

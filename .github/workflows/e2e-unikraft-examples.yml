@@ -65,38 +65,46 @@ jobs:
       matrix:
         include:
           - example: unikraft-expressjs
-            kernel: expressjs_fc-x86_64
+            kernel: node_fc-x86_64
+            pack: true
+            placeholder: node
             # node needs the rootfs resident twice (embedded in the image and
             # unpacked into ramfs) before V8 allocates anything; 512 MiB fails
             # during cpio extraction with a misleading "Input/output error".
             mem: 2048
-            argv: /usr/bin/node /usr/src/server.js
+            argv: /usr/bin/node /usr/src/app/index.js
             port: 3000
             expect: "Bye, World!"
             strict: true
           - example: unikraft-actix
-            kernel: actix_fc-x86_64
+            kernel: hello_fc-x86_64
+            pack: true
+            placeholder: hello
             mem: 1024
-            argv: /server
+            argv: /hello
             port: 8080
             expect: "Bye, World!"
             strict: true
           - example: unikraft-deno
             kernel: deno_fc-x86_64
+            pack: true
+            placeholder: deno
             # As with node: the rootfs is resident twice (embedded in the image
             # and unpacked into ramfs) before V8 allocates anything.
             mem: 2048
             # --quiet is required, not cosmetic. Deno's progress bar otherwise
             # redraws in a tight loop and starves the thread doing the real
             # work; see examples/unikraft-deno/README.md.
-            argv: /usr/bin/deno run --quiet --allow-net /usr/src/server.js
+            argv: /usr/bin/deno run --quiet --allow-net /usr/src/app/server.js
             port: 3000
             expect: "Hello from Deno on Unikraft!"
             strict: true
           - example: unikraft-bun
             kernel: bun_fc-x86_64
+            pack: true
+            placeholder: bun
             mem: 2048
-            argv: /usr/bin/bun run /usr/src/server.js
+            argv: /usr/bin/bun run /usr/src/app/server.js
             port: 3000
             expect: "Hello from Bun on Unikraft!"
             # Bun serves on arm64 now. It needed two syscalls Unikraft was
@@ -303,6 +311,8 @@ jobs:
             strict: false
           - example: unikraft-php
             kernel: php_fc-x86_64
+            pack: true
+            placeholder: php
             # php-cli plus its extensions is ~30 MiB of rootfs.
             mem: 512
             # server.php ignores the extra argv words libkrun appends, so no
@@ -315,6 +325,8 @@ jobs:
             strict: false
           - example: unikraft-ruby
             kernel: ruby_fc-x86_64
+            pack: true
+            placeholder: ruby
             # ruby plus its stdlib is ~60 MiB of rootfs.
             mem: 512
             # server.rb ignores the extra ARGV words libkrun appends, so no
@@ -470,6 +482,13 @@ jobs:
           echo /usr/local/lib64 | sudo tee /etc/ld.so.conf.d/libkrun.conf
           sudo ldconfig
 
+      # Only needed for the `pack: true` examples, but the binary is built
+      # once for all of them: core/build.rs compiles pack/ and embeds it, so
+      # without Go the `bsdkrun pack` subcommand would not exist at all.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: pack/go.mod
+
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -489,7 +508,22 @@ jobs:
       # build.sh runs the kraft half natively on Linux (no container), and
       # builds the rootfs with buildx for the target arch. Here host and target
       # are both x86_64, so no emulation is involved.
-      - name: Build the example
+      # `pack: true` examples ship no Dockerfile/Kraftfile of their own —
+      # `bsdkrun pack` detects the project, builds the rootfs with BuildKit
+      # and generates the Kraftfile. The rest still build the checked-in
+      # Kraftfile through their own build.sh.
+      - name: Build the example (bsdkrun pack)
+        if: ${{ matrix.pack }}
+        run: |
+          set -eux
+          ./target/release/bsdkrun pack examples/${{ matrix.example }} \
+            --target x86_64 --plain
+          ls -l examples/${{ matrix.example }}/.unikraft/build/${{ matrix.kernel }}
+        env:
+          KRAFTKIT_NO_PROMPT: "1"
+
+      - name: Build the example (build.sh)
+        if: ${{ !matrix.pack }}
         run: |
           set -eux
           ./examples/${{ matrix.example }}/build.sh x86_64
@@ -561,7 +595,7 @@ jobs:
             --name ${{ matrix.example }} \
             --mem ${{ matrix.mem }} \
             --port ${{ matrix.port }}:${{ matrix.port }} \
-            --cmdline "elfloader -- ${{ matrix.argv }}" \
+            --cmdline "${{ matrix.placeholder || 'elfloader' }} -- ${{ matrix.argv }}" \
             examples/${{ matrix.example }} | tee id.txt
           sleep 20
           ./target/release/bsdkrun ps -a

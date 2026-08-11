@@ -107,8 +107,19 @@ edit landed. Two patches here exist because a guest died before `main()`:
   arms one for `max_execution_time` and died with *"Could not create timer"*
   before serving. Now a timer table scanned by one polling thread.
 
+- `RLIMIT_STACK` reporting 64 KiB — Unikraft answers with the *kernel* thread
+  stack size while the app runs on the elfloader's. glibc's
+  `pthread_getattr_np` clamps the main thread's computed stack bounds by that
+  rlimit, so any runtime asking glibc for its own stack gets bounds that
+  exclude its own stack pointer. CoreCLR died on this as `E_OUTOFMEMORY`; the
+  dotnet provider's `/proc/self/maps` `[stack]` line is the other half.
+
 When a guest boots and then dies on something that reads like an application
 fault, check whether the syscall is a stub before blaming the application.
+When nothing at the syscall boundary fails, **differential-trace it**: run the
+same binary under Docker with strace, align the two traces, and read what the
+good run does next at the point where the guest dies. That is what solved
+.NET after seven single-hypothesis attempts failed.
 
 ## Verifying
 

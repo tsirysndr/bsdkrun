@@ -1,39 +1,37 @@
 // Package dotnet builds C# projects.
 //
-// KNOWN BROKEN: the build works and the guest boots, but CoreCLR fails to
-// start with E_OUTOFMEMORY (0x8007000E) before any managed code runs.
+// CoreCLR failed to start here for a long time, with an E_OUTOFMEMORY
+// (0x8007000E) that had nothing to do with memory. The cause was found by
+// differential tracing — the same self-contained binary strace'd under
+// Docker, aligned against a guest --strace (which itself needs the tracer
+// patch in the Unikraft patches, or it dies formatting its own output) —
+// and it took three coordinated fixes:
 //
-// It is not about memory. A --strace trace (which needs the tracer patch
-// in library/unikraft-base/patches/apply.sh, or it dies formatting its own
-// output) shows the runtime reading /proc/self/maps last, then failing.
+//  1. DOTNET_EnableWriteXorExecute=0 (ENVP10). .NET 8 turns W^X on by
+//     default, and its executable allocator dual-maps JIT pages through
+//     memfd_create — which Unikraft does not implement. The trace shows
+//     memfd_create = -ENOSYS shortly before the failure.
+//  2. A /proc/self/maps with a real [stack] line (written into the rootfs
+//     below). glibc's pthread_getattr_np computes the main thread's stack
+//     bounds by finding the maps line containing __libc_stack_end; CoreCLR
+//     asks for those bounds during PAL startup and fails without them. The
+//     good trace shows the tell: the maps read paired with
+//     prlimit64(RLIMIT_STACK).
+//  3. The RLIMIT_STACK patch in the Unikraft patches. Unikraft reported
+//     the kernel thread stack size (64 KiB) while the app runs on the
+//     elfloader's 512 KiB stack; glibc clamps the computed bounds by that
+//     rlimit, producing a range that excluded the very stack pointer the
+//     thread was running on.
 //
-// Supplying that file is NOT enough, which was tested rather than assumed.
-// So the missing file was the last interesting thing before the failure
-// rather than the cause of it.
+// (1) was applied on direct evidence but not proven necessary in
+// isolation; (2)+(3) are what turned the guest from failing to serving —
+// with W^X off but the stack bounds still wrong, it failed identically.
 //
-// Ruled out, each with evidence rather than argument:
-//   - Guest RAM: 3 GiB fails identically to 1 GiB.
-//   - The regions GC's huge reservation: a 1 GiB PROT_NONE mmap succeeds,
-//     and no mmap in the whole trace fails.
-//   - Thread creation: clone() succeeds and the trace continues into the
-//     new thread (gettid returns pid:3).
-//   - CPU count: sched_getaffinity reports CPU0 correctly, even though
-//     /proc/stat and /sys/devices/system/cpu/possible are both absent.
-//   - getsid() returning ESRCH: a real bug, since fixed, and unrelated.
-//   - /proc/self/maps missing: supplied, read back in full, still fails.
-//     Two shapes were tried, a full description of the address space and a
-//     sparse one naming only libcoreclr.so, with no difference.
-//   - procfs generally: /proc/self/exe, /proc/self/mountinfo, /proc/stat,
-//     /proc/meminfo and /sys/devices/system/cpu/* were all supplied at
-//     once, every one of them a path the trace showed being tried. Still
-//     fails identically. They are not in the rootfs any more: fabricating
-//     a meminfo that claims 1 GiB whatever --mem says is worse than not
-//     having one, when it buys nothing.
-//
-// What is left is to find which PAL call actually returns the failure.
-// The trace narrows it to CoreCLR's own initialisation, after the maps
-// read and before any managed code — but the syscall boundary no longer
-// shows it, because nothing at that boundary fails any more.
+// Ruled out on the way, so nobody re-tests them: guest RAM (3 GiB failed
+// like 1 GiB), the regions GC's reservation (a 1 GiB PROT_NONE mmap
+// succeeds), thread creation (clone succeeds), CPU count, getsid, and
+// procfs stand-ins for stat/meminfo/mountinfo/cpu (supplied, read, no
+// difference — only the maps [stack] line mattered).
 package dotnet
 
 import (
@@ -107,6 +105,21 @@ func (p *Provider) Plan(dir string, arch plan.Arch) (*plan.Plan, error) {
 			// A hard limit keeps the segments GC from sizing itself against
 			// a machine it cannot see.
 			"CONFIG_LIBPOSIX_ENVIRON_ENVP9": `"DOTNET_GCHeapHardLimit=0x10000000"`,
+			// THE fix, found by tracing: .NET 8 turns W^X on by default,
+			// and its executable-memory allocator builds a dual mapping
+			// (one RW view, one RX view of the same pages) out of
+			// memfd_create — which Unikraft does not implement. The trace
+			// shows memfd_create = -ENOSYS, sixty-six lines before
+			// CoreCLR reports it as E_OUTOFMEMORY, an error that named
+			// neither the syscall nor the feature. The maps reads just
+			// before the failure were this same allocator hunting for
+			// free address space.
+			//
+			// With W^X off the JIT maps its code RWX in one view, which
+			// is how every other JIT here (JVM, BEAM, V8) already runs
+			// on Unikraft — a single address space with no processes has
+			// no isolation for W^X to preserve.
+			"CONFIG_LIBPOSIX_ENVIRON_ENVP10": `"DOTNET_EnableWriteXorExecute=0"`,
 		},
 		// --self-contained, so the runtime ships with the app: there is no
 		// package manager in the guest to install one, and a
@@ -121,8 +134,29 @@ func (p *Provider) Plan(dir string, arch plan.Arch) (*plan.Plan, error) {
     -p:PublishTrimmed=false -p:PublishSingleFile=false \
     -o /tmp/publish
 
-mkdir -p /out/rootfs/usr/src/app /out/rootfs/tmp
+mkdir -p /out/rootfs/usr/src/app /out/rootfs/tmp /out/rootfs/proc/self
 cp -a /tmp/publish/. /out/rootfs/usr/src/app/
+
+# What glibc's pthread_getattr_np() needs to compute the main thread's
+# stack bounds: a /proc/self/maps whose [stack] line contains
+# __libc_stack_end. CoreCLR asks for those bounds during PAL startup, and
+# without this file the call fails -- reported as E_OUTOFMEMORY, an error
+# that names neither the file nor the reason.
+#
+# The [stack] range brackets where app-elfloader actually puts the stack
+# (observed at 0x10003xxxxx in a --strace trace; the loader is
+# deterministic, there is no ASLR). glibc takes the line's top as the
+# stack base and sizes it by min(range, RLIMIT_STACK) -- which is why the
+# RLIMIT_STACK patch in the Unikraft patches is the other half of this:
+# the unpatched 64 KiB rlimit clamps the bounds into a range that excludes
+# the very stack pointer the thread is running on.
+#
+# The libcoreclr line is the anchor the executable-memory allocator looks
+# for when placing its heap; it is secondary but costs one line.
+cat > /out/rootfs/proc/self/maps <<'MAPS'
+1000000000-1000100000 r-xp 00000000 00:00 0                              /usr/src/app/libcoreclr.so
+1000200000-1000400000 rw-p 00000000 00:00 0                              [stack]
+MAPS
 
 
 if [ ! -f /out/rootfs/usr/src/app/%s ]; then

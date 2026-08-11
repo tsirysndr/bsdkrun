@@ -2627,4 +2627,33 @@ else
 	echo "tracer string bounding: already patched or absent, skipping"
 fi
 
+# ---------------------------------------------------------------------------
+# RLIMIT_STACK reports the kernel thread's stack, not the application's
+#
+# getrlimit(RLIMIT_STACK) answers __STACK_SIZE — the size of a Unikraft
+# *kernel* thread stack (STACK_SIZE_PAGE_ORDER=4: 64 KiB) — while the
+# application actually runs on the elfloader-provided stack, which is
+# CONFIG_APPELFLOADER_STACK_NBPAGES (512 KiB by default) and can be far
+# deeper than 64 KiB at any given moment.
+#
+# glibc's pthread_getattr_np() clamps the main thread's computed stack size
+# to this rlimit, so any runtime that asks glibc for its own stack bounds
+# gets an answer that excludes the stack pointer it is currently running
+# on. CoreCLR does exactly that during PAL startup and fails — reported,
+# unhelpfully, as E_OUTOFMEMORY.
+#
+# Report the Linux default (8 MiB) instead. An rlimit is a limit, not a
+# measurement; claiming 8 MiB over a smaller mapping is what Linux itself
+# does, and glibc bounds the final answer by the mapping either way.
+# ---------------------------------------------------------------------------
+DEPR="$UK/lib/posix-process/deprecated.c"
+if [ -f "$DEPR" ] && ! grep -q 'bsdkrun app stack rlimit' "$DEPR"; then
+	echo "patching $DEPR (RLIMIT_STACK reports an application-sized limit)"
+	sed -i.bak 's|old_limit->rlim_cur = __STACK_SIZE;|/* bsdkrun app stack rlimit: see patches/apply.sh */\n		old_limit->rlim_cur = 0x800000;|; s|old_limit->rlim_max = __STACK_SIZE;|old_limit->rlim_max = 0x800000;|' "$DEPR"
+	rm -f "$DEPR.bak"
+	grep -q 'bsdkrun app stack rlimit' "$DEPR" || { echo "failed to patch RLIMIT_STACK" >&2; exit 1; }
+else
+	echo "RLIMIT_STACK: already patched or absent, skipping"
+fi
+
 echo "patches applied."

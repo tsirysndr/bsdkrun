@@ -117,6 +117,8 @@ jobs:
             strict: false
           - example: unikraft-clojure
             kernel: clojure_fc-x86_64
+            pack: true
+            placeholder: clojure
             # A jlink'ed runtime and one uberjar come to 37 MiB, so unlike node
             # and Deno this boots in the default 512 MiB even with the rootfs
             # resident twice. 1024 here only because x86_64 has never been

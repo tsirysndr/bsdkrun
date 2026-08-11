@@ -12,6 +12,13 @@ node_modules/
 # Cross-compiled guest agent binaries — regenerate with `make agent`.
 /core/src/agent-bin/bsdkrun-agent.*
 
+# `bsdkrun pack` Go binary, compiled by core/build.rs and embedded via
+# rust_embed — regenerated on every `cargo build` with `pack` enabled.
+/core/src/pack-bin/bsdkrun-pack
+# Stray local build output from `go build` inside pack/ (e.g. `go build .`
+# with no -o) — the real output always goes through core/build.rs above.
+/pack/pack
+
 # Unikraft example build artifacts.
 examples/**/.rootfs-arm64/
 examples/**/.rust-cache/

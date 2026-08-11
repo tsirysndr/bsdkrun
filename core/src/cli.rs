@@ -180,6 +180,17 @@ pub enum Command {
     /// Static assets only — the UI drives a `bsdkrund` GraphQL API, which it
     /// asks for on first run, so it can manage a daemon on any reachable host.
     Ui(UiArgs),
+
+    /// Package a project into a bootable Unikraft unikernel: detect its
+    /// language, build it with BuildKit, and generate a Kraftfile — like
+    /// railpack, but for `kraft build` instead of an OCI image. Boot the
+    /// result with `bsdkrun unikraft .`.
+    ///
+    /// A thin wrapper over a separate (embedded) tool, so every flag below
+    /// `pack` belongs to it, not to this CLI's clap surface — run
+    /// `bsdkrun pack --help` for the real list.
+    #[cfg(feature = "pack")]
+    Pack(PackArgs),
 }
 
 #[derive(Parser, Serialize, Deserialize)]
@@ -191,6 +202,20 @@ pub struct UiArgs {
     /// Do not open a browser.
     #[arg(long)]
     pub no_open: bool,
+}
+
+#[cfg(feature = "pack")]
+#[derive(Parser, Serialize, Deserialize)]
+// Without this, clap intercepts `-h`/`--help` itself and prints *this*
+// struct's (empty) help instead of forwarding to the real one `bsdkrun-pack
+// --help` prints — defeating the entire point of a passthrough subcommand.
+#[command(disable_help_flag = true)]
+pub struct PackArgs {
+    /// Forwarded verbatim to the `bsdkrun-pack` binary (e.g. a project path,
+    /// `--help`, `--target arm64`). Not parsed here — see
+    /// `bsdkrun pack --help`.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub args: Vec<String>,
 }
 
 #[derive(Parser, Serialize, Deserialize)]

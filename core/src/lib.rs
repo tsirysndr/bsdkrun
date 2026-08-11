@@ -154,6 +154,8 @@ pub fn dispatch(cmd: Command) -> Result<()> {
             }
         },
         Command::Ui(args) => serve_ui(args),
+        #[cfg(feature = "pack")]
+        Command::Pack(args) => commands::pack::cmd_pack(&args.args),
         Command::Network(args) => match args.cmd {
             NetworkCmd::Create(a) => network::cmd_create(&a.name),
             NetworkCmd::Ls(a) => network::cmd_ls(a.json),

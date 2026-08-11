@@ -1,0 +1,13 @@
+config LIBVIRTIO_RNG
+	bool "Virtio RNG device"
+	default n
+	select LIBVIRTIO_BUS
+	select LIBUKSGLIST
+	select LIBUKRANDOM
+	help
+		Entropy source backed by the host via virtio-rng.
+
+		Needed on arm64 under VMMs that do not expose FEAT_RNG
+		(the RNDR instruction), where LIBUKRANDOM_LCPU cannot
+		provide entropy and the only other option is seeding
+		from the command line.

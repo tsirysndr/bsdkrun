@@ -29,6 +29,11 @@ boot = []
 # `bsdkrun ui` — the embedded web SPA. Off by default so a consumer that only
 # wants the engine (the daemon) does not pull in a web server.
 ui = ["dep:actix-web", "dep:rust-embed", "dep:mime_guess"]
+# `bsdkrun pack` — detect/plan/build a project into a Unikraft rootfs +
+# Kraftfile with BuildKit. The actual tool is a Go binary (`pack/`) compiled by
+# build.rs and embedded here with rust-embed; off by default for the same
+# reason as `ui`.
+pack = ["dep:rust-embed"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

@@ -16,6 +16,8 @@ pub mod flavor;
 pub mod guest;
 pub mod images;
 pub mod machines;
+#[cfg(feature = "pack")]
+pub mod pack;
 #[cfg(feature = "boot")]
 pub mod probe;
 #[cfg(target_os = "macos")]

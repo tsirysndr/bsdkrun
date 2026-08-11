@@ -15,6 +15,9 @@ fn main() {
     if std::env::var_os("CARGO_FEATURE_UI").is_some() {
         ensure_web_assets();
     }
+    if std::env::var_os("CARGO_FEATURE_PACK").is_some() {
+        ensure_pack_binary();
+    }
 
     println!("cargo:rerun-if-env-changed=LIBKRUN_PREFIX");
     println!("cargo:rerun-if-changed=build.rs");
@@ -151,4 +154,70 @@ cargo build --release</code></pre>
 </div></body></html>
 "#,
     );
+}
+
+/// Compile `pack/` (the Go half of `bsdkrun pack`) and drop it into
+/// `pack-bin/` so `rust_embed` (see `commands::pack`) can bake it into this
+/// binary.
+///
+/// `pack` only ever needs to match the *host* triple already building this
+/// crate — unlike the guest agent (`agent.rs`), which is downloaded per guest
+/// (os, arch) because it has to match 3 different guest OSes it never runs
+/// on. Building and embedding it here means the shipped `bsdkrun` binary
+/// needs no Go toolchain of its own at runtime.
+///
+/// A fresh checkout without `go` on PATH (or a build that fails) must still
+/// produce a working `bsdkrun` — same rule as `ensure_web_assets` — so this
+/// leaves `pack-bin/` without a binary rather than failing the build;
+/// `commands::pack::cmd_pack` reports that plainly instead of crashing.
+fn ensure_pack_binary() {
+    use std::path::Path;
+
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo");
+    let pack_src = Path::new(&manifest_dir).join("../pack");
+    let out_dir = Path::new(&manifest_dir).join("src/pack-bin");
+    let out_bin = out_dir.join(pack_binary_name());
+
+    // rust_embed's derive needs the folder to exist even when there is
+    // nothing to embed yet.
+    if std::fs::create_dir_all(&out_dir).is_err() {
+        return;
+    }
+
+    println!("cargo:rerun-if-changed=../pack/go.mod");
+    println!("cargo:rerun-if-changed=../pack/go.sum");
+    watch_tree(&pack_src);
+
+    if Command::new("go").arg("version").output().is_err() {
+        println!(
+            "cargo:warning=go toolchain not found on PATH; building bsdkrun without pack support \
+             (install Go >= 1.22 and rebuild to enable `bsdkrun pack`)"
+        );
+        return;
+    }
+
+    // CGO_ENABLED=0: a fully static binary with no libc dependency, which is
+    // what makes it safe to embed and exec on any host of this same triple.
+    let status = Command::new("go")
+        .current_dir(&pack_src)
+        .env("CGO_ENABLED", "0")
+        .args(["build", "-trimpath", "-ldflags", "-s -w", "-o"])
+        .arg(&out_bin)
+        .arg(".")
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {}
+        // Leave any previously-built binary in place rather than deleting a
+        // working one over a transient failure.
+        Ok(s) => println!(
+            "cargo:warning=`go build` for bsdkrun pack exited with {s}; \
+             keeping the previously embedded binary, if any"
+        ),
+        Err(e) => println!("cargo:warning=failed to run `go build` for bsdkrun pack: {e}"),
+    }
+}
+
+fn pack_binary_name() -> &'static str {
+    "bsdkrun-pack"
 }

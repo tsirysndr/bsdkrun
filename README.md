@@ -160,6 +160,13 @@ agents. To hack on bsdkrun without Nix, build from source — see [Prerequisites
 You need **libkrun**, a **Rust toolchain** (`rustup default stable`; edition 2021), and access to
 the hypervisor. The hypervisor part differs by OS.
 
+Optionally, a **Go toolchain** (`go 1.22+`, matching [`pack/go.mod`](./pack/go.mod)) if you want
+`bsdkrun pack` in your build: `core/build.rs` compiles [`pack/`](./pack) and embeds it into the
+`bsdkrun` binary. Without Go, the build still succeeds — it just warns and ships without pack
+support (see `core/build.rs::ensure_pack_binary`). This is a **source-build-only** requirement: the
+released binaries (Homebrew, npm) already have it embedded, so installing bsdkrun that way never
+needs Go on your machine.
+
 ### macOS (Apple Silicon)
 
 bsdkrun links **our libkrun fork** from the `tsirysndr/tap` tap. `krunkit` comes from the

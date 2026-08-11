@@ -25,9 +25,22 @@ $ curl -d ping localhost:18080/echo  ping
 **arm64 works** — verified on macOS/Hypervisor.framework: builds, boots, gets
 a network interface, and serves all three routes above over a forwarded port.
 
-x86_64 is not yet verified here (this example isn't wired into
-`.github/workflows/e2e-unikraft-examples.yml`, which only covers the
-hand-written examples).
+**x86_64 boots but does not answer yet.** `.github/workflows/e2e-pack.yml`
+runs this example (via `bsdkrun pack`, not a checked-in Kraftfile) on every
+push; the kernel builds, boots, and gets a network interface there too, but
+the Go server never answers over the forwarded port — the retry loop times
+out with the guest's TCP stack resetting every connection, and nothing
+appears on the guest console past the boot banner (`net/http` prints nothing
+on success, so silence there is expected — the HTTP check failing is the
+actual signal).
+
+This is unverified territory, not a regression: `../unikraft-caddy` (also a
+statically-linked Go binary) has never answered on x86_64 either — see its
+README, "x86_64 has never been run". Nothing in this repo has yet confirmed a
+Go binary's own listener actually serving under app-elfloader-rs on x86_64,
+only that the kernel and network stack around it work. The HTTP check runs as
+`continue-on-error` in the workflow until it passes; see the job summary for
+the current state.
 
 ## `--cmdline` is required
 

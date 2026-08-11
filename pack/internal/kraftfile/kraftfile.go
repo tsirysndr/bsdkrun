@@ -80,7 +80,7 @@ unikraft:
     CONFIG_LIBSYSCALL_SHIM_HANDLER_ULTLS: 'y'
     CONFIG_LIBSYSCALL_SHIM_HANDLER: 'y'
     CONFIG_LIBSYSCALL_SHIM_LEGACY_VERBOSE: 'y'
-    CONFIG_LIBSYSCALL_SHIM_STRACE: 'n'
+    CONFIG_LIBSYSCALL_SHIM_STRACE: '{{if .Strace}}y{{else}}n{{end}}'
     CONFIG_LIBSYSCALL_SHIM: 'y'
     CONFIG_LIBUKALLOCPOOL: 'y'
     CONFIG_LIBUKBLKDEV_SYNC_IO_BLOCKED_WAITING: 'y'
@@ -193,10 +193,21 @@ type data struct {
 	Cmd          []string
 	KconfigExtra map[string]string
 	KconfigKeys  []string // sorted, so output is deterministic
+	Strace       bool
+}
+
+// Options are Kraftfile-generation choices that come from the `pack`
+// invocation itself rather than from the detected plan — currently just
+// Strace, which stays `false` by default because syscall tracing is
+// invaluable for debugging a guest that boots but doesn't behave, and also
+// very noisy and slows the boot down (same tradeoff the hand-written
+// examples' Kraftfiles already document for this exact symbol).
+type Options struct {
+	Strace bool
 }
 
 // Generate renders p's Kraftfile.
-func Generate(p *plan.Plan) (string, error) {
+func Generate(p *plan.Plan, opts Options) (string, error) {
 	keys := make([]string, 0, len(p.KconfigExtra))
 	for k := range p.KconfigExtra {
 		keys = append(keys, k)
@@ -209,6 +220,7 @@ func Generate(p *plan.Plan) (string, error) {
 		Cmd:          p.Cmd,
 		KconfigExtra: p.KconfigExtra,
 		KconfigKeys:  keys,
+		Strace:       opts.Strace,
 	})
 	if err != nil {
 		return "", fmt.Errorf("rendering Kraftfile: %w", err)
@@ -223,8 +235,8 @@ func Generate(p *plan.Plan) (string, error) {
 // would never be consulted — and unlike the hand-written examples, which
 // point it at a Dockerfile for a human reader, pack has no Dockerfile to
 // point at.
-func Write(dir string, p *plan.Plan) error {
-	content, err := Generate(p)
+func Write(dir string, p *plan.Plan, opts Options) error {
+	content, err := Generate(p, opts)
 	if err != nil {
 		return err
 	}

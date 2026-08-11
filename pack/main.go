@@ -36,8 +36,9 @@ func main() {
 	fs := flag.NewFlagSet("bsdkrun-pack", flag.ContinueOnError)
 	target := fs.String("target", "", "guest architecture to build for: arm64 or x86_64 (default: this host's)")
 	plainOutput := fs.Bool("plain", false, "plain sequential output instead of the animated TUI")
+	strace := fs.Bool("strace", false, "trace every guest syscall to the console (very noisy; for a guest that boots but doesn't behave)")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: bsdkrun pack [path] [--target arm64|x86_64] [--plain]")
+		fmt.Fprintln(os.Stderr, "usage: bsdkrun pack [path] [--target arm64|x86_64] [--plain] [--strace]")
 		fmt.Fprintln(os.Stderr, "\nPackage a project as a bootable Unikraft unikernel.")
 		fmt.Fprintln(os.Stderr, "\nArguments:")
 		fmt.Fprintln(os.Stderr, "  path   project directory to pack (default \".\")")
@@ -62,12 +63,12 @@ func main() {
 	var err error
 	if useTUI {
 		err = tui.Run(func(r report.Reporter) (string, error) {
-			return runPipeline(r, path, *target)
+			return runPipeline(r, path, *target, *strace)
 		})
 	} else {
 		p := report.NewPlain()
 		var final string
-		final, err = runPipeline(p, path, *target)
+		final, err = runPipeline(p, path, *target, *strace)
 		if err == nil {
 			fmt.Println(final)
 		}
@@ -82,7 +83,7 @@ func main() {
 // generate Kraftfile -> fetch/patch Unikraft -> kraft build. It only talks
 // to r — main decides separately whether r renders as the plain printer or
 // the TUI, so this function has no idea which.
-func runPipeline(r report.Reporter, path, targetFlag string) (string, error) {
+func runPipeline(r report.Reporter, path, targetFlag string, strace bool) (string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
@@ -139,15 +140,15 @@ func runPipeline(r report.Reporter, path, targetFlag string) (string, error) {
 		r.PhaseError(report.PhaseRootfs, err)
 		return "", err
 	}
-	r.PhaseDone(report.PhaseRootfs, rootfsDir)
+	r.PhaseDone(report.PhaseRootfs, displayPath(rootfsDir))
 
 	r.PhaseStart(report.PhaseKraftfile)
-	if err := kraftfile.Write(absPath, p); err != nil {
+	if err := kraftfile.Write(absPath, p, kraftfile.Options{Strace: strace}); err != nil {
 		err = fmt.Errorf("generating Kraftfile: %w", err)
 		r.PhaseError(report.PhaseKraftfile, err)
 		return "", err
 	}
-	r.PhaseDone(report.PhaseKraftfile, filepath.Join(absPath, "Kraftfile"))
+	r.PhaseDone(report.PhaseKraftfile, displayPath(filepath.Join(absPath, "Kraftfile")))
 
 	// kraft.Build covers both remaining pack-level phases in one call (fetch
 	// + patch, then kraft build) — its onPhase callback tells us which of
@@ -171,7 +172,7 @@ func runPipeline(r report.Reporter, path, targetFlag string) (string, error) {
 		return "", err
 	}
 	kernelPath := fmt.Sprintf("%s/.unikraft/build/%s_fc-%s", absPath, p.Name, kraftArch)
-	r.PhaseDone(report.PhaseKraftBuild, kernelPath)
+	r.PhaseDone(report.PhaseKraftBuild, displayPath(kernelPath))
 
 	// bsdkrun unikraft does not read the Kraftfile's `cmd:` for a
 	// locally-built kernel (see examples/unikraft-expressjs/README.md,
@@ -181,8 +182,32 @@ func runPipeline(r report.Reporter, path, targetFlag string) (string, error) {
 	// the program name), so a leading placeholder is mandatory even though
 	// it's discarded.
 	cmdline := p.Name + " -- " + strings.Join(p.Cmd, " ")
-	final := fmt.Sprintf("built: %s\nboot it: bsdkrun unikraft %s --cmdline %q", kernelPath, absPath, cmdline)
+	final := fmt.Sprintf("built: %s\nboot it: bsdkrun unikraft %s --cmdline %q",
+		displayPath(kernelPath), displayPath(absPath), cmdline)
 	return final, nil
+}
+
+// displayPath renders p relative to the current working directory when
+// that's actually shorter — `bsdkrun pack .` should echo back `.` and
+// `Kraftfile`, not a 60-character absolute path repeated at every step. Every
+// internal operation still uses the absolute path (buildkit.Build,
+// kraft.Build, and friends never see this); it exists purely for what gets
+// printed.
+//
+// Picking whichever form is shorter (rather than always preferring relative)
+// is what keeps this correct when `path` points well outside the current
+// directory: a naive `filepath.Rel` there produces a "../../../../.." chain
+// longer and less readable than the absolute path it was trying to shorten.
+func displayPath(p string) string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return p
+	}
+	rel, err := filepath.Rel(cwd, p)
+	if err != nil || len(rel) >= len(p) {
+		return p
+	}
+	return rel
 }
 
 func resolvePlatform(targetFlag string) (buildkit.Platform, error) {

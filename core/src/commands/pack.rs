@@ -52,8 +52,34 @@ pub(crate) fn cmd_pack(args: &[String]) -> Result<()> {
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
             .with_context(|| format!("chmod +x {}", bin.display()))?;
     }
+    #[cfg(target_os = "macos")]
+    sign_adhoc(&bin)?;
 
     let err = Command::new(&bin).args(args).exec();
     // exec() only returns on failure.
     Err(err).with_context(|| format!("running {}", bin.display()))
+}
+
+/// Ad-hoc codesign a freshly-extracted binary before `exec`ing into it.
+///
+/// `exec()` (`execve`) replaces this process's image in place rather than
+/// forking — so once `bsdkrun` itself carries the hypervisor entitlement
+/// (`make sign-release`; see the top-level README's "Hypervisor entitlement"
+/// section), macOS's AMFI/hardened-runtime enforcement requires whatever it
+/// execs into to also carry a valid signature. A plain `go build` output has
+/// none ("no CMS blob"), and the kernel SIGKILLs it (exit 137) before main()
+/// ever runs — silently and without a crash report pointing at the real
+/// cause. `bsdkrun-pack` needs no entitlements of its own (it never touches
+/// libkrun), so an ad-hoc signature is sufficient.
+#[cfg(target_os = "macos")]
+fn sign_adhoc(bin: &std::path::Path) -> Result<()> {
+    let status = Command::new("codesign")
+        .args(["--force", "-s", "-"])
+        .arg(bin)
+        .status()
+        .with_context(|| format!("running codesign on {}", bin.display()))?;
+    if !status.success() {
+        bail!("codesign {} failed: {status}", bin.display());
+    }
+    Ok(())
 }

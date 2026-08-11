@@ -178,6 +178,7 @@ pub fn dispatch(cmd: Command) -> Result<()> {
             DomainsCmd::Status(a) => commands::domains::cmd_status(a.json),
             DomainsCmd::Ls(a) => commands::domains::cmd_ls(a.json),
             DomainsCmd::Sync => commands::domains::cmd_sync(),
+            DomainsCmd::Ca(a) => commands::domains::cmd_ca(a.pem),
             // The detached responder process: serve() never returns.
             DomainsCmd::ServeDns(a) => domains::dns::serve(a.port, &a.tld),
         },

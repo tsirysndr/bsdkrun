@@ -327,9 +327,21 @@ pub enum DomainsCmd {
     Ls(DomainsLsArgs),
     /// Regenerate the proxy config from the machine list and reload Caddy.
     Sync,
+    /// Print the local CA's root certificate path — point tools that don't read
+    /// the system trust store at it (e.g. `http --verify "$(bsdkrun domains ca)"
+    /// https://web.bsdk`, or `export REQUESTS_CA_BUNDLE=...`). `--pem` prints the
+    /// certificate itself instead of the path.
+    Ca(DomainsCaArgs),
     /// The detached DNS responder process (not for direct use).
     #[command(hide = true, name = "__serve-dns")]
     ServeDns(ServeDnsArgs),
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct DomainsCaArgs {
+    /// Print the PEM certificate to stdout instead of its path.
+    #[arg(long)]
+    pub pem: bool,
 }
 
 #[derive(Parser, Serialize, Deserialize)]

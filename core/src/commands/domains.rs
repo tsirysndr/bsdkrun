@@ -97,6 +97,25 @@ pub(crate) fn cmd_ls(json: bool) -> Result<()> {
     Ok(())
 }
 
+/// `bsdkrun domains ca [--pem]` — where the local CA root lives, for tools that
+/// verify against their own bundle (Python/requests, Node, Go) rather than the
+/// system trust store.
+pub(crate) fn cmd_ca(pem: bool) -> Result<()> {
+    let root = domains::caddy::ca_root_path()?;
+    if !root.exists() {
+        anyhow::bail!(
+            "no local CA yet — run `bsdkrun domains enable` first ({} does not exist)",
+            root.display()
+        );
+    }
+    if pem {
+        print!("{}", std::fs::read_to_string(&root)?);
+    } else {
+        println!("{}", root.display());
+    }
+    Ok(())
+}
+
 pub(crate) fn cmd_sync() -> Result<()> {
     let db = db::Db::open()?;
     let s = domains::Settings::load(&db)?;

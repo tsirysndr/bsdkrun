@@ -1196,6 +1196,22 @@ is `bsdk`; pick another with `enable --tld`, and non-443 ports with
 `--https-port`/`--http-port` (Linux gets a one-time
 `net.ipv4.ip_unprivileged_port_start=80` sysctl offer for the low ports).
 
+**Tools that don't read the system trust store.** Browsers and system `curl`
+trust the CA once `enable` installs it, but toolchains that ship their own CA
+bundle — Python (`requests`/HTTPie, via certifi), Node, Go — do not. Point them
+at the CA with `bsdkrun domains ca`, which prints its path:
+
+```sh
+http --verify "$(bsdkrun domains ca)" https://web.bsdk       # HTTPie / requests
+export REQUESTS_CA_BUNDLE="$(bsdkrun domains ca)"            # all requests-based tools*
+export NODE_EXTRA_CA_CERTS="$(bsdkrun domains ca)"          # Node
+bsdkrun domains ca --pem >> "$(python3 -m certifi)"          # append to certifi (persists)
+```
+
+\*`REQUESTS_CA_BUNDLE` *replaces* the bundle, so it drops the public roots for
+that shell — fine for talking only to `.bsdk`, not as a login-shell default.
+Appending to certifi keeps the public roots.
+
 ---
 
 ## TUI — the terminal dashboard

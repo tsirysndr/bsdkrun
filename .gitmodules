@@ -1,0 +1,4 @@
+[submodule "library/solo5"]
+	path = library/solo5
+	url = https://github.com/tsirysndr/solo5.git
+	branch = hvf-macos-aarch64

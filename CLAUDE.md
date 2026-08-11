@@ -188,6 +188,17 @@ What that split costs, and what pays for it:
   is not one. x86_64 uses RDTSC and never sees it, so CI stays green while
   macOS breaks: constrain it in `config.ml` unconditionally, not per-platform.
 
+  **The tender cannot fix this — measured, not assumed.** A probe unikernel
+  reports the guest counter as a correct 24 MHz with a smallest delta of one
+  tick, so nothing is broken to repair; the `mrs` is in mirage-crypto's own
+  statically linked stub, with no symbol to interpose; trapping `CNTVCT_EL0`
+  is an EL2 control that Hypervisor.framework owns and would cost an exit on
+  every read, which solo5's own clock does constantly; and the one finer
+  source, the PMU cycle counter, is unavailable — `mrs pmcr_el0` traps with
+  `ec=0x18` (trapped MSR/MRS), so HVF does not virtualise the PMU. The fix
+  belongs upstream in mirage-crypto, whose stated requirement that every
+  counter read differ is false on this hardware.
+
 ## Verifying
 
 A guest that boots is not a guest that works. **Curl it and read the body.** Two

@@ -132,6 +132,18 @@ tender's or Hypervisor.framework's. x86_64 is unaffected (RDTSC ticks fast
 enough that no two reads collide), which is exactly why the constraint is
 unconditional here: otherwise CI would build something macOS cannot run.
 
+Patching the tender was considered and ruled out by measurement rather than
+argument. A probe unikernel reports the guest's counter as a correct 24 MHz —
+Apple's real timebase, which the host only sees as 1 GHz because macOS scales
+it for user space — advancing one tick at a time, so there is nothing broken
+to repair. The `mrs` instruction is in mirage-crypto's own statically linked
+stub, so there is no symbol to interpose; trapping `CNTVCT_EL0` is an EL2
+control belonging to Hypervisor.framework, and would cost a VM exit on every
+read, which Solo5's own clock performs constantly. The one finer source, the
+PMU cycle counter, is not available either: `mrs pmcr_el0` traps with
+`ec=0x18` (trapped MSR/MRS), so HVF does not virtualise the PMU. The fix
+belongs upstream in mirage-crypto.
+
 ## Status
 
 Verified on **macOS/arm64 (Hypervisor.framework)** with mirage 4.11.2, from a

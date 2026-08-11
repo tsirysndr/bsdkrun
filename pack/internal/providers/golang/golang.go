@@ -1,4 +1,5 @@
-package plan
+// Package golang builds Go projects. Ported from examples/unikraft-go.
+package golang
 
 import (
 	"fmt"
@@ -6,7 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/tsirysndr/bsdkrun/pack/internal/detect"
+	"github.com/tsirysndr/bsdkrun/pack/internal/mise"
+	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
 )
 
 // amd64TextAddr is where a packed Go binary's text is linked on amd64: 1
@@ -16,14 +18,40 @@ import (
 // 64 GiB), so it collides with neither.
 const amd64TextAddr = "0x40000000"
 
-// goPlan builds a Go project with CGO_ENABLED=0, which produces a fully
-// static binary — unlike the Rust/actix plan, there is no `ldd` step at all,
-// since there is nothing dynamic left to resolve.
-func goPlan(dir string, arch Arch) (*Plan, error) {
-	name, err := goModuleName(filepath.Join(dir, "go.mod"))
+const defaultVersion = "1.22"
+
+type Provider struct{}
+
+func New() *Provider { return &Provider{} }
+
+func (p *Provider) Name() string { return "go" }
+
+func (p *Provider) Detect(dir string) (bool, error) {
+	_, err := os.Stat(filepath.Join(dir, "go.mod"))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (p *Provider) StartCommandHelp() string {
+	return "Go builds the package in the project root; the binary is named after go.mod's module path."
+}
+
+func (p *Provider) Plan(dir string, arch plan.Arch) (*plan.Plan, error) {
+	name, err := moduleName(filepath.Join(dir, "go.mod"))
 	if err != nil {
 		return nil, err
 	}
+
+	version := defaultVersion
+	if v, ok := mise.Read(dir).Major("go"); ok {
+		version = v
+	}
+
 	// `go build` emits a non-PIE ET_EXEC, so its load addresses are fixed
 	// rather than relocatable. On amd64 they start at 0x400000 (4 MiB) —
 	// and the Unikraft `fc` kernel links at ~1 MiB, growing past 4 MiB once
@@ -40,14 +68,14 @@ func goPlan(dir string, arch Arch) (*Plan, error) {
 	// defeats CGO_ENABLED=0.) Only amd64 is moved, so the proven arm64
 	// layout is left exactly as it is.
 	ldflags := "-s -w"
-	if arch == ArchAmd64 {
+	if arch == plan.ArchAmd64 {
 		ldflags += " -T " + amd64TextAddr
 	}
 
-	return &Plan{
+	return &plan.Plan{
 		Name:       name,
-		Provider:   detect.Go,
-		BuildImage: "golang:1.22-bookworm",
+		Provider:   p.Name(),
+		BuildImage: "golang:" + version + "-bookworm",
 		Env: map[string]string{
 			"PATH":   "/go/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 			"GOPATH": "/go",
@@ -60,11 +88,11 @@ CGO_ENABLED=0 go build -trimpath -ldflags=%q -o /out/rootfs/%s .
 	}, nil
 }
 
-// goModuleName reads the last path element of go.mod's `module` directive,
+// moduleName reads the last path element of go.mod's `module` directive,
 // e.g. "module github.com/acme/widget" -> "widget" — the same name `go
 // build` would give the binary with no `-o`, so it doubles as the rootfs
 // binary's filename.
-func goModuleName(goMod string) (string, error) {
+func moduleName(goMod string) (string, error) {
 	data, err := os.ReadFile(goMod)
 	if err != nil {
 		return "", fmt.Errorf("reading %s: %w", goMod, err)
@@ -72,8 +100,7 @@ func goModuleName(goMod string) (string, error) {
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if after, ok := strings.CutPrefix(line, "module "); ok {
-			modPath := strings.TrimSpace(after)
-			parts := strings.Split(modPath, "/")
+			parts := strings.Split(strings.TrimSpace(after), "/")
 			name := parts[len(parts)-1]
 			if name == "" {
 				return "", fmt.Errorf("%s: empty module path", goMod)

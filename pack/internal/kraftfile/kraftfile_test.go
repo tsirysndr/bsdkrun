@@ -4,12 +4,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tsirysndr/bsdkrun/pack/internal/detect"
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
 )
 
 func TestGenerateStrace(t *testing.T) {
-	p := &plan.Plan{Name: "hello", Provider: detect.Go, Cmd: []string{"/hello"}}
+	p := &plan.Plan{Name: "hello", Provider: "go", Cmd: []string{"/hello"}}
 
 	off, err := Generate(p, Options{Strace: false})
 	if err != nil {

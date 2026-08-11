@@ -130,7 +130,7 @@ unikraft:
     CONFIG_LIBUKNETDEV: 'y'
     CONFIG_LIBUKNETDEV_EINFO_LIBPARAM: 'y'
 {{- range .KconfigKeys}}
-    {{.}}: {{index $.KconfigExtra .}}
+    {{.}}: {{index $.Kconfig .}}
 {{- end}}
 
 libraries:
@@ -141,20 +141,9 @@ libraries:
     source: https://github.com/tsirysndr/app-elfloader.git
     version: main
     kconfig:
-      CONFIG_LIBPOSIX_PROCESS_ARCH_PRCTL: 'y'
-      CONFIG_APPELFLOADER_CUSTOMAPPNAME: 'y'
-      CONFIG_APPELFLOADER_DEBUG: '{{if .LoaderDebug}}y{{else}}n{{end}}'
-      CONFIG_APPELFLOADER_STACK_NBPAGES: 128
-      CONFIG_APPELFLOADER_VFSEXEC: 'y'
-      CONFIG_APPELFLOADER_VFSEXEC_EXECBIT: 'y'
-      CONFIG_APPELFLOADER_VFSEXEC_ENVPWD: 'y'
-      CONFIG_APPELFLOADER_VFSEXEC_ENVPATH: 'y'
-      CONFIG_APPELFLOADER_AUTOGEN: 'y'
-      CONFIG_APPELFLOADER_AUTOGEN_ETCRESOLVCONF: 'y'
-      CONFIG_APPELFLOADER_AUTOGEN_ETCHOSTS: 'y'
-      CONFIG_APPELFLOADER_AUTOGEN_ETCHOSTS_LOCALHOST4: 'y'
-      CONFIG_APPELFLOADER_AUTOGEN_ETCHOSTNAME: 'y'
-      CONFIG_APPELFLOADER_AUTOGEN_REPLACEEXIST: 'y'
+{{- range .ElfloaderKeys}}
+      {{.}}: {{index $.ElfloaderKconfig .}}
+{{- end}}
   lwip:
     source: https://github.com/unikraft/lib-lwip.git
     version: staging
@@ -189,12 +178,36 @@ cmd: [{{range $i, $c := .Cmd}}{{if $i}}, {{end}}{{printf "%q" $c}}{{end}}]
 var parsed = template.Must(template.New("Kraftfile").Parse(tmpl))
 
 type data struct {
-	Name         string
-	Cmd          []string
-	KconfigExtra map[string]string
-	KconfigKeys  []string // sorted, so output is deterministic
-	Strace       bool
-	LoaderDebug  bool
+	Name             string
+	Cmd              []string
+	Kconfig          map[string]string
+	KconfigKeys      []string // sorted, so output is deterministic
+	ElfloaderKconfig map[string]string
+	ElfloaderKeys    []string
+	Strace           bool
+	LoaderDebug      bool
+}
+
+// elfloaderDefaults is app-elfloader's kconfig as every hand-written example
+// carries it. A provider overrides individual entries (Bun needs a 16x
+// bigger stack, say) via Plan.ElfloaderKconfig rather than restating the
+// whole block.
+var elfloaderDefaults = map[string]string{
+	// Implements arch_prctl(ARCH_SET_FS), how glibc installs the thread
+	// pointer on x86_64; without it startup dies before main.
+	"CONFIG_LIBPOSIX_PROCESS_ARCH_PRCTL":              "'y'",
+	"CONFIG_APPELFLOADER_CUSTOMAPPNAME":               "'y'",
+	"CONFIG_APPELFLOADER_STACK_NBPAGES":               "128",
+	"CONFIG_APPELFLOADER_VFSEXEC":                     "'y'",
+	"CONFIG_APPELFLOADER_VFSEXEC_EXECBIT":             "'y'",
+	"CONFIG_APPELFLOADER_VFSEXEC_ENVPWD":              "'y'",
+	"CONFIG_APPELFLOADER_VFSEXEC_ENVPATH":             "'y'",
+	"CONFIG_APPELFLOADER_AUTOGEN":                     "'y'",
+	"CONFIG_APPELFLOADER_AUTOGEN_ETCRESOLVCONF":       "'y'",
+	"CONFIG_APPELFLOADER_AUTOGEN_ETCHOSTS":            "'y'",
+	"CONFIG_APPELFLOADER_AUTOGEN_ETCHOSTS_LOCALHOST4": "'y'",
+	"CONFIG_APPELFLOADER_AUTOGEN_ETCHOSTNAME":         "'y'",
+	"CONFIG_APPELFLOADER_AUTOGEN_REPLACEEXIST":        "'y'",
 }
 
 // Options are Kraftfile-generation choices that come from the `pack`
@@ -216,20 +229,40 @@ type Options struct {
 
 // Generate renders p's Kraftfile.
 func Generate(p *plan.Plan, opts Options) (string, error) {
-	keys := make([]string, 0, len(p.KconfigExtra))
-	for k := range p.KconfigExtra {
+	keys := make([]string, 0, len(p.Kconfig))
+	for k := range p.Kconfig {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 
+	// Defaults first, then the provider's overrides on top.
+	elf := make(map[string]string, len(elfloaderDefaults))
+	for k, v := range elfloaderDefaults {
+		elf[k] = v
+	}
+	for k, v := range p.ElfloaderKconfig {
+		elf[k] = v
+	}
+	elf["CONFIG_APPELFLOADER_DEBUG"] = "'n'"
+	if opts.LoaderDebug {
+		elf["CONFIG_APPELFLOADER_DEBUG"] = "'y'"
+	}
+	elfKeys := make([]string, 0, len(elf))
+	for k := range elf {
+		elfKeys = append(elfKeys, k)
+	}
+	sort.Strings(elfKeys)
+
 	var buf bytes.Buffer
 	err := parsed.Execute(&buf, data{
-		Name:         p.Name,
-		Cmd:          p.Cmd,
-		KconfigExtra: p.KconfigExtra,
-		KconfigKeys:  keys,
-		Strace:       opts.Strace,
-		LoaderDebug:  opts.LoaderDebug,
+		Name:             p.Name,
+		Cmd:              p.Cmd,
+		Kconfig:          p.Kconfig,
+		KconfigKeys:      keys,
+		ElfloaderKconfig: elf,
+		ElfloaderKeys:    elfKeys,
+		Strace:           opts.Strace,
+		LoaderDebug:      opts.LoaderDebug,
 	})
 	if err != nil {
 		return "", fmt.Errorf("rendering Kraftfile: %w", err)

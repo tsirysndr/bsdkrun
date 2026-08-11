@@ -1,60 +1,11 @@
-// Package plan turns a detect.Detection into a concrete build: which image
-// to build in, and the shell script that builds the project and assembles
-// its rootfs at /out/rootfs inside that image.
+// Package plan holds the build plan a provider produces: what image to build
+// in, the script that builds the project and assembles its rootfs, and the
+// Kraftfile knobs the result needs to boot.
 //
-// Each provider's script is a direct port of this repo's existing, proven
-// Dockerfiles (examples/unikraft-actix, examples/unikraft-expressjs) — same
-// commands, same `ldd`-resolution loop for dynamically linked binaries —
-// just run as one LLB step instead of parsed from Dockerfile text.
+// Provider-specific logic lives in internal/providers, not here — this
+// package is the data structure they all fill in, which is what keeps it
+// importable from both sides without a cycle.
 package plan
-
-import (
-	"fmt"
-
-	"github.com/tsirysndr/bsdkrun/pack/internal/detect"
-)
-
-// Plan is everything internal/buildkit needs to build a project's rootfs,
-// and (from Phase 2 on) internal/kraftfile needs to generate its Kraftfile.
-type Plan struct {
-	// Name is the app name: the Kraftfile's `name:`, and the binary's path
-	// inside the rootfs (`/<Name>`).
-	Name string
-
-	Provider detect.Provider
-
-	// BuildImage is the build stage's base image, e.g. "golang:1.22-bookworm".
-	// Always a Linux image — the rootfs runs under app-elfloader's Linux
-	// syscall shim regardless of the host running `pack`.
-	BuildImage string
-
-	// Env is set on the build stage before Script runs. Needed because
-	// `llb.Image` only pulls in the image's *filesystem*, not its config
-	// (ENV/WORKDIR/etc — that's Dockerfile-frontend behavior, not something
-	// building the LLB graph directly gets for free) — so PATH defaults to a
-	// bare Linux one that doesn't include e.g. golang's /usr/local/go/bin.
-	// Values are this repo's knowledge of what each pinned BuildImage tag's
-	// own Dockerfile sets, same category of fact as knowing where `cargo
-	// build --release` writes its output.
-	Env map[string]string
-
-	// Script is run as `sh -c <Script>` in BuildImage, with the project
-	// source copied in at /src (cwd). It must leave the finished rootfs at
-	// /out/rootfs — internal/buildkit copies that directory, and only that
-	// directory, into the final scratch image.
-	Script string
-
-	// Cmd is the Kraftfile `cmd:` — the guest's argv.
-	Cmd []string
-
-	// KconfigExtra is appended to the Kraftfile's shared base kconfig block —
-	// e.g. a future Node provider would set CONFIG_LIBPOSIX_PROCESS_SIGNAL
-	// for OpenSSL's arm64 SIGILL probe here (see
-	// examples/unikraft-expressjs/Kraftfile). Empty for Go and Rust: neither
-	// needs anything past the base block (matches
-	// examples/unikraft-actix/Kraftfile, which adds nothing but `cmd:`).
-	KconfigExtra map[string]string
-}
 
 // Arch is the guest architecture the plan targets, in Docker/OCI spelling
 // ("amd64"/"arm64"). A plain string rather than buildkit.Platform because
@@ -66,14 +17,65 @@ const (
 	ArchArm64 Arch = "arm64"
 )
 
-// Build dispatches to the provider-specific plan builder.
-func Build(d *detect.Detection, arch Arch) (*Plan, error) {
-	switch d.Provider {
-	case detect.Go:
-		return goPlan(d.Dir, arch)
-	case detect.Rust:
-		return rustPlan(d.Dir)
-	default:
-		return nil, fmt.Errorf("no plan builder for provider %q", d.Provider)
-	}
+// Plan is everything internal/buildkit needs to build a project's rootfs and
+// internal/kraftfile needs to generate its Kraftfile.
+type Plan struct {
+	// Name is the app name: the Kraftfile's `name:`, and what the built
+	// kernel is called (`<name>_fc-<arch>`).
+	Name string
+
+	// Provider is the name of the provider that produced this plan, for
+	// display only.
+	Provider string
+
+	// BuildImage is the build stage's base image, e.g.
+	// "golang:1.22-bookworm". Always a Linux image — the rootfs runs under
+	// app-elfloader's Linux syscall shim regardless of the host running
+	// `pack`.
+	BuildImage string
+
+	// Env is set on the build stage before Script runs. Needed because
+	// `llb.Image` only pulls in the image's *filesystem*, not its config
+	// (ENV/WORKDIR/etc — that's Dockerfile-frontend behavior, not something
+	// building the LLB graph directly gets for free).
+	Env map[string]string
+
+	// Script is run as `sh -c <Script>` in BuildImage, with the project
+	// source copied in at /src (cwd). It must leave the finished rootfs at
+	// /out/rootfs — internal/buildkit copies that directory, and only that
+	// directory, into the final scratch image.
+	Script string
+
+	// Cmd is the Kraftfile `cmd:` — the guest's argv.
+	Cmd []string
+
+	// Kconfig is merged into the Kraftfile's `unikraft:` kconfig block,
+	// e.g. Bun's BUN_JSC_useConcurrentGC=0 environment entry.
+	Kconfig map[string]string
+
+	// ElfloaderKconfig overrides entries in the `app-elfloader:` library's
+	// kconfig block, e.g. Bun needs CONFIG_APPELFLOADER_STACK_NBPAGES at
+	// 2048 rather than the default 128.
+	ElfloaderKconfig map[string]string
 }
+
+// LddIntoRootfs is the shell fragment that copies a dynamically linked
+// binary's shared libraries into the rootfs alongside it.
+//
+// Every interpreted-language provider needs this and every one of this
+// repo's hand-written Dockerfiles arrived at the same answer: *resolve* the
+// libraries with ldd rather than listing them, because the paths differ by
+// architecture (`/lib/aarch64-linux-gnu/...` vs `/lib/x86_64-linux-gnu/...`,
+// and `ld-linux-aarch64.so.1` vs `ld-linux-x86-64.so.2`) — a different
+// directory *and* a different filename, so no hardcoded list survives a
+// change of target.
+const LddIntoRootfs = `ldd_into_rootfs() {
+    ldd "$1" \
+      | grep -oE '/[^ ()]+' \
+      | sort -u \
+      | while read -r lib; do
+            mkdir -p "/out/rootfs$(dirname "$lib")"
+            cp -L "$lib" "/out/rootfs$lib"
+        done
+}
+`

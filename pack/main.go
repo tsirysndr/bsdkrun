@@ -24,10 +24,11 @@ import (
 
 	"github.com/tsirysndr/bsdkrun/pack/internal/buildkit"
 	"github.com/tsirysndr/bsdkrun/pack/internal/cachedir"
-	"github.com/tsirysndr/bsdkrun/pack/internal/detect"
 	"github.com/tsirysndr/bsdkrun/pack/internal/kraft"
 	"github.com/tsirysndr/bsdkrun/pack/internal/kraftfile"
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
+	"github.com/tsirysndr/bsdkrun/pack/internal/procfile"
+	"github.com/tsirysndr/bsdkrun/pack/internal/providers"
 	"github.com/tsirysndr/bsdkrun/pack/internal/report"
 	"github.com/tsirysndr/bsdkrun/pack/internal/tui"
 )
@@ -149,18 +150,32 @@ func runPipeline(r report.Reporter, path, targetFlag string, strace, loaderDebug
 	}
 
 	r.PhaseStart(report.PhaseDetect)
-	d, err := detect.Detect(absPath)
+	prov, err := providers.Find(absPath)
 	if err != nil {
 		r.PhaseError(report.PhaseDetect, err)
 		return "", err
 	}
-	r.PhaseDone(report.PhaseDetect, fmt.Sprintf("provider: %s", d.Provider))
+	r.PhaseDone(report.PhaseDetect, fmt.Sprintf("provider: %s", prov.Name()))
 
 	r.PhaseStart(report.PhasePlan)
-	p, err := plan.Build(d, plan.Arch(platform))
+	p, err := prov.Plan(absPath, plan.Arch(platform))
 	if err != nil {
 		r.PhaseError(report.PhasePlan, err)
 		return "", err
+	}
+	// A Procfile is the project stating what to run, which beats anything
+	// the provider inferred. Only one process type can run in a unikernel,
+	// so say plainly which ones are being dropped rather than ignoring them
+	// silently.
+	if pf := procfile.Read(absPath); pf != nil {
+		if cmd, ok := pf.Web(); ok {
+			p.Cmd = strings.Fields(cmd)
+			r.Log(report.PhasePlan, "Procfile: "+cmd)
+		}
+		if ignored := pf.Ignored(); len(ignored) > 0 {
+			r.Log(report.PhasePlan, "Procfile: ignoring "+strings.Join(ignored, ", ")+
+				" (a unikernel runs one process)")
+		}
 	}
 	r.PhaseDone(report.PhasePlan, fmt.Sprintf("name: %s, build image: %s", p.Name, p.BuildImage))
 

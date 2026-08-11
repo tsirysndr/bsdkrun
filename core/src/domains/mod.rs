@@ -233,8 +233,10 @@ pub fn enable(tld: &str, https_port: u16, http_port: u16, no_trust: bool) -> Res
     // 2. Host resolver wiring — the one privileged step, batched.
     resolver::setup(&s.tld, s.dns_port).context("wiring the system resolver")?;
 
-    // 3. Low ports (Linux needs a one-time sysctl; macOS allows them).
-    if !caddy::can_bind(s.https_port) {
+    // 3. Low ports (Linux needs a one-time sysctl; macOS allows them). Skip
+    // when our own Caddy already holds the port — a repair run reloads it in
+    // place, and the probe would misread it as a foreign process.
+    if !caddy::running(&db)? && !caddy::can_bind(s.https_port) {
         #[cfg(target_os = "linux")]
         {
             println!(

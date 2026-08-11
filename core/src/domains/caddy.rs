@@ -235,39 +235,90 @@ pub fn stop(db: &db::Db) -> Result<()> {
     db.remove_setting("domains.caddy_pid")
 }
 
-/// Install Caddy's root CA into the system trust store(s). Inherits stdio —
-/// `caddy trust` may prompt (macOS keychain auth, Linux sudo), and hiding that
-/// prompt would hang silently.
+/// Install Caddy's root CA into the macOS System keychain ourselves, through
+/// the same admin-dialog/sudo escalation the resolver uses. Not `caddy trust`:
+/// that shells out to `sudo security …` internally, which silently fails
+/// without a controlling terminal (a GUI launch, an IDE task runner), and its
+/// exit code also folds in ancillary stores — a missing Java keystore failed
+/// the whole command *after* the parts that matter.
+#[cfg(target_os = "macos")]
 pub fn trust() -> Result<()> {
+    let root = wait_for_ca_root()?;
+    super::resolver::run_as_admin(&format!(
+        "security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain '{}'",
+        root.display()
+    ))
+    .context("could not add the local CA to the System keychain")?;
+    if !is_trusted() {
+        bail!("the local CA did not land in the System keychain — was the dialog cancelled?");
+    }
+    Ok(())
+}
+
+/// Linux: `caddy trust` drives the system + NSS stores correctly (it uses
+/// sudo, which the CLI context has). Its exit code still folds in optional
+/// stores, so verify with `is_trusted` before declaring failure.
+#[cfg(target_os = "linux")]
+pub fn trust() -> Result<()> {
+    wait_for_ca_root()?;
     let status = Command::new(locate()?)
         .arg("trust")
         .arg("--address")
         .arg(admin_address()?)
         .status()
         .context("running caddy trust")?;
-    if !status.success() {
+    if !status.success() && !is_trusted() {
         bail!(
-            "`caddy trust` failed. On Linux, NSS-based browsers need `libnss3-tools` \
-             installed for browser trust; re-run `bsdkrun domains enable` after installing."
+            "`caddy trust` failed. NSS-based browsers need `libnss3-tools` installed \
+             for browser trust; re-run `bsdkrun domains enable` after installing."
         );
     }
     Ok(())
 }
 
+/// Caddy mints its root CA lazily on startup; a `trust` racing that would read
+/// a file that isn't there yet.
+fn wait_for_ca_root() -> Result<PathBuf> {
+    let root = ca_root_path()?;
+    for _ in 0..50 {
+        if root.exists() {
+            return Ok(root);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    bail!(
+        "caddy has not created its root CA yet ({}) — is it running?",
+        root.display()
+    )
+}
+
 /// Remove the CA from the trust store(s). Best-effort — the CA files
 /// themselves live in our storage root and go with `--purge`.
 pub fn untrust() {
-    if let Ok(bin) = locate() {
-        let mut cmd = Command::new(bin);
-        cmd.arg("untrust");
-        // Point at the root cert on disk so untrust works even when the
-        // daemon is already stopped.
-        if let Ok(root) = ca_root_path() {
-            if root.exists() {
-                cmd.arg("--cert").arg(root);
-            }
+    #[cfg(target_os = "macos")]
+    {
+        // Mirror of trust(): delete by CN through the admin escalation.
+        if is_trusted() {
+            let _ = super::resolver::run_as_admin(
+                "security delete-certificate -c 'Caddy Local Authority' \
+                 /Library/Keychains/System.keychain",
+            );
         }
-        let _ = cmd.status();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(bin) = locate() {
+            let mut cmd = Command::new(bin);
+            cmd.arg("untrust");
+            // Point at the root cert on disk so untrust works even when the
+            // daemon is already stopped.
+            if let Ok(root) = ca_root_path() {
+                if root.exists() {
+                    cmd.arg("--cert").arg(root);
+                }
+            }
+            let _ = cmd.status();
+        }
     }
 }
 
@@ -276,18 +327,21 @@ pub fn ca_root_path() -> Result<PathBuf> {
     Ok(proxy_dir()?.join("data/pki/authorities/local/root.crt"))
 }
 
-/// Is the local CA actually in the host trust store (not merely on disk)?
+/// Is the local CA actually *trusted* — not merely present in the keychain?
+///
+/// The distinction bites: a half-finished `caddy trust` (its ancillary NSS /
+/// Java steps can fail after the cert lands) leaves the certificate in the
+/// System keychain with **no trust settings**, so a presence check
+/// (`find-certificate`) reports trusted while nothing on the machine actually
+/// is — and `enable` then skips the real trust step. `dump-trust-settings -d`
+/// lists only certs that carry admin-domain trust settings, so a match there
+/// means the root is a trusted anchor, which is the property we need.
 #[cfg(target_os = "macos")]
 pub fn is_trusted() -> bool {
     Command::new("security")
-        .args([
-            "find-certificate",
-            "-c",
-            "Caddy Local Authority",
-            "/Library/Keychains/System.keychain",
-        ])
+        .args(["dump-trust-settings", "-d"])
         .output()
-        .map(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("Caddy Local Authority"))
         .unwrap_or(false)
 }
 

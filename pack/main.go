@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -44,9 +45,10 @@ func main() {
 	target := fs.String("target", "", "guest architecture to build for: arm64 or x86_64 (default: this host's)")
 	plainOutput := fs.Bool("plain", false, "plain sequential output instead of the animated TUI")
 	strace := fs.Bool("strace", false, "trace every guest syscall to the console (very noisy; for a guest that boots but doesn't behave)")
+	planOnly := fs.Bool("plan", false, "resolve the plan and print it as JSON, without building")
 	loaderDebug := fs.Bool("loader-debug", false, "trace the ELF loader placing the binary, before it runs (says where a guest that dies before its first syscall got to)")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: bsdkrun pack [path] [--target arm64|x86_64] [--plain] [--strace] [--loader-debug]")
+		fmt.Fprintln(os.Stderr, "usage: bsdkrun pack [path] [--target arm64|x86_64] [--plan] [--plain] [--strace] [--loader-debug]")
 		fmt.Fprintln(os.Stderr, "\nPackage a project as a bootable Unikraft unikernel.")
 		fmt.Fprintln(os.Stderr, "\nArguments:")
 		fmt.Fprintln(os.Stderr, "  path   project directory to pack (default \".\")")
@@ -72,6 +74,18 @@ func main() {
 	// (a log file, CI, `| tee build.log`) falls back to the plain printer —
 	// every test run in this repo's own development used exactly that path.
 	useTUI := !*plainOutput && isatty.IsTerminal(os.Stdout.Fd())
+
+	// --plan short-circuits everything below: no Docker, no BuildKit, no
+	// kraft. Useful on its own to see what pack decided, and it is how CI
+	// learns the kernel name and boot argv a provider produces without
+	// running a full build to find out.
+	if *planOnly {
+		if err := printPlan(path, *target); err != nil {
+			fmt.Fprintf(os.Stderr, "bsdkrun pack: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	var err error
 	if useTUI {
@@ -138,6 +152,108 @@ func permuteArgs(fs *flag.FlagSet, args []string) []string {
 	return append(append(flags, "--"), positional...)
 }
 
+// applyStartCommand resolves what the guest will run, lowest precedence
+// first: what the provider inferred, then the project's Procfile, then
+// railpack.json, then an explicit env override — the env var last because
+// it is what someone typed deliberately at the point of building.
+//
+// A unikernel runs exactly one process, so a Procfile's other entries are
+// named as dropped rather than ignored silently. r may be nil (--plan),
+// in which case nothing is logged.
+func applyStartCommand(p *plan.Plan, dir string, cfg *config.Config, r report.Reporter) {
+	log := func(msg string) {
+		if r != nil {
+			r.Log(report.PhasePlan, msg)
+		}
+	}
+	if pf := procfile.Read(dir); pf != nil {
+		if cmd, ok := pf.Web(); ok {
+			p.Cmd = strings.Fields(cmd)
+			log("Procfile: " + cmd)
+		}
+		if ignored := pf.Ignored(); len(ignored) > 0 {
+			log("Procfile: ignoring " + strings.Join(ignored, ", ") +
+				" (a unikernel runs one process)")
+		}
+	}
+	if cfg != nil && cfg.Deploy != nil && strings.TrimSpace(cfg.Deploy.StartCommand) != "" {
+		p.Cmd = strings.Fields(cfg.Deploy.StartCommand)
+		log(config.FileName + ": " + cfg.Deploy.StartCommand)
+	}
+	if cmd := strings.TrimSpace(os.Getenv(StartCmdEnv)); cmd != "" {
+		p.Cmd = strings.Fields(cmd)
+		log(StartCmdEnv + ": " + cmd)
+	}
+}
+
+// bootCmdline is what `bsdkrun unikraft --cmdline` needs.
+//
+// bsdkrun does not read the Kraftfile's `cmd:` for a locally-built kernel,
+// so the program has to be named explicitly, as "<placeholder> -- <argv>":
+// everything before `--` is parsed as kernel library parameters and the
+// first word is always skipped (Unikraft treats it as the program name), so
+// the leading placeholder is required even though it is discarded.
+func bootCmdline(p *plan.Plan) string {
+	return p.Name + " -- " + strings.Join(p.Cmd, " ")
+}
+
+// printPlan resolves a plan and prints it, without building anything.
+func printPlan(path, targetFlag string) error {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	platform, err := resolvePlatform(targetFlag)
+	if err != nil {
+		return err
+	}
+	kraftArch, err := kraft.FromDockerArch(string(platform))
+	if err != nil {
+		return err
+	}
+
+	cfg, err := config.Read(absPath)
+	if err != nil {
+		return err
+	}
+	var prov providers.Provider
+	if cfg != nil && cfg.Provider != nil && *cfg.Provider != "" {
+		if prov = providers.Get(*cfg.Provider); prov == nil {
+			return fmt.Errorf("%s names provider %q, which does not exist",
+				config.FileName, *cfg.Provider)
+		}
+	} else if prov, err = providers.Find(absPath); err != nil {
+		return err
+	}
+
+	p, err := prov.Plan(absPath, plan.Arch(platform))
+	if err != nil {
+		return err
+	}
+	applyStartCommand(p, absPath, cfg, nil)
+
+	out := struct {
+		Provider   string   `json:"provider"`
+		Name       string   `json:"name"`
+		BuildImage string   `json:"buildImage"`
+		Arch       string   `json:"arch"`
+		Kernel     string   `json:"kernel"`
+		Cmd        []string `json:"cmd"`
+		Cmdline    string   `json:"cmdline"`
+	}{
+		Provider:   prov.Name(),
+		Name:       p.Name,
+		BuildImage: p.BuildImage,
+		Arch:       string(kraftArch),
+		Kernel:     fmt.Sprintf("%s_fc-%s", p.Name, kraftArch),
+		Cmd:        p.Cmd,
+		Cmdline:    bootCmdline(p),
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
+}
+
 // runPipeline is the pack pipeline itself: detect -> plan -> build rootfs ->
 // generate Kraftfile -> fetch/patch Unikraft -> kraft build. It only talks
 // to r — main decides separately whether r renders as the plain printer or
@@ -199,31 +315,7 @@ func runPipeline(r report.Reporter, path, targetFlag string, strace, loaderDebug
 		r.PhaseError(report.PhasePlan, err)
 		return "", err
 	}
-	// Start command, lowest precedence first: what the provider inferred,
-	// then the project's Procfile, then an explicit env override. The
-	// override is last because it is the one a person typed deliberately at
-	// the point of building.
-	//
-	// A unikernel runs exactly one process, so the Procfile's other entries
-	// are named as dropped rather than ignored silently.
-	if pf := procfile.Read(absPath); pf != nil {
-		if cmd, ok := pf.Web(); ok {
-			p.Cmd = strings.Fields(cmd)
-			r.Log(report.PhasePlan, "Procfile: "+cmd)
-		}
-		if ignored := pf.Ignored(); len(ignored) > 0 {
-			r.Log(report.PhasePlan, "Procfile: ignoring "+strings.Join(ignored, ", ")+
-				" (a unikernel runs one process)")
-		}
-	}
-	if cfg != nil && cfg.Deploy != nil && strings.TrimSpace(cfg.Deploy.StartCommand) != "" {
-		p.Cmd = strings.Fields(cfg.Deploy.StartCommand)
-		r.Log(report.PhasePlan, config.FileName+": "+cfg.Deploy.StartCommand)
-	}
-	if cmd := strings.TrimSpace(os.Getenv(StartCmdEnv)); cmd != "" {
-		p.Cmd = strings.Fields(cmd)
-		r.Log(report.PhasePlan, StartCmdEnv+": "+cmd)
-	}
+	applyStartCommand(p, absPath, cfg, r)
 	// Build-time packages, prepended so they are present before the
 	// provider's script runs. apt-get or apk depending on the base image —
 	// providers pick both Debian and Alpine bases.
@@ -296,14 +388,7 @@ fi
 	kernelPath := fmt.Sprintf("%s/.unikraft/build/%s_fc-%s", absPath, p.Name, kraftArch)
 	r.PhaseDone(report.PhaseKraftBuild, displayPath(kernelPath))
 
-	// bsdkrun unikraft does not read the Kraftfile's `cmd:` for a
-	// locally-built kernel (see examples/unikraft-expressjs/README.md,
-	// "--cmdline is required") — it has to be given explicitly, as
-	// "<placeholder> -- <argv>": everything before `--` is parsed as kernel
-	// library parameters and the first word is always skipped (treated as
-	// the program name), so a leading placeholder is mandatory even though
-	// it's discarded.
-	cmdline := p.Name + " -- " + strings.Join(p.Cmd, " ")
+	cmdline := bootCmdline(p)
 	final := fmt.Sprintf("built: %s\nboot it: bsdkrun unikraft %s --cmdline %q",
 		displayPath(kernelPath), displayPath(absPath), cmdline)
 	return final, nil

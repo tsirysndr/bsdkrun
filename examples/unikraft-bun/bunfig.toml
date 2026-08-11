@@ -1,0 +1,3 @@
+# Marks this as a Bun project. A bare app/server.js is indistinguishable
+# between Node, Deno and Bun, so `bsdkrun pack` needs a marker to pick the
+# right runtime — the same reason railpack keys detection off manifests.

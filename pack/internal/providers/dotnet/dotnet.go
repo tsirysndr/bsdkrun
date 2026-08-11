@@ -3,30 +3,33 @@
 // KNOWN BROKEN: the build works and the guest boots, but CoreCLR fails to
 // start with E_OUTOFMEMORY (0x8007000E) before any managed code runs.
 //
-// The cause is not memory. A --strace trace (which needs the tracer patch
+// It is not about memory. A --strace trace (which needs the tracer patch
 // in library/unikraft-base/patches/apply.sh, or it dies formatting its own
-// output) ends like this:
+// output) shows the runtime reading /proc/self/maps last, then failing.
 //
-//	openat("/proc/self/maps", O_RDONLY|O_CLOEXEC) = No such file (-2)
-//	openat("/proc/self/maps", O_RDONLY|O_CLOEXEC) = No such file (-2)
-//	futex(NULL, FUTEX_WAKE|FUTEX_PRIVATE_FLAG, 0x7fffffff) = OK
-//	Failed to create CoreCLR, HRESULT: 0x8007000E
+// Supplying that file is NOT enough, which was tested rather than assumed:
+// the rootfs now carries a static one, the trace shows the open succeed
+// and all of it read back, and CoreCLR still fails identically. Two
+// shapes were tried — a full description of the address space, and a
+// sparse one naming only libcoreclr.so — with no difference. So the
+// missing file was the last interesting thing before the failure rather
+// than the cause of it.
 //
-// CoreCLR reads /proc/self/maps to place its executable heap. Unikraft has
-// no procfs, so the read fails and the runtime reports it as being out of
-// memory — which is why every memory-shaped theory about this was wrong.
-//
-// Ruled out along the way, each with evidence rather than argument:
+// Ruled out, each with evidence rather than argument:
 //   - Guest RAM: 3 GiB fails identically to 1 GiB.
 //   - The regions GC's huge reservation: a 1 GiB PROT_NONE mmap succeeds,
 //     and no mmap in the whole trace fails.
-//   - Thread creation: clone() succeeds; the trace continues into the new
-//     thread (gettid returns pid:3).
+//   - Thread creation: clone() succeeds and the trace continues into the
+//     new thread (gettid returns pid:3).
+//   - CPU count: sched_getaffinity reports CPU0 correctly, even though
+//     /proc/stat and /sys/devices/system/cpu/possible are both absent.
 //   - getsid() returning ESRCH: a real bug, since fixed, and unrelated.
+//   - /proc/self/maps missing: supplied, read, still fails.
 //
-// A fix means giving the guest a /proc/self/maps that describes its own
-// address space. A static file in the rootfs is the cheap experiment;
-// whether CoreCLR accepts one that does not match reality is untested.
+// What is left is to find which PAL call actually returns the failure.
+// The trace narrows it to CoreCLR's own initialisation, after the maps
+// read and before any managed code — but the syscall boundary no longer
+// shows it, because nothing at that boundary fails any more.
 package dotnet
 
 import (
@@ -114,8 +117,26 @@ func (p *Provider) Plan(dir string, arch plan.Arch) (*plan.Plan, error) {
     -p:PublishTrimmed=false -p:PublishSingleFile=false \
     -o /tmp/publish
 
-mkdir -p /out/rootfs/usr/src/app /out/rootfs/tmp
+mkdir -p /out/rootfs/usr/src/app /out/rootfs/tmp /out/rootfs/proc/self
 cp -a /tmp/publish/. /out/rootfs/usr/src/app/
+
+# CoreCLR reads /proc/self/maps while placing its executable heap, and
+# reports a failure to read it as E_OUTOFMEMORY -- an error that says
+# nothing about the actual problem. Unikraft has no procfs, so this is a
+# static stand-in.
+#
+# Deliberately small. The file's job is to name libcoreclr.so so the
+# runtime can anchor its heap near it; every *other* range listed is one
+# the runtime believes is taken. An expansive description of the address
+# space is worse than a sparse one, because the free space it is looking
+# for is whatever the file does not mention.
+#
+# The address matches where app-elfloader maps the application (observed
+# in a --strace trace). It describes the layout rather than reporting it,
+# which is the honest limit of writing this at build time.
+cat > /out/rootfs/proc/self/maps <<'MAPS'
+1000000000-1000100000 r-xp 00000000 00:00 0                              /usr/src/app/libcoreclr.so
+MAPS
 
 if [ ! -f /out/rootfs/usr/src/app/%s ]; then
     echo "published output has no %s apphost; is <OutputType>Exe</OutputType> set?" >&2

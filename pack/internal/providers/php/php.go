@@ -53,6 +53,16 @@ func (p *Provider) Plan(dir string, _ plan.Arch) (*plan.Plan, error) {
 		Name:       "php",
 		Provider:   p.Name(),
 		BuildImage: "php:" + version + "-cli-bookworm",
+		// llb.Image pulls in the image's filesystem but not its config, so
+		// the ENV the php image sets is absent unless restated here.
+		// PHP_INI_DIR is the one that bites: docker-php-ext-enable writes
+		// "$PHP_INI_DIR/conf.d/...", which without it becomes /conf.d and
+		// fails with "Directory nonexistent" — taking the whole build down
+		// on a line that looks unrelated.
+		Env: map[string]string{
+			"PHP_INI_DIR": "/usr/local/etc/php",
+			"PATH":        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		},
 		Script: fmt.Sprintf(`set -eu
 %sdocker-php-ext-install sockets >/dev/null
 mkdir -p /out/rootfs/usr/local/bin /out/rootfs/usr/local/etc/php /out/rootfs/usr/src /out/rootfs/tmp

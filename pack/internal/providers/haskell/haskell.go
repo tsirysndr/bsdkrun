@@ -78,14 +78,14 @@ func (p *Provider) Plan(dir string, arch plan.Arch) (*plan.Plan, error) {
 	return &plan.Plan{
 		Name:       "haskell",
 		Provider:   p.Name(),
-		BuildImage: "haskell:9.6-bookworm",
+		BuildImage: "haskell:9.6",
 		Env: map[string]string{
 			"STACK_ROOT": "/tmp/stack",
 		},
 		// No apt-get here: the image already carries the certificates Stack
-		// needs to reach Hackage, and the tag is pinned to bookworm because
-		// the unsuffixed haskell:9.4 is Debian buster, whose repositories
-		// are archived — `apt-get update` against them fails outright.
+		// needs to reach Hackage. That matters more than it looks — 9.4 is
+		// Debian buster, whose repositories are archived, so `apt-get
+		// update` there fails outright and took the build with it.
 		Script: fmt.Sprintf(`set -eu
 %sif [ ! -f stack.yaml ]; then
     printf 'resolver: %s\n' > stack.yaml

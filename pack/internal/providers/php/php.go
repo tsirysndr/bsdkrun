@@ -13,6 +13,25 @@ import (
 
 const defaultVersion = "8.2"
 
+// ServerEnv chooses what serves a framework's public/ document root.
+//
+//	builtin     php -S, PHP's own single-process server (default)
+//	frankenphp  FrankenPHP, a Caddy with PHP embedded
+//
+// nginx + php-fpm is deliberately not offered. php-fpm is a process
+// manager: it fork()s its workers, and Unikraft has no fork() — the guest
+// would need two processes and a socket between them, which is a different
+// kind of thing from every other target here. FrankenPHP is the answer to
+// the same problem, being one process that serves PHP with threads.
+const ServerEnv = "BSDKRUN_PHP_SERVER"
+
+// frankenPHPTextAddr relinks FrankenPHP away from the Unikraft fc kernel.
+// It is a Go binary, so it has exactly the load-address collision on x86_64
+// that providers/golang and providers/static describe — and being cgo, it
+// links externally, so the address has to be handed to the system linker
+// rather than to Go's.
+const frankenPHPTextAddr = "0x40000000"
+
 type Provider struct{}
 
 func New() *Provider { return &Provider{} }
@@ -36,7 +55,7 @@ func (p *Provider) StartCommandHelp() string {
 	return `PHP runs server.php (or index.php); a public/index.php is served by php -S on :8080. A Procfile "web:" line overrides it.`
 }
 
-func (p *Provider) Plan(dir string, _ plan.Arch) (*plan.Plan, error) {
+func (p *Provider) Plan(dir string, arch plan.Arch) (*plan.Plan, error) {
 	main := entry.FindOr(dir,
 		[]string{"server.php", "index.php", "app.php", "main.php"}, "server.php")
 
@@ -53,6 +72,10 @@ func (p *Provider) Plan(dir string, _ plan.Arch) (*plan.Plan, error) {
 	docroot := ""
 	if _, err := os.Stat(filepath.Join(dir, "public", "index.php")); err == nil {
 		docroot = "public"
+	}
+
+	if docroot != "" && os.Getenv(ServerEnv) == "frankenphp" {
+		return frankenPHPPlan(docroot, arch)
 	}
 
 	version := defaultVersion
@@ -120,6 +143,59 @@ cp -a . /out/rootfs/usr/src/ 2>/dev/null || true
 chmod 1777 /out/rootfs/tmp
 `, plan.LddIntoRootfs),
 		Cmd: command(docroot, main),
+	}, nil
+}
+
+// frankenPHPPlan serves the document root with FrankenPHP instead of PHP's
+// built-in server.
+//
+// It is compiled rather than taken from the official image, for the reason
+// in frankenPHPTextAddr: a released Go binary for linux/amd64 loads exactly
+// where the fc kernel already is, and only a build can move it.
+//
+// EXPERIMENTAL: this path has not yet been booted. The build is a long one
+// — FrankenPHP's static builder compiles PHP and its dependencies from
+// source — so it is opt-in, and `builtin` remains the default because that
+// is what is verified.
+func frankenPHPPlan(docroot string, arch plan.Arch) (*plan.Plan, error) {
+	extldflags := ""
+	if arch == plan.ArchAmd64 {
+		extldflags = fmt.Sprintf(` -extldflags "-Wl,-Ttext-segment=%s"`, frankenPHPTextAddr)
+	}
+
+	return &plan.Plan{
+		Name:     "php",
+		Provider: "php",
+		// The static builder carries a PHP built for embedding, which is
+		// what makes a single-binary FrankenPHP possible at all.
+		BuildImage: "dunglas/frankenphp:static-builder",
+		Env: map[string]string{
+			"XCADDY_GO_BUILD_FLAGS": fmt.Sprintf(`-ldflags "-w -s%s"`, extldflags),
+		},
+		Script: fmt.Sprintf(`set -eu
+if [ -f composer.json ]; then
+    composer install --no-dev --optimize-autoloader --no-interaction --no-progress
+fi
+
+cd /go/src/app
+EMBED=/src ./build-static.sh
+
+binary=$(ls -S dist/frankenphp-linux-* 2>/dev/null | head -1)
+if [ -z "$binary" ]; then
+    echo "the static builder produced no binary in dist/" >&2
+    exit 1
+fi
+
+mkdir -p /out/rootfs/usr/bin /out/rootfs/tmp
+cp "$binary" /out/rootfs/usr/bin/frankenphp
+chmod +x /out/rootfs/usr/bin/frankenphp
+chmod 1777 /out/rootfs/tmp
+`),
+		Cmd: []string{
+			"/usr/bin/frankenphp", "php-server",
+			"--listen", "0.0.0.0:8080",
+			"--root", "/app/" + docroot,
+		},
 	}, nil
 }
 

@@ -177,6 +177,12 @@ pub struct App {
     rx: mpsc::Receiver<Msg>,
 }
 
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App {
     pub fn new() -> Self {
         let (action_tx, action_rx) = mpsc::channel::<Action>();

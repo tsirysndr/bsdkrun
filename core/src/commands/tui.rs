@@ -76,13 +76,12 @@ fn run(app: &mut App) -> Result<()> {
         app.frame = app.frame.wrapping_add(1);
 
         if event::poll(Duration::from_millis(250))? {
-            match event::read()? {
-                Event::Key(key) => match tui::handle_key(app, key) {
+            // A resize (or any non-key event) just redraws on the next turn.
+            if let Event::Key(key) = event::read()? {
+                match tui::handle_key(app, key) {
                     Outcome::Handled => {}
                     Outcome::Shell(id) => shell_into(&mut terminal, app, &id),
-                },
-                // A resize redraws on the next loop turn; nothing to do.
-                _ => {}
+                }
             }
         }
         app.drain();

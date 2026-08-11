@@ -37,6 +37,12 @@ pub struct SearchModal {
     primed: bool,
 }
 
+impl Default for SearchModal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SearchModal {
     pub fn new() -> Self {
         SearchModal {
@@ -120,7 +126,7 @@ impl SearchModal {
                     });
                 }
             }
-            self.hits.sort_by(|a, b| b.score.cmp(&a.score));
+            self.hits.sort_by_key(|h| std::cmp::Reverse(h.score));
         }
         self.sel = self.sel.min(self.hits.len().saturating_sub(1));
     }

@@ -8,16 +8,23 @@
 module Main (main) where
 
 import Control.Monad (forever)
+import Data.Version (showVersion)
 import qualified Data.ByteString.Char8 as B
 import Network.Socket
 import Network.Socket.ByteString (recv, sendAll)
 import System.IO (hFlush, stdout)
+import System.Info (compilerVersion)
 
 port :: PortNumber
 port = 8080
 
 body :: B.ByteString
-body = "{\"message\": \"Hello from Haskell on Unikraft!\", \"ghc\": \"9.4\"}"
+body =
+  B.concat
+    [ "{\"message\": \"Hello from Haskell on Unikraft!\", \"ghc\": \""
+    , B.pack (showVersion compilerVersion)
+    , "\"}"
+    ]
 
 response :: B.ByteString
 response =

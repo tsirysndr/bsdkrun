@@ -174,7 +174,12 @@ func frankenPHPPlan(docroot string, arch plan.Arch) (*plan.Plan, error) {
 		},
 		Script: fmt.Sprintf(`set -eu
 if [ -f composer.json ]; then
-    composer install --no-dev --optimize-autoloader --no-interaction --no-progress
+    # --ignore-platform-reqs: the static builder's own CLI PHP is a minimal
+    # one (no iconv, among others) used only to drive the build. What the
+    # application runs on is the PHP compiled into the binary below, and
+    # that is not the interpreter composer is inspecting here.
+    composer install --no-dev --optimize-autoloader --no-interaction \
+        --no-progress --ignore-platform-reqs
 fi
 
 cd /go/src/app

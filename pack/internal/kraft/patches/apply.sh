@@ -2175,4 +2175,28 @@ else
 	echo "fchmodat syscall registration: already patched or absent, skipping"
 fi
 
+# ---------------------------------------------------------------------------
+# CLOCK_PROCESS_CPUTIME_ID
+#
+# posix-time knows CLOCK_THREAD_CPUTIME_ID but not the process one, so
+# clock_gettime(CLOCK_PROCESS_CPUTIME_ID) returns EINVAL. GHC's runtime asks
+# for it during startup and dies with "clock_gettime: Invalid argument"
+# before main() runs, which is what a packed Haskell binary hits.
+#
+# A unikernel is one process, so process CPU time is the guest's CPU time.
+# The thread's exec_time is the same approximation the thread clock already
+# makes, and the callers of this (runtime statistics, mostly) want a
+# monotonic CPU-ish counter rather than an exact one.
+# ---------------------------------------------------------------------------
+TIME="$UK/lib/posix-time/time.c"
+if [ -f "$TIME" ] && ! grep -q 'CLOCK_PROCESS_CPUTIME_ID' "$TIME"; then
+	echo "patching $TIME (support CLOCK_PROCESS_CPUTIME_ID)"
+	sed -i.bak 's|^\tcase CLOCK_THREAD_CPUTIME_ID:$|\tcase CLOCK_PROCESS_CPUTIME_ID:\n&|' "$TIME"
+	rm -f "$TIME.bak"
+	grep -q 'CLOCK_PROCESS_CPUTIME_ID' "$TIME" || { echo "failed to add CLOCK_PROCESS_CPUTIME_ID" >&2; exit 1; }
+else
+	echo "CLOCK_PROCESS_CPUTIME_ID: already patched or absent, skipping"
+fi
+
 echo "patches applied."
+

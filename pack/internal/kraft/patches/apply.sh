@@ -2198,5 +2198,326 @@ else
 	echo "CLOCK_PROCESS_CPUTIME_ID: already patched or absent, skipping"
 fi
 
+# ---------------------------------------------------------------------------
+# POSIX timers
+#
+# lib/posix-time/timer.c stubs timer_create and friends with -ENOTSUP. A
+# program that creates a timer during startup and treats failure as fatal
+# therefore cannot run at all: PHP built with --enable-zend-max-execution-timers
+# dies with "Could not create timer: Not supported (95)" before serving,
+# which is what a FrankenPHP guest hits.
+#
+# The replacement is a table of timers scanned by a single polling thread.
+# See the file's own comment for why that shape, and for what it
+# approximates (CPU-time clocks are measured against the monotonic one).
+# ---------------------------------------------------------------------------
+PTIMER="$UK/lib/posix-time/timer.c"
+if [ -f "$PTIMER" ] && ! grep -q 'bsdkrun: POSIX timers' "$PTIMER"; then
+	echo "patching $PTIMER (implement POSIX timers)"
+	cat > "$PTIMER" <<'BSDKRUN_TIMER_EOF'
+/* SPDX-License-Identifier: BSD-3-Clause */
+/* bsdkrun: POSIX timers (timer_create and friends).
+ *
+ * Upstream stubs all five of these with -ENOTSUP, which is fine until
+ * something creates a timer during startup and treats failure as fatal.
+ * PHP does exactly that: built with --enable-zend-max-execution-timers (as
+ * static-php-cli configures it for ZTS, with no way to turn it off from the
+ * outside) it arms a per-process timer to enforce max_execution_time, and
+ * dies with "Could not create timer: Not supported (95)" before serving a
+ * request. That is what a FrankenPHP guest hits.
+ *
+ * The implementation is a table of timers scanned by one polling thread,
+ * rather than a per-timer platform timer:
+ *
+ *   - It is one thread for all timers, not one per timer. A server creates
+ *     a timer per worker, and a thread apiece would cost more than the
+ *     timers do.
+ *   - The resolution is the scan interval, which is coarse. That suits what
+ *     these are actually used for here — execution timeouts measured in
+ *     seconds — and no caller in this position needs millisecond accuracy.
+ *   - The thread sleeps longer when nothing is armed, so an idle guest is
+ *     not woken ten times a second for timers nobody set.
+ *
+ * CLOCK_THREAD_CPUTIME_ID and CLOCK_PROCESS_CPUTIME_ID timers are measured
+ * against the monotonic clock. For a thread that is busy — which is when an
+ * execution timeout matters — the two run together; for one that blocks,
+ * this expires earlier than a true CPU-time timer would.
+ */
+
+#include <errno.h>
+#include <signal.h>
+#include <time.h>
+
+#include <uk/arch/time.h>
+#include <uk/arch/types.h>
+#include <uk/errptr.h>
+#include <uk/essentials.h>
+#include <uk/plat/time.h>
+#include <uk/print.h>
+#include <uk/sched.h>
+#include <uk/syscall.h>
+#include <uk/thread.h>
+
+#define UK_PTIMER_MAX		16
+/* Scan interval while something is armed, and while nothing is. */
+#define UK_PTIMER_TICK_NSEC	(10ULL * 1000000ULL)
+#define UK_PTIMER_IDLE_NSEC	(200ULL * 1000000ULL)
+
+struct uk_ptimer {
+	/* Written by the caller's thread, read by the timer thread. */
+	volatile int used;
+	volatile int armed;
+	volatile int overrun;
+	clockid_t clockid;
+	int signo;
+	__nsec next;
+	__nsec interval;
+};
+
+static struct uk_ptimer uk_ptimers[UK_PTIMER_MAX];
+static struct uk_thread *uk_ptimer_thread;
+
+static inline __nsec uk_ptimer_ts2nsec(const struct timespec *ts)
+{
+	return ukarch_time_sec_to_nsec((__nsec)ts->tv_sec) + (__nsec)ts->tv_nsec;
+}
+
+static inline void uk_ptimer_nsec2ts(__nsec n, struct timespec *ts)
+{
+	ts->tv_sec = ukarch_time_nsec_to_sec(n);
+	ts->tv_nsec = ukarch_time_subsec(n);
+}
+
+/* Timer ids are the table index plus one, so that a valid id is never the
+ * NULL that timer_t (a pointer type) would otherwise collide with.
+ */
+static struct uk_ptimer *uk_ptimer_get(timer_t timerid)
+{
+	__uptr idx = (__uptr)timerid;
+
+	if (unlikely(!idx || idx > UK_PTIMER_MAX))
+		return __NULL;
+	if (unlikely(!uk_ptimers[idx - 1].used))
+		return __NULL;
+
+	return &uk_ptimers[idx - 1];
+}
+
+static void uk_ptimer_expire(struct uk_ptimer *t, __nsec now)
+{
+	if (t->signo)
+#if CONFIG_LIBPOSIX_PROCESS_SIGNAL
+		uk_syscall_r_kill(uk_syscall_r_getpid(), t->signo);
+#else
+		uk_pr_warn_once("timer expired but signals are not configured in\n");
+#endif
+
+	if (!t->interval) {
+		t->armed = 0;
+		return;
+	}
+
+	/* A timer whose interval elapsed more than once while we were not
+	 * looking has overrun; POSIX wants that counted, not replayed.
+	 */
+	do {
+		t->next += t->interval;
+		if (now >= t->next)
+			t->overrun++;
+	} while (now >= t->next);
+}
+
+static void uk_ptimer_monitor(void *arg __unused)
+{
+	for (;;) {
+		__nsec now;
+		int i, armed = 0;
+
+		now = ukplat_monotonic_clock();
+
+		for (i = 0; i < UK_PTIMER_MAX; i++) {
+			struct uk_ptimer *t = &uk_ptimers[i];
+
+			if (!t->used || !t->armed)
+				continue;
+
+			armed = 1;
+			if (now >= t->next)
+				uk_ptimer_expire(t, now);
+		}
+
+		uk_sched_thread_sleep(armed ? UK_PTIMER_TICK_NSEC
+					    : UK_PTIMER_IDLE_NSEC);
+	}
+}
+
+UK_SYSCALL_R_DEFINE(int, timer_create, clockid_t, clockid,
+		    struct sigevent *__restrict, sevp,
+		    timer_t *__restrict, timerid)
+{
+	struct uk_ptimer *t = __NULL;
+	int i, idx = -1, signo = SIGALRM;
+
+	if (unlikely(!timerid))
+		return -EFAULT;
+
+	switch (clockid) {
+	case CLOCK_REALTIME:
+	case CLOCK_REALTIME_COARSE:
+	case CLOCK_MONOTONIC:
+	case CLOCK_MONOTONIC_RAW:
+	case CLOCK_MONOTONIC_COARSE:
+	case CLOCK_BOOTTIME:
+	case CLOCK_PROCESS_CPUTIME_ID:
+	case CLOCK_THREAD_CPUTIME_ID:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (sevp) {
+		switch (sevp->sigev_notify) {
+		case SIGEV_NONE:
+			signo = 0;
+			break;
+		case SIGEV_SIGNAL:
+		case SIGEV_THREAD_ID:
+			signo = sevp->sigev_signo;
+			break;
+		default:
+			/* SIGEV_THREAD delivers by starting a userspace
+			 * thread per expiry, which is the C library's job
+			 * and not something this can do from here.
+			 */
+			uk_pr_warn("timer_create: SIGEV_THREAD is not supported\n");
+			return -ENOTSUP;
+		}
+	}
+
+	for (i = 0; i < UK_PTIMER_MAX; i++) {
+		if (!uk_ptimers[i].used) {
+			idx = i;
+			t = &uk_ptimers[i];
+			break;
+		}
+	}
+	if (unlikely(!t))
+		return -EAGAIN;
+
+	t->armed = 0;
+	t->overrun = 0;
+	t->clockid = clockid;
+	t->signo = signo;
+	t->next = 0;
+	t->interval = 0;
+	t->used = 1;
+
+	if (!uk_ptimer_thread) {
+		uk_ptimer_thread = uk_sched_thread_create(uk_sched_current(),
+							  uk_ptimer_monitor,
+							  __NULL, "posix-timer");
+		if (unlikely(PTRISERR(uk_ptimer_thread))) {
+			uk_pr_err("timer_create: could not start the timer thread\n");
+			uk_ptimer_thread = __NULL;
+			t->used = 0;
+			return -EAGAIN;
+		}
+	}
+
+	*timerid = (timer_t)(__uptr)(idx + 1);
+	return 0;
+}
+
+UK_SYSCALL_R_DEFINE(int, timer_delete,
+		    timer_t, timerid)
+{
+	struct uk_ptimer *t = uk_ptimer_get(timerid);
+
+	if (unlikely(!t))
+		return -EINVAL;
+
+	t->armed = 0;
+	t->used = 0;
+	return 0;
+}
+
+UK_SYSCALL_R_DEFINE(int, timer_settime,
+		    timer_t, timerid,
+		    int, flags,
+		    const struct itimerspec *__restrict, new_value,
+		    struct itimerspec *__restrict, old_value)
+{
+	struct uk_ptimer *t = uk_ptimer_get(timerid);
+	__nsec now, value;
+
+	if (unlikely(!t))
+		return -EINVAL;
+	if (unlikely(!new_value))
+		return -EFAULT;
+
+	now = ukplat_monotonic_clock();
+
+	if (old_value) {
+		uk_ptimer_nsec2ts((t->armed && t->next > now) ? t->next - now : 0,
+				  &old_value->it_value);
+		uk_ptimer_nsec2ts(t->interval, &old_value->it_interval);
+	}
+
+	value = uk_ptimer_ts2nsec(&new_value->it_value);
+	t->interval = uk_ptimer_ts2nsec(&new_value->it_interval);
+
+	/* A zero it_value disarms, which is how a caller turns a timeout
+	 * off — PHP does this whenever max_execution_time is 0.
+	 */
+	if (!value) {
+		t->armed = 0;
+		return 0;
+	}
+
+	t->next = (flags & TIMER_ABSTIME) ? value : now + value;
+	t->overrun = 0;
+	t->armed = 1;
+	return 0;
+}
+
+UK_SYSCALL_R_DEFINE(int, timer_gettime,
+		    timer_t, timerid,
+		    struct itimerspec *, curr_value)
+{
+	struct uk_ptimer *t = uk_ptimer_get(timerid);
+	__nsec now;
+
+	if (unlikely(!t))
+		return -EINVAL;
+	if (unlikely(!curr_value))
+		return -EFAULT;
+
+	now = ukplat_monotonic_clock();
+
+	/* A disarmed timer reports zero, which is how a caller tells the
+	 * difference between "not set" and "about to expire".
+	 */
+	uk_ptimer_nsec2ts((t->armed && t->next > now) ? t->next - now : 0,
+			  &curr_value->it_value);
+	uk_ptimer_nsec2ts(t->interval, &curr_value->it_interval);
+	return 0;
+}
+
+UK_SYSCALL_R_DEFINE(int, timer_getoverrun,
+		    timer_t, timerid)
+{
+	struct uk_ptimer *t = uk_ptimer_get(timerid);
+
+	if (unlikely(!t))
+		return -EINVAL;
+
+	return t->overrun;
+}
+BSDKRUN_TIMER_EOF
+	grep -q 'bsdkrun: POSIX timers' "$PTIMER" || { echo "failed to implement POSIX timers" >&2; exit 1; }
+else
+	echo "POSIX timers: already patched or absent, skipping"
+fi
+
 echo "patches applied."
 

@@ -117,6 +117,20 @@ traps met here: a stale VM still holding the port answered for a guest that neve
 started, and port 8080 on this machine belongs to an unrelated service — use a
 free host port (`--port 18080:8080`) and kill leftover VMs first.
 
+## `--strace` has a trap
+
+A guest that dies under `--strace` with a data abort may be reporting the
+*tracer's* bug, not the application's. Symbolicate before believing it:
+
+```sh
+llvm-addr2line -f -C -e .unikraft/build/<name>_fc-<arch>.dbg 0x<ELR_EL1>
+```
+
+`.NET` traces end in `memchr` (`lib/nolibc/string.c`) called from `vsnprintf`
+(`lib/nolibc/stdio.c`) — Unikraft formatting a `%s` syscall argument from a
+pointer it cannot read. The trace stops at the same line every time, which
+looks exactly like the application failing at a fixed point and is not.
+
 ## Style
 
 - Markdown tables are padded so the pipes line up.

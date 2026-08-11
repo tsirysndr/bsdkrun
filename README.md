@@ -1171,7 +1171,7 @@ Give every machine a real, browser-trusted URL on this host:
 
 ```sh
 bsdkrun linux nginx:alpine --port 18080:80 -d --name web
-bsdkrun domains enable          # one admin prompt (resolver) + CA trust
+bsdkrun domains enable          # prompts once to wire the resolver + trust the CA
 curl https://web.bsdk           # no -k, no warnings
 ```
 
@@ -1182,7 +1182,7 @@ re-running it repairs whatever is missing:
 | ------------- | --------------------------------------------------------------------------------------------------------------------- |
 | DNS responder | Built into bsdkrun; answers `*.bsdk` with `127.0.0.1` on a loopback port (5343). No dnsmasq needed.                     |
 | Resolver      | `/etc/resolver/bsdk` on macOS, a systemd-resolved drop-in on Linux — only that TLD is routed to bsdkrun.                |
-| Caddy         | Found on `PATH` (`brew install caddy` / `apt install caddy`, or `$BSDKRUN_CADDY`); terminates TLS with its local CA and reverse-proxies to each machine's first `--port` forward. `caddy trust` puts the CA in the system trust store. |
+| Caddy         | Found on `PATH` (`brew install caddy` / `apt install caddy`, or `$BSDKRUN_CADDY`); terminates TLS with its local CA and reverse-proxies to each machine's first `--port` forward. |
 
 Guests live behind gvproxy's userspace NAT, so a domain routes to a **forwarded
 port** — a machine without `--port` has nothing to route to, and `bsdkrun
@@ -1190,27 +1190,54 @@ domains ls` says so. Machine names become DNS labels (`tidy_turing` →
 `tidy-turing.bsdk`); stopped machines keep their domain and serve Caddy's 502,
 which beats NXDOMAIN as a diagnostic. New machines join automatically on boot.
 
-`domains status` health-checks every piece; `domains disable --purge` removes
-the resolver wiring, un-trusts the CA and deletes the proxy state. Default TLD
-is `bsdk`; pick another with `enable --tld`, and non-443 ports with
-`--https-port`/`--http-port` (Linux gets a one-time
-`net.ipv4.ip_unprivileged_port_start=80` sysctl offer for the low ports).
+`domains status` health-checks every piece (DNS, resolver, Caddy, CA trust);
+`domains disable --purge` removes the resolver wiring, un-trusts the CA and
+deletes the proxy state. Default TLD is `bsdk`; pick another with `enable
+--tld`, and non-443 ports with `--https-port`/`--http-port` (Linux gets a
+one-time `net.ipv4.ip_unprivileged_port_start=80` sysctl offer for the low
+ports). Which machine maps to which URL and upstream port is `domains ls`.
 
-**Tools that don't read the system trust store.** Browsers and system `curl`
-trust the CA once `enable` installs it, but toolchains that ship their own CA
-bundle — Python (`requests`/HTTPie, via certifi), Node, Go — do not. Point them
-at the CA with `bsdkrun domains ca`, which prints its path:
+### Local certificates
+
+Caddy runs its own **local CA** and mints a short-lived leaf per domain; the
+root and its key live under `<state>/proxy/data/pki/authorities/local/`
+(isolated from any system Caddy, and deleted by `disable --purge`).
+`bsdkrun domains ca` prints the root's path, `--pem` the certificate itself.
+
+Trust is installed into the **system trust store** once, on `enable`:
+
+- **macOS** — `sudo security add-trusted-cert -d -r trustRoot -k
+  /Library/Keychains/System.keychain <root>`, run through an **interactive
+  sudo** prompt in your terminal. It has to be interactive: `add-trusted-cert`
+  sets the trust *settings* through an API that a sessionless root (an
+  osascript "with administrator privileges" shell, or a GUI-launched process)
+  cannot satisfy — it fails with *"authorization was denied since no user
+  interaction was possible,"* leaving the cert present but untrusted. So run
+  `bsdkrun domains enable` from a real terminal.
+- **Linux** — `caddy trust`, which drives both the system store and the NSS
+  store browsers use (`libnss3-tools` provides the `certutil` it needs).
+
+`domains status`'s **ca trust** line checks *actual* trust settings
+(`security dump-trust-settings -d` / `openssl verify`), not mere presence — a
+half-installed cert reads as `NOT OK`, and re-running `enable` repairs it.
+
+**Tools that verify against their own bundle, not the system store.** Browsers
+and system `curl` trust the CA after `enable`. Toolchains that ship a bundled
+CA list — Python (`requests`/HTTPie, via certifi), Node, Go — never consult the
+keychain, so they reject the cert. Point them at the CA:
 
 ```sh
-http --verify "$(bsdkrun domains ca)" https://web.bsdk       # HTTPie / requests
-export REQUESTS_CA_BUNDLE="$(bsdkrun domains ca)"            # all requests-based tools*
+http --verify "$(bsdkrun domains ca)" https://web.bsdk       # HTTPie / requests, per call
+bsdkrun domains ca --pem >> "$(python3 -m certifi)"          # append to certifi (persists, keeps public roots)
+export REQUESTS_CA_BUNDLE="$(bsdkrun domains ca)"            # requests-based tools*
 export NODE_EXTRA_CA_CERTS="$(bsdkrun domains ca)"          # Node
-bsdkrun domains ca --pem >> "$(python3 -m certifi)"          # append to certifi (persists)
 ```
 
-\*`REQUESTS_CA_BUNDLE` *replaces* the bundle, so it drops the public roots for
-that shell — fine for talking only to `.bsdk`, not as a login-shell default.
-Appending to certifi keeps the public roots.
+\*`REQUESTS_CA_BUNDLE`/`SSL_CERT_FILE` *replace* the bundle, dropping the public
+roots for that shell — fine for talking only to `.bsdk`, not a login-shell
+default. Appending to certifi keeps the public roots. macOS note: `/usr/bin/curl`
+(SecureTransport) reads the keychain; a Homebrew `curl` (OpenSSL) does not, so
+verify with the system one or point it at `--cacert "$(bsdkrun domains ca)"`.
 
 ---
 
@@ -1220,28 +1247,34 @@ Appending to certifi keeps the public roots.
 bsdkrun tui
 ```
 
-Machines, images, volumes and networks as live panels, refreshed every 1.5 s.
-The bottom status line shows the current selection, the outcome of the last
-action (with a spinner while one runs), and the machine-domains health chip.
+Machines, images, volumes and networks as live panels, refreshed every 1.5 s on
+a background thread. The persistent bottom status line shows the current
+selection, the outcome of the last action (with a spinner while one runs), and
+the machine-domains health chip (`https ·bsdk ✓` / `domains off`). Press `?`
+for the full keybinding list at any time.
 
-| Key            | Action                                                        |
-| -------------- | ------------------------------------------------------------- |
-| `Tab` / `S-Tab` | Cycle panels (`j`/`k` move, `g`/`G` first/last)               |
-| `/`            | Fuzzy search across everything (fzf-style), `Enter` jumps      |
-| `n`            | New machine wizard (image, name, port, cpus, mem)              |
-| `s` / `x`      | Start / stop the selected machine                              |
-| `e`            | Shell into it (suspends the TUI, resumes on exit)              |
-| `l`            | Log viewer — follows a running machine's console live          |
-| `i` / `Enter`  | Settings (vCPU / memory, applied on next start)                |
-| `o`            | Open `https://<name>.bsdk` in the browser (needs domains)      |
-| `d`            | Remove, with confirmation                                      |
-| `?`            | Every keybinding                                               |
-| `q` / `Ctrl-C` | Quit                                                           |
+| Key             | Action                                                        |
+| --------------- | ------------------------------------------------------------- |
+| `Tab` / `S-Tab` | Cycle panels (`j`/`k`/arrows move, `g`/`G` first/last)         |
+| `/`             | Fuzzy search across every panel (fzf-style), `Enter` jumps     |
+| `n`             | New-machine wizard (image, name, port, cpus, mem)              |
+| `s` / `x`       | Start / stop the selected machine                              |
+| `e`             | Shell into it (suspends the TUI, resumes on exit)              |
+| `l`             | Log viewer — backfills, then follows a running machine live    |
+| `i` / `Enter`   | Machine settings (vCPU / memory, applied on next start)        |
+| `o`             | Open `https://<name>.bsdk` in the browser (needs domains)      |
+| `d`             | Remove, with confirmation                                      |
+| `r`             | Refresh now                                                    |
+| `?`             | Show every keybinding                                          |
+| `q` / `Ctrl-C`  | Quit                                                           |
 
-Starting a machine spawns a detached `bsdkrun start` (a boot forks and becomes
-the machine, which must never happen inside the TUI's process); stopping runs on
-a worker thread, so the dashboard stays live through a slow graceful BSD
-poweroff.
+The `/` search fuzzy-matches across all four panels at once (fzf-quality
+ranking, matched characters highlighted); `Enter` jumps focus straight to the
+hit. Starting a machine spawns a detached `bsdkrun start` — a boot forks and
+becomes the machine, which must never happen inside the TUI's own process —
+and stopping runs on a worker thread, so the dashboard stays responsive through
+a slow graceful BSD poweroff. The alternate screen is restored on quit, on a
+panic, and on `SIGTERM`/`SIGHUP`.
 
 ---
 

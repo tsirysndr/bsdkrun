@@ -169,8 +169,15 @@ jobs:
         with:
           ocaml-compiler: "5.2"
 
+      # `conf-pkg-config.4`, not the newest, on purpose. Version 5 carries two
+      # unconditional `extra-source` entries — mingw-w64 shims fetched from
+      # raw.githubusercontent.com — which only Windows ever uses, but opam
+      # fetches them on every platform. That download failed here with curl
+      # exit 35 (SSL connect error) and took the whole job with it. Versions 3
+      # and 4 declare no extra sources at all: they just check that pkg-config
+      # exists, which apt installed above. One fewer host to depend on.
       - name: Install the MirageOS toolchain
-        run: opam install -y mirage
+        run: opam install -y conf-pkg-config.4 mirage
 
       # `make depends` pulls this unikernel's sources into duniverse/ and
       # installs the ocaml-solo5 cross-compiler; `make build` cross-compiles

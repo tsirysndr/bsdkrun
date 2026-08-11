@@ -6,3 +6,5 @@
 /.unikraft/
 /.rootfs-*/
 /.rust-cache/
+/.zig-cache/
+/zig-out/

@@ -2,3 +2,5 @@
 .rootfs-*
 .Kraftfile.*
 .config.*
+.zig-cache
+zig-out

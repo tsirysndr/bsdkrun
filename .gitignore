@@ -34,3 +34,7 @@ examples/**/*.dbg.*
 examples/**/.rootfs-*/
 examples/**/.Kraftfile.*
 examples/**/.config.*
+
+# Zig's build cache, written into whatever project `zig build` runs in.
+.zig-cache/
+zig-out/

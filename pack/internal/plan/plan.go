@@ -40,6 +40,19 @@ type Plan struct {
 	// building the LLB graph directly gets for free).
 	Env map[string]string
 
+	// BuilderImage and BuilderScript are an optional first stage, for
+	// providers whose build tool and runtime want different images. The
+	// script runs in BuilderImage and leaves its artifacts in /out/stage;
+	// they appear at /stage in the second stage.
+	//
+	// Clojure needs this: the example builds its uberjar in the official
+	// clojure image (a pinned tools-deps CLI) but jlinks the JRE in a
+	// pristine eclipse-temurin JDK, and the JRE jlink emits is what the
+	// guest executes. Collapsing the two into one image changes both the
+	// CLI producing the jar and the JDK producing the runtime.
+	BuilderImage  string
+	BuilderScript string
+
 	// Script is run as `sh -c <Script>` in BuildImage, with the project
 	// source copied in at /src (cwd). It must leave the finished rootfs at
 	// /out/rootfs — internal/buildkit copies that directory, and only that

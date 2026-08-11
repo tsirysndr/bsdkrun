@@ -123,7 +123,37 @@ func Build(ctx context.Context, addr, srcDir string, p *plan.Plan, platform Plat
 		}
 
 		build := base.
-			File(llb.Copy(src, "/", "/src", &llb.CopyInfo{CreateDestPath: true})).
+			File(llb.Copy(src, "/", "/src", &llb.CopyInfo{CreateDestPath: true}))
+
+		// Optional first stage, in its own image; its /out/stage lands at
+		// /stage here.
+		if p.BuilderImage != "" {
+			builder := llb.Image(p.BuilderImage, llb.Platform(ociPlatform))
+			benv, err := imageEnv(ctx, gw, p.BuilderImage, ociPlatform)
+			if err != nil {
+				return nil, err
+			}
+			for k, v := range benv {
+				builder = builder.AddEnv(k, v)
+			}
+			for k, v := range p.Env {
+				builder = builder.AddEnv(k, v)
+			}
+			staged := builder.
+				File(llb.Copy(src, "/", "/src", &llb.CopyInfo{CreateDestPath: true})).
+				Dir("/src").
+				Run(
+					llb.Args([]string{"sh", "-c", p.BuilderScript}),
+					llb.WithCustomName(fmt.Sprintf("build %s (%s, stage 1)", p.Name, p.Provider)),
+				).
+				Root()
+			build = build.File(llb.Copy(staged, "/out/stage", "/stage", &llb.CopyInfo{
+				CreateDestPath:      true,
+				CopyDirContentsOnly: true,
+			}))
+		}
+
+		build = build.
 			Dir("/src").
 			Run(
 				llb.Args([]string{"sh", "-c", p.Script}),
@@ -148,6 +178,13 @@ func Build(ctx context.Context, addr, srcDir string, p *plan.Plan, platform Plat
 
 	solveOpt := bkclient.SolveOpt{
 		LocalMounts: map[string]fsutil.FS{"context": contextFS},
+		// Non-nil deliberately. buildkit's solve() does
+		// `maps.Copy(maps.Clone(opt.FrontendAttrs), cacheOpt.frontendAttrs)`,
+		// and maps.Clone(nil) is nil — so as soon as a cache import supplies
+		// attributes, it panics writing into a nil map. Only reachable with
+		// CacheImports set, which is why it surfaced the moment the build
+		// cache was wired up in CI and never locally.
+		FrontendAttrs: map[string]string{},
 		Exports: []bkclient.ExportEntry{
 			{Type: bkclient.ExporterLocal, OutputDir: outDir},
 		},

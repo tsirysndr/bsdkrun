@@ -25,6 +25,7 @@ pub mod cli;
 pub mod commands;
 pub mod console;
 pub mod db;
+pub mod domains;
 pub mod elf;
 pub mod fetch;
 pub mod flavors;
@@ -50,6 +51,8 @@ pub mod solo5;
 #[cfg(target_os = "macos")]
 pub mod store;
 pub mod tty;
+#[cfg(all(feature = "boot", feature = "tui"))]
+pub mod tui;
 #[cfg(feature = "ui")]
 pub mod ui;
 pub mod unikraft;
@@ -169,7 +172,28 @@ pub fn dispatch(cmd: Command) -> Result<()> {
             NetworkCmd::Disconnect(a) => network::cmd_disconnect(&a.machine),
             NetworkCmd::Sync(a) => network::cmd_sync(&a.network),
         },
+        Command::Domains(args) => match args.cmd {
+            DomainsCmd::Enable(a) => commands::domains::cmd_enable(a),
+            DomainsCmd::Disable(a) => commands::domains::cmd_disable(a.purge),
+            DomainsCmd::Status(a) => commands::domains::cmd_status(a.json),
+            DomainsCmd::Ls(a) => commands::domains::cmd_ls(a.json),
+            DomainsCmd::Sync => commands::domains::cmd_sync(),
+            // The detached responder process: serve() never returns.
+            DomainsCmd::ServeDns(a) => domains::dns::serve(a.port, &a.tld),
+        },
+        Command::Tui(args) => run_tui(args),
     }
+}
+
+/// `bsdkrun tui`, when this build has the dashboard compiled in.
+#[cfg(all(feature = "boot", feature = "tui"))]
+fn run_tui(args: cli::TuiArgs) -> Result<()> {
+    commands::tui::cmd_tui(args)
+}
+
+#[cfg(all(feature = "boot", not(feature = "tui")))]
+fn run_tui(_args: cli::TuiArgs) -> Result<()> {
+    anyhow::bail!("this build has no TUI compiled in")
 }
 
 /// `bsdkrun ui`, when this build has the SPA compiled in.

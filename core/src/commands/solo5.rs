@@ -185,6 +185,8 @@ fn run_detached(machine_id: &str, image: &str, run: Run) -> Result<()> {
             None,
             net::format_ports(&run.args.net.ports).as_deref(),
         );
+        // Parent side only — the child becomes the tender's supervisor.
+        crate::domains::sync_if_enabled();
         println!("{machine_id}");
         return Ok(());
     }

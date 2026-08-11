@@ -162,6 +162,8 @@ pub fn remove_machine(id: &str, force: bool) -> Result<String> {
     #[cfg(target_os = "macos")]
     store::remove_machine_rootfs(&vm.id);
     db.delete_machine(&vm.id)?;
+    // The machine's domain goes with it.
+    crate::domains::sync_if_enabled();
     Ok(vm.id)
 }
 

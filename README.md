@@ -53,6 +53,8 @@ image** (`bsdkrun linux alpine` pulls it from any registry, extracts the rootfs,
 - [Managing machines](#managing-machines)
 - [Flavors — preconfigured environments & snapshots](#flavors--preconfigured-environments--snapshots)
 - [Networking](#networking)
+- [Machine domains — local DNS + HTTPS](#machine-domains--local-dns--https)
+- [TUI — the terminal dashboard](#tui--the-terminal-dashboard)
 - [Disks](#disks)
 - [Console](#console-how-output-reaches-your-terminal)
 - [Preparing a guest image](#preparing-a-guest-image)
@@ -1160,6 +1162,70 @@ NetBSD `MICROVM`, FreeBSD `FIRECRACKER`) generally lack tun/tap, and userspace m
 the guest **reachable over the tailnet** (ssh, agent port, anything listening). Pass
 `--kernel-tun` to `start`/`setup` to use a real TUN device where the kernel has one
 (e.g. full Linux kernels with `/dev/net/tun` — detected automatically there).
+
+---
+
+## Machine domains — local DNS + HTTPS
+
+Give every machine a real, browser-trusted URL on this host:
+
+```sh
+bsdkrun linux nginx:alpine --port 18080:80 -d --name web
+bsdkrun domains enable          # one admin prompt (resolver) + CA trust
+curl https://web.bsdk           # no -k, no warnings
+```
+
+`enable` starts three cooperating pieces and wires them up — all idempotent, so
+re-running it repairs whatever is missing:
+
+| Piece         | What it does                                                                                                          |
+| ------------- | --------------------------------------------------------------------------------------------------------------------- |
+| DNS responder | Built into bsdkrun; answers `*.bsdk` with `127.0.0.1` on a loopback port (5343). No dnsmasq needed.                     |
+| Resolver      | `/etc/resolver/bsdk` on macOS, a systemd-resolved drop-in on Linux — only that TLD is routed to bsdkrun.                |
+| Caddy         | Found on `PATH` (`brew install caddy` / `apt install caddy`, or `$BSDKRUN_CADDY`); terminates TLS with its local CA and reverse-proxies to each machine's first `--port` forward. `caddy trust` puts the CA in the system trust store. |
+
+Guests live behind gvproxy's userspace NAT, so a domain routes to a **forwarded
+port** — a machine without `--port` has nothing to route to, and `bsdkrun
+domains ls` says so. Machine names become DNS labels (`tidy_turing` →
+`tidy-turing.bsdk`); stopped machines keep their domain and serve Caddy's 502,
+which beats NXDOMAIN as a diagnostic. New machines join automatically on boot.
+
+`domains status` health-checks every piece; `domains disable --purge` removes
+the resolver wiring, un-trusts the CA and deletes the proxy state. Default TLD
+is `bsdk`; pick another with `enable --tld`, and non-443 ports with
+`--https-port`/`--http-port` (Linux gets a one-time
+`net.ipv4.ip_unprivileged_port_start=80` sysctl offer for the low ports).
+
+---
+
+## TUI — the terminal dashboard
+
+```sh
+bsdkrun tui
+```
+
+Machines, images, volumes and networks as live panels, refreshed every 1.5 s.
+The bottom status line shows the current selection, the outcome of the last
+action (with a spinner while one runs), and the machine-domains health chip.
+
+| Key            | Action                                                        |
+| -------------- | ------------------------------------------------------------- |
+| `Tab` / `S-Tab` | Cycle panels (`j`/`k` move, `g`/`G` first/last)               |
+| `/`            | Fuzzy search across everything (fzf-style), `Enter` jumps      |
+| `n`            | New machine wizard (image, name, port, cpus, mem)              |
+| `s` / `x`      | Start / stop the selected machine                              |
+| `e`            | Shell into it (suspends the TUI, resumes on exit)              |
+| `l`            | Log viewer — follows a running machine's console live          |
+| `i` / `Enter`  | Settings (vCPU / memory, applied on next start)                |
+| `o`            | Open `https://<name>.bsdk` in the browser (needs domains)      |
+| `d`            | Remove, with confirmation                                      |
+| `?`            | Every keybinding                                               |
+| `q` / `Ctrl-C` | Quit                                                           |
+
+Starting a machine spawns a detached `bsdkrun start` (a boot forks and becomes
+the machine, which must never happen inside the TUI's process); stopping runs on
+a worker thread, so the dashboard stays live through a slow graceful BSD
+poweroff.
 
 ---
 

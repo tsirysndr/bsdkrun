@@ -1364,6 +1364,8 @@ pub(crate) fn run_machine(
         volume,
         net::format_ports(ports).as_deref(),
     );
+    // Foreground boot: this process becomes the VM, so sync before entering.
+    crate::domains::sync_if_enabled();
     tty::install();
     if watchdog {
         watchdog::install();
@@ -1744,6 +1746,9 @@ pub(crate) fn run_detached(
             volume,
             net::format_ports(ports).as_deref(),
         );
+        // Machine domains follow the DB: parent side only — the forked child
+        // becomes the VM and must not run host-side sync.
+        crate::domains::sync_if_enabled();
         // No trailing command: classic `-d`, just announce the id.
         if exec_after.is_empty() {
             println!("{machine_id}");

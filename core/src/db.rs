@@ -287,9 +287,63 @@ impl Db {
             )
             .execute(&self.pool)
             .await?;
+            // Host-level key/value settings (domains feature state, daemon pids).
+            // Runtime pids live here rather than a config file so the lazy
+            // respawn pattern (`pid_alive` check, then respawn) works exactly as
+            // it does for networks.
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )",
+            )
+            .execute(&self.pool)
+            .await?;
             Ok::<_, sqlx::Error>(())
         })?;
         Ok(())
+    }
+
+    // ---- settings -------------------------------------------------------
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        self.rt
+            .block_on(async {
+                let row = sqlx::query("SELECT value FROM settings WHERE key = ?")
+                    .bind(key)
+                    .fetch_optional(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(row.map(|r| r.get("value")))
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.rt
+            .block_on(async {
+                sqlx::query(
+                    "INSERT INTO settings (key, value) VALUES (?, ?)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                )
+                .bind(key)
+                .bind(value)
+                .execute(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn remove_setting(&self, key: &str) -> Result<()> {
+        self.rt
+            .block_on(async {
+                sqlx::query("DELETE FROM settings WHERE key = ?")
+                    .bind(key)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .map_err(Into::into)
     }
 
     // ---- images ---------------------------------------------------------

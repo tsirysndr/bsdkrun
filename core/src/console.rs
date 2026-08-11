@@ -711,6 +711,13 @@ fn connect_when_ready(sock: &Path) -> Result<UnixStream> {
     }
 }
 
+/// Connect to a machine's live console, read-only, for a caller that wants the
+/// bytes rather than stdout — the TUI's log viewer. Same wait-for-broker
+/// semantics as [`follow`].
+pub fn open_stream(dir: &Path) -> Result<UnixStream> {
+    connect_when_ready(&dir.join("console.sock"))
+}
+
 /// Stream a detached VM's console socket to stdout (for `logs -f`), read-only,
 /// until the guest closes it or the user interrupts.
 pub fn follow(dir: &Path) -> Result<()> {

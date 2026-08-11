@@ -12,6 +12,7 @@
 
 #[cfg(feature = "boot")]
 pub mod boot;
+pub mod domains;
 pub mod flavor;
 pub mod guest;
 pub mod images;
@@ -27,6 +28,8 @@ pub mod probe;
 pub mod solo5;
 #[cfg(target_os = "macos")]
 pub mod store;
+#[cfg(all(feature = "boot", feature = "tui"))]
+pub mod tui;
 pub mod volumes;
 
 use std::path::PathBuf;

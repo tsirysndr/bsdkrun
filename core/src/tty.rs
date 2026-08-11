@@ -30,7 +30,10 @@ pub fn install() {
     install_signal_handlers();
 }
 
-fn save_stdin_termios() {
+/// Snapshot stdin's termios without installing the boot-path signal handlers.
+/// The TUI uses this: it needs the snapshot for its own handler (which must
+/// also leave the alternate screen), not the boot handler's child-killing.
+pub fn save_stdin_termios() {
     // STDIN_FILENO == 0. Only meaningful when stdin is a terminal; a redirected
     // or piped stdin was never raw, so there is nothing to restore.
     if unsafe { libc::isatty(0) } != 1 {

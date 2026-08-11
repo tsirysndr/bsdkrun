@@ -40,6 +40,9 @@ pack = ["dep:rust-embed"]
 # default for the same reason: it needs a C toolchain on the build host, and
 # the daemon has no use for it.
 solo5 = ["dep:rust-embed"]
+# `bsdkrun tui` — the ratatui terminal dashboard. Off by default so the daemon
+# links no terminal stack; only the CLI turns it on.
+tui = ["dep:ratatui", "dep:crossterm", "dep:nucleo-matcher"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -54,6 +57,9 @@ tokio = { version = "1", features = ["rt", "time"] }
 actix-web = { version = "4", optional = true }
 rust-embed = { version = "8", optional = true }
 mime_guess = { version = "2", optional = true }
+ratatui = { version = "0.30", optional = true }
+crossterm = { version = "0.29", optional = true }
+nucleo-matcher = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

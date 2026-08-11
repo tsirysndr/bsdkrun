@@ -183,6 +183,15 @@ pub enum Command {
     /// with `--network` to reach each other by IP and by name.
     Network(NetworkArgs),
 
+    /// Local machine domains: serve every machine at https://<name>.<tld> on
+    /// this host — a built-in DNS responder plus a Caddy reverse proxy with a
+    /// locally-trusted CA.
+    Domains(DomainsArgs),
+
+    /// Open the interactive terminal dashboard (machines, images, volumes,
+    /// networks — with live status, logs, and actions).
+    Tui(TuiArgs),
+
     /// Serve the bundled web interface (a Docker-Desktop-style UI in a browser).
     ///
     /// Static assets only — the UI drives a `bsdkrund` GraphQL API, which it
@@ -296,6 +305,87 @@ pub struct NetworkSyncArgs {
     #[arg(value_name = "NETWORK")]
     pub network: String,
 }
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct DomainsArgs {
+    #[command(subcommand)]
+    pub cmd: DomainsCmd,
+}
+
+#[derive(Subcommand, Serialize, Deserialize)]
+pub enum DomainsCmd {
+    /// Turn on machine domains: start the DNS responder, wire the system
+    /// resolver for the TLD, start Caddy, and trust its local CA. Idempotent —
+    /// re-running repairs whatever is missing.
+    Enable(DomainsEnableArgs),
+    /// Stop the DNS responder and the proxy. `--purge` also removes the
+    /// resolver wiring and untrusts the CA.
+    Disable(DomainsDisableArgs),
+    /// Show each component's health (DNS, resolver, Caddy, CA trust).
+    Status(DomainsStatusArgs),
+    /// List machine domains: NAME → URL → upstream port.
+    Ls(DomainsLsArgs),
+    /// Regenerate the proxy config from the machine list and reload Caddy.
+    Sync,
+    /// The detached DNS responder process (not for direct use).
+    #[command(hide = true, name = "__serve-dns")]
+    ServeDns(ServeDnsArgs),
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct DomainsEnableArgs {
+    /// TLD for machine domains (machines become https://<name>.<tld>).
+    #[arg(long, default_value = "bsdk")]
+    pub tld: String,
+
+    /// Host port Caddy serves HTTPS on.
+    #[arg(long, default_value_t = 443)]
+    pub https_port: u16,
+
+    /// Host port Caddy serves the HTTP→HTTPS redirect on.
+    #[arg(long, default_value_t = 80)]
+    pub http_port: u16,
+
+    /// Skip installing Caddy's root CA into the system trust store.
+    #[arg(long)]
+    pub no_trust: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct DomainsDisableArgs {
+    /// Also remove the resolver wiring (/etc/resolver file or resolved
+    /// drop-in) and remove the CA from the trust store.
+    #[arg(long)]
+    pub purge: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct DomainsStatusArgs {
+    /// Emit the status as JSON (for scripting / the TUI).
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct DomainsLsArgs {
+    /// Emit the domain list as a JSON array.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct ServeDnsArgs {
+    /// UDP port to listen on (loopback only).
+    #[arg(long)]
+    pub port: u16,
+
+    /// The zone to answer for.
+    #[arg(long)]
+    pub tld: String,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct TuiArgs {}
 
 #[derive(Parser, Serialize, Deserialize)]
 pub struct CommitArgs {

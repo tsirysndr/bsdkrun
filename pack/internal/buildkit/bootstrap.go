@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	bkclient "github.com/moby/buildkit/client"
 )
 
 // containerName is fixed and reused across invocations (and across
@@ -91,7 +93,46 @@ func Bootstrap(ctx context.Context, cacheDir string) (string, error) {
 		)
 	}
 
-	return "tcp://" + addr, nil
+	// Accepting a TCP connection is not the same as being ready to serve:
+	// Docker's port forwarder accepts on the host side as soon as the
+	// container exists, well before buildkitd is listening inside it. Going
+	// straight to Solve() at that point fails with a bare gRPC
+	// "Unavailable" / "error reading server preface: EOF" that looks like a
+	// build error rather than a startup race. Ask the daemon something real
+	// until it answers.
+	endpoint := "tcp://" + addr
+	if err := waitForReady(ctx, endpoint, 60*time.Second); err != nil {
+		return "", fmt.Errorf(
+			"buildkitd container %q accepted a connection on %s but never served gRPC: %w "+
+				"(check `docker logs %s`)",
+			containerName, addr, err, containerName,
+		)
+	}
+
+	return endpoint, nil
+}
+
+// waitForReady polls buildkitd with a real RPC (ListWorkers) until it
+// answers. gRPC dials lazily, so constructing a client proves nothing —
+// only a round trip does.
+func waitForReady(ctx context.Context, endpoint string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		c, err := bkclient.New(ctx, endpoint)
+		if err == nil {
+			_, err = c.ListWorkers(ctx)
+			c.Close()
+			if err == nil {
+				return nil
+			}
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out after %s: %w", timeout, lastErr)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 func containerRunning(ctx context.Context) (bool, error) {

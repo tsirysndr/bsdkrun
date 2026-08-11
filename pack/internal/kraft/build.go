@@ -43,7 +43,7 @@ func Build(ctx context.Context, dir string, arch Arch, name, rootfsRelDir string
 	if runtime.GOOS == "linux" {
 		return buildLinux(ctx, dir, arch, steps, w)
 	}
-	return buildContainer(ctx, dir, arch, steps, w)
+	return buildContainer(ctx, dir, steps, w)
 }
 
 func unikraftTreeExists(dir string) bool {
@@ -165,11 +165,15 @@ func buildLinux(ctx context.Context, dir string, arch Arch, steps string, w *lin
 	return nil
 }
 
-// buildContainer runs the same steps inside a debian:bookworm container:
-// the Unikraft build tree needs GNU make/sed and a Linux toolchain that
-// macOS doesn't have. The container recipe (packages, kraftkit .deb,
-// rustup) is build.sh's, unchanged — it's already proven across 20 examples.
-func buildContainer(ctx context.Context, dir string, arch Arch, steps string, w *lineWriter) error {
+// buildContainer runs the same steps inside a container: the Unikraft build
+// tree needs GNU make/sed and a Linux toolchain that macOS doesn't have. The
+// container's toolchain (packages, kraftkit .deb, rustup) is baked into a
+// cached image by ensureBuilderImage rather than reinstalled by this
+// function on every run — see image.go's doc comment for why.
+//
+// Unlike buildLinux this takes no Arch: the image carries the cross
+// toolchains for both arches, and kraftSteps already names the target.
+func buildContainer(ctx context.Context, dir string, steps string, w *lineWriter) error {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return fmt.Errorf("bsdkrun pack needs docker on PATH to build the unikernel on macOS: %w", err)
 	}
@@ -180,8 +184,11 @@ func buildContainer(ctx context.Context, dir string, arch Arch, steps string, w 
 	}
 	defer os.RemoveAll(patchesDir)
 
+	// Only the loader's cargo build cache and its crates.io registry cache
+	// need to persist per-project/host — the rustup toolchain itself now
+	// lives in the builder image, not here.
 	rustCacheDir := filepath.Join(dir, ".rust-cache")
-	for _, sub := range []string{"rustup", "cargo", "target"} {
+	for _, sub := range []string{"target", "cargo-registry"} {
 		if err := os.MkdirAll(filepath.Join(rustCacheDir, sub), 0o755); err != nil {
 			return err
 		}
@@ -192,50 +199,23 @@ func buildContainer(ctx context.Context, dir string, arch Arch, steps string, w 
 		return err
 	}
 
-	// Cross toolchain: only needed when building for an arch that isn't the
-	// container's own (Docker Desktop always runs the container as the
-	// host's arch).
-	cross := ""
-	if string(arch.debArch()) != hostDebArch {
-		switch arch {
-		case ArchX86_64:
-			cross = "gcc-x86-64-linux-gnu binutils-x86-64-linux-gnu"
-		case ArchArm64:
-			cross = "gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu"
-		}
+	image, err := ensureBuilderImage(ctx, hostDebArch, w)
+	if err != nil {
+		return err
 	}
-
-	script := fmt.Sprintf(`set -eux
-apt-get update -qq
-apt-get install -y -qq --no-install-recommends \
-	build-essential libncurses-dev libyaml-dev flex bison git wget \
-	unzip uuid-runtime python3 curl ca-certificates bc file patch \
-	%s >/dev/null
-curl -sSfLo /tmp/kraft.deb \
-	https://github.com/unikraft/kraftkit/releases/download/v%s/kraftkit_%s_linux_%s.deb
-dpkg -i /tmp/kraft.deb
-
-export PATH="$CARGO_HOME/bin:$PATH"
-command -v cargo >/dev/null 2>&1 || \
-	curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-		| sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable
-rustup target add %s
-
-%s`, cross, kraftVersion, kraftVersion, hostDebArch, arch.rustTarget(), steps)
 
 	args := []string{
 		"run", "--rm",
 		"-e", "KRAFTKIT_NO_PROMPT=1",
 		"-e", "PATCHES_DIR=/patches",
-		"-e", "RUSTUP_HOME=/rust/rustup",
-		"-e", "CARGO_HOME=/rust/cargo",
 		"-e", "APPELFLOADER_RUST_CACHE=/rust/target",
 		"-v", dir + ":/w",
 		"-v", patchesDir + ":/patches:ro",
-		"-v", rustCacheDir + ":/rust",
+		"-v", filepath.Join(rustCacheDir, "target") + ":/rust/target",
+		"-v", filepath.Join(rustCacheDir, "cargo-registry") + ":/root/.cargo/registry",
 		"-w", "/w",
-		"debian:bookworm",
-		"sh", "-c", script,
+		image,
+		"sh", "-eux", "-c", steps,
 	}
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Stdout = w

@@ -3,11 +3,13 @@
 // .unikraft/build/<name>_fc-<arch> — the same result `bsdkrun unikraft .`
 // already knows how to boot.
 //
-// It is a Go port of every examples/*/build.sh's kraft half — confirmed
-// byte-identical across all 20 examples — not a reimplementation: same
+// It is a Go port of every examples/*/build.sh's kraft half — same
 // fetch/patch/build steps, same per-arch Kraftfile stripping, same
 // macOS-container / Linux-native split, because that script is already
-// proven across every example in this repo.
+// proven across every example in this repo. One deliberate divergence: on
+// macOS the container's toolchain (apt packages, kraftkit .deb, rustup) is
+// baked into a cached image (see image.go) instead of reinstalled fresh in
+// a --rm container on every run, which is what build.sh still does.
 package kraft
 
 import (

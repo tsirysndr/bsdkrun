@@ -24,6 +24,10 @@ on:
         description: "Trace every guest syscall to the console (very noisy; for diagnosing a guest that boots but doesn't behave, e.g. the HTTP check failing with no crash trace). Off by default even on a manual run."
         type: boolean
         default: false
+      loader_debug:
+        description: "Trace the ELF loader placing the binary, before the app runs. Unlike strace (which only shows syscalls the app makes, so it is silent for a guest that dies before its first one), this distinguishes 'never loaded' from 'loaded, then died at the entry point'."
+        type: boolean
+        default: false
   push:
     branches:
       - "main"
@@ -167,11 +171,12 @@ jobs:
       - name: pack — detect, build rootfs, generate Kraftfile, kraft build
         run: |
           set -eux
-          ./target/release/bsdkrun pack examples/unikraft-go --plain $STRACE_FLAG
+          ./target/release/bsdkrun pack examples/unikraft-go --plain $STRACE_FLAG $LOADER_DEBUG_FLAG
           ls -l examples/unikraft-go/.unikraft/build/hello_fc-x86_64
         env:
           KRAFTKIT_NO_PROMPT: "1"
           STRACE_FLAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.strace) && '--strace' || '' }}
+          LOADER_DEBUG_FLAG: ${{ (github.event_name == 'workflow_dispatch' && inputs.loader_debug) && '--loader-debug' || '' }}
 
       # Same patch assertions as e2e-unikraft-examples.yml: pack's embedded
       # copy of library/unikraft-base/patches (pack/internal/kraft/patches)

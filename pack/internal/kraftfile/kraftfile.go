@@ -143,7 +143,7 @@ libraries:
     kconfig:
       CONFIG_LIBPOSIX_PROCESS_ARCH_PRCTL: 'y'
       CONFIG_APPELFLOADER_CUSTOMAPPNAME: 'y'
-      CONFIG_APPELFLOADER_DEBUG: 'n'
+      CONFIG_APPELFLOADER_DEBUG: '{{if .LoaderDebug}}y{{else}}n{{end}}'
       CONFIG_APPELFLOADER_STACK_NBPAGES: 128
       CONFIG_APPELFLOADER_VFSEXEC: 'y'
       CONFIG_APPELFLOADER_VFSEXEC_EXECBIT: 'y'
@@ -194,16 +194,24 @@ type data struct {
 	KconfigExtra map[string]string
 	KconfigKeys  []string // sorted, so output is deterministic
 	Strace       bool
+	LoaderDebug  bool
 }
 
 // Options are Kraftfile-generation choices that come from the `pack`
-// invocation itself rather than from the detected plan — currently just
-// Strace, which stays `false` by default because syscall tracing is
-// invaluable for debugging a guest that boots but doesn't behave, and also
-// very noisy and slows the boot down (same tradeoff the hand-written
-// examples' Kraftfiles already document for this exact symbol).
+// invocation itself rather than from the detected plan. Both default to
+// `false`: each is invaluable for debugging a guest that boots but doesn't
+// behave, and each is very noisy and slows the boot down (the same tradeoff
+// the hand-written examples' Kraftfiles already document for these symbols).
 type Options struct {
 	Strace bool
+
+	// LoaderDebug turns on app-elfloader's placement trace
+	// (CONFIG_APPELFLOADER_DEBUG). Unlike Strace — which only shows
+	// syscalls the application makes, so it says nothing at all about a
+	// guest that dies before its first one — this prints while the loader
+	// is still mapping the binary, which is what distinguishes "never
+	// loaded" from "loaded, then died at the entry point".
+	LoaderDebug bool
 }
 
 // Generate renders p's Kraftfile.
@@ -221,6 +229,7 @@ func Generate(p *plan.Plan, opts Options) (string, error) {
 		KconfigExtra: p.KconfigExtra,
 		KconfigKeys:  keys,
 		Strace:       opts.Strace,
+		LoaderDebug:  opts.LoaderDebug,
 	})
 	if err != nil {
 		return "", fmt.Errorf("rendering Kraftfile: %w", err)

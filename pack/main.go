@@ -37,8 +37,9 @@ func main() {
 	target := fs.String("target", "", "guest architecture to build for: arm64 or x86_64 (default: this host's)")
 	plainOutput := fs.Bool("plain", false, "plain sequential output instead of the animated TUI")
 	strace := fs.Bool("strace", false, "trace every guest syscall to the console (very noisy; for a guest that boots but doesn't behave)")
+	loaderDebug := fs.Bool("loader-debug", false, "trace the ELF loader placing the binary, before it runs (says where a guest that dies before its first syscall got to)")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: bsdkrun pack [path] [--target arm64|x86_64] [--plain] [--strace]")
+		fmt.Fprintln(os.Stderr, "usage: bsdkrun pack [path] [--target arm64|x86_64] [--plain] [--strace] [--loader-debug]")
 		fmt.Fprintln(os.Stderr, "\nPackage a project as a bootable Unikraft unikernel.")
 		fmt.Fprintln(os.Stderr, "\nArguments:")
 		fmt.Fprintln(os.Stderr, "  path   project directory to pack (default \".\")")
@@ -63,12 +64,12 @@ func main() {
 	var err error
 	if useTUI {
 		err = tui.Run(func(r report.Reporter) (string, error) {
-			return runPipeline(r, path, *target, *strace)
+			return runPipeline(r, path, *target, *strace, *loaderDebug)
 		})
 	} else {
 		p := report.NewPlain()
 		var final string
-		final, err = runPipeline(p, path, *target, *strace)
+		final, err = runPipeline(p, path, *target, *strace, *loaderDebug)
 		if err == nil {
 			fmt.Println(final)
 		}
@@ -83,7 +84,7 @@ func main() {
 // generate Kraftfile -> fetch/patch Unikraft -> kraft build. It only talks
 // to r — main decides separately whether r renders as the plain printer or
 // the TUI, so this function has no idea which.
-func runPipeline(r report.Reporter, path, targetFlag string, strace bool) (string, error) {
+func runPipeline(r report.Reporter, path, targetFlag string, strace, loaderDebug bool) (string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
@@ -143,7 +144,7 @@ func runPipeline(r report.Reporter, path, targetFlag string, strace bool) (strin
 	r.PhaseDone(report.PhaseRootfs, displayPath(rootfsDir))
 
 	r.PhaseStart(report.PhaseKraftfile)
-	if err := kraftfile.Write(absPath, p, kraftfile.Options{Strace: strace}); err != nil {
+	if err := kraftfile.Write(absPath, p, kraftfile.Options{Strace: strace, LoaderDebug: loaderDebug}); err != nil {
 		err = fmt.Errorf("generating Kraftfile: %w", err)
 		r.PhaseError(report.PhaseKraftfile, err)
 		return "", err

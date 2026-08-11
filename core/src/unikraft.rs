@@ -381,7 +381,10 @@ mod tests {
             build_cmdline_at("php -- /usr/bin/x", &[], "img", 42),
             "php epoch.boot=42 -- /usr/bin/x"
         );
-        assert_eq!(build_cmdline_at("app --", &[], "img", 42), "app epoch.boot=42 --");
+        assert_eq!(
+            build_cmdline_at("app --", &[], "img", 42),
+            "app epoch.boot=42 --"
+        );
     }
 
     /// An explicit epoch in the cmdline is the user overriding the clock on

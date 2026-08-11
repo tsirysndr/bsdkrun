@@ -1,4 +1,32 @@
 // Package dotnet builds C# projects.
+//
+// KNOWN BROKEN: the build works and the guest boots, but CoreCLR fails to
+// start with E_OUTOFMEMORY (0x8007000E) before any managed code runs.
+//
+// The cause is not memory. A --strace trace (which needs the tracer patch
+// in library/unikraft-base/patches/apply.sh, or it dies formatting its own
+// output) ends like this:
+//
+//	openat("/proc/self/maps", O_RDONLY|O_CLOEXEC) = No such file (-2)
+//	openat("/proc/self/maps", O_RDONLY|O_CLOEXEC) = No such file (-2)
+//	futex(NULL, FUTEX_WAKE|FUTEX_PRIVATE_FLAG, 0x7fffffff) = OK
+//	Failed to create CoreCLR, HRESULT: 0x8007000E
+//
+// CoreCLR reads /proc/self/maps to place its executable heap. Unikraft has
+// no procfs, so the read fails and the runtime reports it as being out of
+// memory — which is why every memory-shaped theory about this was wrong.
+//
+// Ruled out along the way, each with evidence rather than argument:
+//   - Guest RAM: 3 GiB fails identically to 1 GiB.
+//   - The regions GC's huge reservation: a 1 GiB PROT_NONE mmap succeeds,
+//     and no mmap in the whole trace fails.
+//   - Thread creation: clone() succeeds; the trace continues into the new
+//     thread (gettid returns pid:3).
+//   - getsid() returning ESRCH: a real bug, since fixed, and unrelated.
+//
+// A fix means giving the guest a /proc/self/maps that describes its own
+// address space. A static file in the rootfs is the cheap experiment;
+// whether CoreCLR accepts one that does not match reality is untested.
 package dotnet
 
 import (

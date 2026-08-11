@@ -32,6 +32,10 @@ const ServerEnv = "BSDKRUN_PHP_SERVER"
 // rather than to Go's.
 const frankenPHPTextAddr = "0x40000000"
 
+// staticBuilderTag pins the FrankenPHP static builder. See frankenPHPPlan
+// for why a floating tag does not work here.
+const staticBuilderTag = "static-builder-musl-1.12.6"
+
 type Provider struct{}
 
 func New() *Provider { return &Provider{} }
@@ -153,10 +157,29 @@ chmod 1777 /out/rootfs/tmp
 // in frankenPHPTextAddr: a released Go binary for linux/amd64 loads exactly
 // where the fc kernel already is, and only a build can move it.
 //
-// EXPERIMENTAL: this path has not yet been booted. The build is a long one
-// — FrankenPHP's static builder compiles PHP and its dependencies from
-// source — so it is opt-in, and `builtin` remains the default because that
-// is what is verified.
+// EXPERIMENTAL, and currently blocked in the guest. It builds and boots —
+// Caddy starts and logs — and then PHP dies before serving:
+//
+//	Fatal error: Could not create timer: Not supported (95)
+//
+// That is timer_create(), which Unikraft does not implement. PHP calls it
+// because static-php-cli configures PHP with
+// --enable-zend-max-execution-timers (hardcoded for ZTS builds, with no
+// environment override), and that feature arms a per-process POSIX timer
+// to enforce max_execution_time.
+//
+// Two ways out, neither small:
+//
+//   - Rebuild PHP with --disable-zend-max-execution-timers. That means
+//     patching static-php-cli inside the builder image and forcing a
+//     from-source PHP build (musl builds pull prebuilt libraries by
+//     default), so the flag actually reaches configure.
+//   - Implement timer_create/timer_settime/timer_delete in Unikraft.
+//     Unlike the CLOCK_PROCESS_CPUTIME_ID patch this repo carries, that is
+//     a feature rather than a missing case label: it needs timer state and
+//     signal delivery.
+//
+// `builtin` remains the default because it is what is verified.
 func frankenPHPPlan(docroot string, arch plan.Arch) (*plan.Plan, error) {
 	extldflags := ""
 	if arch == plan.ArchAmd64 {
@@ -168,7 +191,17 @@ func frankenPHPPlan(docroot string, arch plan.Arch) (*plan.Plan, error) {
 		Provider: "php",
 		// The static builder carries a PHP built for embedding, which is
 		// what makes a single-binary FrankenPHP possible at all.
-		BuildImage: "dunglas/frankenphp:static-builder",
+		//
+		// Pinned, and musl. The floating `static-builder` tag holds a
+		// FrankenPHP source tree older than the Caddy that xcaddy fetches
+		// for it, and the two no longer compile together — Caddy changed
+		// LoadConfig's signature. A released tag pins both halves to a
+		// combination that was built and tested as a pair.
+		//
+		// musl over gnu because it links fully statically: no interpreter
+		// and no shared libraries to resolve into the rootfs, which is what
+		// makes this one file in the guest.
+		BuildImage: "dunglas/frankenphp:" + staticBuilderTag,
 		Env: map[string]string{
 			"XCADDY_GO_BUILD_FLAGS": fmt.Sprintf(`-ldflags "-w -s%s"`, extldflags),
 			// The static builder's own composer.lock requires ext-iconv,

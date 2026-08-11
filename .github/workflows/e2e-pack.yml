@@ -214,6 +214,27 @@ jobs:
           echo "::endgroup::"
           grep -q "Powered by Unikraft" "$out"
 
+      # A register dump is only actionable with symbols, and only this job has
+      # everything needed to resolve them: the kernel's .dbg for kernel-range
+      # addresses, and the exported rootfs plus the loader's "loaded to" lines
+      # for application-range ones (flip CONFIG_APPELFLOADER_DEBUG to 'y' in
+      # pack/internal/kraftfile/kraftfile.go to get those). Same script and
+      # placement as e2e-unikraft-examples.yml; a no-op when there's no crash
+      # banner in the console (exits 0 either way — diagnostic, not a gate).
+      - name: Symbolicate a guest crash
+        if: ${{ always() }}
+        run: |
+          set -eu
+          out=uk-unikraft-go.out
+          grep -aq "Unikraft Crash" "$out" 2>/dev/null || exit 0
+          echo "::group::crash symbolication"
+          python3 .github/scripts/symbolicate-unikraft-crash.py \
+            "$out" \
+            examples/unikraft-go/.unikraft/build/hello_fc-x86_64.dbg \
+            examples/unikraft-go/.rootfs-x86_64 \
+            || true
+          echo "::endgroup::"
+
       - name: e2e — networking and entropy
         run: |
           set -eu

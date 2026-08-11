@@ -41,7 +41,10 @@ const (
 	failed
 )
 
-// steps is the fixed pipeline order — same six names report.Phase* define.
+// steps is the pipeline order every run goes through. Optional phases —
+// push, for one — are not here: they appear only if they actually run, and
+// showing "push" greyed out on every build would advertise a step most
+// builds never take.
 var steps = []string{
 	report.PhaseDetect,
 	report.PhasePlan,
@@ -74,6 +77,8 @@ const maxLogLines = 8
 
 type model struct {
 	state map[string]*stepState
+	// order is the display order, extended when an optional phase appears.
+	order []string
 	// current is which step is running now (or most recently was), so
 	// incoming logMsg/buildkitMsg — which don't carry the six-step name
 	// themselves — know which step's nested detail they belong to.
@@ -110,6 +115,7 @@ func newModel() model {
 	}
 
 	return model{
+		order:    append([]string(nil), steps...),
 		state:    state,
 		vertices: map[string]*vertex{},
 		started:  time.Now(),
@@ -140,7 +146,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case phaseStartMsg:
-		s := m.state[msg.phase]
+		s := m.step(msg.phase)
 		s.status = running
 		s.started = time.Now()
 		m.current = msg.phase
@@ -150,14 +156,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case phaseDoneMsg:
-		s := m.state[msg.phase]
+		s := m.step(msg.phase)
 		s.status = done
 		s.detail = msg.detail
 		s.elapsed = time.Since(s.started)
 		return m, nil
 
 	case phaseErrorMsg:
-		s := m.state[msg.phase]
+		s := m.step(msg.phase)
 		s.status = failed
 		s.err = msg.err
 		s.elapsed = time.Since(s.started)
@@ -193,9 +199,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// step returns the state for a phase, creating it if this is a phase the
+// fixed pipeline does not list. A missing entry used to be a nil map read
+// and a panic one frame later, which is a poor way for an optional step to
+// announce itself.
+func (m *model) step(name string) *stepState {
+	if s, ok := m.state[name]; ok {
+		return s
+	}
+	s := &stepState{status: pending}
+	m.state[name] = s
+	m.order = append(m.order, name)
+	return s
+}
+
 func (m model) View() string {
 	var b strings.Builder
-	for _, name := range steps {
+	for _, name := range m.order {
 		s := m.state[name]
 		switch s.status {
 		case done:

@@ -25,7 +25,11 @@ const response = std.fmt.comptimePrint(
 
 pub fn main() !void {
     const address = try std.net.Address.parseIp("0.0.0.0", port);
-    var server = try address.listen(.{ .reuse_address = true });
+    // No .reuse_address: Unikraft's lwip does not implement SO_REUSEADDR,
+    // and setting it fails the listen outright with InvalidProtocolOption.
+    // Nothing is lost — a unikernel is the only thing that ever binds this
+    // port, and it does not outlive the guest.
+    var server = try address.listen(.{});
     defer server.deinit();
 
     std.debug.print("Zig {s} listening on :{d}\n", .{ builtin.zig_version_string, port });

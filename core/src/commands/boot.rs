@@ -239,7 +239,14 @@ pub(crate) fn boot_kernel(args: KernelArgs) -> Result<()> {
 /// Boot a Unikraft unikernel. See [`crate::unikraft`] for why the image needs a
 /// host-side shim before libkrun's aarch64 loader will enter it.
 pub(crate) fn boot_unikraft(args: UnikraftArgs) -> Result<()> {
-    let kernel = unikraft::resolve(&args.path)?;
+    // A reference rather than a path means the unikernel comes from a
+    // registry. It is fetched on first use and cached, so booting the same
+    // reference again costs nothing — the same shape as `docker run`.
+    //
+    // The registry also carries the argv, which a kernel does not record:
+    // an explicit --cmdline still wins, since someone passing one is
+    // overriding on purpose.
+    let (kernel, cmdline) = resolve_unikraft_source(&args)?;
     let volumes = args
         .mount
         .iter()
@@ -247,13 +254,42 @@ pub(crate) fn boot_unikraft(args: UnikraftArgs) -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
     boot_unikraft_image(
         &kernel,
-        &args.cmdline,
+        &cmdline,
         args.initramfs.as_deref(),
         args.detach,
         args.net,
         args.vm,
         &volumes,
     )
+}
+
+/// Resolve what to boot: a local path, or an OCI reference pulled into the
+/// cache. Returns the kernel and the command line to boot it with.
+fn resolve_unikraft_source(args: &UnikraftArgs) -> Result<(std::path::PathBuf, String)> {
+    let spec = args.path.to_string_lossy();
+
+    #[cfg(feature = "pack")]
+    if crate::commands::pack::is_reference(&spec) {
+        let pulled = crate::commands::pack::pull_unikernel(&spec)?;
+        let cmdline = if args.cmdline.is_empty() {
+            pulled.cmdline.clone()
+        } else {
+            args.cmdline.clone()
+        };
+        return Ok((pulled.kernel, cmdline));
+    }
+
+    // Without pack support there is no registry client to fetch with, and
+    // failing here with the real reason beats `<ref> does not exist`.
+    #[cfg(not(feature = "pack"))]
+    if spec.contains(['/', ':', '@']) && !args.path.exists() {
+        anyhow::bail!(
+            "{spec} is not a path, and this bsdkrun binary was built without pack support, \
+             so it cannot pull from a registry"
+        );
+    }
+
+    Ok((unikraft::resolve(&args.path)?, args.cmdline.clone()))
 }
 
 /// Shared by `unikraft` and `start` (which re-boots a machine's saved image).

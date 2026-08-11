@@ -61,8 +61,11 @@ func (p *Provider) Plan(dir string, arch plan.Arch) (*plan.Plan, error) {
 		// Crystal's socket code does.
 		BuildImage: "crystallang/crystal:latest-alpine",
 		Script: fmt.Sprintf(`set -eu
+# --without-development rather than --production: they mean the same thing
+# for a build, but --production insists on a shard.lock and a project that
+# has never been installed does not have one.
 if [ -f shard.yml ]; then
-    shards install --production --skip-postinstall
+    shards install --without-development --skip-postinstall
 fi
 
 crystal build --release --static --no-debug%s -o /tmp/%s %q

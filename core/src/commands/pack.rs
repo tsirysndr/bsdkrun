@@ -26,9 +26,55 @@ struct PackBinary;
 
 const BINARY_NAME: &str = "bsdkrun-pack";
 
-/// Extract the embedded binary (if any) and exec it with `args`, replacing
-/// this process. Never returns on success.
-pub(crate) fn cmd_pack(args: &[String]) -> Result<()> {
+/// A unikernel fetched from a registry: where its kernel landed, and the
+/// argv it needs — which the kernel itself does not record.
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct Pulled {
+    pub kernel: std::path::PathBuf,
+    pub cmdline: String,
+}
+
+/// Fetch `reference` from an OCI registry into the local cache, returning
+/// the kernel to boot. A reference already in the cache costs no network.
+///
+/// The registry work lives in the Go binary because that is where the
+/// registry client (and its authentication, which reads the same
+/// `~/.docker/config.json` and credential helpers everything else here
+/// already uses) is.
+pub(crate) fn pull_unikernel(reference: &str) -> Result<Pulled> {
+    let bin = pack_binary()?;
+
+    // stderr is inherited so the pull's progress reaches the terminal, while
+    // stdout is captured: it carries the one JSON line this needs.
+    let out = Command::new(&bin)
+        .arg("pull")
+        .arg(reference)
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .with_context(|| format!("running {} pull {}", bin.display(), reference))?;
+    if !out.status.success() {
+        bail!("pulling {reference} failed");
+    }
+
+    serde_json::from_slice(&out.stdout)
+        .with_context(|| format!("reading the pull result for {reference}"))
+}
+
+/// Whether `s` names a registry reference rather than a local path.
+///
+/// Only asked of something that is not an existing path. A bare word is
+/// deliberately not a reference: `docker.io/library/<word>` is a valid
+/// parse, so treating one as a reference would turn every mistyped
+/// directory name into a registry lookup and a confusing network error.
+pub(crate) fn is_reference(s: &str) -> bool {
+    !s.starts_with('.')
+        && !s.starts_with('/')
+        && s.contains(['/', ':', '@'])
+        && !std::path::Path::new(s).exists()
+}
+
+/// Extract the embedded binary (if any), returning the path to it.
+fn pack_binary() -> Result<std::path::PathBuf> {
     let embedded = PackBinary::get(BINARY_NAME).filter(|f| !f.data.is_empty());
     let Some(embedded) = embedded else {
         bail!(
@@ -55,6 +101,13 @@ pub(crate) fn cmd_pack(args: &[String]) -> Result<()> {
     #[cfg(target_os = "macos")]
     sign_adhoc(&bin)?;
 
+    Ok(bin)
+}
+
+/// Extract the embedded binary and exec it with `args`, replacing this
+/// process. Never returns on success.
+pub(crate) fn cmd_pack(args: &[String]) -> Result<()> {
+    let bin = pack_binary()?;
     let err = Command::new(&bin).args(args).exec();
     // exec() only returns on failure.
     Err(err).with_context(|| format!("running {}", bin.display()))

@@ -21,6 +21,7 @@ const (
 	PhaseKraftfile  = "generate Kraftfile"
 	PhaseFetch      = "fetch + patch Unikraft"
 	PhaseKraftBuild = "kraft build"
+	PhasePush       = "push"
 )
 
 // FormatDuration renders an elapsed time the way both renderers show it at

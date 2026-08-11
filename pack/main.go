@@ -30,6 +30,7 @@ import (
 	"github.com/tsirysndr/bsdkrun/pack/internal/ignore"
 	"github.com/tsirysndr/bsdkrun/pack/internal/kraft"
 	"github.com/tsirysndr/bsdkrun/pack/internal/kraftfile"
+	"github.com/tsirysndr/bsdkrun/pack/internal/oci"
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
 	"github.com/tsirysndr/bsdkrun/pack/internal/procfile"
 	"github.com/tsirysndr/bsdkrun/pack/internal/providers"
@@ -49,6 +50,16 @@ const StartCmdEnv = "BSDKRUN_START_CMD"
 const BuildCacheEnv = "BSDKRUN_PACK_BUILD_CACHE"
 
 func main() {
+	// `pull` is a subcommand rather than a flag: its argument is a registry
+	// reference, and everything else this command takes is a path.
+	if len(os.Args) > 1 && os.Args[1] == "pull" {
+		if err := runPull(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "bsdkrun pack: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	fs := flag.NewFlagSet("bsdkrun-pack", flag.ContinueOnError)
 	target := fs.String("target", "", "guest architecture to build for: arm64 or x86_64 (default: this host's)")
 	plainOutput := fs.Bool("plain", false, "plain sequential output instead of the animated TUI")
@@ -56,16 +67,24 @@ func main() {
 	doClean := fs.Bool("clean", false, "remove the build artifacts pack generated in this project, then exit")
 	doPrune := fs.Bool("prune", false, "with --clean, also remove the shared buildkitd container, its build cache, and the kraft builder image")
 	planOnly := fs.Bool("plan", false, "resolve the plan and print it as JSON, without building")
+	pushRef := fs.String("push", "", "after building, push the unikernel to an OCI registry (e.g. ghcr.io/you/app:v1)")
 	loaderDebug := fs.Bool("loader-debug", false, "trace the ELF loader placing the binary, before it runs (says where a guest that dies before its first syscall got to)")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: bsdkrun pack [path] [--target arm64|x86_64] [--plan] [--clean [--prune]] [--plain] [--strace] [--loader-debug]")
+		fmt.Fprintln(os.Stderr, "usage: bsdkrun pack [path] [--target arm64|x86_64] [--push REF] [--plan] [--clean [--prune]] [--plain] [--strace] [--loader-debug]")
+		fmt.Fprintln(os.Stderr, "       bsdkrun pack pull REF [dir]")
 		fmt.Fprintln(os.Stderr, "\nPackage a project as a bootable Unikraft unikernel.")
 		fmt.Fprintln(os.Stderr, "\nArguments:")
 		fmt.Fprintln(os.Stderr, "  path   project directory to pack (default \".\")")
+		fmt.Fprintln(os.Stderr, "\nRegistry:")
+		fmt.Fprintln(os.Stderr, "  --push REF          push the built unikernel; a reference with no registry means Docker Hub")
+		fmt.Fprintln(os.Stderr, "  pull REF [dir]      fetch one into the local cache (`bsdkrun unikraft REF` does this for you)")
 		fmt.Fprintln(os.Stderr, "\nEnvironment:")
 		fmt.Fprintf(os.Stderr, "  %s   override the start command (beats %s and a Procfile)\n",
 			StartCmdEnv, config.FileName)
 		fmt.Fprintf(os.Stderr, "  %s  directory for a BuildKit cache that outlives the daemon\n", BuildCacheEnv)
+		fmt.Fprintf(os.Stderr, "  %s / %s\n", oci.UsernameEnv, oci.PasswordEnv)
+		fmt.Fprintf(os.Stderr, "  %s      registry credentials, overriding ~/.docker/config.json\n", oci.TokenEnv)
+		fmt.Fprintf(os.Stderr, "  %s   allow plain HTTP to a registry without TLS (localhost needs no opt-in)\n", oci.InsecureEnv)
 		fmt.Fprintln(os.Stderr, "\nConfig:")
 		fmt.Fprintf(os.Stderr, "  %s   provider, packages, buildAptPackages, deploy.startCommand\n", config.FileName)
 	}
@@ -110,12 +129,12 @@ func main() {
 	var err error
 	if useTUI {
 		err = tui.Run(func(r report.Reporter) (string, error) {
-			return runPipeline(r, path, *target, *strace, *loaderDebug)
+			return runPipeline(r, path, *target, *pushRef, *strace, *loaderDebug)
 		})
 	} else {
 		p := report.NewPlain()
 		var final string
-		final, err = runPipeline(p, path, *target, *strace, *loaderDebug)
+		final, err = runPipeline(p, path, *target, *pushRef, *strace, *loaderDebug)
 		fmt.Printf("\ntotal %s\n", report.FormatDuration(p.Elapsed()))
 		if err == nil {
 			fmt.Println(final)
@@ -307,7 +326,7 @@ func printPlan(path, targetFlag string) error {
 // generate Kraftfile -> fetch/patch Unikraft -> kraft build. It only talks
 // to r — main decides separately whether r renders as the plain printer or
 // the TUI, so this function has no idea which.
-func runPipeline(r report.Reporter, path, targetFlag string, strace, loaderDebug bool) (string, error) {
+func runPipeline(r report.Reporter, path, targetFlag, pushRef string, strace, loaderDebug bool) (string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
@@ -449,7 +468,112 @@ fi
 	cmdline := bootCmdline(p)
 	final := fmt.Sprintf("built: %s\nboot it: bsdkrun unikraft %s --cmdline %q",
 		displayPath(kernelPath), displayPath(absPath), cmdline)
+
+	if pushRef != "" {
+		r.PhaseStart(report.PhasePush)
+		digest, err := oci.Push(pushRef, kernelPath, oci.Metadata{
+			Name:     p.Name,
+			Provider: p.Provider,
+			Arch:     string(kraftArch),
+			Cmdline:  cmdline,
+			Kernel:   filepath.Base(kernelPath),
+		}, func(line string) { r.Log(report.PhasePush, line) })
+		if err != nil {
+			r.PhaseError(report.PhasePush, err)
+			return "", err
+		}
+		r.PhaseDone(report.PhasePush, digest)
+		// The pushed reference is the useful one to echo: it is what
+		// someone else runs, and it needs no copy of this directory.
+		final = fmt.Sprintf("pushed: %s\nboot it: bsdkrun unikraft %s", digest, pushRef)
+	}
 	return final, nil
+}
+
+// runPull fetches a unikernel from a registry into dir (or the shared cache
+// when no directory is given) and prints where it landed. This is what the
+// Rust side calls when `bsdkrun unikraft` is handed a reference rather than
+// a path.
+func runPull(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: bsdkrun pack pull REF [dir]")
+	}
+	ref := args[0]
+
+	dest := ""
+	if len(args) > 1 {
+		dest = args[1]
+	} else {
+		var err error
+		if dest, err = CachePath(ref); err != nil {
+			return err
+		}
+	}
+
+	// Already cached: say so and stop. A boot asks for this on every run,
+	// and a unikernel reference is immutable in practice — re-fetching it
+	// would put a registry round trip in front of every start.
+	meta, err := cached(dest)
+	if err != nil {
+		return err
+	}
+	if meta == nil {
+		if meta, err = oci.Pull(ref, dest, func(line string) {
+			fmt.Fprintln(os.Stderr, line)
+		}); err != nil {
+			return err
+		}
+	}
+
+	// Printed to stdout, as the caller's machine-readable answer: the
+	// kernel to boot and the argv to boot it with, which the kernel itself
+	// does not record.
+	out, err := json.Marshal(struct {
+		Kernel  string `json:"kernel"`
+		Cmdline string `json:"cmdline"`
+		Name    string `json:"name"`
+		Arch    string `json:"arch"`
+	}{
+		Kernel:  filepath.Join(dest, oci.KernelFileName),
+		Cmdline: meta.Cmdline,
+		Name:    meta.Name,
+		Arch:    meta.Arch,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
+	return nil
+}
+
+// cached reads a previously pulled unikernel's metadata, or returns nil if
+// this reference has not been pulled. Both files have to be present: a
+// kernel without metadata is missing the argv needed to boot it.
+func cached(dir string) (*oci.Metadata, error) {
+	if _, err := os.Stat(filepath.Join(dir, oci.KernelFileName)); err != nil {
+		return nil, nil
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "metadata.json"))
+	if err != nil {
+		return nil, nil
+	}
+	var meta oci.Metadata
+	if err := json.Unmarshal(body, &meta); err != nil {
+		return nil, nil
+	}
+	return &meta, nil
+}
+
+// CachePath is where a pulled unikernel lives. Keyed by the reference with
+// the characters a path cannot hold replaced, so two tags of the same image
+// do not collide and neither needs a registry round trip to locate.
+func CachePath(ref string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	safe := strings.NewReplacer("/", "_", ":", "_", "@", "_").Replace(ref)
+	return filepath.Join(home, ".cache", "bsdkrun", "unikernels", safe), nil
 }
 
 // displayPath renders p relative to the current working directory when

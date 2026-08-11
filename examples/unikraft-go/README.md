@@ -29,16 +29,28 @@ a network interface, and serves all three routes above over a forwarded port.
 runs this example (via `bsdkrun pack`, not a checked-in Kraftfile) on every
 push; the kernel builds, boots, and gets a network interface there too, but
 the Go server never answers over the forwarded port — the retry loop times
-out with the guest's TCP stack resetting every connection, and nothing
-appears on the guest console past the boot banner (`net/http` prints nothing
-on success, so silence there is expected — the HTTP check failing is the
-actual signal).
+out with the guest's TCP stack resetting every connection.
+
+Diagnosed with `bsdkrun pack --strace` (`workflow_dispatch` input `strace`,
+which sets `CONFIG_LIBSYSCALL_SHIM_STRACE: 'y'` — see
+`pack/internal/kraftfile/kraftfile.go`): **zero syscalls are traced**, not
+even the ones a Go binary makes during its own runtime bootstrap, before
+`main` runs. That rules out a `net/http`- or networking-specific bug — the
+guest never gets that far. Nothing else appears on the console either (no
+`Unikraft Crash` banner, so `Symbolicate a guest crash` in the workflow is a
+no-op here), which points at something failing silently very early: most
+likely app-elfloader-rs's ELF loading or entry-point handoff not agreeing
+with a Go binary's unusual static-binary layout (Go sets up its own stack,
+TLS and signal handling in assembly before making any libc-shaped syscall,
+unlike Rust or C binaries this loader is proven against). Not yet root-caused
+further — that needs interactive debugging on x86_64/KVM, which this
+investigation didn't have.
 
 This is unverified territory, not a regression: `../unikraft-caddy` (also a
 statically-linked Go binary) has never answered on x86_64 either — see its
 README, "x86_64 has never been run". Nothing in this repo has yet confirmed a
-Go binary's own listener actually serving under app-elfloader-rs on x86_64,
-only that the kernel and network stack around it work. The HTTP check runs as
+Go binary actually running under app-elfloader-rs on x86_64, only that the
+kernel and network stack around it work. The HTTP check runs as
 `continue-on-error` in the workflow until it passes; see the job summary for
 the current state.
 

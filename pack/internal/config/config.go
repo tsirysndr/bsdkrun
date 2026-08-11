@@ -35,6 +35,9 @@ type Config struct {
 	// Deploy carries the start command.
 	Deploy *Deploy `json:"deploy,omitempty"`
 
+	// Exclude are extra build-context exclusions, on top of .dockerignore.
+	Exclude []string `json:"exclude,omitempty"`
+
 	// Recognised but unsupported: pack builds with a single script per
 	// provider, so railpack's multi-step graph, its caches and its secrets
 	// have nowhere to go. Kept as raw JSON purely so Unsupported() can name

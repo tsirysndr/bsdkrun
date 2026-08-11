@@ -56,7 +56,7 @@ func HostPlatform(goarch string) (Platform, error) {
 // build progresses — vertex started/completed, log lines, byte counters —
 // so a caller (internal/tui) can render it live instead of waiting for
 // Build to return.
-func Build(ctx context.Context, addr, srcDir string, p *plan.Plan, platform Platform, outDir string, onStatus func(*bkclient.SolveStatus)) error {
+func Build(ctx context.Context, addr, srcDir string, p *plan.Plan, platform Platform, outDir string, excludes []string, onStatus func(*bkclient.SolveStatus)) error {
 	c, err := bkclient.New(ctx, addr)
 	if err != nil {
 		return fmt.Errorf("connecting to buildkitd at %s: %w", addr, err)
@@ -64,11 +64,25 @@ func Build(ctx context.Context, addr, srcDir string, p *plan.Plan, platform Plat
 	defer c.Close()
 
 	ociPlatform := platform.ociPlatform()
-	src := llb.Local("context", llb.WithCustomName("load "+srcDir))
+	// Excludes matter here in a way they would not for a normal build: pack
+	// writes .unikraft/ and .rootfs-<arch>/ into the project, so without
+	// them every rebuild uploads the previous build back as context.
+	src := llb.Local("context",
+		llb.ExcludePatterns(excludes),
+		llb.WithCustomName("load "+srcDir))
 
 	contextFS, err := fsutil.NewFS(srcDir)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", srcDir, err)
+	}
+	// Filter the mount as well as the LLB op: ExcludePatterns alone keeps
+	// the files out of the *build*, but the client would still walk and
+	// transfer them.
+	contextFS, err = fsutil.NewFilterFS(contextFS, &fsutil.FilterOpt{
+		ExcludePatterns: excludes,
+	})
+	if err != nil {
+		return fmt.Errorf("applying excludes to %s: %w", srcDir, err)
 	}
 
 	// Solve sends to statusChan and closes it when done; a nil onStatus still

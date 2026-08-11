@@ -1,0 +1,7 @@
+# Keeps the build context small. `bsdkrun pack` already excludes its own
+# output (.unikraft/, .rootfs-*/, .rust-cache/ — see pack/internal/ignore);
+# this is for what belongs to the project itself.
+README.md
+*.log
+_build/
+deps/

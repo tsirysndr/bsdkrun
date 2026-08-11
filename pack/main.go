@@ -27,6 +27,7 @@ import (
 	"github.com/tsirysndr/bsdkrun/pack/internal/cachedir"
 	"github.com/tsirysndr/bsdkrun/pack/internal/clean"
 	"github.com/tsirysndr/bsdkrun/pack/internal/config"
+	"github.com/tsirysndr/bsdkrun/pack/internal/ignore"
 	"github.com/tsirysndr/bsdkrun/pack/internal/kraft"
 	"github.com/tsirysndr/bsdkrun/pack/internal/kraftfile"
 	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
@@ -390,7 +391,12 @@ fi
 	rootfsRelDir := fmt.Sprintf(".rootfs-%s", kraftArch)
 	rootfsDir := filepath.Join(absPath, rootfsRelDir)
 	onStatus := func(s *bkclient.SolveStatus) { r.BuildKitStatus(report.PhaseRootfs, s) }
-	if err := buildkit.Build(ctx, addr, absPath, p, platform, rootfsDir, onStatus); err != nil {
+	var extraExcludes []string
+	if cfg != nil {
+		extraExcludes = cfg.Exclude
+	}
+	excludes := ignore.Read(absPath, extraExcludes)
+	if err := buildkit.Build(ctx, addr, absPath, p, platform, rootfsDir, excludes, onStatus); err != nil {
 		err = fmt.Errorf("building rootfs: %w", err)
 		r.PhaseError(report.PhaseRootfs, err)
 		return "", err

@@ -43,6 +43,7 @@ on:
       - "examples/unikraft-mongodb/**"
       - "examples/unikraft-php/**"
       - "examples/unikraft-python/**"
+      - "examples/unikraft-python-uv/**"
       - "examples/unikraft-haskell/**"
       - "examples/unikraft-laravel/**"
       - "examples/unikraft-symfony/**"
@@ -350,6 +351,18 @@ jobs:
             # Verified end to end on arm64/macOS; x86_64 has never been run,
             # so this job is the test. Non-strict until it passes.
             strict: false
+          - example: unikraft-python-uv
+            kernel: python_fc-x86_64
+            pack: true
+            placeholder: python
+            # CPython's prefix plus the locked dependency.
+            mem: 1024
+            argv: /opt/python/bin/python3 -u /src/main.py
+            port: 8080
+            expect: "Hello from Python + uv on Unikraft!"
+            # Verified end to end on arm64/macOS; x86_64 has never been run,
+            # so this job is the test. Non-strict until it passes.
+            strict: false
           - example: unikraft-haskell
             kernel: haskell_fc-x86_64
             pack: true
@@ -370,6 +383,26 @@ jobs:
             expect: "Hello from Symfony on Unikraft!"
             # Verified end to end on arm64/macOS; x86_64 has never been run,
             # so this job is the test. Non-strict until it passes.
+            strict: false
+          # The same example again, served by FrankenPHP instead of php -S.
+          # Its own entry rather than a replacement: php -S is the default
+          # and the one that is verified, so it keeps its coverage.
+          #
+          # This job is slow -- the static builder compiles PHP from source
+          # -- but matrix entries are separate jobs, so it delays nothing
+          # else. It has never passed anywhere: FrankenPHP boots and serves
+          # under the POSIX-timer patch, and the ext-filter fix after that
+          # is unverified. This job is the test.
+          - example: unikraft-symfony
+            kernel: php_fc-x86_64
+            pack: true
+            php_server: frankenphp
+            placeholder: php
+            # One static binary with PHP linked in, plus the embedded app.
+            mem: 1024
+            argv: /usr/bin/frankenphp php-server --listen 0.0.0.0:8080
+            port: 8080
+            expect: "Hello from Symfony on Unikraft!"
             strict: false
           - example: unikraft-laravel
             kernel: php_fc-x86_64
@@ -647,6 +680,9 @@ jobs:
         env:
           KRAFTKIT_NO_PROMPT: "1"
           BSDKRUN_PACK_BUILD_CACHE: /home/runner/.cache/bsdkrun/build-cache
+          # Per-example knobs, e.g. BSDKRUN_PHP_SERVER=frankenphp.
+          # Empty for every entry that does not set one.
+          BSDKRUN_PHP_SERVER: ${{ matrix.php_server }}
 
       - name: Build the example (build.sh)
         if: ${{ !matrix.pack }}

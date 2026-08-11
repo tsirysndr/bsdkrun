@@ -171,6 +171,22 @@ func frankenPHPPlan(docroot string, arch plan.Arch) (*plan.Plan, error) {
 		BuildImage: "dunglas/frankenphp:static-builder",
 		Env: map[string]string{
 			"XCADDY_GO_BUILD_FLAGS": fmt.Sprintf(`-ldflags "-w -s%s"`, extldflags),
+			// The static builder's own composer.lock requires ext-iconv,
+			// which the minimal CLI PHP in that image does not have — its
+			// own dependency install fails before the app's does. A flag on
+			// the app's composer install cannot reach that one, so the
+			// exemption has to be in the environment, where every
+			// invocation sees it.
+			//
+			// Nothing is lost by it: this interpreter only drives the
+			// build. What the application ends up running on is the PHP
+			// compiled into the binary below.
+			"COMPOSER_IGNORE_PLATFORM_REQS": "1",
+			// The image pins GOTOOLCHAIN=local and ships whatever Go it was
+			// built with, while xcaddy pulls the current Caddy — which by
+			// now wants a newer one than the image has. "auto" lets Go
+			// fetch the toolchain the modules ask for instead of failing.
+			"GOTOOLCHAIN": "auto",
 		},
 		Script: fmt.Sprintf(`set -eu
 if [ -f composer.json ]; then

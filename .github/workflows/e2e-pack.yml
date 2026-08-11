@@ -1,0 +1,258 @@
+name: e2e (bsdkrun pack / KVM)
+
+# Runs `bsdkrun pack` itself end to end against examples/unikraft-go — the one
+# example that ships no Dockerfile/Kraftfile/build.sh, exactly so this workflow
+# has something to detect-plan-build-and-boot from scratch. Asserts the whole
+# pipeline: BuildKit builds the rootfs, the Kraftfile is generated, kraft
+# fetches + patches + builds Unikraft, the kernel boots under KVM, and the
+# packed Go server answers over a forwarded port.
+#
+# x86_64 only, for the same reason as e2e-unikraft-examples.yml: GitHub's
+# arm64 runners have no /dev/kvm. arm64 is exercised by hand on macOS/HVF —
+# see examples/unikraft-go/README.md.
+#
+# Unlike e2e-unikraft-examples.yml (which builds a checked-in Kraftfile via
+# each example's own build.sh), this job needs a Go toolchain too: `pack` is
+# compiled by core/build.rs and embedded into the `bsdkrun` binary at `cargo
+# build` time (see core/src/commands/pack.rs), so without Go on this runner
+# `bsdkrun pack` would not exist in the binary under test at all.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - "main"
+    paths:
+      # Not library/unikraft-base/** — pack/internal/kraft/patches is its own
+      # vendored copy (pack must be self-contained for a project outside this
+      # repo), not read from that directory at runtime, so a change there
+      # doesn't move this workflow's outcome until it's re-synced by hand.
+      - "pack/**"
+      - "core/src/commands/pack.rs"
+      - "core/build.rs"
+      - "examples/unikraft-go/**"
+      - "src/**"
+      - ".github/workflows/e2e-pack.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  boot:
+    name: unikraft-go (x86_64, via bsdkrun pack)
+    runs-on: ubuntu-latest # x86_64; has /dev/kvm and a docker daemon (for BuildKit)
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          set -eux
+          test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 0666 /dev/kvm
+          ls -l /dev/kvm
+
+      - name: Install build deps (bsdkrun, libkrun/libkrunfw, and Unikraft)
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl ca-certificates xz-utils python3 \
+            python3-pyelftools pkg-config patchelf patch cpio kmod rsync zstd \
+            flex bison bc libelf-dev libssl-dev libncurses-dev libyaml-dev \
+            uuid-runtime unzip wget clang libclang-dev llvm-dev \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+
+      # --port forwards a host port into the guest, which is user-mode
+      # networking; without gvproxy on PATH the machine refuses to start.
+      - name: Install gvproxy (user-mode networking)
+        run: |
+          set -eux
+          sudo curl -fL -o /usr/local/bin/gvproxy \
+            https://github.com/containers/gvisor-tap-vsock/releases/latest/download/gvproxy-linux-amd64
+          sudo chmod +x /usr/local/bin/gvproxy
+          gvproxy --help >/dev/null 2>&1 || which gvproxy
+
+      # Same cache key as e2e-linux.yml, e2e-unikraft.yml and
+      # e2e-unikraft-examples.yml on purpose: a hit from any of them saves the
+      # ~15-20 min libkrunfw kernel compile.
+      - name: Restore libkrun build
+        id: libkrun-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v16
+
+      - name: Build libkrun (cache miss)
+        if: steps.libkrun-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          git clone --depth 1 -b v5.5.0 https://github.com/containers/libkrunfw
+          ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
+          git clone --depth 1 -b feat/pvh-boot https://github.com/tsirysndr/libkrun
+          ( cd libkrun && make -j"$(nproc)" BLK=1 NET=1 )
+
+      - name: Save libkrun build
+        if: steps.libkrun-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v16
+
+      - name: Install libkrun
+        run: |
+          set -eux
+          ( cd libkrunfw && sudo make install )
+          ( cd libkrun && sudo make install BLK=1 NET=1 )
+          echo "PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo /usr/local/lib64 | sudo tee /etc/ld.so.conf.d/libkrun.conf
+          sudo ldconfig
+
+      # Pinned via pack/go.mod rather than a hardcoded version so the build
+      # requirement and the toolchain installed here can't drift apart — see
+      # release.yml, which does the same.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: pack/go.mod
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build bsdkrun
+        run: cargo build --release
+
+      # build.rs degrades gracefully (a warning, not a build failure) when Go
+      # is missing, so a binary silently missing pack support would only
+      # surface here as a much more confusing failure a few steps down.
+      # Fail loudly and immediately instead.
+      - name: Verify bsdkrun pack was embedded
+        run: |
+          set -eux
+          test -s core/src/pack-bin/bsdkrun-pack
+          ./target/release/bsdkrun pack --help
+
+      - name: Install kraft
+        run: |
+          set -eux
+          curl -fsSLo /tmp/kraft.deb \
+            "https://github.com/unikraft/kraftkit/releases/download/v${KRAFT_VERSION}/kraftkit_${KRAFT_VERSION}_linux_amd64.deb"
+          sudo dpkg -i /tmp/kraft.deb
+          kraft version
+        env:
+          KRAFT_VERSION: 0.12.15
+
+      # The actual subject under test: detect the go.mod, build the rootfs
+      # with BuildKit, generate the Kraftfile, then fetch/patch/build Unikraft
+      # — no Dockerfile or Kraftfile checked in for this example (see its
+      # README). --plain: this runner's stdout isn't a terminal, so the
+      # animated TUI would no-op into it anyway, but be explicit.
+      #
+      # kraft build runs natively here (buildLinux in pack/internal/kraft),
+      # not through the debian container pack uses on macOS, since this
+      # runner already has everything (kraft, cargo, a Linux toolchain) —
+      # same reasoning as build.sh's own Linux path.
+      - name: pack — detect, build rootfs, generate Kraftfile, kraft build
+        run: |
+          set -eux
+          ./target/release/bsdkrun pack examples/unikraft-go --plain
+          ls -l examples/unikraft-go/.unikraft/build/hello_fc-x86_64
+        env:
+          KRAFTKIT_NO_PROMPT: "1"
+
+      # Same patch assertions as e2e-unikraft-examples.yml: pack's embedded
+      # copy of library/unikraft-base/patches (pack/internal/kraft/patches)
+      # has to actually apply, or the driver is missing and entropy is gone.
+      - name: Assert the patches were applied
+        run: |
+          set -eux
+          cfg=examples/unikraft-go/.config.hello_fc-x86_64
+          grep -q '^CONFIG_LIBVIRTIO_RNG=y' "$cfg"
+          test -f examples/unikraft-go/.unikraft/unikraft/drivers/virtio/rng/virtio_rng.c
+          echo "--- virtio-mmio cmdline device budget ---"
+          grep -E '^CONFIG_(LIBVIRTIO_MMIO|VIRTIO_MMIO_MAX_DEV_CMDLINE|VIRTIO_MMIO_LINUX_COMPAT_CMDLINE)' "$cfg"
+
+      # `<placeholder> -- <argv>`: everything before `--` is parsed as kernel
+      # library parameters and the first word is skipped (Unikraft treats it
+      # as the program name), so the placeholder is required. `pack`'s own
+      # final output prints exactly this command — see
+      # examples/unikraft-go/README.md.
+      - name: e2e — boot the packed unikernel
+        run: |
+          set -eux
+          ./target/release/bsdkrun unikraft -d \
+            --name unikraft-go \
+            --mem 512 \
+            --port 8080:8080 \
+            --cmdline "hello -- /hello" \
+            examples/unikraft-go | tee id.txt
+          sleep 20
+          ./target/release/bsdkrun ps -a
+          ./target/release/bsdkrun logs "$(cat id.txt)" | tee uk-unikraft-go.out
+          cp -v "$HOME/.local/state/bsdkrun/machines/$(cat id.txt)/bsdkrun.log" \
+            uk-unikraft-go-boot.out || true
+
+      - name: e2e — kernel came up
+        run: |
+          set -eux
+          out=uk-unikraft-go.out
+          echo "::group::guest console"
+          cat "$out" || true
+          echo "::endgroup::"
+          grep -q "Powered by Unikraft" "$out"
+
+      - name: e2e — networking and entropy
+        run: |
+          set -eu
+          out=uk-unikraft-go.out
+          boot=uk-unikraft-go-boot.out
+          echo "::group::bsdkrun boot log (kernel cmdline, device setup)"
+          cat "$boot" 2>/dev/null || echo "(no boot log)"
+          echo "::endgroup::"
+          grep -q "Set IPv4 address" "$out"
+          ! grep -q "Could not obtain randomness" "$out"
+
+      # The payoff: all three routes the server exposes, over the forwarded
+      # port. The retry loop covers the moment between the interface coming
+      # up and the Go runtime finishing its own startup.
+      - name: e2e — server answers
+        run: |
+          set -eu
+          for i in $(seq 1 45); do
+            if curl -fsS --max-time 5 "http://127.0.0.1:8080/" -o body.txt; then
+              break
+            fi
+            sleep 2
+          done
+          test -s body.txt || { echo "no response from the guest"; exit 1; }
+          cat body.txt
+          grep -a -q "Bye, World!" body.txt
+
+          curl -fsS --max-time 5 "http://127.0.0.1:8080/hey" -o hey.txt
+          cat hey.txt
+          grep -a -q "Buh bye!" hey.txt
+
+          curl -fsS --max-time 5 -d ping "http://127.0.0.1:8080/echo" -o echo.txt
+          cat echo.txt
+          grep -a -q "ping" echo.txt
+
+      - name: Tear down
+        if: always()
+        run: |
+          set -eux
+          ./target/release/bsdkrun rm -f "$(cat id.txt)" || true
+
+      - name: Upload console output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unikraft-go-console
+          path: uk-*.out
+          if-no-files-found: ignore

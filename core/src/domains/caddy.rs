@@ -235,22 +235,47 @@ pub fn stop(db: &db::Db) -> Result<()> {
     db.remove_setting("domains.caddy_pid")
 }
 
-/// Install Caddy's root CA into the macOS System keychain ourselves, through
-/// the same admin-dialog/sudo escalation the resolver uses. Not `caddy trust`:
-/// that shells out to `sudo security …` internally, which silently fails
-/// without a controlling terminal (a GUI launch, an IDE task runner), and its
-/// exit code also folds in ancillary stores — a missing Java keystore failed
-/// the whole command *after* the parts that matter.
+/// Install Caddy's root CA into the macOS System keychain via **interactive
+/// sudo**, exactly as mkcert and Caddy do.
+///
+/// The escalation method matters, uniquely, for this one step.
+/// `add-trusted-cert` both stores the cert *and* calls
+/// `SecTrustSettingsSetTrustSettings` to mark it a trusted root — and that
+/// second call demands a real interactive session. Root-via-osascript (`do
+/// shell script … with administrator privileges`) is root but has no such
+/// session, so the Trust API is denied with "authorization was denied since
+/// no user interaction was possible": the cert lands, untrusted, and nothing
+/// on the machine actually trusts it. Interactive `sudo` on a controlling
+/// terminal *is* a real root session, so the trust settings take.
+///
+/// This is why we don't use `caddy trust` either — besides folding a missing
+/// Java keystore into its exit code, it hits the same wall from a non-terminal
+/// launch. Requires a terminal; `bsdkrun domains enable` always has one.
 #[cfg(target_os = "macos")]
 pub fn trust() -> Result<()> {
     let root = wait_for_ca_root()?;
-    super::resolver::run_as_admin(&format!(
-        "security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain '{}'",
-        root.display()
-    ))
-    .context("could not add the local CA to the System keychain")?;
-    if !is_trusted() {
-        bail!("the local CA did not land in the System keychain — was the dialog cancelled?");
+    // Inherit stdio so the sudo password prompt (or Touch ID via the sudo
+    // plugin) is visible and answerable.
+    let status = Command::new("sudo")
+        .args([
+            "security",
+            "add-trusted-cert",
+            "-d",
+            "-r",
+            "trustRoot",
+            "-k",
+            "/Library/Keychains/System.keychain",
+        ])
+        .arg(&root)
+        .status()
+        .context("running `sudo security add-trusted-cert`")?;
+    if !status.success() || !is_trusted() {
+        bail!(
+            "could not trust the local CA. Approve the sudo prompt in a terminal, or run:\n  \
+             sudo security add-trusted-cert -d -r trustRoot \
+             -k /Library/Keychains/System.keychain {}",
+            root.display()
+        );
     }
     Ok(())
 }
@@ -297,12 +322,19 @@ fn wait_for_ca_root() -> Result<PathBuf> {
 pub fn untrust() {
     #[cfg(target_os = "macos")]
     {
-        // Mirror of trust(): delete by CN through the admin escalation.
+        // Mirror of trust(): remove the trust settings + cert via interactive
+        // sudo (same reason — the Trust API needs a real root session).
         if is_trusted() {
-            let _ = super::resolver::run_as_admin(
-                "security delete-certificate -c 'Caddy Local Authority' \
-                 /Library/Keychains/System.keychain",
-            );
+            let _ = Command::new("sudo")
+                .args([
+                    "security",
+                    "delete-certificate",
+                    "-c",
+                    "Caddy Local Authority",
+                    "-t",
+                    "/Library/Keychains/System.keychain",
+                ])
+                .status();
         }
     }
     #[cfg(target_os = "linux")]

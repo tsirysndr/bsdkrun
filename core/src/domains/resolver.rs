@@ -12,7 +12,6 @@
 //! never touches this process — it goes into the OS dialog or straight to sudo.
 
 use std::fs;
-use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
@@ -57,7 +56,7 @@ pub fn setup(tld: &str, port: u16) -> Result<()> {
 
     // Fast path: already root / writable.
     if fs::create_dir_all("/etc/resolver").is_ok()
-        && fs::write(PathBuf::from("/etc/resolver").join(tld), &contents).is_ok()
+        && fs::write(format!("/etc/resolver/{tld}"), &contents).is_ok()
     {
         flush_cache();
         return Ok(());

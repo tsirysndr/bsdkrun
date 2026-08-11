@@ -48,7 +48,7 @@ func (p *Provider) Plan(dir string, _ plan.Arch) (*plan.Plan, error) {
 gleam export erlang-shipment
 mkdir -p /out/rootfs/srv
 cp -a build/erlang-shipment/. /out/rootfs/srv/
-%s`, plan.LddIntoRootfs, beam.ExtractERTS)
+%s`, plan.LddIntoRootfs, beam.ExtractERTS(beam.GleamApps))
 
 	// ERL_LIBS replaces the `-pa "$BASE"/*/ebin` that Gleam's generated
 	// entrypoint.sh expands to — 21 arguments there, one env var here.

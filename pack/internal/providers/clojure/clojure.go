@@ -53,12 +53,17 @@ func (p *Provider) Plan(dir string, _ plan.Arch) (*plan.Plan, error) {
 	// unpacked into ramfs), so only the modules the server actually needs
 	// are linked in.
 	script := fmt.Sprintf(`set -eu
-# jlink --strip-debug shells out to objcopy, which the -slim image does not
-# carry. The example got it for free by running jlink in the fuller
-# eclipse-temurin JDK image; a single-stage build has to install it, or
-# jlink dies with 'Cannot run program "objcopy"'.
-if ! command -v objcopy >/dev/null 2>&1; then
-    apt-get update -qq && apt-get install -y -qq --no-install-recommends binutils >/dev/null
+# eclipse-temurin, not clojure:...-slim, and that is load-bearing: this is
+# the image the example jlinks from, and the JRE it produces is what the
+# guest actually runs. A JRE linked from the slim image crashed the guest at
+# boot. The Clojure CLI is installed on top rather than the JDK being
+# swapped out from under jlink.
+apt-get update -qq
+apt-get install -y -qq --no-install-recommends \
+    curl bash rlwrap binutils ca-certificates git >/dev/null
+if ! command -v clojure >/dev/null 2>&1; then
+    curl -sSfL -o /tmp/clj.sh https://download.clojure.org/install/linux-install.sh
+    bash /tmp/clj.sh >/dev/null
 fi
 export CLJ_CONFIG=/tmp/clj GITLIBS=/tmp/gitlibs
 clojure -P
@@ -92,7 +97,7 @@ chmod 1777 /out/rootfs/tmp
 	return &plan.Plan{
 		Name:       "clojure",
 		Provider:   p.Name(),
-		BuildImage: "clojure:temurin-" + jdk + "-tools-deps-bookworm-slim",
+		BuildImage: "eclipse-temurin:" + jdk + "-jdk",
 		Script:     script,
 		Kconfig: map[string]string{
 			// Replaces the base entry: libjvm.so and friends live under the

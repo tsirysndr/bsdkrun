@@ -47,14 +47,17 @@ func (p *Provider) Plan(dir string, _ plan.Arch) (*plan.Plan, error) {
 	// The release lands at /srv, then beam.go carves the runtime out of the
 	// image's OTP install around it.
 	script := fmt.Sprintf(`set -eu
-%sexport MIX_ENV=prod HEX_HOME=/tmp/hex MIX_HOME=/tmp/mix
+%s# hex fetches over TLS and the slim image ships no CA bundle.
+apt-get update -qq
+apt-get install -y -qq --no-install-recommends ca-certificates >/dev/null
+export MIX_ENV=prod HEX_HOME=/tmp/hex MIX_HOME=/tmp/mix
 mix local.hex --force
 mix local.rebar --force
 mix deps.get
 mix release --overwrite
 mkdir -p /out/rootfs/srv
 cp -a _build/prod/rel/%s/. /out/rootfs/srv/
-%s`, plan.LddIntoRootfs, app, beam.ExtractERTS)
+%s`, plan.LddIntoRootfs, app, beam.ExtractERTS(beam.ElixirApps))
 
 	cmd := append(beam.Argv(),
 		"-noshell", "-mode", "embedded",

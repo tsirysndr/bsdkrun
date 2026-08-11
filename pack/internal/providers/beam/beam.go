@@ -10,26 +10,16 @@
 // exactly the OTP libraries it transitively needs.
 package beam
 
-import "github.com/tsirysndr/bsdkrun/pack/internal/plan"
+import (
+	"fmt"
 
-// ExtractERTS is the shell that builds /out/rootfs/erl from the image's OTP
-// install. The release is expected to already be at /out/rootfs/srv.
-const ExtractERTS = `
-ERL=/usr/local/lib/erlang
-ERTS=$(basename "$ERL"/erts-*)
-mkdir -p "/out/rootfs/erl/$ERTS/bin" /out/rootfs/erl/lib /out/rootfs/root /out/rootfs/tmp
+	"github.com/tsirysndr/bsdkrun/pack/internal/plan"
+)
 
-# Only these three are ever exec'd: the emulator itself, the helper it
-# spawns for ports, and the DNS resolver.
-for prog in beam.smp erl_child_setup inet_gethost; do
-    cp -a "$ERL/$ERTS/bin/$prog" "/out/rootfs/erl/$ERTS/bin/$prog"
-done
-ln -s "$ERTS" /out/rootfs/erl/erts
-
-mkdir -p /out/rootfs/erl/bin
-cp -a "$ERL"/bin/*.boot /out/rootfs/erl/bin/
-
-deps_of() {
+// GleamApps selects OTP applications by walking the {applications,[...]}
+// graph from the shipment's own .app files. `gleam export erlang-shipment`
+// lays them out as srv/<app>/ebin/<app>.app, so the glob finds them.
+const GleamApps = `deps_of() {
     tr -d ' \n' < "$1" \
       | sed -n 's/.*{applications,\[\([^]]*\)\].*/\1/p' \
       | tr ',' '\n'
@@ -49,8 +39,70 @@ while [ -n "$queue" ]; do
     done
     queue=$(echo "$next" | tr ' ' '\n' | sort -u)
 done
+`
 
-ldd_into_rootfs "/out/rootfs/erl/$ERTS/bin/beam.smp"
+// ElixirApps selects OTP applications from the release's start.script.
+//
+// Which applications to carry is not a guess for a mix release: start.script
+// records the $ROOT-relative code path of every application the boot script
+// loads. The graph walk GleamApps uses would find nothing here, because a
+// mix release puts its own applications under $RELEASE_LIB (srv/lib/...)
+// rather than srv/<app>/ebin — and the result is a VM that dies at boot with
+// load_failed on every kernel module.
+const ElixirApps = `grep -o '"\$ROOT/lib/[^"]*/ebin"' /out/rootfs/srv/releases/*/start.script \
+  | sed 's|.*/lib/\(.*\)/ebin"|\1|' \
+  | sort -u \
+  | while read -r app; do
+        cp -a "$ERL/lib/$app" /out/rootfs/erl/lib/
+    done
+`
+
+// ExtractERTS returns the shell that builds /out/rootfs/erl from the image's
+// OTP install, using the given application-selection step. The release is
+// expected to already be at /out/rootfs/srv.
+func ExtractERTS(selectApps string) string {
+	return fmt.Sprintf(extractERTS, selectApps)
+}
+
+// extractERTS is that script with a %s where the selection step goes.
+const extractERTS = `
+ERL=/usr/local/lib/erlang
+ERTS=$(basename "$ERL"/erts-*)
+mkdir -p "/out/rootfs/erl/$ERTS/bin" /out/rootfs/erl/lib /out/rootfs/root /out/rootfs/tmp
+
+# Only these three are ever exec'd: the emulator itself, the helper it
+# spawns for ports, and the DNS resolver.
+for prog in beam.smp erl_child_setup inet_gethost; do
+    cp -a "$ERL/$ERTS/bin/$prog" "/out/rootfs/erl/$ERTS/bin/$prog"
+done
+ln -s "$ERTS" /out/rootfs/erl/erts
+
+mkdir -p /out/rootfs/erl/bin
+cp -a "$ERL"/bin/*.boot /out/rootfs/erl/bin/
+
+%s
+echo "OTP applications carried:"; ls /out/rootfs/erl/lib
+
+# Drop what a running system never reads, before resolving libraries — the
+# image is resident twice at boot, so this is size that matters.
+find /out/rootfs/erl -type d \
+    \( -name src -o -name doc -o -name examples -o -name man -o -name include \) \
+    -prune -exec rm -rf {} +
+
+# Every executable and .so under the whole tree, not just beam.smp: OTP's
+# NIFs are what pull in the real dependencies. crypto's priv/lib/crypto.so
+# is why libcrypto.so.3 ends up in the image, and without it the VM dies at
+# boot with "Unable to load crypto library".
+find /out/rootfs/erl -type f \( -perm -u+x -o -name '*.so' \) -print \
+  | while read -r f; do ldd "$f" 2>/dev/null || true; done \
+  | grep -oE '/[^ ()]+' \
+  | grep -v '^/out/rootfs' \
+  | sort -u \
+  | while read -r lib; do
+        [ -f "$lib" ] || continue
+        mkdir -p "/out/rootfs$(dirname "$lib")"
+        cp -L "$lib" "/out/rootfs$lib"
+    done
 chmod 1777 /out/rootfs/tmp
 `
 

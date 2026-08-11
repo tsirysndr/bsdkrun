@@ -5,7 +5,7 @@ A [Wisp](https://gleam.run/gleam-http/wisp/) HTTP server written in
 as a Unikraft unikernel on **both architectures**.
 
 ```sh
-bsdkrun pack .                # host arch; or: bsdkrun pack . --target x86_64
+./build.sh                    # host arch; or: ./build.sh x86_64
 bsdkrun unikraft . --mem 1024 --port 3000:3000 --cmdline \
   "elfloader -- /erl/erts/bin/beam.smp -fnu -- -root /erl -bindir /erl/erts/bin \
    -progname erl -- -home /root -- -noshell -eval wisp_demo@@main:run(wisp_demo) --"

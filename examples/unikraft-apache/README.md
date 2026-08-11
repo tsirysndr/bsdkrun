@@ -15,44 +15,51 @@ bsdkrun unikraft . --mem 512 --port 18083:8080 \
 
 ```console
 $ curl http://127.0.0.1:18083/
-Hello from Apache on Unikraft!
+<!DOCTYPE html>
+<html>
+<head><title>Apache on Unikraft</title></head>
+<body>
+<h1>Hello from Apache on Unikraft!</h1>
+</body>
+</html>
 ```
-
-(That's the expectation upstream servers here document. See **Status** below
--- this one does not actually get there yet.)
 
 ## Status
 
-**arm64 boots, DHCPs, and starts apache2 -- then apache2 exits before it ever
-listens.** The kernel comes up, `en1` gets an address from gvproxy, the start
-script `exec`s `apache2 -X -f /etc/apache2/apache2.conf`, and apache2 begins
-its own startup (module init, socket setup). It gets as far as:
+**Both architectures work.** arm64 boots, DHCPs an address, the start script
+execs apache2, and `GET /` answers over the forwarded port:
 
+```console
+$ curl http://127.0.0.1:18083/
+<!DOCTYPE html>
+<html>
+<head><title>Apache on Unikraft</title></head>
+<body>
+<h1>Hello from Apache on Unikraft!</h1>
+</body>
+</html>
 ```
-[core:warn] (22)Invalid argument: AH00076: Failed to enable APR_TCP_DEFER_ACCEPT
-[core:warn] (22)Invalid argument: AH00076: Failed to enable APR_TCP_DEFER_ACCEPT
-[core:error] (38)Function not implemented: AH10231: apache2: Failed creating pid file /var/run/apache2/apache2.pid.ccjkCj
-```
 
-and then `exit(1)`s. The `APR_TCP_DEFER_ACCEPT` warnings are harmless --
-`TCP_DEFER_ACCEPT` is a Linux `setsockopt()` this guest's lwip does not
-support, and Apache only warns and moves on. The `AH10231` line is fatal, and
-it is not this port's bug to fix.
+Verified with `--mem 512`, guest port `8080` forwarded, repeated requests
+against the same running machine. x86_64 is green on
+`.github/workflows/e2e-unikraft-examples.yml`, after the `libgcc_s.so.1` fix
+below.
 
-**Root cause: `apache2` always writes a PID file, every time it starts, and
-doing so calls `chmod()`.** Traced in upstream's `server/log.c`,
-`ap_log_pid()`:
+**Getting arm64 there needed a real kernel patch — entry 26 in
+`../../library/unikraft-base/patches/apply.sh`.** apache2 always writes a PID
+file on startup, and doing so calls `chmod()`, traced in upstream's
+`server/log.c`, `ap_log_pid()`:
 
 ```c
 temp_fname = apr_pstrcat(p, fname, ".XXXXXX", NULL);
 rv = apr_file_mktemp(&pid_file, temp_fname, ...);          /* succeeds -- the
                                                                 ".ccjkCj" file
                                                                 in the log line
-                                                                above is this */
+                                                                below is this */
 ...
 perms = APR_UREAD | APR_UWRITE | APR_GREAD | APR_WREAD;
 if (((rv = apr_file_perms_set(temp_fname, perms)) != APR_SUCCESS
-       && rv != APR_ENOTIMPL)                                /* <-- fails here */
+       && rv != APR_ENOTIMPL)                                /* <-- failed here */
     || (rv = apr_file_write_full(...)) != APR_SUCCESS
     || (rv = apr_file_close(pid_file)) != APR_SUCCESS
     || (rv = apr_file_rename(temp_fname, fname, p)) != APR_SUCCESS) {
@@ -61,30 +68,61 @@ if (((rv = apr_file_perms_set(temp_fname, perms)) != APR_SUCCESS
 }
 ```
 
-`apr_file_perms_set()` is a `chmod()` on the freshly created temp file. That
-call comes back `ENOSYS` ("Function not implemented"), which APR turns into
-an OS-specific error code -- not the symbolic `APR_ENOTIMPL` the `&&` clause
-was written to tolerate -- so the whole condition is true and Apache exits
-before `apr_file_write_full`, `apr_file_close` or `apr_file_rename` are ever
-reached. `write_full`/`close`/`rename` are never the problem; `chmod()` is.
+Before the patch, this is what boot looked like -- apache2 got as far as:
 
-**This is not a new discovery, and not something to patch here.**
-`../unikraft-postgres/README.md` already documents that this repo's Unikraft
-base has no `chmod()`: *"No Unix-domain socket. Binding one ends in
-`chmod()`, which the guest does not implement (`could not create any
-Unix-domain sockets`)."* postgres worked around it by not needing the
-feature at all (no Unix socket, TCP only). Apache's PID-file write is not
-optional the same way -- `ap_log_pid()` runs unconditionally from `main()` on
-every startup, `-X` (single-process debug mode) included, and there is no
-`PidFile`-adjacent directive that skips it; the compiled-in default path is
-used even with no `PidFile` line in the config at all. Working around it
-would mean either patching the kernel's syscall shim to implement `chmod()`
-(a real, general-purpose gap -- out of scope for a from-scratch application
-port, per this example's brief) or patching/recompiling Apache's own `log.c`
-to treat any `apr_file_perms_set()` failure as tolerable (a source rebuild,
-which this port deliberately avoids -- see below). Neither was attempted.
+```
+[core:warn] (22)Invalid argument: AH00076: Failed to enable APR_TCP_DEFER_ACCEPT
+[core:error] (38)Function not implemented: AH10231: apache2: Failed creating pid file /var/run/apache2/apache2.pid.ccjkCj
+```
 
-x86_64 has never been run.
+and then `exit(1)`'d. (The `APR_TCP_DEFER_ACCEPT` warning is unrelated and
+harmless -- `TCP_DEFER_ACCEPT` is a Linux `setsockopt()` this guest's lwip
+does not support, and Apache only warns and moves on.)
+
+**Root cause: arm64 Linux has no raw `chmod` syscall at all**, and Unikraft's
+syscall shim never implemented its replacement. arm64's ABI dropped every
+"legacy" path syscall x86_64 still carries; glibc papers over that for
+`chmod()` the exact same way it does for `open`, `mkdir`, and `unlink` --
+`chmod(path, mode)` becomes `fchmodat(AT_FDCWD, path, mode, 0)`. vfscore
+(`lib/vfscore`) already had working `openat`/`mkdirat`/`unlinkat`, and its
+`chmod` `UK_SYSCALL_R_DEFINE` was itself a complete, correct implementation --
+`sys_chmod()` → `vn_setmode()` → ramfs's `ramfs_setattr()` sets the mode bits
+and returns success -- but nothing on arm64 could ever reach it, because
+`chmod`'s syscall number does not exist there. Only `fchmodat` was missing:
+never declared as a provided syscall, no handler defined, so every call fell
+straight through to `ENOSYS`. Confirmed with a syscall trace before the fix:
+
+```
+openat(dirfd:4, "/var/run/apache2/apache2.pid.CsOhld", O_RDONLY|O_CREAT|O_EXCL|0x2) = fd:4
+fchmodat(0xffffffffffffffda, 0x100086f090, ...) = Function not implemented (-38)
+```
+
+`../unikraft-postgres/README.md` already noted the same underlying gap for a
+Unix-domain socket bind (*"Binding one ends in `chmod()`, which the guest
+does not implement"*) and worked around it instead of fixing it, because
+postgres didn't need the feature at all. Apache's PID-file write is not
+optional the same way -- `ap_log_pid()` runs unconditionally on every
+startup, `-X` included, with no config directive that skips it -- so this
+port implements `fchmodat` in `library/unikraft-base/patches/apply.sh`
+(patch 26) instead of working around it. It is a generic fix, not
+apache-specific: any arm64 program calling `chmod()` hit this identically.
+`AT_SYMLINK_NOFOLLOW` is not handled -- Linux's own `fchmodat` rejects that
+flag too, so this isn't a narrower contract than upstream, just an
+unimplemented corner nothing here exercises.
+
+**x86_64 needed one more thing: `libgcc_s.so.1`, missing from the rootfs.**
+`ldd` of `apache2` and its four loaded modules never lists it -- nothing has
+it as a `DT_NEEDED` entry. glibc's NPTL `dlopen()`s it lazily, the first
+time something needs stack unwinding (`pthread_exit()` among others), so its
+absence only showed up at runtime, on CI:
+
+```
+libgcc_s.so.1 must be installed for pthread_exit to work
+```
+
+right after apache2 got past `APR_TCP_DEFER_ACCEPT` and the expected
+`getpwuid` line below, and right before the guest exited. The Dockerfile now
+copies it unconditionally alongside the `ldd`-resolved set.
 
 ## What this trims from stock Apache
 

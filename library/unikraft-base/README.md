@@ -28,7 +28,9 @@ Sixteen things were needed on top of a stock checkout. All are applied by
 Entries 10-14 came out of getting node to run on arm64 and are described in
 `../../examples/unikraft-expressjs/README.md`; entries 15 (`mremap`) and 16
 (`epoll_pwait`'s signal mask) came out of Bun and are described in
-`../../examples/unikraft-bun/README.md`, with a test for the first in `tests/`:
+`../../examples/unikraft-bun/README.md`, with a test for the first in `tests/`.
+Entry 26 (`fchmodat`) came out of Apache and is described in
+`../../examples/unikraft-apache/README.md`:
 
 1. **`lib/syscall_shim/arch/arm64/syscall_handler.c` is missing an include.**
    It uses `struct ukarch_execenv` but only includes `<uk/arch/types.h>`, so any

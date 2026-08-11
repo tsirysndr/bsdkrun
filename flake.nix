@@ -336,7 +336,7 @@
         commonArgs = {
           inherit src;
           pname = "bsdkrun";
-          version = "0.7.0";
+          version = "0.8.0";
           strictDeps = true;
           # Explicit even though the workspace's `default-members` is this
           # package: the daemon is a member too, and nothing here should build
@@ -430,7 +430,7 @@
         # itself does not have to. Same source tree, different package.
         supervisorArgs = daemonArgs // {
           pname = "bsdkrun-supervisor";
-          version = "0.7.0";
+          version = "0.8.0";
           cargoExtraArgs = "-p bsdkrun-supervisor";
         };
 

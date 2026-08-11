@@ -1,6 +1,6 @@
 [package]
 name = "bsdkrun-supervisor"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 description = "Runs one bsdkrun command in its own process, and hosts the machine it boots"
 

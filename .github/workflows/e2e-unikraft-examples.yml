@@ -44,6 +44,7 @@ on:
       - "examples/unikraft-php/**"
       - "examples/unikraft-python/**"
       - "examples/unikraft-python-uv/**"
+      - "examples/unikraft-procfile/**"
       - "examples/unikraft-haskell/**"
       - "examples/unikraft-laravel/**"
       - "examples/unikraft-symfony/**"
@@ -360,6 +361,21 @@ jobs:
             argv: /opt/python/bin/python3 -u /src/main.py
             port: 8080
             expect: "Hello from Python + uv on Unikraft!"
+            # Verified end to end on arm64/macOS; x86_64 has never been run,
+            # so this job is the test. Non-strict until it passes.
+            strict: false
+          # Start command from a Procfile, environment from railpack.json's
+          # deploy.variables. The expect string proves the Procfile was
+          # honoured (the provider would have found no entry point at all);
+          # the guest reading GREETING proves the variables reached it.
+          - example: unikraft-procfile
+            kernel: python_fc-x86_64
+            pack: true
+            placeholder: python
+            mem: 1024
+            argv: /opt/python/bin/python3 -u /src/serve.py
+            port: 8080
+            expect: "hello from deploy.variables"
             # Verified end to end on arm64/macOS; x86_64 has never been run,
             # so this job is the test. Non-strict until it passes.
             strict: false

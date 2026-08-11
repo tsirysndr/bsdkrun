@@ -19,6 +19,32 @@ open Mirage
    to be discovered as an unreachable server. *)
 let stack = generic_stackv4v6 default_network
 
-let main = main "Unikernel.Main" (stackv4v6 @-> job)
+(* mirage-crypto 2.2.0 added an entropy self-test that `initialize` runs at
+   startup, unconditionally, in every unikernel. It calls the cycle counter
+   eleven times and fails if any two consecutive reads are equal:
+
+     Fatal error: exception Failure("same data from timer at 3 with: ...")
+     Solo5: solo5_exit(2) called
+
+   On aarch64 that counter is CNTVCT_EL0, and on Apple silicon consecutive
+   reads *are* frequently equal — its update granularity is coarser than its
+   nominal 1 GHz. Measured on the host, outside any VM, 7 of 11 back-to-back
+   reads returned the same value, so this is a property of the CPU rather than
+   of the tender or of Hypervisor.framework. The unikernel then dies before
+   main(), which reads as a bsdkrun bug and is not one.
+
+   x86_64 is unaffected: there the counter is RDTSC, which ticks fast enough
+   that no two reads collide. Constraining this here rather than only on the
+   platforms that need it keeps CI building what macOS runs. *)
+let crypto_without_the_entropy_self_test =
+  [
+    package ~max:"2.2.0" "mirage-crypto";
+    package ~max:"2.2.0" "mirage-crypto-rng-mirage";
+  ]
+
+let main =
+  main "Unikernel.Main"
+    ~packages:crypto_without_the_entropy_self_test
+    (stackv4v6 @-> job)
 
 let () = register "hello" [ main $ stack ]

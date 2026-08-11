@@ -28,8 +28,8 @@ from the pinned `library/solo5` submodule at compile time and embeds it, so
 emits ELF for a bare-metal target — which is what `build.sh` drives:
 
 ```sh
-opam install mirage
-./build.sh          # mirage configure -t hvt && make depends && make build
+opam install mirage   # needs >= 4.11; build.sh checks
+./build.sh            # mirage configure -t hvt && make depends && make build
 ```
 
 `-t hvt` matters. The other Solo5 targets (`spt`, `virtio`, `xen`, …) produce
@@ -102,10 +102,41 @@ bsdkrun stop "$id"
 one. `stop` kills the tender rather than just bsdkrun, so a stopped machine
 leaves nothing behind holding its ports.
 
+## Two version constraints, and why they are not tidiness
+
+`config.ml` pins two things. Both were found the hard way, and both fail in
+ways that do not point at their cause.
+
+**mirage >= 4.11**, checked by `build.sh`. 4.11 inverted the old `dhcp`
+configure key into `no_dhcp` and flipped the default, so DHCP is what you get
+unless you ask otherwise — which is what keeps the boot command free of
+`--ipv4=…`. On 4.10 the same `config.ml` compiles and quietly does the
+opposite: a static 10.0.0.2 that boots perfectly and answers nothing.
+
+**mirage-crypto < 2.2.0**, via `package ~max:` in `config.ml`. 2.2.0 added an
+entropy self-test that `initialize` runs at startup in every unikernel. It
+reads the cycle counter eleven times and fails if two consecutive reads are
+equal:
+
+```
+TESTING entropy harvesting... Fatal error: exception
+  Failure("same data from timer at 3 with: \137\159\002K")
+Solo5: solo5_exit(2) called
+```
+
+On aarch64 that counter is `CNTVCT_EL0`, and on Apple silicon consecutive
+reads frequently *are* equal — its update granularity is coarser than its
+nominal 1 GHz. Measured on the host, outside any VM, 7 of 11 back-to-back
+reads returned the same value, so this is the CPU's behaviour and not the
+tender's or Hypervisor.framework's. x86_64 is unaffected (RDTSC ticks fast
+enough that no two reads collide), which is exactly why the constraint is
+unconditional here: otherwise CI would build something macOS cannot run.
+
 ## Status
 
-Verified on **macOS/arm64 (Hypervisor.framework)**: builds, boots, leases a
-DHCP address and serves the body above. Linux/x86_64 (KVM) is covered by the
+Verified on **macOS/arm64 (Hypervisor.framework)** with mirage 4.11.2, from a
+clean `./build.sh`: builds, boots, leases a DHCP address and serves the body
+above. Linux/x86_64 (KVM) is covered by the
 `e2e-solo5` workflow, which asserts on the served response rather than on the
 job's conclusion.
 

@@ -172,10 +172,21 @@ What that split costs, and what pays for it:
 - **Pin the guest MAC.** The tender generates a random one per boot; gvproxy
   then leases `.3`, `.4`, … and `--port`, which forwards to the fixed guest
   address, points at nobody. `--net-mac:NAME=` fixes it.
-- **DHCP, not flags.** A MirageOS `generic_stackv4v6` reads a `--dhcp` runtime
-  key defaulting to *false*, so it comes up on mirage's built-in 10.0.0.2 and
-  answers nothing. Pin it at configure time (`~dhcp_key:(Key.pure true)`)
-  rather than passing `--ipv4=`/`--ipv4-gateway=` on every boot.
+- **DHCP, not flags** — and the mechanism moved. mirage 4.11 inverted the
+  `dhcp` key into `no_dhcp` and flipped the default, so `generic_stackv4v6
+  default_network` now leases over DHCP on its own; 4.10 defaulted to a static
+  10.0.0.2 and needed `~dhcp_key:(Key.pure true)`, a labelled argument 4.11
+  removed. Verify an example against the mirage `opam install` actually gives
+  you, not the one in your switch: 4.10 accepts config.ml and silently serves
+  nothing, which is worse than the type error 4.11 raises.
+- **mirage-crypto >= 2.2.0 cannot boot on Apple silicon.** Its `initialize`
+  runs an entropy self-test that reads the cycle counter eleven times and
+  fails if two consecutive reads are equal. On aarch64 that is `CNTVCT_EL0`,
+  whose update granularity here is coarser than its nominal 1 GHz — 7 of 11
+  back-to-back reads are identical *on the host*, outside any VM. The guest
+  dies before `main()` with `solo5_exit(2)`, which reads as a bsdkrun bug and
+  is not one. x86_64 uses RDTSC and never sees it, so CI stays green while
+  macOS breaks: constrain it in `config.ml` unconditionally, not per-platform.
 
 ## Verifying
 

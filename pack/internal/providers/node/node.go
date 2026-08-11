@@ -62,15 +62,6 @@ fi
 cp -a . /out/rootfs/usr/src/ 2>/dev/null || true
 rm -rf /out/rootfs/usr/src/node_modules/.cache
 `, plan.LddIntoRootfs),
-		// The runtime needs FP/SIMD and signal delivery: OpenSSL probes for
-		// CPU extensions by *executing* an instruction the CPU may not
-		// implement and expecting SIGILL back, so without
-		// LIBPOSIX_PROCESS_SIGNAL that probe is a fatal trap rather than a
-		// recoverable one.
-		Kconfig: map[string]string{
-			"CONFIG_LIBPOSIX_PROCESS_SIGNAL": "'y'",
-			"CONFIG_LIBPOSIX_PROCESS_BRK":    "'y'",
-		},
 		Cmd: []string{"/usr/bin/node", "/usr/src/" + entry},
 	}, nil
 }

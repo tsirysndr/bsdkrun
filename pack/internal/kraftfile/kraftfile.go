@@ -76,6 +76,16 @@ unikraft:
     CONFIG_LIBPOSIX_POLL: 'y'
     CONFIG_LIBPOSIX_PROCESS: 'y'
     CONFIG_LIBPOSIX_PROCESS_MULTITHREADING: 'y'
+    # Deliver CPU faults to the application as signals, and give it a brk.
+    # Base config, not a per-runtime tweak: 13 of the 17 hand-written
+    # examples set both, and the ones that need them need them badly. The
+    # JVM turns SIGSEGV into its implicit null check, so without delivery
+    # the first null dereference is a fatal trap and the guest dies with a
+    # register dump instead of an exception. OpenSSL's CPU probes expect
+    # SIGILL back from an instruction they run on purpose. The cost to a
+    # runtime that uses neither is nil.
+    CONFIG_LIBPOSIX_PROCESS_SIGNAL: 'y'
+    CONFIG_LIBPOSIX_PROCESS_BRK: 'y'
     CONFIG_LIBPOSIX_SOCKET: 'y'
     CONFIG_LIBPOSIX_SYSINFO: 'y'
     CONFIG_LIBPOSIX_TIME: 'y'

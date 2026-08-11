@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "python",
+  "packages": {
+    "python": "3.12",
+    "jq": "latest"
+  },
+  "deploy": {
+    "variables": {
+      "GREETING": "hello from deploy.variables",
+      "PORT": "8080"
+    }
+  }
+}

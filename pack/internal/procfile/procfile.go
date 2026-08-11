@@ -21,17 +21,31 @@ type Procfile struct {
 	Order    []string
 }
 
-// Web returns the command a unikernel should run: the `web` process type if
-// declared, else the first one. Reports false when there is nothing to run.
+// Web returns the command a unikernel should run: `web`, else `worker`,
+// else the first declared. Reports false when there is nothing to run.
+//
+// The worker step matters for a Procfile that declares only background
+// processes — falling straight to "first declared" would pick whichever
+// happened to be written first, which for `release: migrate` and
+// `worker: consume` is a migration that exits immediately.
 func (p *Procfile) Web() (string, bool) {
 	if p == nil || len(p.Order) == 0 {
 		return "", false
 	}
-	if cmd, ok := p.Commands["web"]; ok && cmd != "" {
+	if cmd := p.Commands[chosen(p)]; cmd != "" {
 		return cmd, true
 	}
-	first := p.Order[0]
-	return p.Commands[first], p.Commands[first] != ""
+	return "", false
+}
+
+// chosen is the process type that will run.
+func chosen(p *Procfile) string {
+	for _, preferred := range []string{"web", "worker"} {
+		if cmd, ok := p.Commands[preferred]; ok && cmd != "" {
+			return preferred
+		}
+	}
+	return p.Order[0]
 }
 
 // Ignored lists the process types that will not run, since only one can.
@@ -39,13 +53,13 @@ func (p *Procfile) Ignored() []string {
 	if p == nil {
 		return nil
 	}
-	chosen := "web"
-	if _, ok := p.Commands["web"]; !ok && len(p.Order) > 0 {
-		chosen = p.Order[0]
+	if len(p.Order) == 0 {
+		return nil
 	}
+	running := chosen(p)
 	var rest []string
 	for _, name := range p.Order {
-		if name != chosen {
+		if name != running {
 			rest = append(rest, name)
 		}
 	}

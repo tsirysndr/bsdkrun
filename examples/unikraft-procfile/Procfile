@@ -1,0 +1,9 @@
+# A unikernel runs exactly one program, so only `web` is used here. The
+# others are reported as ignored rather than silently dropped.
+#
+# The command is written with absolute guest paths: there is no shell to
+# resolve `python3` against PATH, and the working directory is not the
+# source tree. `bsdkrun pack` prints the exact argv it will boot with.
+web: /opt/python/bin/python3 -u /src/serve.py
+worker: /opt/python/bin/python3 -u /src/serve.py --worker
+release: /opt/python/bin/python3 -c "print('migrations would run here')"

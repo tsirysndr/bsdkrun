@@ -99,6 +99,42 @@ type ToolCopy struct {
 	Dst   string
 }
 
+// CARootsIntoRootfs ships the build image's CA trust store in the rootfs,
+// so outbound TLS from the guest can verify anything. Appended to every
+// provider's script centrally (main.go) rather than written per provider:
+// the need is universal — a guest without roots cannot verify a single
+// certificate, whatever language it runs — and with the epoch.boot wall
+// clock fix this is the last platform piece outbound HTTPS was missing.
+//
+// Only the bundle file (ca-certificates.crt) plus the OpenSSL cert.pem
+// symlink target, NOT the hashed c_rehash directory. That directory is a
+// few hundred small files, and dereferencing them into ramfs — which is
+// resident in RAM and, on this platform, has no hard links — was enough
+// to fault the guest at boot. Every runtime here reads the single bundle;
+// the hashed dir is OpenSSL's fallback lookup path, which the bundle makes
+// unnecessary.
+//
+// Installing the package first is not redundant: debian:bookworm-slim
+// ships no bundle at all, and a copy of nothing would succeed silently.
+const CARootsIntoRootfs = `
+# CA trust store for outbound TLS (see plan.CARootsIntoRootfs).
+if [ ! -f /etc/ssl/certs/ca-certificates.crt ]; then
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update -qq >/dev/null 2>&1 || true
+        apt-get install -y -qq --no-install-recommends ca-certificates >/dev/null 2>&1 || true
+    elif command -v apk >/dev/null 2>&1; then
+        apk add --no-cache ca-certificates >/dev/null 2>&1 || true
+    fi
+fi
+if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
+    mkdir -p /out/rootfs/etc/ssl/certs
+    cp -L /etc/ssl/certs/ca-certificates.crt /out/rootfs/etc/ssl/certs/ca-certificates.crt
+    # Where OpenSSL and LibreSSL look by default; a copy, so both the
+    # bundle path and the single-file path resolve to the same roots.
+    cp -L /etc/ssl/certs/ca-certificates.crt /out/rootfs/etc/ssl/cert.pem
+fi
+`
+
 // LddIntoRootfs is the shell fragment that copies a dynamically linked
 // binary's shared libraries into the rootfs alongside it.
 //

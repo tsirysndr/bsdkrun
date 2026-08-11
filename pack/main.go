@@ -411,6 +411,10 @@ func runPipeline(r report.Reporter, path, targetFlag, pushRef string, strace, lo
 				config.FileName, len(vars)))
 		}
 	}
+	// The CA trust store rides along in every rootfs — without roots the
+	// guest cannot verify a single certificate, whatever it runs.
+	p.Script += plan.CARootsIntoRootfs
+
 	// Extra tools the project asked for, installed with mise and put on
 	// PATH before anything else runs — a build tool is no use after the
 	// build. What the provider already resolved for itself is skipped.

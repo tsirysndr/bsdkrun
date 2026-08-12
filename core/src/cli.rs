@@ -105,7 +105,7 @@ pub enum Command {
 
     /// Boot a Nanos (NanoVMs) unikernel image (built with `ops build`).
     /// Linux/x86_64 boots it Firecracker-style (experimental); macOS/arm64
-    /// needs an upstream Nanos fix — see examples/nanos-hello.
+    /// needs the patched Nanos kernel staged — see examples/nanos-hello.
     Nanos(NanosArgs),
 
     /// Boot an OSv unikernel image (an OSv release loader, or one composed by

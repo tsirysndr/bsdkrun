@@ -19,7 +19,7 @@ Like every unikernel, a Nanos machine has no shell or agent: `exec`, `shell`
 and `commit` are rejected; `logs`, `ps`, `stop`, `start` and `rm` work as
 usual.
 
-## Status: x86_64 experimental, arm64 blocked on virtio-mmio support
+## Status: x86_64 experimental, arm64 boots with patched kernel + libkrun
 
 **x86_64 (Linux/KVM)** boots via direct kernel load — the same path
 Firecracker uses, which Nanos supports officially. `bsdkrun nanos` finds the
@@ -32,53 +32,58 @@ bsdkrun nanos nanos-hello --cpus 1 --mem 512 --no-net
 This is exercised by the `e2e-nanos` workflow on KVM runners; treat it as
 experimental until that workflow is green.
 
-**arm64 (macOS) does not boot yet: Nanos needs virtio-PCI, and libkrun has
-only virtio-mmio.**
+**arm64 (macOS) boots to userspace** — with a patched Nanos and a patched
+libkrun. Stock 0.1.55 dies before userspace, and the old "Nanos needs
+virtio-PCI" diagnosis was only the first layer of five. Every one of these
+had to fall, in order (nanos fork branch `fix/aarch64-libkrun-boot`, libkrun
+fork branch `feat/pvh-boot`):
 
-The whole failure reproduces with no libkrun involved. Same image, same QEMU,
-same stock edk2 — only the disk transport differs:
+1. **No virtio-mmio enumeration** (`platform/virt/service.c`): the virt
+   platform never called `virtio_mmio_enum_devs()`, so the DSDT's `LNRO0005`
+   devices — the only kind libkrun has — were invisible. Reproducible on
+   plain QEMU with a modern virtio-mmio disk
+   (`-global virtio-mmio.force-legacy=false`; Nanos requires virtio 1.0 and
+   silently skips QEMU's default legacy transport).
+2. **DC ZVA before the MMU is on** (`src/runtime/memops.c`): `zero()` used
+   the DC ZVA fast path while every access is still Device memory —
+   alignment fault on HVF, hidden on QEMU which takes the memset path.
+3. **Dirty-cache handover from the EFI loader** (`src/aarch64/uefi.c`): the
+   loader hands over with caches off but everything it wrote — kernel image,
+   `boot_params`, memory map — still in dirty write-back lines, and stale
+   lines masking the kernel's uncached early writes (initial page tables,
+   boot stack) once caches come back on. `acpi_rsdp` arrived as 0. QEMU does
+   not model caches, so only hardware-backed hypervisors see any of this.
+4. **GICv2/v3 selection from `ID_AA64PFR0_EL1.GIC`** (`src/aarch64/gic.c`):
+   HVF does not virtualize that field, so it reads "no sysreg interface" and
+   Nanos drove a GICv2 GICC at QEMU-virt compile-time addresses that don't
+   exist on libkrun. A MADT redistributor entry now outranks PFR0.
+5. **virtio-mmio IRQ routing ignored the DSDT** (`src/virtio/virtio_mmio.c`):
+   the handler was registered on a vector allocated from a heap that starts
+   at QEMU's first mmio slot, not on the SPI the DSDT declared — right on
+   QEMU only when the device sits in slot 0, wrong everywhere on libkrun.
+   Every block completion was silently lost.
 
-```sh
-# boots, prints "Hello from Nanos on bsdkrun!"
-qemu-system-aarch64 -machine virt -cpu cortex-a72 -m 512 -nographic \
-  -bios /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
-  -drive file=$HOME/.ops/images/nanos-hello,format=raw,if=virtio -net none
+And one bug on the libkrun side: the in-kernel `hv_gic`'s SPIs are real
+levels, but nothing ever lowered them — after the first completion the guest
+took ~35k empty interrupts per second, forever. The fork now de-asserts the
+SPI when the guest's virtio `InterruptACK` leaves no ISR bits set.
 
-# hangs at `BdsDxe: starting ... VenHw(...)` — exactly what bsdkrun shows
-qemu-system-aarch64 -machine virt -cpu cortex-a72 -m 512 -nographic \
-  -bios /opt/homebrew/share/qemu/edk2-aarch64-code.fd \
-  -drive file=$HOME/.ops/images/nanos-hello,format=raw,if=none,id=d0 \
-  -device virtio-blk-device,drive=d0 -net none
-```
-
-The Nanos kernel's own strings say why: it has **no devicetree support at all**
-on arm64 (`virtio,mmio`, `arm,gic`, `arm,pl011` are all absent) and discovers
-devices purely through ACPI (`SPCR`, `APIC`, `PNP0`) — but it knows nothing
-about `LNRO0005`, the ACPI HID that describes a virtio-mmio device. The mmio
-driver itself is there (`src/virtio/virtio_mmio.c`, `vtmmio:` messages); the
-devices are simply never enumerated, so it finds no storage. At the hang the
-vCPU sits at ~100% CPU with zero VM exits — a guest-internal spin, not a halt.
-
-Things measured and ruled out, so nobody re-digs them:
-
-- **ACPI is not the problem.** With `KRUN_ACPI=1` the libkrun fork (branch
-  `feat/pvh-boot`) serves QEMU-shaped tables over fw_cfg and the firmware
-  installs them — an EFI-shell `memmap` probe reports 16 pages of ACPI reclaim
-  memory (zero before), and a level-5 trace shows ~570 fw_cfg accesses.
-- **The PSCI conduit is consistent.** The FADT declares SMC and libkrun's HVF
-  layer services `EC_AA64_SMC` through `handle_psci_request()`.
-- **Nothing is wrong with the console path.** The guest emits no bytes at all.
-
-Unblocking it means upstream Nanos enumerating `LNRO0005` virtio-mmio devices
-from the DSDT; the two commands above are a self-contained bug report. The
-alternative — a virtio-PCI transport in libkrun — is a much larger job.
-
-The bsdkrun side is otherwise ready: `bsdkrun nanos` sets `KRUN_ACPI=1` and
-boots the image via EFI on macOS:
+To run it, build the patched kernel and stage it over what ops installed
+(ops needs no other change; back the originals up first):
 
 ```sh
+git clone -b fix/aarch64-libkrun-boot https://github.com/tsirysndr/nanos && cd nanos
+make kernel        # needs aarch64-elf-gcc (brew install aarch64-elf-gcc)
+cp output/platform/virt/bin/kernel.img output/platform/virt/boot/bootaa64.efi \
+   ~/.ops/0.1.55-arm/
+cd ../nanos-hello && ./build.sh          # rebuild the image with them
 bsdkrun nanos nanos-hello --cpus 1 --mem 1024
 ```
 
 (The arm64 image needs `"Uefi": true` — `config.json` here — or ops emits no
-EFI System Partition and the firmware drops to a shell.)
+EFI System Partition and the firmware drops to a shell. `bsdkrun nanos` sets
+`KRUN_ACPI=1` itself.)
+
+Verified on M-series (2026-08-12): three consecutive `bsdkrun nanos` boots
+print `Hello from Nanos on bsdkrun!`, and the same image still boots on QEMU
+with both a virtio-PCI disk and a modern virtio-mmio disk.

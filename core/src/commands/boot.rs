@@ -639,10 +639,12 @@ pub(crate) fn boot_nanos_image(
         // libkrun without it simply ignores the variable).
         std::env::set_var("KRUN_ACPI", "1");
         warn!(
-            "Nanos/arm64 does not reach userspace at nanos 0.1.55: it enumerates \
-             virtio only over PCI, and libkrun provides virtio-mmio only, so the \
-             guest finds no storage and spins after the firmware hands off. \
-             Reproducible on plain QEMU by swapping the disk to virtio-mmio — \
+            "Nanos/arm64 needs patched artifacts: the stock 0.1.55 kernel and \
+             bootloader die before userspace on libkrun (loader cache \
+             maintenance, GIC selection and virtio-mmio IRQ routing — all \
+             fixed on the nanos fork's fix/aarch64-libkrun-boot branch). If \
+             this boot hangs silently, stage the patched kernel.img and \
+             bootaa64.efi into ~/.ops/<version>-arm/ and rebuild the image — \
              see examples/nanos-hello/README.md."
         );
         (kernel.map(|k| k.to_path_buf()), fw)

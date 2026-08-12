@@ -737,11 +737,12 @@ not apply; `logs`, `ps`, `stop`, `start`, and `rm` work as usual.
 - **Linux/x86_64** boots via direct kernel load — the same Firecracker-style contract Nanos
   supports officially. `bsdkrun nanos` auto-finds the newest `~/.ops/<version>/kernel.img` that
   `ops build` staged, or you can override it with `--kernel`.
-- **macOS/arm64** uses EFI boot with `KRUN_ACPI=1` and needs an image built with `"Uefi": true`,
-  but current upstream Nanos hangs before userspace: it enumerates virtio only over PCI, and
-  libkrun has no PCI bus — so it never finds its root disk. Not an ACPI gap (those tables are
-  installed and verified); reproducible on plain QEMU by moving the disk to virtio-mmio. See
-  [`examples/nanos-hello`](examples/nanos-hello/README.md) for the diagnosis and repro.
+- **macOS/arm64** uses EFI boot with `KRUN_ACPI=1` and needs an image built with `"Uefi": true`.
+  It boots to userspace with a **patched Nanos kernel + bootloader** (nanos fork, branch
+  `fix/aarch64-libkrun-boot`, staged into `~/.ops/<version>-arm/`) and the libkrun fork's
+  level-SPI ack fix; stock 0.1.55 dies before userspace. See
+  [`examples/nanos-hello`](examples/nanos-hello/README.md) for the five root causes and the
+  staging steps.
 - **Linux/arm64** is not bootable today: the Nanos kernel links below libkrun's direct-kernel RAM
   base, and Linux hosts have no EFI path for it.
 

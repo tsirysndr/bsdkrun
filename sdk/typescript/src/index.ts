@@ -82,6 +82,7 @@ export type {
   FirmwareCreateOptions,
   KernelCreateOptions,
   UnikraftCreateOptions,
+  Solo5CreateOptions,
   NanosCreateOptions,
   OsvCreateOptions,
   BaseCreateOptions,
@@ -116,6 +117,7 @@ export type {
   RunBsdOptions,
   RunNanosOptions,
   RunUnikraftOptions,
+  RunSolo5Options,
   RunOsvOptions,
   RunFlavorOptions,
 } from "./client.js";

@@ -6,12 +6,21 @@ defmodule Bsdkrun.Args do
 
   Options are given as a keyword list or map, discriminated on `:os`
   (`:linux`, `:freebsd`, `:netbsd`, `:firmware`, `:kernel`, `:unikraft`,
-  `:nanos`, `:osv`). See
+  `:solo5`, `:nanos`, `:osv`). See
   `Bsdkrun.Sandbox.create/1` for the full set of per-kind keys.
   """
 
   @typedoc "The guest kind, discriminating `create/1` and mirrored by `SandboxInfo.kind`."
-  @type os :: :linux | :freebsd | :netbsd | :firmware | :kernel | :unikraft | :nanos | :osv
+  @type os ::
+          :linux
+          | :freebsd
+          | :netbsd
+          | :firmware
+          | :kernel
+          | :unikraft
+          | :solo5
+          | :nanos
+          | :osv
 
   @doc "Build the create argv (a list of strings) for the given options."
   @spec build_create([keyword() | map()]) :: [String.t()]
@@ -26,6 +35,7 @@ defmodule Bsdkrun.Args do
         :firmware -> firmware(opts)
         :kernel -> kernel(opts)
         :unikraft -> unikraft(opts)
+        :solo5 -> solo5(opts)
         :nanos -> nanos(opts)
         :osv -> osv(opts)
         other -> raise ArgumentError, "unknown os #{inspect(other)}"
@@ -133,6 +143,28 @@ defmodule Bsdkrun.Args do
     |> concat(name_args(o))
     |> concat(vm_args(o))
     |> concat([o[:path] || "."])
+  end
+
+  # Solo5 (MirageOS): runs under the `solo5-hvt` tender rather than libkrun.
+  # The unikernel declares its devices in its own MFT1 manifest, so only the
+  # `:block` backing files ("NAME=FILE") are passed. `:path` is a `.hvt`
+  # binary or a project dir whose `dist/` holds one; default ".". Guest
+  # `:args` go last, after a literal "--" — MirageOS options look like
+  # bsdkrun's own (e.g. --ipv4=...), so the CLI takes them as trailing args.
+  defp solo5(o) do
+    ["solo5", "-d"]
+    |> multi(o, :block, "--block")
+    |> concat(net_args(o[:net]))
+    |> concat(name_args(o))
+    |> concat(vm_args(o))
+    |> concat([o[:path] || "."])
+    |> concat(
+      case o[:args] do
+        nil -> []
+        [] -> []
+        args -> ["--" | args]
+      end
+    )
   end
 
   # --- shared fragment helpers ------------------------------------------------

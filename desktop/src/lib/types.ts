@@ -11,7 +11,7 @@ export interface Machine {
   id: string;
   name: string | null;
   image: string;
-  kind: string; // "linux" | "freebsd" | "netbsd" | "firmware" | "kernel" | "unikraft" | "nanos"
+  kind: string; // "linux" | "freebsd" | "netbsd" | "firmware" | "kernel" | "unikraft" | "nanos" | "osv" | "solo5"
   command: string;
   status: string; // "running" | "exited"
   running: boolean;
@@ -119,9 +119,10 @@ export interface Settings {
 // The Run dialog payload. Field names are snake_case to match the Rust
 // `RunSpec` struct exactly (nested structs are not camelCase-converted).
 export interface RunSpec {
-  kind: "linux" | "freebsd" | "netbsd" | "unikraft" | "nanos" | "osv";
+  kind: "linux" | "freebsd" | "netbsd" | "unikraft" | "nanos" | "osv" | "solo5";
   image?: string | null;
-  /** Unikraft only: a kraft project directory or a built unikernel image. */
+  /** Unikraft: a kraft project directory or a built unikernel image.
+   * Solo5: a `.hvt` binary, or a project directory whose `dist/` holds one. */
   path?: string | null;
   /** Unikraft/Nanos/OSv: kernel cmdline. For OSv, the application to run. */
   cmdline?: string | null;
@@ -149,6 +150,11 @@ export interface RunSpec {
   network?: string | null;
   name?: string | null;
   command: string[];
+  /** Solo5 only: backing files for declared block devices, `NAME=FILE`. */
+  blocks: string[];
+  /** Solo5 only: arguments passed to the unikernel itself. Separate from
+   * `command`, which means "run via the guest agent" — Solo5 has no agent. */
+  args: string[];
 }
 
 export type ViewKey = "machines" | "images" | "volumes" | "flavors" | "networks";

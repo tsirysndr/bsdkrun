@@ -169,12 +169,31 @@
     (vm-args opts)
     [(str (or (:path opts) "."))])))
 
+(defn solo5-args
+  "Solo5 (MirageOS): runs under the `solo5-hvt` tender rather than libkrun.
+  The unikernel declares its devices in its own MFT1 manifest, so only the
+  `:block` backing files (\"NAME=FILE\") are passed. `:path` is a `.hvt`
+  binary or a project dir whose `dist/` holds one; default `.`. Guest `:args`
+  go last, behind a literal \"--\" — MirageOS options look like bsdkrun's own
+  (e.g. --ipv4=...), so the CLI takes them as trailing args."
+  [opts]
+  (vec
+   (concat
+    ["solo5" "-d"]
+    (mapcat (fn [b] ["--block" b]) (util/as-seq (:block opts)))
+    (net-args (:net opts))
+    (name-args opts)
+    (vm-args opts)
+    [(str (or (:path opts) "."))]
+    (let [args (util/as-seq (:args opts))]
+      (when (seq args) (cons "--" args))))))
+
 (defn build-create-args
   "Build the full detached `create` argv for the given options.
 
   `opts` is a map discriminated on `:os` (a keyword, or the equivalent
   string — `:linux`, `:freebsd`, `:netbsd`, `:firmware`, `:kernel`,
-  `:unikraft`, `:nanos`, `:osv`).
+  `:unikraft`, `:solo5`, `:nanos`, `:osv`).
 
   Throws `errors/unknown-os` on an unrecognized `:os`."
   [opts]
@@ -185,6 +204,7 @@
     "firmware" (firmware-args opts)
     "kernel" (kernel-args opts)
     "unikraft" (unikraft-args opts)
+    "solo5" (solo5-args opts)
     "nanos" (nanos-args opts)
     "osv" (osv-args opts)
     (throw (errors/unknown-os (:os opts)))))

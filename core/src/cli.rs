@@ -116,7 +116,12 @@ pub enum Command {
     /// target — with the embedded `solo5-hvt` tender.
     ///
     /// Aliased as `mirage`, since that is what most people are running.
-    #[cfg(feature = "solo5")]
+    //
+    // Not gated on the `solo5` feature (a doc comment here would land in
+    // `--help`): like every boot command, the *definition* stays available so
+    // a non-booting consumer (the daemon) can describe the command and hand it
+    // to `bsdkrun-supervisor`. Only the implementation — the embedded tender —
+    // is feature-gated.
     #[command(visible_alias = "mirage")]
     Solo5(Solo5Args),
 
@@ -1116,7 +1121,6 @@ pub struct UnikraftArgs {
 /// [`crate::solo5`]. What is left is what only the host can know: how much
 /// memory to give it, what to back a block device with, and which ports to
 /// forward.
-#[cfg(feature = "solo5")]
 #[derive(Parser, Serialize, Deserialize)]
 pub struct Solo5Args {
     /// The unikernel to run: a `.hvt` binary, or a project directory whose

@@ -64,6 +64,7 @@ _RUN_LINUX_MUTATION = "mutation($input: RunLinuxInput!) { runLinux(input: $input
 _RUN_BSD_MUTATION = "mutation($input: RunBsdInput!) { runBsd(input: $input) }"
 _RUN_NANOS_MUTATION = "mutation($input: RunNanosInput!) { runNanos(input: $input) }"
 _RUN_UNIKRAFT_MUTATION = "mutation($input: RunUnikraftInput!) { runUnikraft(input: $input) }"
+_RUN_SOLO5_MUTATION = "mutation($input: RunSolo5Input!) { runSolo5(input: $input) }"
 _RUN_OSV_MUTATION = "mutation($input: RunOsvInput!) { runOsv(input: $input) }"
 _RUN_FLAVOR_MUTATION = "mutation($input: RunFlavorInput!) { runFlavor(input: $input) }"
 
@@ -223,6 +224,22 @@ def _run_unikraft_input(opts: Mapping[str, Any]) -> dict[str, Any]:
         "cmdline": opts.get("cmdline"),
         "initramfs": opts.get("initramfs"),
         "mounts": list(opts.get("mounts") or []),
+    }
+
+
+def _run_solo5_input(opts: Mapping[str, Any]) -> dict[str, Any]:
+    # Solo5 (MirageOS) runs under the `solo5-hvt` tender rather than libkrun.
+    # The unikernel declares its own network and block devices in its MFT1
+    # manifest note, so only what the host alone can know is asked for: block
+    # backing files ("NAME=FILE") and the unikernel's own args (e.g.
+    # "--ipv4=10.0.0.2/24"). Like unikraft, no disk and no agent.
+    return {
+        "path": opts.get("path"),
+        "cpus": opts.get("cpus"),
+        "mem": opts.get("mem"),
+        "net": _net_input(opts.get("net")),
+        "block": list(opts.get("block") or []),
+        "args": list(opts.get("args") or []),
     }
 
 
@@ -406,6 +423,10 @@ class Client:
     def run_unikraft(self, **opts: Any) -> str:
         data = self.request(_RUN_UNIKRAFT_MUTATION, {"input": _run_unikraft_input(opts)})
         return str(data["runUnikraft"])
+
+    def run_solo5(self, **opts: Any) -> str:
+        data = self.request(_RUN_SOLO5_MUTATION, {"input": _run_solo5_input(opts)})
+        return str(data["runSolo5"])
 
     def run_osv(self, **opts: Any) -> str:
         data = self.request(_RUN_OSV_MUTATION, {"input": _run_osv_input(opts)})

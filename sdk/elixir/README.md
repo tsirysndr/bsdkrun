@@ -127,7 +127,7 @@ Bsdkrun.remove(box, force: true)
 ```
 
 `SandboxInfo.kind` is an atom — `:linux`, `:freebsd`, `:netbsd`, `:firmware`,
-`:kernel`, `:unikraft`, `:nanos`, or `:osv` — the same vocabulary `create/1`
+`:kernel`, `:unikraft`, `:solo5`, `:nanos`, or `:osv` — the same vocabulary `create/1`
 takes for `:os`, so you can match on it directly:
 `case info.kind do :freebsd -> ...; :netbsd -> ...; _ -> ... end`.
 
@@ -259,7 +259,7 @@ Bsdkrun.Client.stop(client, id)
 Bsdkrun.Client.remove(client, [id])
 ```
 
-`Client.run_linux`/`run_bsd`/`run_nanos`/`run_unikraft`/`run_osv`/`run_flavor`
+`Client.run_linux`/`run_bsd`/`run_nanos`/`run_unikraft`/`run_solo5`/`run_osv`/`run_flavor`
 each take the same options (a keyword list or map) as the corresponding
 GraphQL mutation (`daemon/src/graphql.rs`) — `run_bsd(client, os: :freebsd, ...)`,
 etc. — and return the new machine's id. `stop`/`start`/`remove`/`update`/

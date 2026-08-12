@@ -163,6 +163,35 @@ export interface UnikraftCreateOptions extends BaseCreateOptions {
 }
 
 /**
+ * Boot a Solo5 (MirageOS) unikernel (`bsdkrun solo5`).
+ *
+ * Runs under the `solo5-hvt` tender rather than libkrun. The unikernel
+ * declares its own network and block devices in its `MFT1` manifest note, so
+ * only what the host alone can know is asked for here. Like unikraft there is
+ * no disk and no agent — `exec`, `shell` and `snapshot` do not apply; read
+ * its output with `logs`. Always a single vCPU — `cpus` above 1 is warned
+ * about and ignored.
+ */
+export interface Solo5CreateOptions extends BaseCreateOptions {
+  os: "solo5";
+  /**
+   * A `.hvt` binary, or a project directory whose `dist/` holds one (where
+   * `mirage build` leaves it). Defaults to `"."`.
+   */
+  path?: string;
+  /**
+   * Backing files for declared block devices, each `"NAME=FILE"`. The
+   * `NAME=` may be omitted when the unikernel declares exactly one.
+   */
+  block?: string[];
+  /**
+   * Arguments passed to the unikernel itself, e.g. MirageOS's
+   * `"--ipv4=10.0.0.2/24"`.
+   */
+  args?: string[];
+}
+
+/**
  * Boot a Nanos (NanoVMs) unikernel image (`bsdkrun nanos`).
  *
  * Like unikraft, there is no agent — `exec`, `shell` and `snapshot` do not
@@ -224,6 +253,7 @@ export type CreateOptions =
   | FirmwareCreateOptions
   | KernelCreateOptions
   | UnikraftCreateOptions
+  | Solo5CreateOptions
   | NanosCreateOptions
   | OsvCreateOptions;
 
@@ -235,6 +265,7 @@ export type GuestKind =
   | "firmware"
   | "kernel"
   | "unikraft"
+  | "solo5"
   | "nanos"
   | "osv";
 

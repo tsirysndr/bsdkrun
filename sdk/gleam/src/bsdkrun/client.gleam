@@ -641,6 +641,51 @@ pub fn run_unikraft(
   )
 }
 
+/// `RunSolo5Input` (`daemon/src/graphql.rs`). Solo5 (MirageOS) runs under
+/// the `solo5-hvt` tender rather than libkrun; the unikernel declares its
+/// own network and block devices in its `MFT1` manifest note, so only what
+/// the host alone can know is carried: `block` backing files (`"NAME=FILE"`)
+/// and the `args` handed to the unikernel itself. Always a single vCPU —
+/// `cpus` above 1 is warned about and ignored. No disk, no agent.
+pub type RunSolo5Options {
+  RunSolo5Options(
+    path: Option(String),
+    cpus: Option(Int),
+    mem: Option(Int),
+    net: Option(NetOptions),
+    block: List(String),
+    args: List(String),
+  )
+}
+
+/// Defaults for `RunSolo5Options`: everything unset/empty (`path` defaults
+/// to `"."` daemon-side when left `None`).
+pub fn run_solo5_options() -> RunSolo5Options {
+  RunSolo5Options(path: None, cpus: None, mem: None, net: None, block: [], args: [])
+}
+
+/// Boot a Solo5 (MirageOS) unikernel, detached. Returns the new machine's id.
+pub fn run_solo5(
+  client: Client,
+  opts opts: RunSolo5Options,
+) -> Result(String, Error) {
+  let input =
+    json.object([
+      #("path", json.nullable(opts.path, json.string)),
+      #("cpus", json.nullable(opts.cpus, json.int)),
+      #("mem", json.nullable(opts.mem, json.int)),
+      #("net", net_json(opts.net)),
+      #("block", json.array(opts.block, json.string)),
+      #("args", json.array(opts.args, json.string)),
+    ])
+  run_mutation(
+    client,
+    "mutation($input: RunSolo5Input!) { runSolo5(input: $input) }",
+    json.object([#("input", input)]),
+    "runSolo5",
+  )
+}
+
 /// `RunOsvInput` (`daemon/src/graphql.rs` ~line 467). Like Nanos, no agent —
 /// but it does have a root filesystem, so unlike Unikraft it takes the disk
 /// options.

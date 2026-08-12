@@ -115,6 +115,13 @@ pub fn dispatch(cmd: Command) -> Result<()> {
         Command::Osv(args) => commands::boot::boot_osv(args),
         #[cfg(feature = "solo5")]
         Command::Solo5(args) => commands::solo5::cmd_solo5(args),
+        // The variant always exists (the daemon needs to *describe* the
+        // command); only the implementation is feature-gated.
+        #[cfg(not(feature = "solo5"))]
+        Command::Solo5(_) => anyhow::bail!(
+            "this build has no solo5 support: it was compiled without the `solo5` feature. \
+             Rebuild with `--features solo5` (and the library/solo5 submodule checked out)."
+        ),
         Command::Ps(args) => commands::machines::cmd_ps(args.all, args.json),
         Command::Images(args) => commands::images::cmd_images(args.json),
         Command::Stop(args) => commands::machines::cmd_stop(&args.id),

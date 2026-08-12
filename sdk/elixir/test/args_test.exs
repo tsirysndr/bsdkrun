@@ -200,6 +200,37 @@ defmodule Bsdkrun.ArgsTest do
     end
   end
 
+  describe "solo5" do
+    # The "--" matters: MirageOS options look like bsdkrun's own flags
+    # (e.g. --ipv4=…), so guest args ride behind the separator, last.
+    test "blocks come first, guest args last behind --" do
+      argv =
+        Args.build_create(
+          os: :solo5,
+          path: "hello.hvt",
+          block: ["storage=disk.img"],
+          mem: 256,
+          args: ["--ipv4=10.0.0.2/24"]
+        )
+
+      assert argv == [
+               "solo5",
+               "-d",
+               "--block",
+               "storage=disk.img",
+               "--mem",
+               "256",
+               "hello.hvt",
+               "--",
+               "--ipv4=10.0.0.2/24"
+             ]
+    end
+
+    test "no guest args means no separator, and the path defaults to ." do
+      assert Args.build_create(os: :solo5) == ["solo5", "-d", "."]
+    end
+  end
+
   test "accepts a map with string keys and a string os" do
     argv = Args.build_create(%{"os" => "linux", "image" => "alpine", "name" => "x"})
     assert argv == ["linux", "alpine", "-d", "--name", "x"]

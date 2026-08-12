@@ -457,6 +457,41 @@ pub struct RunUnikraftInput {
     pub mounts: Vec<String>,
 }
 
+/// Solo5 (MirageOS): runs under the `solo5-hvt` tender rather than libkrun.
+/// The unikernel declares its own network and block devices in its `MFT1`
+/// manifest note, so only what the host alone can know is asked for here.
+/// Always a single vCPU — `cpus` above 1 is warned about and ignored.
+#[derive(InputObject)]
+pub struct RunSolo5Input {
+    /// A `.hvt` binary, or a project directory whose `dist/` holds one (where
+    /// `mirage build` leaves it). Defaults to ".".
+    pub path: Option<String>,
+    pub cpus: Option<u32>,
+    pub mem: Option<u32>,
+    pub net: Option<NetInput>,
+    /// Backing files for declared block devices, each "NAME=FILE". The NAME=
+    /// may be omitted when the unikernel declares exactly one.
+    #[graphql(default)]
+    pub block: Vec<String>,
+    /// Arguments passed to the unikernel itself (e.g. MirageOS's
+    /// "--ipv4=10.0.0.2/24").
+    #[graphql(default)]
+    pub args: Vec<String>,
+}
+
+impl From<RunSolo5Input> for ops::RunSolo5Opts {
+    fn from(input: RunSolo5Input) -> Self {
+        ops::RunSolo5Opts {
+            path: input.path,
+            cpus: input.cpus,
+            mem: input.mem,
+            net: input.net.map(Into::into).unwrap_or_default(),
+            block: input.block,
+            args: input.args,
+        }
+    }
+}
+
 /// OSv: like nanos there is no agent (no exec/shell/snapshot), but it does
 /// have a root filesystem, so the disk options apply.
 #[derive(InputObject)]
@@ -841,6 +876,15 @@ impl Mutation {
             mounts: input.mounts,
         };
         api(ctx)?.ops.run_unikraft(&opts).await.map_err(gql_err)
+    }
+
+    async fn run_solo5(
+        &self,
+        ctx: &Context<'_>,
+        input: RunSolo5Input,
+    ) -> async_graphql::Result<String> {
+        let opts: ops::RunSolo5Opts = input.into();
+        api(ctx)?.ops.run_solo5(&opts).await.map_err(gql_err)
     }
 
     async fn run_osv(
@@ -1252,6 +1296,18 @@ impl Subscription_ {
             initramfs: input.initramfs,
             mounts: input.mounts,
         };
+        Ok(launch_stream(api.ops.clone(), opts.to_command()))
+    }
+
+    /// Boot a Solo5 (MirageOS) unikernel, streaming progress until its id is
+    /// known.
+    async fn launch_solo5(
+        &self,
+        ctx: &Context<'_>,
+        input: RunSolo5Input,
+    ) -> async_graphql::Result<impl Stream<Item = LaunchEvent>> {
+        let api = api(ctx)?;
+        let opts: ops::RunSolo5Opts = input.into();
         Ok(launch_stream(api.ops.clone(), opts.to_command()))
     }
 

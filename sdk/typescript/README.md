@@ -295,10 +295,13 @@ await client.stop(id);
 await client.remove([id]);
 ```
 
-`client.runLinux`/`runBsd`/`runNanos`/`runUnikraft`/`runOsv`/`runFlavor` each
-take the same fields as the corresponding GraphQL mutation
+`client.runLinux`/`runBsd`/`runNanos`/`runUnikraft`/`runSolo5`/`runOsv`/
+`runFlavor` each take the same fields as the corresponding GraphQL mutation
 (`daemon/src/graphql.rs`) — `runBsd({ os: "FREEBSD", ... })`, etc. — and
-return the new machine's id. `stop`/`start`/`remove`/`update`/`commit` return
+return the new machine's id. `runSolo5` boots a MirageOS unikernel under the
+`solo5-hvt` tender rather than libkrun:
+`runSolo5({ path: "dist/hello.hvt", args: ["--ipv4=10.0.0.2/24"] })`.
+`stop`/`start`/`remove`/`update`/`commit` return
 a `RemoteCommandResult` (`{exitCode, stdout, stderr}`).
 
 For a live terminal instead of a one-shot `exec`, use `shell()`:

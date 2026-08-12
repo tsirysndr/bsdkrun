@@ -30,13 +30,13 @@ and every namespace is a set of functions over plain maps.
 Via `deps.edn`:
 
 ```clojure
-io.github.tsirysndr/bsdkrun {:mvn/version "0.1.1"}
+io.github.tsirysndr/bsdkrun {:mvn/version "0.2.0"}
 ```
 
 Via Leiningen:
 
 ```clojure
-[io.github.tsirysndr/bsdkrun "0.1.1"]
+[io.github.tsirysndr/bsdkrun "0.2.0"]
 ```
 
 ### The `bsdkrun` binary
@@ -301,7 +301,7 @@ first, exactly like `bsdkrun.sandbox`'s functions take a `sandbox` map first.
 (client/remove! c [id])
 ```
 
-`run-linux!`/`run-bsd!`/`run-nanos!`/`run-unikraft!`/`run-osv!`/`run-flavor!`
+`run-linux!`/`run-bsd!`/`run-nanos!`/`run-unikraft!`/`run-solo5!`/`run-osv!`/`run-flavor!`
 each take the same options as the corresponding GraphQL mutation
 (`daemon/src/graphql.rs`) — kebab-case keys mapped 1:1 onto the wire's
 camelCase fields (`:kernel-version` -> `kernelVersion`, `:attach-disk` ->

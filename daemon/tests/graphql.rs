@@ -329,6 +329,40 @@ async fn run_unikraft_passes_each_volume_as_its_own_mount() {
     );
 }
 
+/// Solo5 runs under its tender rather than libkrun, but over the wire it is
+/// one more unikernel: no disk flags, no agent, and never a tender override —
+/// which tender to run is the daemon host's business, so the daemon always
+/// hands over `tender: null`.
+#[tokio::test]
+async fn run_solo5_carries_blocks_and_guest_args_but_never_a_tender() {
+    let h = Harness::new();
+    let d = h
+        .query(
+            r#"mutation { runSolo5(input: {
+                path: "~/hello.hvt", mem: 256,
+                block: ["storage=~/disk.img"], args: ["--ipv4=10.0.0.2/24"]
+            }) }"#,
+        )
+        .await;
+    assert_eq!(json(&d)["runSolo5"], "m-boot-001");
+    let a = &h.last_command()["Solo5"];
+    assert_eq!(a["path"], "~/hello.hvt");
+    assert_eq!(a["vm"]["mem"], 256);
+    assert_eq!(a["block"], serde_json::json!(["storage=~/disk.img"]));
+    assert_eq!(a["args"], serde_json::json!(["--ipv4=10.0.0.2/24"]));
+    assert_eq!(a["tender"], serde_json::Value::Null);
+    assert_eq!(a["detach"], true);
+}
+
+/// Like unikraft's path, solo5's defaults to "." when the input omits it.
+#[tokio::test]
+async fn run_solo5_defaults_the_path_to_the_current_directory() {
+    let h = Harness::new();
+    h.query(r#"mutation { runSolo5(input: {}) }"#).await;
+    let a = &h.last_command()["Solo5"];
+    assert_eq!(a["path"], ".");
+}
+
 /// Nanos: flags stay before the positional image, and persist is the one
 /// disk option a unikernel with a real root disk takes.
 #[tokio::test]

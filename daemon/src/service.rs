@@ -360,6 +360,25 @@ impl Bsdkrun for BsdkrunService {
         }))
     }
 
+    async fn run_solo5(
+        &self,
+        req: Request<RunSolo5Request>,
+    ) -> Result<Response<RunResponse>, Status> {
+        let r = req.into_inner();
+        let (cpus, mem) = vm_opts(r.vm);
+        let opts = ops::RunSolo5Opts {
+            path: r.path,
+            cpus,
+            mem,
+            net: net_opts(r.net),
+            block: r.block,
+            args: r.args,
+        };
+        Ok(Response::new(RunResponse {
+            id: self.ops.run_solo5(&opts).await?,
+        }))
+    }
+
     async fn run_osv(&self, req: Request<RunOsvRequest>) -> Result<Response<RunResponse>, Status> {
         let r = req.into_inner();
         let (cpus, mem) = vm_opts(r.vm);

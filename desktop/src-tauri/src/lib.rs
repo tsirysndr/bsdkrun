@@ -628,7 +628,7 @@ async fn system_stats(state: State<'_, AppState>) -> Result<system::SystemStats,
 /// always runs detached (`-d`).
 #[derive(Debug, Deserialize)]
 pub struct RunSpec {
-    pub kind: String, // "linux" | "freebsd" | "netbsd" | "unikraft" | "nanos" | "osv"
+    pub kind: String, // "linux" | "freebsd" | "netbsd" | "unikraft" | "nanos" | "osv" | "solo5"
     #[serde(default)]
     pub image: Option<String>,
     /// Unikraft only: a `kraft` project directory (the image is found under its
@@ -688,6 +688,14 @@ pub struct RunSpec {
     pub name: Option<String>,
     #[serde(default)]
     pub command: Vec<String>,
+    /// Solo5 only: backing files for declared block devices, `NAME=FILE`.
+    #[serde(default)]
+    pub blocks: Vec<String>,
+    /// Solo5 only: arguments passed to the unikernel itself. Kept separate
+    /// from `command` — that means "run via the guest agent" elsewhere, and a
+    /// Solo5 guest has no agent.
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 fn nonempty(s: &Option<String>) -> Option<&str> {
@@ -702,8 +710,11 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
     let unikraft = spec.kind == "unikraft";
     let nanos = spec.kind == "nanos";
     let osv = spec.kind == "osv";
+    // Solo5 runs under its own tender rather than libkrun, but takes the same
+    // shape of argv — and it is one more agent-less unikernel to the UI.
+    let solo5 = spec.kind == "solo5";
     // Every unikernel kind: no volume/repo/command, since none has an agent.
-    let unikernel = unikraft || nanos || osv;
+    let unikernel = unikraft || nanos || osv || solo5;
 
     if bsd {
         if let Some(v) = nonempty(&spec.version) {
@@ -820,6 +831,24 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
         let image = nonempty(&spec.image)
             .ok_or_else(|| BkError::Parse("an image is required for osv".into()))?;
         a.push(image.into());
+    } else if solo5 {
+        // The unikernel declares its own devices (MFT1 note); the host only
+        // supplies what backs a declared block device.
+        for b in &spec.blocks {
+            if !b.is_empty() {
+                a.push("--block".into());
+                a.push(b.clone());
+            }
+        }
+        // The path is positional; default to "." like the CLI.
+        a.push(nonempty(&spec.path).unwrap_or(".").into());
+        // Guest arguments go last, behind a literal "--": MirageOS options
+        // look exactly like bsdkrun's own flags (e.g. --ipv4=…), so without
+        // the separator the CLI would eat them. Only emit it when needed.
+        if !spec.args.is_empty() {
+            a.push("--".into());
+            a.extend(spec.args.iter().cloned());
+        }
     } else {
         // BSD: grow the root disk + attach extra virtio-blk disks.
         if let Some(sz) = nonempty(&spec.disk_size) {

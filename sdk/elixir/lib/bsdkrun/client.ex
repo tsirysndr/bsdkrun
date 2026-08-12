@@ -441,6 +441,33 @@ defmodule Bsdkrun.Client do
     with {:ok, data} <- gql(client, mutation, %{input: input}), do: {:ok, data["runUnikraft"]}
   end
 
+  @doc """
+  Boot a Solo5 (MirageOS) unikernel. `opts` maps to `RunSolo5Input`.
+
+  Runs under the `solo5-hvt` tender rather than libkrun; the unikernel
+  declares its own network and block devices in its `MFT1` manifest note, so
+  only host-side facts are taken: `:path` (a `.hvt` binary or a project dir
+  whose `dist/` holds one, default "."), `:block` backing files ("NAME=FILE"),
+  and `:args` handed to the unikernel itself. Always a single vCPU — `:cpus`
+  above 1 is warned about and ignored. No disk, no agent — no `exec/4`/`commit/4`.
+  """
+  @spec run_solo5(t(), keyword() | map()) :: {:ok, String.t()} | {:error, Error.t()}
+  def run_solo5(client, opts \\ []) do
+    o = to_map(opts)
+
+    input = %{
+      path: Map.get(o, :path),
+      cpus: Map.get(o, :cpus),
+      mem: Map.get(o, :mem),
+      net: net_input(Map.get(o, :net)),
+      block: Map.get(o, :block, []),
+      args: Map.get(o, :args, [])
+    }
+
+    mutation = "mutation($input: RunSolo5Input!) { runSolo5(input: $input) }"
+    with {:ok, data} <- gql(client, mutation, %{input: input}), do: {:ok, data["runSolo5"]}
+  end
+
   @doc "Boot an OSv unikernel. `opts` maps to `RunOsvInput`. No agent — no `exec/4`/`commit/4`."
   @spec run_osv(t(), keyword() | map()) :: {:ok, String.t()} | {:error, Error.t()}
   def run_osv(client, opts) do

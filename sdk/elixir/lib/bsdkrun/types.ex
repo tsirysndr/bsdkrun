@@ -308,7 +308,7 @@ defmodule Bsdkrun.Types do
   end
 
   # `kind` is one of bsdkrun's own guest kinds (`linux` / `freebsd` / `netbsd` /
-  # `firmware` / `kernel` / `unikraft` / `nanos` / `osv`) — a small, trusted
+  # `firmware` / `kernel` / `unikraft` / `solo5` / `nanos` / `osv`) — a small, trusted
   # vocabulary, not user input — so turning it into an atom (matching the
   # `:os` atoms `create/1` already takes) can't exhaust the atom table.
   defp kind_atom(nil), do: nil

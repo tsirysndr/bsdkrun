@@ -139,8 +139,8 @@ its own — the CLI has no change feed, so this genuinely polls).
 ### Machines are always detached
 
 The daemon outlives any single RPC, so a foreground VM would have nowhere to
-live. `RunLinux` / `RunBsd` / `RunUnikraft` / `RunNanos` / `RunOsv` / `RunFlavor`
-return a machine id;
+live. `RunLinux` / `RunBsd` / `RunUnikraft` / `RunNanos` / `RunOsv` /
+`RunSolo5` / `RunFlavor` return a machine id;
 use `Logs` to watch it boot and `Exec` to get a shell.
 
 `RunUnikraft` boots a [Unikraft](https://unikraft.org) unikernel — the
@@ -149,11 +149,20 @@ because such a guest has no disk and no in-guest agent; `Exec` and `Commit`
 are rejected for the machines it creates, and `Logs` is how you read their
 output.
 
-`RunNanos` and `RunOsv` boot the other two unikernels. They share the "no
+`RunNanos` and `RunOsv` boot two more unikernels. They share the "no
 agent, so no `Exec` and no `Commit`" contract, but both have a root
 filesystem, so unlike `RunUnikraft` they do take the disk options — `RunOsv`
 in particular takes a `disk` of its own, which is how an x86_64 guest is
 given a filesystem (its loader ELF is kernel only).
+
+`RunSolo5` boots a [Solo5](https://github.com/Solo5/solo5) unikernel —
+MirageOS, mostly. It is the one guest that does not run under libkrun: the
+daemon's supervisor spawns the embedded `solo5-hvt` tender, which is itself
+the hypervisor front end. Over the wire it is just another unikernel (no
+disk options, no agent); the unikernel declares its own network and block
+devices in its `MFT1` manifest note, so the request carries only what the
+host alone can know — memory, port forwards, `NAME=FILE` block backings, and
+the arguments handed to the unikernel itself.
 
 ## How a remote interactive shell works
 

@@ -30,8 +30,9 @@ export const TOKEN_ENV = "BSDKRUN_TOKEN";
 // ---------------------------------------------------------------------------
 // GraphQL input shapes — transcribed field-for-field from the `InputObject`s
 // in daemon/src/graphql.rs (RunLinuxInput ~384, RunBsdInput ~406,
-// RunNanosInput ~428, RunUnikraftInput ~449, RunOsvInput ~467, RunFlavorInput
-// ~506, NetInput ~360, BsdOs ~324). Rust's `snake_case` fields arrive here
+// RunNanosInput ~429, RunUnikraftInput ~445, RunSolo5Input ~465, RunOsvInput
+// ~498, RunFlavorInput ~541, NetInput ~360, BsdOs ~324). Rust's `snake_case`
+// fields arrive here
 // already `camelCase` (async-graphql's default rename), so these match the
 // wire 1:1 with no local renaming — unlike `CreateOptions` in types.ts, which
 // shapes CLI arguments instead.
@@ -108,6 +109,32 @@ export interface RunUnikraftOptions {
   initramfs?: string;
   /** Persistent volumes over virtio-fs, each `"HOST:GUEST"` with an absolute guest path. */
   mounts?: string[];
+}
+
+/**
+ * Solo5 (MirageOS): runs under the `solo5-hvt` tender rather than libkrun.
+ * The unikernel declares its own network and block devices in its `MFT1`
+ * manifest note, so only what the host alone can know is asked for. Like
+ * Unikraft there is no disk and no agent, so no volume/persist/repo/command
+ * fields.
+ */
+export interface RunSolo5Options {
+  /**
+   * A `.hvt` binary, or a project directory whose `dist/` holds one (where
+   * `mirage build` leaves it). Defaults to `"."`.
+   */
+  path?: string;
+  /** Always a single vCPU — a value above 1 is warned about and ignored. */
+  cpus?: number;
+  mem?: number;
+  net?: NetOptions;
+  /**
+   * Backing files for declared block devices, each `"NAME=FILE"`. The
+   * `NAME=` may be omitted when the unikernel declares exactly one.
+   */
+  block?: string[];
+  /** Arguments passed to the unikernel itself, e.g. MirageOS's `"--ipv4=10.0.0.2/24"`. */
+  args?: string[];
 }
 
 /** OSv: like Nanos there is no agent, but it does have a root filesystem, so the disk options apply. */
@@ -531,6 +558,14 @@ export class Client {
       { i: opts },
     );
     return d.runUnikraft;
+  }
+
+  async runSolo5(opts: RunSolo5Options): Promise<string> {
+    const d = await this.request<{ runSolo5: string }>(
+      `mutation($i:RunSolo5Input!){ runSolo5(input:$i) }`,
+      { i: opts },
+    );
+    return d.runSolo5;
   }
 
   async runOsv(opts: RunOsvOptions): Promise<string> {

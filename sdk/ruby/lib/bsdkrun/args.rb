@@ -66,6 +66,7 @@ module Bsdkrun
       when "firmware" then firmware_args(opts)
       when "kernel"   then kernel_args(opts)
       when "unikraft" then unikraft_args(opts)
+      when "solo5"    then solo5_args(opts)
       when "nanos"    then nanos_args(opts)
       when "osv"      then osv_args(opts)
       else raise ArgumentError, "unknown os: #{opts[:os].inspect}"
@@ -166,6 +167,25 @@ module Bsdkrun
       Array(opts[:mounts]).each { |m| a.push("--mount", m) }
       a.concat(net_args(opts[:net])).concat(name_args(opts)).concat(vm_args(opts))
       a.push((opts[:path] || ".").to_s)
+    end
+
+    # @!visibility private
+    #
+    # Solo5 (MirageOS): runs under the +solo5-hvt+ tender rather than libkrun.
+    # The unikernel declares its devices in its own MFT1 manifest, so only the
+    # +:block+ backing files (+NAME=FILE+) are passed. +:path+ is a +.hvt+
+    # binary or a project dir whose +dist/+ holds one; default +.+. Guest
+    # +:args+ go last, after a literal +--+ — MirageOS options look like
+    # bsdkrun's own (e.g. +--ipv4=...+), so the CLI takes them as trailing
+    # args.
+    def solo5_args(opts)
+      a = ["solo5", "-d"]
+      Array(opts[:block]).each { |b| a.push("--block", b) }
+      a.concat(net_args(opts[:net])).concat(name_args(opts)).concat(vm_args(opts))
+      a.push((opts[:path] || ".").to_s)
+      args = Array(opts[:args])
+      a.push("--", *args) unless args.empty?
+      a
     end
   end
 end

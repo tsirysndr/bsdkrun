@@ -29,7 +29,7 @@ printf -- '---\n' >> "$LOG"
 
 SPEC="$2"
 case "$SPEC" in
-*'"Linux"'*|*'"Freebsd"'*|*'"Netbsd"'*|*'"Unikraft"'*|*'"Nanos"'*|*'"Osv"'*|*'"Flavor"'*)
+*'"Linux"'*|*'"Freebsd"'*|*'"Netbsd"'*|*'"Unikraft"'*|*'"Nanos"'*|*'"Osv"'*|*'"Solo5"'*|*'"Flavor"'*)
   # A boot command prints the new machine id on stdout and exits.
   echo "m-boot-001"; exit 0 ;;
 *'"Logs"'*)

@@ -78,6 +78,26 @@ pub type Guest {
     mounts: List(String),
   )
 
+  /// Boot a Solo5 unikernel — MirageOS and anything else built for the `hvt`
+  /// target — under the `solo5-hvt` tender rather than libkrun.
+  ///
+  /// The unikernel declares its own network and block devices in its `MFT1`
+  /// manifest note, so only the host-side halves are taken here: the backing
+  /// file behind each declared block device, and the arguments handed to the
+  /// unikernel itself. Always a single vCPU — a `cpus` above 1 is warned
+  /// about and ignored. Like Unikraft there is no disk and no agent: neither
+  /// `exec` nor `shell` nor snapshots apply, and `logs` reads its output.
+  Solo5(
+    /// A `.hvt` binary, or a project directory whose `dist/` holds one
+    /// (where `mirage build` leaves it). `"."` for the current directory.
+    path: String,
+    /// Backing files for declared block devices, each `"NAME=FILE"`. The
+    /// `NAME=` may be omitted when the unikernel declares exactly one.
+    block: List(String),
+    /// Arguments for the unikernel itself, e.g. `"--ipv4=10.0.0.2/24"`.
+    args: List(String),
+  )
+
   /// Boot an OSv unikernel image.
   ///
   /// Like the other unikernels there is no agent, so neither `exec` nor
@@ -188,6 +208,12 @@ pub fn nanos(image: String) -> CreateOptions {
 /// built image. Pass `"."` for the current directory.
 pub fn unikraft(path: String) -> CreateOptions {
   new(Unikraft(path: path, cmdline: None, initramfs: None, mounts: []))
+}
+
+/// Boot the Solo5 unikernel at `path` — a `.hvt` binary or a project
+/// directory whose `dist/` holds one. Pass `"."` for the current directory.
+pub fn solo5(path: String) -> CreateOptions {
+  new(Solo5(path: path, block: [], args: []))
 }
 
 /// Boot the OSv image `image` — a `loader.img`, or on x86_64 a loader ELF
@@ -429,6 +455,19 @@ fn try_guest(
         ]),
       )
 
+    Solo5(path: "", ..) ->
+      Error(InvalidOptions(
+        "solo5 guests need a non-empty path (\".\" for the current directory)",
+      ))
+    Solo5(path:, block:, args: _) ->
+      next(
+        list.flatten([
+          ["solo5", "-d"],
+          multi("--block", block),
+          [path],
+        ]),
+      )
+
     Osv(image: "", ..) ->
       Error(InvalidOptions("osv guests need a non-empty image"))
     Osv(image:, cmdline:, disk:, gic:) ->
@@ -452,6 +491,9 @@ fn disk_args(opts: CreateOptions) -> List(String) {
     Linux(..) -> opt("-v", opts.volume)
     // A unikernel has no disk, so there is nothing to persist or attach.
     Unikraft(..) -> []
+    // Solo5 block devices are declared by the unikernel and backed via
+    // `--block` in the guest head; the shared disk options do not apply.
+    Solo5(..) -> []
     // Nanos: persist is emitted with the guest args; no volume/attach-disk.
     Nanos(..) -> []
     // OSv: same as Nanos — persist rides with the guest args.
@@ -487,11 +529,16 @@ fn vm_args(opts: CreateOptions) -> List(String) {
   ])
 }
 
-/// A trailing `-- cmd args…`, Linux guests only.
+/// A trailing `-- cmd args…` — Linux's guest command, or Solo5's unikernel
+/// arguments. Solo5 needs the separator most: MirageOS options look exactly
+/// like bsdkrun's own flags (e.g. `--ipv4=…`), and only `--` stops the CLI
+/// from eating them.
 fn command_args(opts: CreateOptions) -> List(String) {
   case opts.guest {
     Linux(command: [], ..) -> []
     Linux(command: cmd, ..) -> ["--", ..cmd]
+    Solo5(args: [], ..) -> []
+    Solo5(args: args, ..) -> ["--", ..args]
     _ -> []
   }
 }

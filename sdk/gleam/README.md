@@ -243,7 +243,7 @@ let assert Ok(_) = client.stop(c, id: id)
 let assert Ok(_) = client.remove(c, ids: [id], force: False)
 ```
 
-`client.run_linux`/`run_bsd`/`run_nanos`/`run_unikraft`/`run_osv`/`run_flavor`
+`client.run_linux`/`run_bsd`/`run_nanos`/`run_unikraft`/`run_solo5`/`run_osv`/`run_flavor`
 each take an `Options` record built from a `*_options(...)` default
 constructor (`run_bsd_options`, `run_nanos_options`, ...) and Gleam's record
 update syntax, matching the corresponding GraphQL mutation's fields

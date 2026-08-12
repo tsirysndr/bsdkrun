@@ -17,7 +17,7 @@ use bsdkrun_core::api;
 use bsdkrun_core::cli::{
     BsdArgs, Command as CoreCommand, ExecArgs, FetchArgs, FlavorAddArgs, FlavorArgs, FlavorCmd,
     FlavorPrebuildArgs, FlavorRunArgs, IdArgs, LinuxArgs, LogsArgs, NanosArgs, NetConfig, OsvArgs,
-    RunConfig, SshArgs, SystemdArgs, TailscaleArgs, UnikraftArgs, VmConfig,
+    RunConfig, Solo5Args, SshArgs, SystemdArgs, TailscaleArgs, UnikraftArgs, VmConfig,
 };
 use bsdkrun_core::net::PortForward;
 
@@ -240,6 +240,40 @@ impl RunUnikraftOpts {
             detach: true,
             net: self.net.to_config(),
             vm: vm_config(self.cpus, self.mem),
+        })
+    }
+}
+
+/// Solo5 (MirageOS): runs under the `solo5-hvt` tender rather than libkrun,
+/// but the machine lands in the same database, so everything downstream
+/// (ps/logs/stop) is unchanged. The unikernel declares its own devices in its
+/// `MFT1` note; what crosses here is only what the host can know.
+#[derive(Debug, Default, Clone)]
+pub struct RunSolo5Opts {
+    /// A `.hvt` binary or a project directory whose `dist/` holds one.
+    /// Empty = ".".
+    pub path: Option<String>,
+    pub cpus: Option<u32>,
+    pub mem: Option<u32>,
+    pub net: NetOpts,
+    /// Backing files for declared block devices, each "NAME=FILE".
+    pub block: Vec<String>,
+    /// Arguments passed to the unikernel itself (e.g. MirageOS's `--ipv4=…`).
+    pub args: Vec<String>,
+}
+
+impl RunSolo5Opts {
+    pub fn to_command(&self) -> CoreCommand {
+        // No tender override: which tender to run is the *host's* business,
+        // and a remote caller has no path on this machine to name anyway.
+        CoreCommand::Solo5(Solo5Args {
+            path: self.path.as_deref().map_or_else(|| ".".into(), Into::into),
+            block: self.block.clone(),
+            tender: None,
+            detach: true,
+            net: self.net.to_config(),
+            vm: vm_config(self.cpus, self.mem),
+            args: self.args.clone(),
         })
     }
 }
@@ -641,6 +675,10 @@ impl Ops {
     }
 
     pub async fn run_unikraft(&self, opts: &RunUnikraftOpts) -> OpResult<String> {
+        Ok(self.supervisor.detached(&opts.to_command()).await?)
+    }
+
+    pub async fn run_solo5(&self, opts: &RunSolo5Opts) -> OpResult<String> {
         Ok(self.supervisor.detached(&opts.to_command()).await?)
     }
 

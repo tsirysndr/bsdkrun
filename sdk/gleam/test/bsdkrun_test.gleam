@@ -396,6 +396,29 @@ pub fn unikraft_without_volumes_test() {
   |> should.equal(["unikraft", "-d", "."])
 }
 
+// Solo5's guest args ride behind a literal "--", last: MirageOS options look
+// exactly like bsdkrun's own flags (e.g. --ipv4=…), and only the separator
+// stops the CLI from eating them. Blocks are host-side backings for devices
+// the unikernel itself declares.
+pub fn solo5_with_blocks_and_guest_args_test() {
+  build(
+    args.new(
+      args.Solo5(path: "hello.hvt", block: ["storage=disk.img"], args: [
+        "--ipv4=10.0.0.2/24",
+      ]),
+    ),
+  )
+  |> should.equal([
+    "solo5", "-d", "--block", "storage=disk.img", "hello.hvt", "--",
+    "--ipv4=10.0.0.2/24",
+  ])
+}
+
+pub fn solo5_without_args_has_no_separator_test() {
+  build(args.solo5("."))
+  |> should.equal(["solo5", "-d", "."])
+}
+
 pub fn nanos_test() {
   build(
     args.nanos("nanos-hello")

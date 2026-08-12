@@ -111,6 +111,19 @@ export function buildCreateArgs(opts: CreateOptions): string[] {
       a.push(opts.path ?? ".");
       return a;
     }
+    case "solo5": {
+      // Like unikraft, no diskArgs — and not even mounts: a Solo5 unikernel
+      // declares its devices in its own MFT1 manifest, so only the block
+      // backing files are passed. Guest args go last, after a literal "--" —
+      // MirageOS options look like bsdkrun's own (e.g. --ipv4=...), so the
+      // CLI takes them as trailing args.
+      const a = ["solo5", "-d"];
+      for (const b of opts.block ?? []) a.push("--block", b);
+      a.push(...netArgs(opts.net), ...nameArgs(opts), ...vmArgs(opts));
+      a.push(opts.path ?? ".");
+      if (opts.args?.length) a.push("--", ...opts.args);
+      return a;
+    }
     case "osv": {
       // Like nanos: no agent, so no volume/repo/command, but OSv does have a
       // root filesystem, so --persist applies.

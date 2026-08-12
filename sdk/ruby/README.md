@@ -213,10 +213,13 @@ client.stop(id)
 client.remove([id])
 ```
 
-`client.run_linux`/`run_bsd`/`run_nanos`/`run_unikraft`/`run_osv`/`run_flavor`
-each take the same options as the corresponding GraphQL mutation
+`client.run_linux`/`run_bsd`/`run_nanos`/`run_unikraft`/`run_solo5`/`run_osv`/
+`run_flavor` each take the same options as the corresponding GraphQL mutation
 (`daemon/src/graphql.rs`) — `run_bsd(os: "freebsd", ...)`, etc. — and return
-the new machine's id. `stop`/`start`/`remove`/`update`/`commit` return a
+the new machine's id. `run_solo5` boots a MirageOS unikernel under the
+`solo5-hvt` tender rather than libkrun:
+`run_solo5(path: "dist/hello.hvt", args: ["--ipv4=10.0.0.2/24"])`.
+`stop`/`start`/`remove`/`update`/`commit` return a
 `CommandResult` (`exit_code`, `stdout`, `stderr`).
 
 For a live terminal instead of a one-shot `exec`, use `shell`:

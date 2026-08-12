@@ -198,6 +198,29 @@ function osvInput(spec: RunSpec) {
   };
 }
 
+/**
+ * Solo5 (MirageOS): runs under the solo5-hvt tender rather than libkrun, but
+ * it is one more agent-less unikernel over the wire — no volume/repo/command.
+ * The unikernel declares its own devices, so only the block backing files and
+ * the guest's own arguments are carried. Always single-vCPU; the daemon warns
+ * about and ignores anything above 1.
+ */
+function solo5Input(spec: RunSpec) {
+  return {
+    path: orNull(spec.path),
+    cpus: spec.cpus ?? null,
+    mem: spec.mem ?? null,
+    net: {
+      noNet: spec.no_net,
+      ports: clean(spec.ports),
+      network: orNull(spec.network),
+      name: orNull(spec.name),
+    },
+    block: clean(spec.blocks),
+    args: spec.args ?? [],
+  };
+}
+
 /** Nanos: no agent (no volume/repo/command); image + cmdline only for now. */
 function nanosInput(spec: RunSpec) {
   return {
@@ -449,6 +472,13 @@ export const api = {
       );
       return d.runUnikraft;
     }
+    if (spec.kind === "solo5") {
+      const d = await gql<{ runSolo5: string }>(
+        `mutation($i:RunSolo5Input!){ runSolo5(input:$i) }`,
+        { i: solo5Input(spec) },
+      );
+      return d.runSolo5;
+    }
     const d = await gql<{ runBsd: string }>(`mutation($i:RunBsdInput!){ runBsd(input:$i) }`, {
       i: bsdInput(spec),
     });
@@ -476,6 +506,13 @@ export const api = {
         "launchUnikraft",
         `subscription($i:RunUnikraftInput!){ launchUnikraft(input:$i){ line machineId error } }`,
         { i: unikraftInput(spec) },
+      );
+    } else if (spec.kind === "solo5") {
+      streamLaunch(
+        launchId,
+        "launchSolo5",
+        `subscription($i:RunSolo5Input!){ launchSolo5(input:$i){ line machineId error } }`,
+        { i: solo5Input(spec) },
       );
     } else if (spec.kind === "osv") {
       streamLaunch(

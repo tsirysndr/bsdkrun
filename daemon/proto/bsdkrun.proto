@@ -257,6 +257,25 @@ message RunOsvRequest {
   optional string volume = 10;
 }
 
+// Solo5 (MirageOS): runs under the `solo5-hvt` tender rather than libkrun.
+// Deliberately small, like the CLI command — the unikernel declares its own
+// network and block devices in its `MFT1` manifest note, so only what the
+// host alone can know crosses the wire. Single vCPU, always: the tender has
+// no flag for more, so a `vm.cpus` above 1 is warned about and ignored.
+message RunSolo5Request {
+  // The unikernel to boot: a `.hvt` binary, or a project directory whose
+  // `dist/` holds one (where `mirage build` leaves it). Defaults to ".".
+  optional string path = 1;
+  VmConfig vm = 2;
+  NetConfig net = 3;
+  // Back a declared block device with a file, each "NAME=FILE". The NAME= may
+  // be omitted when the unikernel declares exactly one block device.
+  repeated string block = 4;
+  // Arguments passed to the unikernel itself (MirageOS options such as
+  // "--ipv4=10.0.0.2/24").
+  repeated string args = 5;
+}
+
 // Which interrupt controller libkrun should give an OSv guest.
 enum OsvGic {
   // Let bsdkrun choose (v2 — what the released OSv kernel needs).
@@ -558,6 +577,7 @@ service Bsdkrun {
   rpc RunUnikraft(RunUnikraftRequest) returns (RunResponse);
   rpc RunNanos(RunNanosRequest) returns (RunResponse);
   rpc RunOsv(RunOsvRequest) returns (RunResponse);
+  rpc RunSolo5(RunSolo5Request) returns (RunResponse);
   rpc RunFlavor(RunFlavorRequest) returns (RunResponse);
 
   // -- images ---------------------------------------------------------------

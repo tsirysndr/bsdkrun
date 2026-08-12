@@ -97,6 +97,15 @@
   (testing "defaults :path to \".\""
     (is (= ["unikraft" "-d" "."] (build {:os "unikraft"})))))
 
+(deftest solo5
+  ;; Guest args ride behind a literal "--", last: MirageOS options look like
+  ;; bsdkrun's own flags (e.g. --ipv4=…), so the separator is load-bearing.
+  (is (= ["solo5" "-d" "--block" "storage=disk.img" "hello.hvt" "--" "--ipv4=10.0.0.2/24"]
+         (build {:os "solo5" :path "hello.hvt" :block ["storage=disk.img"]
+                 :args ["--ipv4=10.0.0.2/24"]})))
+  (testing "defaults :path to \".\" and omits the separator without args"
+    (is (= ["solo5" "-d" "."] (build {:os "solo5"})))))
+
 (deftest string-or-keyword-os
   (is (= (build {:os "linux" :image "alpine"}) (build {:os :linux :image "alpine"})))
   (is (= (build {:os "freebsd"}) (build {:os :freebsd})))

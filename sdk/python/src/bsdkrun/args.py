@@ -12,6 +12,9 @@ The public entrypoint is :func:`build_create_args`, keyed on ``os``:
 * ``kernel``   — boot a kernel directly (``kernel`` required).
 * ``unikraft`` — boot a Unikraft unikernel (``path``: a kraft project dir or an
   image; defaults to ``.``).
+* ``solo5``    — boot a Solo5 (MirageOS) unikernel under the ``solo5-hvt``
+  tender (``path``: a ``.hvt`` binary or a project dir whose ``dist/`` holds
+  one; defaults to ``.``).
 * ``nanos``    — boot a Nanos image (``image``: a path or a ~/.ops/images name).
 * ``osv``      — boot an OSv image (``image``: a loader.img, or on x86_64 the
   loader ELF plus a ``disk``).
@@ -33,6 +36,7 @@ _VALID_OS = (
     "firmware",
     "kernel",
     "unikraft",
+    "solo5",
     "nanos",
     "osv",
 )
@@ -210,6 +214,21 @@ def build_create_args(*, os: str, **opts: Any) -> list[str]:
             a += ["--mount", mount]
         a += _net_args(net) + _name_args(opts) + _vm_args(opts)
         a.append(opts.get("path") or ".")
+        return a
+
+    if os == "solo5":
+        # Like unikraft, no _disk_args — and not even mounts: a Solo5
+        # unikernel declares its devices in its own MFT1 manifest, so only
+        # the block backing files are passed. Guest args go last, after a
+        # literal "--" — MirageOS options look like bsdkrun's own
+        # (e.g. --ipv4=...), so the CLI takes them as trailing args.
+        a = ["solo5", "-d"]
+        for block in opts.get("block") or []:
+            a += ["--block", block]
+        a += _net_args(net) + _name_args(opts) + _vm_args(opts)
+        a.append(opts.get("path") or ".")
+        if opts.get("args"):
+            a += ["--", *opts["args"]]
         return a
 
     raise ValueError(f"unknown os {os!r}; expected one of {', '.join(_VALID_OS)}")

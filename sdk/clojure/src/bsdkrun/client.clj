@@ -559,6 +559,24 @@
         data (request client "mutation($i:RunUnikraftInput!){ runUnikraft(input:$i) }" {:i input})]
     (get data "runUnikraft")))
 
+(defn run-solo5!
+  "Boot a Solo5 (MirageOS) unikernel. Runs under the `solo5-hvt` tender
+  rather than libkrun; the unikernel declares its own network and block
+  devices in its MFT1 manifest note, so only host-side facts cross: `:path`
+  (a `.hvt` binary or a project dir whose `dist/` holds one, default `.`),
+  `:block` backing files (\"NAME=FILE\"), and `:args` handed to the unikernel
+  itself. Single vCPU always — `:cpus` above 1 is warned about and ignored.
+  No disk, no agent. Returns the new machine's id."
+  [client opts]
+  (let [input {:path (:path opts)
+               :cpus (:cpus opts)
+               :mem (:mem opts)
+               :net (net-input (:net opts))
+               :block (vec (or (:block opts) []))
+               :args (vec (or (:args opts) []))}
+        data (request client "mutation($i:RunSolo5Input!){ runSolo5(input:$i) }" {:i input})]
+    (get data "runSolo5")))
+
 (defn run-osv!
   "Boot an OSv unikernel. Like Nanos, no agent, but it does have a root
   filesystem, so the disk options apply — `:disk` in particular, how an

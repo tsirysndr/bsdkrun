@@ -432,6 +432,16 @@
           pname = "bsdkrun-supervisor";
           version = "0.8.0";
           cargoExtraArgs = "-p bsdkrun-supervisor";
+
+          # The supervisor carries the embedded Solo5 tender (its core dep
+          # turns the `solo5` feature on, so daemon-driven solo5 boots work).
+          # Same trick as the bsdkrun package: build.rs finds no library/solo5
+          # in the cleaned source and leaves this copy alone.
+          preBuild = ''
+            mkdir -p core/src/solo5-bin
+            cp ${solo5Tender}/bin/solo5-hvt core/src/solo5-bin/solo5-hvt
+            chmod -R u+w core/src/solo5-bin
+          '';
         };
 
         supervisorArtifacts = craneLib.buildDepsOnly supervisorArgs;

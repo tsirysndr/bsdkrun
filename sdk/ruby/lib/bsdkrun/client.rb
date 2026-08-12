@@ -274,10 +274,11 @@ module Bsdkrun
 
     # ---- booting ------------------------------------------------------------
     #
-    # Six variants, one per daemon mutation — see +daemon/src/graphql.rs+ for
+    # Seven variants, one per daemon mutation — see +daemon/src/graphql.rs+ for
     # the exact input field names this transcribes (RunLinuxInput ~L384,
-    # RunBsdInput ~L406, RunNanosInput ~L428, RunUnikraftInput ~L449,
-    # RunOsvInput ~L467, RunFlavorInput ~L506, NetInput ~L360). Each accepts
+    # RunBsdInput ~L406, RunNanosInput ~L429, RunUnikraftInput ~L445,
+    # RunSolo5Input ~L465, RunOsvInput ~L498, RunFlavorInput ~L541,
+    # NetInput ~L360). Each accepts
     # an options Hash and/or keyword arguments, merged — the same convention
     # {Sandbox.create} uses — with snake_case Ruby keys mapped 1:1 to the
     # camelCase GraphQL fields on the wire.
@@ -357,6 +358,26 @@ module Bsdkrun
         mounts: o[:mounts] || []
       }
       request("mutation($i:RunUnikraftInput!){ runUnikraft(input:$i) }", { i: input })["runUnikraft"]
+    end
+
+    # Solo5 (MirageOS): runs under the +solo5-hvt+ tender rather than libkrun.
+    # The unikernel declares its own network and block devices in its +MFT1+
+    # manifest note, so only what the host alone can know is asked for —
+    # +block:+ backing files (+NAME=FILE+) and the unikernel's own +args:+
+    # (e.g. "--ipv4=10.0.0.2/24"). Like Unikraft, no disk and no agent, so no
+    # volume/persist/repo/command fields.
+    # @return [String] the new machine's id.
+    def run_solo5(opts = {}, **kwargs)
+      o = merge_opts(opts, kwargs)
+      input = {
+        path: o[:path],
+        cpus: o[:cpus],
+        mem: o[:mem],
+        net: net_input(o[:net]),
+        block: o[:block] || [],
+        args: o[:args] || []
+      }
+      request("mutation($i:RunSolo5Input!){ runSolo5(input:$i) }", { i: input })["runSolo5"]
     end
 
     # Like Nanos, no agent, but it does have a root filesystem, so the disk

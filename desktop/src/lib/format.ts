@@ -93,17 +93,24 @@ const BADGE = {
     className: "bg-rose-500/15 text-rose-300 border-rose-500/25",
     dot: "bg-rose-400",
   },
+  solo5: {
+    label: "Solo5",
+    className: "bg-lime-500/15 text-lime-300 border-lime-500/25",
+    dot: "bg-lime-400",
+  },
 } as const;
 
 /**
- * Whether this machine is a unikernel (Unikraft, Nanos or OSv) — the
+ * Whether this machine is a unikernel (Unikraft, Nanos, OSv or Solo5) — the
  * application linked into, or loaded by, the kernel. There is no in-guest
  * agent, so snapshots and the terminal/exec do not apply and the CLI rejects
  * them; the UI hides those actions rather than offering a button that always
  * errors.
  */
 export function isUnikraft(kind: string | null | undefined): boolean {
-  return kind === "unikraft" || kind === "nanos" || kind === "osv";
+  return (
+    kind === "unikraft" || kind === "nanos" || kind === "osv" || kind === "solo5"
+  );
 }
 
 /**
@@ -125,6 +132,7 @@ export function kindColor(
   if (kind === "unikraft") return BADGE.unikraft;
   if (kind === "nanos" || ref.startsWith("nanos")) return BADGE.nanos;
   if (kind === "osv" || ref.startsWith("osv")) return BADGE.osv;
+  if (kind === "solo5") return BADGE.solo5;
   if (kind === "linux") return BADGE.linux;
   return {
     label: kind || "machine",

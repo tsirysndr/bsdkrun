@@ -146,6 +146,9 @@ fn run_foreground(machine_id: &str, image: &str, run: Run) -> Result<()> {
         None,
         net::format_ports(&run.args.net.ports).as_deref(),
     );
+    // Foreground boot: this process becomes the tender's supervisor, so sync
+    // the machine domains before entering — mirrors boot::run_foreground.
+    crate::domains::sync_if_enabled();
     tty::install();
     let code = launch(&run)?;
     tty::restore_stdin_termios();

@@ -20,7 +20,7 @@ exclude = ["agent", "desktop", "examples", "library"]
 name = "bsdkrun"
 version = "0.8.1"
 edition = "2021"
-description = "A Firecracker-style microVM launcher for BSD and Linux (OCI) guests on macOS, built on libkrun (Hypervisor.framework)"
+description = "A Firecracker-style microVM launcher for BSD, Linux (OCI), and unikernel guests on macOS, built on libkrun (Hypervisor.framework)"
 
 [dependencies]
 # The engine. This crate is the command-line front end over it and nothing more.

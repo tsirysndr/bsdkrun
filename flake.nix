@@ -1,5 +1,5 @@
 {
-  description = "bsdkrun - a Firecracker-style microVM launcher for BSD and Linux guests, on libkrun";
+  description = "bsdkrun - a Firecracker-style microVM launcher for BSD, Linux, and unikernel guests, on libkrun";
 
   # Both bsdkrun's and the libkrun fork's CI push to this cache — declaring it
   # here lets `nix build`/`nix develop` substitute libkrun-pvh (and bsdkrun

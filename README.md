@@ -11,15 +11,19 @@
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/tsirysndr/bsdkrun/total)
 
 
-A Firecracker-style **microVM launcher for BSD and Linux guests on macOS and Linux**, built on
-[libkrun](https://github.com/containers/libkrun) (which drives Apple's Hypervisor.framework on
-macOS and KVM on Linux).
+A Firecracker-style **microVM launcher for BSD, Linux, and unikernel guests on macOS and Linux**,
+built on [libkrun](https://github.com/containers/libkrun) (which drives Apple's
+Hypervisor.framework on macOS and KVM on Linux).
 
 `bsdkrun` is a thin, purpose-built CLI: it wraps libkrun's C ABI in a handful of safe Rust
 bindings and boots a guest three ways — from a **UEFI firmware** image (the guest's own EFI loader
 boots a normal disk), from a **direct kernel + FDT** (no bootloader), or straight from an **OCI
 image** (`bsdkrun linux alpine` pulls it from any registry, extracts the rootfs, and boots it like
-`docker run`). It is deliberately small: one FFI module, one CLI, no daemon.
+`docker run`). It also boots **unikernels** — [Unikraft](#unikraft--boot-a-unikraft-unikernel),
+[Nanos](#nanos--boot-a-nanos-nanovms-unikernel), OSv, and
+[MirageOS/Solo5](#solo5--mirage--run-a-mirageos-solo5-unikernel) — and `bsdkrun pack` turns an
+ordinary project into a bootable Unikraft unikernel. It is deliberately small: one FFI module,
+one CLI, no daemon required.
 
 > **Platforms:** **macOS on Apple Silicon** (Hypervisor.framework) and **Linux on amd64 or arm64**
 > (KVM). A hardware-virtualized guest runs the host's CPU arch, so bsdkrun detects the arch and

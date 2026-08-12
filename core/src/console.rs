@@ -755,6 +755,11 @@ impl RawGuard {
         }
         let saved = term;
         unsafe { libc::cfmakeraw(&mut term) };
+        // Raw input only: cfmakeraw also clears OPOST on the (shared) tty,
+        // and a guest that writes bare newlines — Nanos, whose console has no
+        // tty layer — then staircases across the screen. ONLCR expands its
+        // \n to \r\n; guests that already send \r\n are unaffected.
+        term.c_oflag |= libc::OPOST | libc::ONLCR;
         unsafe { libc::tcsetattr(0, libc::TCSANOW, &term) };
         RawGuard { saved: Some(saved) }
     }

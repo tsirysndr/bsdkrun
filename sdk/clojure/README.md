@@ -1,5 +1,7 @@
 # bsdkrun (Clojure SDK)
 
+[![Clojars Project](https://img.shields.io/clojars/v/io.github.tsirysndr/bsdkrun.svg)]
+
 A Clojure SDK for [**bsdkrun**](https://github.com/tsirysndr/bsdkrun) — a
 Firecracker-style microVM launcher for **BSD, Linux, and unikernel** guests on macOS and
 Linux, built on [libkrun](https://github.com/containers/libkrun). Boot and
@@ -30,13 +32,13 @@ and every namespace is a set of functions over plain maps.
 Via `deps.edn`:
 
 ```clojure
-io.github.tsirysndr/bsdkrun {:mvn/version "0.2.0"}
+io.github.tsirysndr/bsdkrun {:mvn/version "0.2.1"}
 ```
 
 Via Leiningen:
 
 ```clojure
-[io.github.tsirysndr/bsdkrun "0.2.0"]
+[io.github.tsirysndr/bsdkrun "0.2.1"]
 ```
 
 ### The `bsdkrun` binary

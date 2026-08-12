@@ -25,6 +25,7 @@ image** (`bsdkrun linux alpine` pulls it from any registry, extracts the rootfs,
 ordinary project into a bootable Unikraft unikernel. It is deliberately small: one FFI module,
 one CLI, no daemon required.
 
+> [!IMPORTANT]
 > **Platforms:** **macOS on Apple Silicon** (Hypervisor.framework) and **Linux on amd64 or arm64**
 > (KVM). A hardware-virtualized guest runs the host's CPU arch, so bsdkrun detects the arch and
 > pulls the matching kernel, OCI image, and agent automatically. macOS is arm64-only; Linux works

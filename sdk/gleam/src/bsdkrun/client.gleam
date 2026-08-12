@@ -661,7 +661,14 @@ pub type RunSolo5Options {
 /// Defaults for `RunSolo5Options`: everything unset/empty (`path` defaults
 /// to `"."` daemon-side when left `None`).
 pub fn run_solo5_options() -> RunSolo5Options {
-  RunSolo5Options(path: None, cpus: None, mem: None, net: None, block: [], args: [])
+  RunSolo5Options(
+    path: None,
+    cpus: None,
+    mem: None,
+    net: None,
+    block: [],
+    args: [],
+  )
 }
 
 /// Boot a Solo5 (MirageOS) unikernel, detached. Returns the new machine's id.

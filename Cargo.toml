@@ -12,9 +12,9 @@
 members = ["core", "daemon", "supervisor"]
 default-members = ["."]
 # Everything else in the tree that carries a Cargo.toml but is built on its own
-# terms: the guest agent (cross-compiled), the Tauri app, and the unikraft
-# examples with their vendored sources.
-exclude = ["agent", "desktop", "examples", "library"]
+# terms: the guest agent (cross-compiled), the Tauri app, the unikraft
+# examples with their vendored sources, and the standalone SDK crates.
+exclude = ["agent", "desktop", "examples", "library", "sdk"]
 
 [package]
 name = "bsdkrun"

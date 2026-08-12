@@ -29,8 +29,9 @@ works too (`(sdk/test "clojure")`), which is how `bb`'s CLI args arrive.
 ## Why a console?
 
 The repo has build/test entry points spread across `make`, `cargo`, Bun
-(`web/`, `desktop/`), and six SDK toolchains (`sdk/typescript`,
-`sdk/python`, `sdk/ruby`, `sdk/elixir`, `sdk/gleam`, `sdk/clojure`). There is
+(`web/`, `desktop/`), and eight SDK toolchains (`sdk/typescript`,
+`sdk/python`, `sdk/ruby`, `sdk/elixir`, `sdk/gleam`, `sdk/clojure`,
+`sdk/go`, `sdk/rust`). There is
 no single `--help` that lists them all; you have to read the root
 `Makefile`, `web/package.json`, `desktop/package.json`, and each SDK's own
 build config to know what exists.
@@ -97,6 +98,8 @@ You still need the **underlying toolchain** the scripts shell out to:
 | `sdk/test :gleam`, `sdk/publish :gleam`   | `gleam` (+ Hex auth for publish)            |
 | `sdk/test :typescript`                     | `bun`, `npm` (for `publish`)                |
 | `sdk/test :clojure`, `sdk/publish :clojure` | `clojure`/`clj` CLI (+ `CLOJARS_USERNAME`/`CLOJARS_PASSWORD` for publish) |
+| `sdk/test :go`                             | `go`                                        |
+| `sdk/test :rust`, `sdk/publish :rust`     | `cargo` (+ `cargo login` for publish)       |
 
 The console will surface a useful error (the underlying tool's own "not
 found") if any of these are missing.
@@ -173,11 +176,11 @@ Run `(help)` / `bb help` for the live list. Snapshot:
 |           | `test`                                | `make test` — boot FreeBSD under a PTY (e2e)                    |
 |           | `clean`                               | `cargo clean`                                                   |
 | `sdk`     | `deps <lang>`                         | fetch deps. lang ∈ `:elixir` `:gleam`                          |
-|           | `test <lang>`                         | run tests. lang ∈ `:clojure` `:ruby` `:python` `:elixir` `:gleam` `:typescript` |
+|           | `test <lang>`                         | run tests. lang ∈ `:clojure` `:ruby` `:python` `:elixir` `:gleam` `:typescript` `:go` `:rust` |
 |           | `lint <lang>`                         | lint. lang ∈ `:python`                                          |
 |           | `build <lang>`                        | build the artifact. lang ∈ `:clojure` `:ruby` `:python` `:typescript` |
 |           | `install <lang>`                      | install locally. lang ∈ `:clojure` (`~/.m2`)                    |
-|           | `publish <lang> [args...]`            | push to the registry. lang ∈ `:clojure` `:ruby` `:python` `:typescript` `:elixir` `:gleam` |
+|           | `publish <lang> [args...]`            | push to the registry. lang ∈ `:clojure` `:ruby` `:python` `:typescript` `:elixir` `:gleam` `:rust` |
 |           | `test-all`                            | every SDK's unit-test suite in turn                              |
 | `web`     | `dev` / `build` / `typecheck` / `preview` | web/ (Vite SPA)                                          |
 | `desktop` | `dev` / `build` / `tauri-dev` / `tauri-build` | desktop/ (Tauri app)                                 |
@@ -188,8 +191,9 @@ Run `(help)` / `bb help` for the live list. Snapshot:
 
 `(sdk/publish lang & args)` pushes a package to its registry — Clojars
 (clojure), RubyGems (ruby), PyPI (python), npm (typescript), Hex (elixir,
-gleam). It builds first where the registry needs a built artifact (ruby,
-python, typescript), then pushes.
+gleam), crates.io (rust). It builds first where the registry needs a built
+artifact (ruby, python, typescript), then pushes. Go has no registry push —
+a module is published by tagging the repo (`sdk/go/vX.Y.Z`).
 
 ```clojure
 (sdk/publish :clojure)              ;; clj -T:build deploy (Clojars)

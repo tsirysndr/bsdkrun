@@ -1,0 +1,25 @@
+# Standalone crate — deliberately NOT a member of the repo's root workspace
+# (the root Cargo.toml excludes `sdk`), so it carries its own lockfile and a
+# `cargo build` here never drags libkrun into the link.
+[package]
+name = "bsdkrun"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Rust SDK for bsdkrun — a Firecracker-style microVM launcher for BSD, Linux, and unikernel guests"
+license = "MIT"
+repository = "https://github.com/tsirysndr/bsdkrun"
+keywords = ["microvm", "sandbox", "libkrun", "unikernel", "vm"]
+categories = ["virtualization", "api-bindings"]
+
+[dependencies]
+serde = "1"
+serde_json = "1"
+thiserror = "2"
+base64 = "0.22"
+# HTTP transport for the remote client. Queries and mutations are one blocking
+# POST each, so an async stack would buy nothing and cost a runtime.
+ureq = "2"
+# graphql-transport-ws subscriptions. Blocking, like everything else here; its
+# server half is also what the tests fake a daemon with.
+tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }

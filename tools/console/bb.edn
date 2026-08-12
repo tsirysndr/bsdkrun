@@ -34,13 +34,13 @@
   clean          {:doc  "make clean — cargo clean"
                   :task (do (require 'console.build) ((resolve 'console.build/clean)))}
 
-  ;; ── sdk (all six language packages — lang is always a keyword atom;
+  ;; ── sdk (all the language packages — lang is always a keyword atom;
   ;;         `bb` hands us strings, so every task below coerces the first
   ;;         CLI arg with `keyword`) ────────────────────────────────────
   sdk:deps     {:doc  "Fetch deps. Usage: bb sdk:deps <elixir|gleam>"
                :task (do (require 'console.sdk)
                          ((resolve 'console.sdk/deps) (keyword (first *command-line-args*))))}
-  sdk:test     {:doc  "Run one SDK's tests. Usage: bb sdk:test <clojure|ruby|python|elixir|gleam|typescript>"
+  sdk:test     {:doc  "Run one SDK's tests. Usage: bb sdk:test <clojure|ruby|python|elixir|gleam|typescript|go|rust>"
                :task (do (require 'console.sdk)
                          ((resolve 'console.sdk/test) (keyword (first *command-line-args*))))}
   sdk:lint     {:doc  "Lint. Usage: bb sdk:lint <python>"

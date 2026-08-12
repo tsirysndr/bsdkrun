@@ -129,8 +129,8 @@ one CLI, no daemon required.
 - **TUI dashboard** — [live panels](#tui--the-terminal-dashboard) for machines, images, volumes and
   networks, with fuzzy search, a new-machine wizard, and a follow-mode log viewer.
 - **Desktop app** — machines list with a tabbed terminal panel (the screenshot up top).
-- **SDKs for six languages** — [TypeScript, Python, Ruby, Elixir, Gleam, and Clojure](#sdks): thin,
-  stateless wrappers around the binary, each with an interactive console.
+- **SDKs for eight languages** — [TypeScript, Python, Ruby, Elixir, Gleam, Clojure, Go, and Rust](#sdks):
+  thin, stateless wrappers around the binary.
 - **Agent skill** — the [full CLI reference](#agent-skill) packaged for coding agents
   (`npx skills add tsirysndr/bsdkrun`).
 - **Install anywhere** — [Homebrew, a curl one-liner, npm, or a Nix flake](#install); the macOS
@@ -1554,6 +1554,8 @@ long-lived state, so the SDKs are safe to use from short-lived processes and scr
 | **Elixir**     | `bsdkrun_ex`   | [`sdk/elixir`](sdk/elixir)         | One dependency (`:jason`). `{:ok, _}` / `{:error, _}` with bang variants. Modules are plain `Bsdkrun.*`.    |
 | **Gleam**      | `bsdkrun`      | [`sdk/gleam`](sdk/gleam)           | Erlang target. Fully typed `Result`s; no exceptions.                                                       |
 | **Clojure**    | `io.github.tsirysndr/bsdkrun` | [`sdk/clojure`](sdk/clojure) | No runtime dependencies beyond `org.clojure/clojure` + `data.json`. A "sandbox" is a plain map — no object hierarchy. Docs on [cljdoc.org](https://cljdoc.org/d/io.github.tsirysndr/bsdkrun). |
+| **Go**         | `github.com/tsirysndr/bsdkrun/sdk/go` | [`sdk/go`](sdk/go) | Zero third-party dependencies — stdlib only, hand-rolled `graphql-transport-ws`. Fluent builders ending in `(T, error)`. |
+| **Rust**       | `bsdkrun`      | [`sdk/rust`](sdk/rust)         | Blocking, no async runtime. Fluent consuming builders; standalone crate outside the workspace.              |
 
 Elixir publishes as **`bsdkrun_ex`** because Hex is a single namespace and the Gleam SDK
 already takes `bsdkrun` there; its modules are unaffected.
@@ -1594,11 +1596,21 @@ let assert Ok(res) = bsdkrun.exec(box, ["uname", "-a"])
 (def box (sandbox/create! {:os "linux" :image "alpine"}))
 (sandbox/exec! box ["uname" "-a"])
 ```
+```go
+// Go
+box, err := bsdkrun.Linux("alpine").Create()
+res, err := box.Exec("uname", "-a")
+```
+```rust
+// Rust
+let sandbox = Sandbox::linux("alpine").create()?;
+let res = sandbox.exec(["uname", "-a"])?;
+```
 
 ### Try it interactively
 
-Each SDK ships a console with the binary resolved and the API already in scope, so you can
-poke at real machines without writing a script:
+The REPL-native SDKs ship a console with the binary resolved and the API already in scope,
+so you can poke at real machines without writing a script:
 
 ```sh
 cd sdk/python  && uv run console.py    # IPython
@@ -1637,7 +1649,7 @@ others run [unit + argv tests](.github/workflows/sdk-unit.yml) on every change.
 | `bsdkrun.entitlements` | `com.apple.security.hypervisor` + library-validation opt-out. |
 | `images/`              | Guest disk images and a symlink to libkrun's EDK2 firmware (git-ignored blobs). |
 | `skills/`              | Agent skills published to [skills.sh](https://skills.sh/tsirysndr/bsdkrun) — `skills/bsdkrun-cli/` documents every subcommand and flag for coding agents. |
-| `sdk/`                 | Client [SDKs](#sdks) — TypeScript, Python, Ruby, Elixir, Gleam, and Clojure. Each builds argv, shells out to the binary, and parses its JSON output. |
+| `sdk/`                 | Client [SDKs](#sdks) — TypeScript, Python, Ruby, Elixir, Gleam, Clojure, Go, and Rust. Each builds argv, shells out to the binary, and parses its JSON output. |
 | `tools/console/`       | Contributor tooling: a Clojure/Babashka REPL centralizing every build/test/publish command in the monorepo. See [Monorepo dev console](#monorepo-dev-console-console). |
 | `console`              | Root shortcut: `./console` == `cd tools/console && clj -M:rebel`. |
 | `doc/cljdoc.edn`       | [cljdoc.org](https://cljdoc.org) doc-tree config for the Clojure SDK (`sdk/clojure`), published to Clojars as `io.github.tsirysndr/bsdkrun`. |

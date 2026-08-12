@@ -1,5 +1,5 @@
 (ns console.sdk
-  "Unified per-language commands for the six `sdk/*` packages — the same
+  "Unified per-language commands for the `sdk/*` packages — the same
   commands `.github/workflows/sdk-unit.yml` / `e2e-sdk.yml` run in CI.
 
   Every command here is a single function that takes a language as a plain
@@ -23,7 +23,9 @@
    :python     "sdk/python"
    :elixir     "sdk/elixir"
    :gleam      "sdk/gleam"
-   :typescript "sdk/typescript"})
+   :typescript "sdk/typescript"
+   :go         "sdk/go"
+   :rust       "sdk/rust"})
 
 (defn- ->lang
   "Coerce a language argument to a keyword, so both `:clojure` and
@@ -67,7 +69,8 @@
 
 (defn test
   "Run one SDK's unit-test suite — the same command CI runs. lang ∈
-  :clojure :ruby :python :elixir :gleam :typescript. Usage: (test :clojure)"
+  :clojure :ruby :python :elixir :gleam :typescript :go :rust.
+  Usage: (test :clojure)"
   [lang]
   (case (->lang lang)
     :clojure    (sh/sh ["clojure" "-M:test"] {:dir (dir :clojure)})
@@ -81,7 +84,14 @@
                             ["gleam" "deps" "download"]
                             ["gleam" "format" "--check" "src" "test"]
                             ["gleam" "test"])
-    :typescript (sh/sh ["bun" "test"] {:dir (dir :typescript)})))
+    :typescript (sh/sh ["bun" "test"] {:dir (dir :typescript)})
+    :go         (run-steps (dir :go)
+                            ["go" "vet" "./..."]
+                            ["go" "test" "./..."])
+    :rust       (run-steps (dir :rust)
+                            ["cargo" "fmt" "--check"]
+                            ["cargo" "clippy" "--" "-D" "warnings"]
+                            ["cargo" "test"])))
 
 (defn lint
   "lang ∈ :python — ruff check + ruff format --check + mypy, the same three
@@ -130,10 +140,10 @@
                {:dir (dir :ruby)})))))
 
 (defn publish
-  "Publish one SDK to its registry — Clojars/RubyGems/PyPI/npm/Hex. lang ∈
-  :clojure :ruby :python :typescript :elixir :gleam. Extra args pass through
-  to the underlying publisher (e.g. a tag, or --dry-run where the tool
-  supports one).
+  "Publish one SDK to its registry — Clojars/RubyGems/PyPI/npm/Hex/crates.io.
+  lang ∈ :clojure :ruby :python :typescript :elixir :gleam :rust. Extra args
+  pass through to the underlying publisher (e.g. a tag, or --dry-run where
+  the tool supports one).
 
   ⚠️ NOT sandboxed and NOT dry-run by default — this really pushes to the
   public registry. Each publisher expects its own credentials already
@@ -152,7 +162,11 @@
                             ["bun" "run" "build"]
                             (into ["npm" "publish"] (map str args)))
     :elixir     (sh/sh (into ["mix" "hex.publish"] (map str args)) {:dir (dir :elixir)})
-    :gleam      (sh/sh (into ["gleam" "publish"] (map str args)) {:dir (dir :gleam)})))
+    :gleam      (sh/sh (into ["gleam" "publish"] (map str args)) {:dir (dir :gleam)})
+    :rust       (sh/sh (into ["cargo" "publish"] (map str args)) {:dir (dir :rust)})
+    ;; Go has no registry push — a module is "published" by tagging the repo
+    ;; (sdk/go/vX.Y.Z) and letting the proxy fetch it.
+    (throw (ex-info (str "publish: no publish step wired for " (name lang)) {:lang lang}))))
 
 (defn test-all
   "Run every SDK's unit-test suite in turn, stopping at the first failure
@@ -161,4 +175,4 @@
   e2e suite (that one boots a real guest — see `e2e-sdk.yml`). Returns
   whether every suite passed."
   []
-  (every? zero? (map test [:python :ruby :elixir :gleam :clojure])))
+  (every? zero? (map test [:python :ruby :elixir :gleam :clojure :go :rust])))

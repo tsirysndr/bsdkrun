@@ -1,4 +1,4 @@
-name: sdk unit (Python / Ruby / Elixir / Gleam / Clojure)
+name: sdk unit (Python / Ruby / Elixir / Gleam / Clojure / Go / Rust)
 
 # Unit + argv-builder tests for the non-TypeScript SDKs. These never boot a
 # guest, so they need no /dev/kvm and no libkrun — they exercise argv building,
@@ -16,6 +16,8 @@ on:
       - "sdk/elixir/**"
       - "sdk/gleam/**"
       - "sdk/clojure/**"
+      - "sdk/go/**"
+      - "sdk/rust/**"
       - ".github/workflows/sdk-unit.yml"
   pull_request:
     paths:
@@ -24,6 +26,8 @@ on:
       - "sdk/elixir/**"
       - "sdk/gleam/**"
       - "sdk/clojure/**"
+      - "sdk/go/**"
+      - "sdk/rust/**"
       - ".github/workflows/sdk-unit.yml"
 
 permissions:
@@ -115,3 +119,36 @@ jobs:
         with:
           cli: latest
       - run: clojure -M:test
+
+  go:
+    name: go
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: sdk/go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: sdk/go/go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test ./...
+
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: sdk/rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy -- -D warnings
+      - run: cargo test

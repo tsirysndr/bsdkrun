@@ -142,33 +142,29 @@ one CLI, no daemon required.
 
 The usual microVM stacks (Firecracker, Cloud Hypervisor) don't run on macOS, and the usual macOS
 VM tooling (QEMU, `vftool`, UTM) isn't microVM-shaped. libkrun gives you a Firecracker-like
-"configure a context, then `start_enter`" model on top of Hypervisor.framework — its batteries are
-aimed at Linux guests, and `bsdkrun` both leans into that (running OCI images directly) and points
-the same machinery at **FreeBSD / NetBSD** guests.
+"configure a context, then `start_enter`" model on top of Hypervisor.framework and KVM — but its
+batteries are aimed at Linux guests. `bsdkrun` leans into that (running any OCI image
+`docker run`-style, no Docker daemon) and then points the same machinery at everything libkrun was
+never aimed at:
 
-- **FreeBSD:** on **macOS**, boot via **firmware/EFI** — we hand libkrun its bundled EDK2 firmware
-  and let the guest's `loader.efi` take over from the EFI System Partition on the disk (that
-  firmware ships only with the macOS `libkrun-efi`). On **Linux/amd64**, boot via **PVH direct
-  kernel**: bsdkrun downloads its bundled agent-injected UFS rootfs + FreeBSD's **`FIRECRACKER`**
-  kernel (no ACPI, MPTable, virtio-mmio built in) and enters it at its `PHYS32_ENTRY` — which
-  needs our [PVH-enabled libkrun fork](https://github.com/tsirysndr/libkrun/tree/feat/pvh-boot)
-  (see the [FreeBSD notes](#freebsd--netbsd--one-liner-bsd-microvms)).
-- **NetBSD:** boot via **direct kernel** — **no bootloader or firmware**, so `bsdkrun netbsd` works
-  on **both macOS and Linux**. On **arm64** it uses NetBSD's evbarm `GENERIC64` kernel + bsdkrun's
-  agent-injected `gzimg`. NetBSD ships no amd64 disk image, so on **amd64** bsdkrun uses its own
-  bundled FFS rootfs plus the **`MICROVM`** kernel, entered via **PVH** — which needs our
-  [PVH-enabled libkrun fork](https://github.com/tsirysndr/libkrun/tree/feat/pvh-boot) (see the
-  [NetBSD notes](#netbsd-version-handling-is-arch-specific)).
-- **Linux:** run any **OCI image** as a microVM — bsdkrun fetches a prebuilt kernel, pulls the
-  image from any registry, extracts its rootfs, and boots it `docker run`-style, with internet
-  access out of the box. See [`linux`](#linux--run-an-oci-image-as-a-microvm).
+- **BSD guests as first-class microVMs.** FreeBSD and NetBSD boot to multi-user on macOS *and*
+  Linux — via EFI firmware, direct kernel, or PVH direct kernel (through our
+  [PVH-enabled libkrun fork](https://github.com/tsirysndr/libkrun/tree/feat/pvh-boot)) — and get
+  the same `exec`/`shell`, volumes, and networking a Linux guest gets. This started as a research
+  question — *can a BSD kernel enumerate the virtio-mmio devices libkrun describes, and find its
+  console?* — and the answer turned out to be yes; the pieces that made it true (PVH entry, an
+  MPTable, serial-console wiring) now live in the fork and in bsdkrun itself (see
+  [Status](#status)).
+- **One CLI for every unikernel.** Unikraft, Nanos, OSv, and MirageOS/Solo5 each ship their own
+  runner with its own flags and quirks. bsdkrun boots them all with the same Docker-style
+  lifecycle (`ps` / `logs` / `stop` / `rm`), and [`bsdkrun pack`](./pack)
+  goes further: point it at an ordinary project and it builds a bootable Unikraft unikernel —
+  no unikernel expertise required.
+- **Docker ergonomics without a daemon.** Short ids, copy-on-write clones, named volumes,
+  networks with internal DNS, `https://<name>.bsdk` domains, flavors and `commit` — for every
+  guest type above, from one small CLI backed by a SQLite file.
 
 > DragonFly BSD is out of scope: there's no arm64 port.
-
-The open research question is guest-side **virtio-mmio device discovery**. libkrun exposes its
-virtio devices over MMIO (there is no PCI bus), and describes them via the ACPI/FDT it hands the
-guest. Whether a given BSD kernel enumerates those virtio-mmio devices — and routes its console to
-libkrun's virtio-console — is exactly what this tool is for probing.
 
 ---
 

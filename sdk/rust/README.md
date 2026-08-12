@@ -1,4 +1,4 @@
-# bsdkrun (Rust SDK)
+# bsdkrun-sdk (Rust SDK)
 
 A Rust SDK for [**bsdkrun**](https://github.com/tsirysndr/bsdkrun) — a
 Firecracker-style microVM launcher for **BSD, Linux, and unikernel** guests on
@@ -11,7 +11,7 @@ async runtime, no tokio. The API is fluent: consuming builders you chain and
 finish with one terminal call.
 
 ```rust
-use bsdkrun::Sandbox;
+use bsdkrun_sdk::Sandbox;
 
 let sandbox = Sandbox::linux("alpine").create()?;
 
@@ -29,21 +29,21 @@ sandbox.stop()?;
 ## Install
 
 ```sh
-cargo add bsdkrun
+cargo add bsdkrun-sdk
 ```
 
 Or from this repo:
 
 ```toml
 [dependencies]
-bsdkrun = { path = "../bsdkrun/sdk/rust" }
+bsdkrun-sdk = { path = "../bsdkrun/sdk/rust" }
 ```
 
 ### The `bsdkrun` binary
 
 You need the `bsdkrun` binary itself. The SDK finds it via, in order:
 
-1. `bsdkrun::set_binary_path("/path/to/bsdkrun")`
+1. `bsdkrun_sdk::set_binary_path("/path/to/bsdkrun")`
 2. the `BSDKRUN_BIN` environment variable
 3. `bsdkrun` on your `PATH`
 4. an in-repo `target/release/bsdkrun` or `target/debug/bsdkrun` build
@@ -58,7 +58,7 @@ One builder per guest kind — each exposes only the options its kind takes, and
 every `create()` runs the machine **detached** and returns a `Sandbox` handle:
 
 ```rust
-use bsdkrun::Sandbox;
+use bsdkrun_sdk::Sandbox;
 
 // Linux OCI image (docker run-style)
 Sandbox::linux("ghcr.io/owner/name:tag")
@@ -146,7 +146,7 @@ sandbox.remove(true)?;                       // force: stop first if running
 Host-level namespaces:
 
 ```rust
-use bsdkrun::{images, networks, system, volumes};
+use bsdkrun_sdk::{images, networks, system, volumes};
 
 system::probe()?;                                  // toolchain sanity check
 images::list()?;                                   // Vec<ImageInfo>
@@ -164,7 +164,7 @@ and reach each other **by IP and by name** (docker-compose style), with
 internal DNS:
 
 ```rust
-use bsdkrun::{networks, Sandbox};
+use bsdkrun_sdk::{networks, Sandbox};
 
 networks::create("devnet")?;
 
@@ -211,7 +211,7 @@ sibling: it drives the same operations against a remote
 needed, just a URL and a bearer token.
 
 ```rust
-use bsdkrun::Client;
+use bsdkrun_sdk::Client;
 
 let client = Client::new("http://vps.example.com:50052", "9f2c...")?;
 // or, from BSDKRUN_URL / BSDKRUN_TOKEN:
@@ -302,7 +302,7 @@ both `BSDKRUN_URL` and `BSDKRUN_TOKEN`, or pass both explicitly.
 
 ## Errors
 
-Everything returns `bsdkrun::Result<T>` with one `Error` enum:
+Everything returns `bsdkrun_sdk::Result<T>` with one `Error` enum:
 
 - `BinaryNotFound` — the `bsdkrun` binary wasn't found (carries every
   location searched).

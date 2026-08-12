@@ -7,7 +7,7 @@
 //! runtime anywhere.
 //!
 //! ```no_run
-//! use bsdkrun::Sandbox;
+//! use bsdkrun_sdk::Sandbox;
 //!
 //! let sandbox = Sandbox::linux("alpine")
 //!     .cpus(2)
@@ -18,7 +18,7 @@
 //!
 //! println!("{}", sandbox.exec(["uname", "-a"])?.text());
 //! sandbox.stop()?;
-//! # Ok::<(), bsdkrun::Error>(())
+//! # Ok::<(), bsdkrun_sdk::Error>(())
 //! ```
 //!
 //! Host-level operations live in the [`images`], [`volumes`], [`networks`]

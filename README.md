@@ -1555,7 +1555,7 @@ long-lived state, so the SDKs are safe to use from short-lived processes and scr
 | **Gleam**      | `bsdkrun`      | [`sdk/gleam`](sdk/gleam)           | Erlang target. Fully typed `Result`s; no exceptions.                                                       |
 | **Clojure**    | `io.github.tsirysndr/bsdkrun` | [`sdk/clojure`](sdk/clojure) | No runtime dependencies beyond `org.clojure/clojure` + `data.json`. A "sandbox" is a plain map — no object hierarchy. Docs on [cljdoc.org](https://cljdoc.org/d/io.github.tsirysndr/bsdkrun). |
 | **Go**         | `github.com/tsirysndr/bsdkrun/sdk/go` | [`sdk/go`](sdk/go) | Zero third-party dependencies — stdlib only, hand-rolled `graphql-transport-ws`. Fluent builders ending in `(T, error)`. |
-| **Rust**       | `bsdkrun`      | [`sdk/rust`](sdk/rust)         | Blocking, no async runtime. Fluent consuming builders; standalone crate outside the workspace.              |
+| **Rust**       | `bsdkrun-sdk`  | [`sdk/rust`](sdk/rust)             | Blocking, no async runtime. Fluent consuming builders; standalone crate outside the workspace.             |
 
 Elixir publishes as **`bsdkrun_ex`** because Hex is a single namespace and the Gleam SDK
 already takes `bsdkrun` there; its modules are unaffected.

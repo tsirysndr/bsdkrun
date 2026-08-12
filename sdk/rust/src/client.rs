@@ -306,12 +306,12 @@ impl Client {
     /// Stream a machine's console log live.
     ///
     /// ```no_run
-    /// # let client = bsdkrun::Client::new("localhost:50052", "tok")?;
+    /// # let client = bsdkrun_sdk::Client::new("localhost:50052", "tok")?;
     /// let sub = client
     ///     .follow_logs("abc123")
     ///     .on_data(|bytes| print!("{}", String::from_utf8_lossy(&bytes)))
     ///     .start()?;
-    /// # Ok::<(), bsdkrun::Error>(())
+    /// # Ok::<(), bsdkrun_sdk::Error>(())
     /// ```
     pub fn follow_logs(&self, id: &str) -> FollowLogsBuilder {
         FollowLogsBuilder {
@@ -551,12 +551,12 @@ impl Client {
     /// Open a live interactive session — output/exit arrive via callbacks.
     ///
     /// ```no_run
-    /// # let client = bsdkrun::Client::new("localhost:50052", "tok")?;
+    /// # let client = bsdkrun_sdk::Client::new("localhost:50052", "tok")?;
     /// let session = client.shell("abc123").rows(50).cols(120).open()?;
     /// session.on_output(|bytes| print!("{}", String::from_utf8_lossy(bytes)));
     /// session.on_exit(|code| println!("exited {code}"));
     /// session.write("ls -la\n")?;
-    /// # Ok::<(), bsdkrun::Error>(())
+    /// # Ok::<(), bsdkrun_sdk::Error>(())
     /// ```
     pub fn shell(&self, id: &str) -> ShellBuilder {
         ShellBuilder {

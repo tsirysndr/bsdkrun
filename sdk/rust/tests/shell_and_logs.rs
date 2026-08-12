@@ -6,7 +6,7 @@ mod support;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bsdkrun::Client;
+use bsdkrun_sdk::Client;
 use serde_json::json;
 use support::{wait_until, FakeDaemon};
 

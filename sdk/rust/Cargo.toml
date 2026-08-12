@@ -2,7 +2,7 @@
 # (the root Cargo.toml excludes `sdk`), so it carries its own lockfile and a
 # `cargo build` here never drags libkrun into the link.
 [package]
-name = "bsdkrun"
+name = "bsdkrun-sdk"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"

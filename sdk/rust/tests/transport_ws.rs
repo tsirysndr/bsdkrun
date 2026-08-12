@@ -8,8 +8,8 @@ mod support;
 
 use std::sync::{Arc, Mutex};
 
-use bsdkrun::transport::WsTransport;
-use bsdkrun::Error;
+use bsdkrun_sdk::transport::WsTransport;
+use bsdkrun_sdk::Error;
 use serde_json::json;
 use support::{wait_until, RawWsServer};
 

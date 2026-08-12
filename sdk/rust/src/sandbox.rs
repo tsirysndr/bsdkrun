@@ -2,7 +2,7 @@
 //! fluent builders that boot one.
 //!
 //! ```no_run
-//! use bsdkrun::Sandbox;
+//! use bsdkrun_sdk::Sandbox;
 //!
 //! let boxx = Sandbox::linux("alpine")
 //!     .cpus(2)
@@ -12,7 +12,7 @@
 //!     .create()?;
 //! println!("{}", boxx.exec(["uname", "-a"])?.text());
 //! boxx.stop()?;
-//! # Ok::<(), bsdkrun::Error>(())
+//! # Ok::<(), bsdkrun_sdk::Error>(())
 //! ```
 
 use serde_json::Value;
@@ -621,14 +621,14 @@ impl Sandbox {
     /// Start building a guest command: program first, everything else chained.
     ///
     /// ```no_run
-    /// # let sandbox = bsdkrun::Sandbox::from_id("abc123");
+    /// # let sandbox = bsdkrun_sdk::Sandbox::from_id("abc123");
     /// let out = sandbox
     ///     .command("node")
     ///     .args(["-e", "console.log(1)"])
     ///     .env("X", "hi")
     ///     .cwd("/app")
     ///     .run()?;
-    /// # Ok::<(), bsdkrun::Error>(())
+    /// # Ok::<(), bsdkrun_sdk::Error>(())
     /// ```
     pub fn command(&self, program: impl Into<String>) -> CommandBuilder {
         CommandBuilder {
@@ -720,9 +720,9 @@ impl Sandbox {
     /// Change the recorded vCPU / RAM; applies on the next [`Sandbox::start`].
     ///
     /// ```no_run
-    /// # let sandbox = bsdkrun::Sandbox::from_id("abc123");
+    /// # let sandbox = bsdkrun_sdk::Sandbox::from_id("abc123");
     /// sandbox.update().cpus(4).mem(2048).apply()?;
-    /// # Ok::<(), bsdkrun::Error>(())
+    /// # Ok::<(), bsdkrun_sdk::Error>(())
     /// ```
     pub fn update(&self) -> UpdateBuilder {
         UpdateBuilder {
@@ -757,9 +757,9 @@ impl Sandbox {
     /// With no key, the CLI installs your local `~/.ssh/*.pub` keys.
     ///
     /// ```no_run
-    /// # let sandbox = bsdkrun::Sandbox::from_id("abc123");
+    /// # let sandbox = bsdkrun_sdk::Sandbox::from_id("abc123");
     /// sandbox.ssh_setup().user("tsiry").key("~/.ssh/work.pub").run()?;
-    /// # Ok::<(), bsdkrun::Error>(())
+    /// # Ok::<(), bsdkrun_sdk::Error>(())
     /// ```
     pub fn ssh_setup(&self) -> SshSetupBuilder {
         SshSetupBuilder {
@@ -772,9 +772,9 @@ impl Sandbox {
     /// Put the guest on your tailnet (`tailscale setup`, via the agent).
     ///
     /// ```no_run
-    /// # let sandbox = bsdkrun::Sandbox::from_id("abc123");
+    /// # let sandbox = bsdkrun_sdk::Sandbox::from_id("abc123");
     /// sandbox.tailscale_up().authkey("tskey-auth-...").hostname("web").run()?;
-    /// # Ok::<(), bsdkrun::Error>(())
+    /// # Ok::<(), bsdkrun_sdk::Error>(())
     /// ```
     pub fn tailscale_up(&self) -> TailscaleUpBuilder {
         TailscaleUpBuilder {

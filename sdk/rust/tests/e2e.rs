@@ -7,7 +7,7 @@
 //! BSDKRUN_SDK_E2E=1 cargo test --test e2e -- --nocapture
 //! ```
 
-use bsdkrun::Sandbox;
+use bsdkrun_sdk::Sandbox;
 
 fn gated() -> bool {
     if std::env::var("BSDKRUN_SDK_E2E").is_err() {

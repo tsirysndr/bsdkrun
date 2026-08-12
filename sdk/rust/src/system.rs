@@ -14,8 +14,8 @@ pub fn probe() -> Result<bool> {
 /// Download + prepare a BSD image ahead of time.
 ///
 /// ```no_run
-/// bsdkrun::system::fetch_image("freebsd").version("14.3").run()?;
-/// # Ok::<(), bsdkrun::Error>(())
+/// bsdkrun_sdk::system::fetch_image("freebsd").version("14.3").run()?;
+/// # Ok::<(), bsdkrun_sdk::Error>(())
 /// ```
 pub fn fetch_image(os: impl Into<String>) -> FetchImageBuilder {
     FetchImageBuilder {

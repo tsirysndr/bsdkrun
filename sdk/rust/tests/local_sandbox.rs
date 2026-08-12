@@ -14,7 +14,7 @@ mod support;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use bsdkrun::{reset_binary_cache, set_binary_path, Error, Sandbox};
+use bsdkrun_sdk::{reset_binary_cache, set_binary_path, Error, Sandbox};
 
 static STUB_LOCK: Mutex<()> = Mutex::new(());
 

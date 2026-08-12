@@ -7,7 +7,7 @@ mod support;
 
 use std::time::Duration;
 
-use bsdkrun::{BsdOs, Client, Error};
+use bsdkrun_sdk::{BsdOs, Client, Error};
 use serde_json::json;
 use support::FakeDaemon;
 

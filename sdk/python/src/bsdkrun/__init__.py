@@ -1,5 +1,5 @@
 """bsdkrun — a Python SDK for `bsdkrun <https://github.com/tsirysndr/bsdkrun>`_,
-a Firecracker-style microVM launcher for BSD and Linux guests.
+a Firecracker-style microVM launcher for BSD, Linux, and unikernel guests.
 
 A thin, dependency-free wrapper around the ``bsdkrun`` CLI: it builds argv,
 shells out, and parses the JSON output.

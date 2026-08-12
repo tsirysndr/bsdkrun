@@ -17,7 +17,7 @@ require_relative "bsdkrun/shell_session"
 require_relative "bsdkrun/client"
 
 # bsdkrun — a Ruby SDK for {https://github.com/tsirysndr/bsdkrun bsdkrun}, a
-# Firecracker-style microVM launcher for BSD and Linux guests. A thin wrapper
+# Firecracker-style microVM launcher for BSD, Linux, and unikernel guests. A thin wrapper
 # around the +bsdkrun+ CLI: it builds argv, shells out, and parses JSON output.
 #
 # @example

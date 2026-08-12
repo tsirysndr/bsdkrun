@@ -3,7 +3,7 @@
 [![Package Version](https://img.shields.io/hexpm/v/bsdkrun)](https://hex.pm/packages/bsdkrun)
 [![Hex Docs](https://img.shields.io/badge/hex-docs-ffaff3)](https://hexdocs.pm/bsdkrun/)
 
-A Gleam SDK for [**bsdkrun**](https://github.com/tsirysndr/bsdkrun) — a Firecracker-style microVM launcher for **BSD and Linux** guests on macOS and
+A Gleam SDK for [**bsdkrun**](https://github.com/tsirysndr/bsdkrun) — a Firecracker-style microVM launcher for **BSD, Linux, and unikernel** guests on macOS and
 Linux, built on [libkrun](https://github.com/containers/libkrun).
 
 The SDK is a thin, stateless wrapper around the `bsdkrun` binary: it builds

@@ -509,7 +509,7 @@
           '';
 
           meta = with lib; {
-            description = "Firecracker-style microVM launcher for BSD and Linux guests on libkrun";
+            description = "Firecracker-style microVM launcher for BSD, Linux, and unikernel guests on libkrun";
             homepage = "https://github.com/tsirysndr/bsdkrun";
             license = licenses.mit;
             mainProgram = "bsdkrun";

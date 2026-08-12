@@ -38,6 +38,6 @@
     ],
     "category": "DeveloperTool",
     "shortDescription": "GUI for bsdkrun microVMs",
-    "longDescription": "A Docker Desktop-style GUI for bsdkrun — run FreeBSD, NetBSD and Linux (OCI) microVMs on macOS and Linux."
+    "longDescription": "A Docker Desktop-style GUI for bsdkrun — run FreeBSD, NetBSD, Linux (OCI), and unikernel microVMs on macOS and Linux."
   }
 }

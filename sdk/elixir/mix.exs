@@ -13,7 +13,7 @@ defmodule Bsdkrun.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       description:
-        "Elixir SDK for bsdkrun — a Firecracker-style microVM launcher for BSD and Linux guests.",
+        "Elixir SDK for bsdkrun — a Firecracker-style microVM launcher for BSD, Linux, and unikernel guests.",
       package: package(),
       name: "bsdkrun_ex",
       source_url: @source_url,

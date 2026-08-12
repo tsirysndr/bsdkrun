@@ -8,10 +8,10 @@ Gem::Specification.new do |spec|
   spec.authors     = ["Tsiry Sandratraina"]
   spec.email       = ["tsiry.sndr@gmail.com"]
 
-  spec.summary     = "Ruby SDK for bsdkrun — a Firecracker-style microVM launcher for BSD and Linux guests."
+  spec.summary     = "Ruby SDK for bsdkrun — a Firecracker-style microVM launcher for BSD, Linux, and unikernel guests."
   spec.description = <<~DESC
     A thin, dependency-free Ruby wrapper around the `bsdkrun` CLI. Boot and drive
-    BSD/Linux microVMs programmatically: create sandboxes, exec commands, manage
+    BSD/Linux/unikernel microVMs programmatically: create sandboxes, exec commands, manage
     lifecycle, and wire up global networks, volumes and images.
   DESC
   spec.homepage    = "https://github.com/tsirysndr/bsdkrun"

@@ -1,6 +1,6 @@
 # bsdkrun (Python SDK)
 
-A Python SDK for [**bsdkrun**](https://github.com/tsirysndr/bsdkrun) — a Firecracker-style microVM launcher for **BSD and Linux** guests on macOS and
+A Python SDK for [**bsdkrun**](https://github.com/tsirysndr/bsdkrun) — a Firecracker-style microVM launcher for **BSD, Linux, and unikernel** guests on macOS and
 Linux, built on [libkrun](https://github.com/containers/libkrun). Boot and drive
 microVMs programmatically, inspired by the **Vercel** and **Deno** Sandbox SDKs.
 

@@ -1,6 +1,6 @@
 /**
  * @bsdkrun/sdk — a TypeScript SDK for {@link https://github.com/tsirysndr/bsdkrun | bsdkrun},
- * a Firecracker-style microVM launcher for BSD and Linux guests. Inspired by the
+ * a Firecracker-style microVM launcher for BSD, Linux, and unikernel guests. Inspired by the
  * Vercel and Deno Sandbox SDKs. Runs on Node.js, Deno and Bun.
  *
  * ```ts

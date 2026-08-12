@@ -42,6 +42,7 @@ one CLI, no daemon required.
 
 ## Contents
 
+- [Features](#features)
 - [Why this exists](#why-this-exists)
 - [Install](#install)
 - [Prerequisites](#prerequisites)
@@ -68,6 +69,72 @@ one CLI, no daemon required.
 - [Troubleshooting](#troubleshooting)
 - [Status](#status)
 - [License](#license)
+
+---
+
+## Features
+
+**Guests & boot paths**
+
+- **One-liner BSD microVMs** — [`bsdkrun freebsd` / `bsdkrun netbsd`](#freebsd--netbsd--one-liner-bsd-microvms)
+  fetch a bundled image (guest agent baked in) and boot it: run a command à la `docker run`
+  (`bsdkrun freebsd -- uname -a`), or get dropped straight into an interactive shell.
+- **Any OCI image as a Linux microVM** — [`bsdkrun linux alpine`](#linux--run-an-oci-image-as-a-microvm)
+  pulls from any registry (no Docker daemon), extracts the rootfs, and boots it `docker run`-style;
+  [`bsdkrun systemd`](#systemd--turn-an-oci-guest-into-a-full-systemd-system) flips a
+  debian/ubuntu/fedora guest into a full systemd system.
+- **Unikernels** — [Unikraft](#unikraft--boot-a-unikraft-unikernel),
+  [Nanos](#nanos--boot-a-nanos-nanovms-unikernel), OSv, and
+  [MirageOS/Solo5](#solo5--mirage--run-a-mirageos-solo5-unikernel), each with its own subcommand;
+  `bsdkrun pack` turns an ordinary project into a bootable Unikraft unikernel.
+- **Three boot protocols** — [UEFI firmware](#firmware--boot-a-disk-through-its-uefi-loader) (the
+  guest's own EFI loader), [direct kernel + FDT](#kernel--boot-a-kernel-directly-no-bootloader) (no
+  bootloader), and PVH direct kernel on Linux/amd64 (via the
+  [PVH libkrun fork](https://github.com/tsirysndr/libkrun/tree/feat/pvh-boot)).
+- **macOS and Linux hosts** — Hypervisor.framework on Apple Silicon, KVM on Linux (amd64/arm64),
+  behind one CLI.
+
+**Machine management**
+
+- **Docker-style lifecycle** — short ids, [`ps` / `logs -f` / `exec` / `shell` / `stop` / `start` /
+  `update` / `rm`](#managing-machines) across every guest type; state in a small SQLite database,
+  **no daemon required**.
+- **In-guest exec agent** — [`exec`/`shell`](#the-exec-agent) run real processes in Linux *and* BSD
+  guests over a small framed TCP protocol (PTY, env vars, exit codes) — no vsock dependency.
+- **Copy-on-write everything** — per-machine APFS/reflink [clones](#managing-machines) boot many
+  microVMs from one base image instantly; named persistent volumes (`-v`), host bind mounts
+  (`--mount`), [extra disks](#disks) (`--attach-disk`), and [`grow`](#resizing-the-disk) to enlarge
+  images.
+- **Flavors & snapshots** — [ready-to-boot environments](#flavors--preconfigured-environments--snapshots)
+  (languages, databases, web servers, AI coding agents), your own `flavors.toml` stacks, and
+  `commit` to freeze a running machine into a reusable flavor, like `docker commit`.
+- **Clone a repo on boot** — `--repo <git-url>` clones into the guest (installing git if the base
+  lacks it) and your shell lands in the checkout.
+
+**Networking**
+
+- **Internet by default** — every guest gets a virtio-net NIC behind
+  [gvproxy](#networking) (userspace NAT with DHCP and DNS); `--port HOST:GUEST` forwards ports, and
+  a unique host port is forwarded to the guest's SSH automatically.
+- **Global networks** — [shared subnets with internal DNS](#global-networks--reach-machines-by-name)
+  so machines reach each other by IP *and by name*, docker-compose style.
+- **Machine domains** — [`bsdkrun domains enable`](#machine-domains--local-dns--https) gives every
+  machine a browser-trusted `https://<name>.bsdk` URL (built-in DNS responder + Caddy's local CA).
+- **SSH & Tailscale in one command** — [`bsdkrun ssh <id> setup`](#ssh--key-based-access-in-one-command)
+  installs your keys and sshd; [`bsdkrun tailscale <id> setup`](#tailscale--put-a-guest-on-your-tailnet)
+  puts the guest on your tailnet.
+
+**Interfaces & tooling**
+
+- **TUI dashboard** — [live panels](#tui--the-terminal-dashboard) for machines, images, volumes and
+  networks, with fuzzy search, a new-machine wizard, and a follow-mode log viewer.
+- **Desktop app** — machines list with a tabbed terminal panel (the screenshot up top).
+- **SDKs for six languages** — [TypeScript, Python, Ruby, Elixir, Gleam, and Clojure](#sdks): thin,
+  stateless wrappers around the binary, each with an interactive console.
+- **Agent skill** — the [full CLI reference](#agent-skill) packaged for coding agents
+  (`npx skills add tsirysndr/bsdkrun`).
+- **Install anywhere** — [Homebrew, a curl one-liner, npm, or a Nix flake](#install); the macOS
+  binaries ship pre-signed with the hypervisor entitlement.
 
 ---
 

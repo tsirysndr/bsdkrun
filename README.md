@@ -125,6 +125,24 @@ Homebrew will ask you to remove it first:
 brew uninstall --ignore-dependencies libkrun
 ```
 
+**curl** — install the prebuilt host binary for your platform (macOS/arm64, Linux/x64, Linux/arm64)
+with a one-liner:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tsirysndr/bsdkrun/main/install.sh | sh
+```
+
+The script downloads the matching release archives, verifies their SHA-256s, and unpacks
+everything into `~/.bsdkrun/bin` (override with `BSDKRUN_INSTALL`): the `bsdkrun` CLI, the
+[`bsdkrund`](daemon/) daemon, and `bsdkrun-supervisor` (which the daemon finds beside itself) —
+one directory because the Linux CLI archive bundles libkrun beside the binary. It also fetches
+`gvproxy` for guest networking (skip with `BSDKRUN_SKIP_GVPROXY=1`), and on macOS installs our
+libkrun fork via Homebrew when `brew` is available. Pin a release with `BSDKRUN_VERSION`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tsirysndr/bsdkrun/main/install.sh | BSDKRUN_VERSION=v0.8.1 sh
+```
+
 **npm** — install the prebuilt host binary for your platform (macOS/arm64, Linux/x64, Linux/arm64):
 
 ```sh

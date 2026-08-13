@@ -1,6 +1,6 @@
 # bsdkrun (Clojure SDK)
 
-[![Clojars Project](https://img.shields.io/clojars/v/io.github.tsirysndr/bsdkrun.svg)]
+[![Clojars Project](https://img.shields.io/clojars/v/io.github.tsirysndr/bsdkrun.svg)](https://clojars.org/io.github.tsirysndr/bsdkrun)
 
 A Clojure SDK for [**bsdkrun**](https://github.com/tsirysndr/bsdkrun) — a
 Firecracker-style microVM launcher for **BSD, Linux, and unikernel** guests on macOS and

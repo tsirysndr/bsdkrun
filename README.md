@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./.github/assets/desktop.png" alt="bsdkrun Desktop — machines list with a tabbed terminal panel" width="900">
+  <img src="https://mirror.tangled.network/xrpc/sh.tangled.git.temp.getBlob?path=.github%2Fassets%2Fdesktop.png&ref=main&repo=did%3Aplc%3Anbljdkycqux4kcthe34d45vz" alt="bsdkrun Desktop — machines list with a tabbed terminal panel" width="900">
 </p>
 
 # bsdkrun
@@ -35,7 +35,7 @@ one CLI, no daemon required.
 > support is new — see the [KVM e2e CI](.github/workflows/e2e-linux.yml).)_
 
 <p align="center">
-  <img src=".github/assets/preview.png" alt="FreeBSD 15 arm64 booting under bsdkrun on macOS" width="800">
+  <img src="https://mirror.tangled.network/xrpc/sh.tangled.git.temp.getBlob?path=.github%2Fassets%2Fpreview.png&ref=main&repo=did%3Aplc%3Anbljdkycqux4kcthe34d45vz" alt="FreeBSD 15 arm64 booting under bsdkrun on macOS" width="800">
 </p>
 
 ---

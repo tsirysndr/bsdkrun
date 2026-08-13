@@ -164,8 +164,6 @@ never aimed at:
   networks with internal DNS, `https://<name>.bsdk` domains, flavors and `commit` — for every
   guest type above, from one small CLI backed by a SQLite file.
 
-> DragonFly BSD is out of scope: there's no arm64 port.
-
 ---
 
 ## Install

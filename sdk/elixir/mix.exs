@@ -1,7 +1,7 @@
 defmodule Bsdkrun.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
+  @version "0.3.1"
   @source_url "https://github.com/tsirysndr/bsdkrun"
 
   def project do
@@ -62,7 +62,8 @@ defmodule Bsdkrun.MixProject do
       # Monorepo: the package lives at sdk/elixir and is tagged separately from
       # the CLI's own v-series.
       source_ref: "elixir-sdk-v#{@version}",
-      source_url_pattern: "#{@source_url}/blob/elixir-sdk-v#{@version}/sdk/elixir/%{path}#L%{line}"
+      source_url_pattern:
+        "#{@source_url}/blob/elixir-sdk-v#{@version}/sdk/elixir/%{path}#L%{line}"
     ]
   end
 end

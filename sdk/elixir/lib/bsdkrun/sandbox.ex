@@ -162,7 +162,7 @@ defmodule Bsdkrun.Sandbox do
   @spec get(String.t()) :: {:ok, t()} | {:error, Error.t()}
   def get(id) when is_binary(id) do
     with {:ok, all} <- list(all: true) do
-      case Enum.find(all, &(&1.id == id or String.starts_with?(&1.id, id))) do
+      case Enum.find(all, &(&1.id == id or String.starts_with?(&1.id, id) or &1.name == id)) do
         nil -> {:error, Error.sandbox_not_found(id)}
         match -> {:ok, %__MODULE__{id: match.id}}
       end
@@ -178,7 +178,8 @@ defmodule Bsdkrun.Sandbox do
   """
   @spec list(keyword()) :: {:ok, [SandboxInfo.t()]} | {:error, Error.t()}
   def list(opts \\ []) do
-    args = if Keyword.get(opts, :all, false), do: ["ps", "--json", "--all"], else: ["ps", "--json"]
+    args =
+      if Keyword.get(opts, :all, false), do: ["ps", "--json", "--all"], else: ["ps", "--json"]
 
     with {:ok, res} <- Cli.checked(args, "bsdkrun ps") do
       {:ok, decode_rows(res.stdout, &Types.sandbox_info/1)}
@@ -249,8 +250,7 @@ defmodule Bsdkrun.Sandbox do
     }
 
     if Keyword.get(opts, :throw_on_error, false) and res.exit_code != 0 do
-      {:error,
-       Error.command_failed(res.exit_code, res.stdout, res.stderr, result.command)}
+      {:error, Error.command_failed(res.exit_code, res.stdout, res.stderr, result.command)}
     else
       {:ok, result}
     end
@@ -263,7 +263,8 @@ defmodule Bsdkrun.Sandbox do
   @doc "Read the machine's console log. Pass `boot: true` for bsdkrun's own boot log."
   @spec logs(ref(), keyword()) :: {:ok, String.t()} | {:error, Error.t()}
   def logs(ref, opts \\ []) do
-    args = if Keyword.get(opts, :boot, false), do: ["logs", "--boot", id(ref)], else: ["logs", id(ref)]
+    args =
+      if Keyword.get(opts, :boot, false), do: ["logs", "--boot", id(ref)], else: ["logs", id(ref)]
 
     with {:ok, res} <- Cli.checked(args, "bsdkrun logs") do
       {:ok, res.stdout}
@@ -295,7 +296,9 @@ defmodule Bsdkrun.Sandbox do
   @doc "Remove the machine and its state. `force: true` stops it first if running."
   @spec remove(ref(), keyword()) :: :ok | {:error, Error.t()}
   def remove(ref, opts \\ []) do
-    args = if Keyword.get(opts, :force, false), do: ["rm", "--force", id(ref)], else: ["rm", id(ref)]
+    args =
+      if Keyword.get(opts, :force, false), do: ["rm", "--force", id(ref)], else: ["rm", id(ref)]
+
     lifecycle(args, "bsdkrun rm")
   end
 
@@ -308,8 +311,12 @@ defmodule Bsdkrun.Sandbox do
   def update(ref, opts) do
     args =
       ["update", id(ref)]
-      |> then(fn a -> if opts[:cpus] != nil, do: a ++ ["--cpus", to_string(opts[:cpus])], else: a end)
-      |> then(fn a -> if opts[:mem] != nil, do: a ++ ["--mem", to_string(opts[:mem])], else: a end)
+      |> then(fn a ->
+        if opts[:cpus] != nil, do: a ++ ["--cpus", to_string(opts[:cpus])], else: a
+      end)
+      |> then(fn a ->
+        if opts[:mem] != nil, do: a ++ ["--mem", to_string(opts[:mem])], else: a
+      end)
 
     lifecycle(args, "bsdkrun update")
   end

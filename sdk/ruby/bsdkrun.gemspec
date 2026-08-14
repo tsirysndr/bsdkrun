@@ -6,7 +6,7 @@ Gem::Specification.new do |spec|
   spec.name        = "bsdkrun"
   spec.version     = Bsdkrun::VERSION
   spec.authors     = ["Tsiry Sandratraina"]
-  spec.email       = ["tsiry.sndr@gmail.com"]
+  spec.email       = ["tsiry.sndr@rocksky.app"]
 
   spec.summary     = "Ruby SDK for bsdkrun — a Firecracker-style microVM launcher for BSD, Linux, and unikernel guests."
   spec.description = <<~DESC

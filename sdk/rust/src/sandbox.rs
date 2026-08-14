@@ -577,7 +577,7 @@ impl Sandbox {
     /// Reconnect to an existing machine by id (a unique prefix is enough).
     pub fn get(id: &str) -> Result<Sandbox> {
         for info in Self::list(true)? {
-            if info.id == id || info.id.starts_with(id) {
+            if info.id == id || info.id.starts_with(id) || info.name == id {
                 return Ok(Sandbox {
                     id: info.id,
                     ssh_port: None,

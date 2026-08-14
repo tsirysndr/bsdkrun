@@ -31,7 +31,7 @@ func GetSandbox(id string) (*Sandbox, error) {
 		return nil, err
 	}
 	for _, info := range rows {
-		if info.ID == id || strings.HasPrefix(info.ID, id) {
+		if info.ID == id || strings.HasPrefix(info.ID, id) || info.Name == id {
 			return &Sandbox{ID: info.ID}, nil
 		}
 	}

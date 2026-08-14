@@ -89,7 +89,7 @@ pub fn create(opts: CreateOptions) -> Result(Sandbox, Error) {
 pub fn get(id: String) -> Result(Sandbox, Error) {
   use all <- result.try(list_all(True))
 
-  case list.find(all, fn(m) { m.id == id || string.starts_with(m.id, id) }) {
+  case list.find(all, fn(m) { m.id == id || string.starts_with(m.id, id) || m.name == Some(id) }) {
     Ok(found) -> Ok(Sandbox(id: found.id, ssh_port: None))
     Error(_) -> Error(SandboxNotFound(id))
   }

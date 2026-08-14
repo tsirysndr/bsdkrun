@@ -164,7 +164,7 @@ export class Sandbox {
   /** Reconnect to an existing machine by id (a unique prefix is enough). */
   static async get(id: string): Promise<Sandbox> {
     const all = await Sandbox.list({ all: true });
-    const match = all.find((m) => m.id === id || m.id.startsWith(id));
+    const match = all.find((m) => m.id === id || m.id.startsWith(id) || m.name === id);
     if (!match) throw new SandboxNotFoundError(id);
     return new Sandbox(match.id);
   }

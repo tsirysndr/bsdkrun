@@ -77,7 +77,7 @@ class Sandbox:
     def get(cls, sandbox_id: str) -> Sandbox:
         """Reconnect to an existing machine by id (a unique prefix is enough)."""
         for info in cls.list(all=True):
-            if info.id == sandbox_id or info.id.startswith(sandbox_id):
+            if info.id == sandbox_id or info.id.startswith(sandbox_id) or info.name == sandbox_id:
                 return cls(info.id)
         raise SandboxNotFound(sandbox_id)
 

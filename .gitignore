@@ -65,3 +65,5 @@ zig-out/
 
 *.dylib
 
+.clj-kondo
+.lsp

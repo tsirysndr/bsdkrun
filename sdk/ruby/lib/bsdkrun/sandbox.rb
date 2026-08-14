@@ -69,7 +69,7 @@ module Bsdkrun
       # @return [Sandbox]
       # @raise [SandboxNotFound]
       def get(id)
-        row = list(all: true).find { |m| m.id == id || m.id.start_with?(id) }
+        row = list(all: true).find { |m| m.id == id || m.id.start_with?(id) || m.name == id }
         raise SandboxNotFound, id unless row
 
         new(row.id)

@@ -1,6 +1,6 @@
 {
   "name": "@bsdkrun/sdk",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "TypeScript SDK for bsdkrun — boot and drive BSD/Linux/unikernel microVMs programmatically, à la Vercel/Deno Sandbox.",
   "license": "MIT",
   "type": "module",

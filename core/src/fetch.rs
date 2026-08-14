@@ -495,10 +495,10 @@ pub fn fetch_freebsd_amd64_kernel(force: bool) -> Result<PathBuf> {
 
 /// Grow a raw disk image to `size` (e.g. "8G"). Only ever enlarges the file.
 ///
-/// NetBSD's arm64 image expands its root filesystem to fill the new space
-/// automatically on the next boot (its root partition is last on the disk and
-/// `resize_root` runs on boot) — no in-guest steps needed. FreeBSD's image
-/// won't: its UFS root is followed by swap, so the trailing space isn't
+/// NetBSD arm64 images may expand their root filesystem on boot. The bundled
+/// amd64 bare image is pre-sized because its disklabel/FFS root does not
+/// reliably grow when only the backing file is enlarged. FreeBSD's image won't
+/// auto-grow: its UFS root is followed by swap, so the trailing space isn't
 /// adjacent to root (you'd need to repartition + `growfs` by hand).
 pub fn grow(disk: &Path, size: &str) -> Result<()> {
     let target = parse_size(size)?;
@@ -528,8 +528,9 @@ pub fn grow(disk: &Path, size: &str) -> Result<()> {
 
     info!(from = current, to = target, image = %disk.display(), "grew image");
     info!(
-        "NetBSD expands its root filesystem to fill the new space on next boot. \
-         (FreeBSD's root is followed by swap, so it won't auto-grow.)"
+        "NetBSD arm64 images may expand their root filesystem on next boot; the \
+         bundled amd64 image is pre-sized. FreeBSD's root is followed by swap, \
+         so it won't auto-grow."
     );
     Ok(())
 }

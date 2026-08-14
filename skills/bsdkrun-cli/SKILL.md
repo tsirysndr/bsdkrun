@@ -95,6 +95,9 @@ Disks, images, volumes:
   gvproxy DNS's AAAA NXDOMAIN). Joins auto-sync; use `network sync` to refresh an
   existing network without restarting members.
 - **Snapshots of BSD guests** power the guest off first for a clean, bootable image.
+- **Linux storage on macOS is case-sensitive.** The first Linux launch automatically creates a
+  sparse APFS store for OCI roots and volumes. Inspect or manage it with `bsdkrun store status`,
+  `init`, `attach`, `detach`, and `rm`.
 - The desktop app mirrors these: Machines, Images, Volumes, Flavors, and Networks
   views, plus per-machine edit (CPU/RAM, network) and network member browsing.
 

@@ -540,6 +540,44 @@ Notes:
 - Either way the image must have a `/bin/sh` (scratch/distroless images won't boot this way), and
   the console defaults to `hvc0` (libkrun's virtio-console; `--console` overrides it).
 
+#### Case-sensitive Linux storage on macOS
+
+Linux filesystems are case-sensitive, but the default macOS APFS boot volume usually is not. OCI
+images and Linux workloads can contain paths that differ only by case—for example, the Linux
+kernel contains both `ipt_ECN.h` and `ipt_ecn.h`. Serving a rootfs directly from a case-insensitive
+directory through virtio-fs would merge those files and silently corrupt the guest filesystem.
+
+On macOS, bsdkrun therefore requires a case-sensitive backing store for OCI image trees, writable
+machine roots, and named volumes. The first `bsdkrun linux ...` invocation creates it automatically
+as a case-sensitive APFS sparsebundle and mounts it below the bsdkrun cache. A 200 GiB capacity is
+the default ceiling, but the sparsebundle initially consumes only the blocks it actually uses.
+Linux hosts already use case-sensitive filesystems and do not create this store.
+
+Manage or inspect the store explicitly with:
+
+```sh
+bsdkrun store status
+bsdkrun store init --size 300g  # optional manual initialization/custom ceiling
+bsdkrun store detach           # all machines using it must be stopped
+bsdkrun store attach
+bsdkrun store rm --force       # destructive: removes cached images and volumes
+```
+
+Initialization refuses to migrate storage while a machine is running. Stop active machines and
+retry. Existing OCI cache trees are discarded rather than migrated because extraction on a
+case-insensitive filesystem may already have corrupted them; images are pulled again into the new
+store. Existing Linux machines created before the store should also be removed and recreated so
+they cannot resume a damaged rootfs:
+
+```sh
+bsdkrun stop <id>
+bsdkrun rm <id>
+bsdkrun linux alpine
+```
+
+Virtio-fs remains the guest transport. The sparsebundle fixes the semantics of its host-side
+backing filesystem; it does not replace virtio-fs or load the rootfs into guest memory.
+
 ### systemd — turn an OCI guest into a full systemd system
 
 OCI images boot with bsdkrun's tiny generated `/init` as PID 1 — great for `docker run`-style

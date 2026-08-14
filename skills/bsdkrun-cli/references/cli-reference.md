@@ -170,6 +170,14 @@ outdated) one. The next `exec`/`ssh`/`tailscale` spawns the fresh binary.
 
 ## Disks, images, volumes, diagnostics
 
+### `store init|status|attach|detach|rm` (macOS only)
+Manage the case-sensitive APFS sparsebundle used for Linux OCI rootfs trees and named volumes.
+The first Linux launch initializes the default 200 GiB sparse-capacity store automatically when
+the macOS cache filesystem is case-insensitive. `init --size <SIZE>` creates it explicitly with a
+custom ceiling; `status` reports its state and disk use; `attach`/`detach [-f]` manage the mount;
+`rm -f` permanently deletes the store, cached images, and volumes. Stop running machines before
+initialization or detachment.
+
 ### `images [--json]`
 List downloaded images.
 

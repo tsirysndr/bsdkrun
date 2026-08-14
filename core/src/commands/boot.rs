@@ -1522,6 +1522,9 @@ pub(crate) fn boot_linux_from(
     rootfs_override: Option<PathBuf>,
     provision: &[String],
 ) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    crate::store::ensure_linux_storage()?;
+
     // Prepare everything that can fail before we fork / touch the hypervisor.
     let kernel = linux::ensure_kernel(args.kernel.clone(), &args.kernel_version)?;
     let image = oci::pull(&args.image)?;
@@ -2209,6 +2212,17 @@ pub(crate) fn cmd_start(id: &str) -> Result<()> {
         matches!(vm.kind.as_str(), "kernel" | "netbsd") || reference.starts_with("netbsd");
 
     if vm.kind == "linux" {
+        let legacy_machine_dir = machine_dir_or_tmp(&vm.id);
+        let legacy_rootfs = legacy_machine_dir.join("rootfs");
+        let legacy_rootfs_exists = volume.is_none()
+            && legacy_rootfs.symlink_metadata().is_ok()
+            && std::fs::read_dir(&legacy_rootfs)
+                .map(|mut entries| entries.next().is_some())
+                .unwrap_or(false);
+
+        #[cfg(target_os = "macos")]
+        crate::store::ensure_linux_storage()?;
+
         let largs = LinuxArgs {
             image: vm.image.clone(),
             kernel: None,
@@ -2231,7 +2245,15 @@ pub(crate) fn cmd_start(id: &str) -> Result<()> {
         // NOT gated on /bin|/nix, so images without those top-level dirs still
         // resume. Volume machines resume their volume rootfs already; a missing or
         // broken (nested) dir falls back to the base image.
-        let own_rootfs = machine_dir_or_tmp(&vm.id).join("rootfs");
+        let own_rootfs = machine_rootfs_dir(&vm.id, &legacy_machine_dir).join("rootfs");
+        if legacy_rootfs_exists && own_rootfs != legacy_rootfs {
+            anyhow::bail!(
+                "Linux machine {} uses a rootfs created before the case-sensitive macOS store; \
+                 remove and recreate it with `bsdkrun rm {}` to avoid resuming corrupted storage",
+                vm.id,
+                vm.id
+            );
+        }
         let intact = own_rootfs.symlink_metadata().is_ok()
             && !own_rootfs.join("rootfs").exists()
             && std::fs::read_dir(&own_rootfs)

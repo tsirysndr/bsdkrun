@@ -3,28 +3,13 @@
 
 use anyhow::Result;
 
-use crate::{db, store};
+use crate::store;
 
 /// Create the case-sensitive store, then move existing named volumes onto it.
 /// The image cache is dropped rather than moved — see [`store::migrate`].
 #[cfg(target_os = "macos")]
 pub(crate) fn cmd_store_init(size: &str) -> Result<()> {
-    // A stale "running" row whose pid is gone must not block the migration, so
-    // confirm liveness rather than trusting the recorded status.
-    let running = db::Db::open()
-        .and_then(|d| d.list_machines())
-        .map(|ms| {
-            ms.iter()
-                .filter(|m| m.status == "running" && m.pid.map(db::pid_alive).unwrap_or(false))
-                .count()
-        })
-        .unwrap_or(0);
-    if running > 0 {
-        anyhow::bail!(
-            "{running} machine(s) still running — stop them first, since their rootfs \
-             moves onto the new store"
-        );
-    }
+    store::ensure_no_running_machines()?;
     store::create(size)?;
     store::migrate()?;
     println!("case-sensitive store ready at {}", store::root()?.display());

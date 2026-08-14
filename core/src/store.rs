@@ -2,10 +2,10 @@
 //! module is not compiled on other hosts.
 //!
 //! macOS formats the boot volume as **case-insensitive** APFS. That is fine for
-//! most guests, but it silently corrupts a nix store: `/nix/store` routinely
-//! holds paths that differ only by case (perl ships both `Pod/` and `pod/`), so
-//! extracting or building into a case-insensitive directory collapses them and
-//! nix fails with the very confusing
+//! most guests, but it silently corrupts Linux trees whose paths differ only by
+//! case. That includes nix (`Pod/` and `pod/`) and Linux kernel sources
+//! (`ipt_ECN.h` and `ipt_ecn.h`). Extracting or building into a case-insensitive
+//! directory collapses them and produces confusing failures such as
 //!
 //! ```text
 //! error: creating directory ".../perl-5.42.0/lib/perl5/5.42.0/pod": File exists
@@ -202,6 +202,65 @@ pub fn auto_attach() {
     }
 }
 
+/// Ensure Linux OCI trees have case-sensitive backing storage.
+///
+/// The default macOS boot volume is usually case-insensitive. OCI images and
+/// guest workloads can contain names that differ only by case (the Linux
+/// kernel has several), so silently falling back to the historical cache can
+/// corrupt a checkout. Create the sparse case-sensitive store automatically on
+/// first Linux use. Existing stores are attached and verified.
+pub fn ensure_linux_storage() -> Result<()> {
+    let cache = crate::fetch::cache_dir()?;
+    let state = crate::db::state_dir()?;
+    if is_case_sensitive(&cache) && is_case_sensitive(&state) {
+        return Ok(());
+    }
+    if exists() {
+        attach()?;
+        if is_active() {
+            return Ok(());
+        }
+        bail!("the bsdkrun store is attached but is not case-sensitive");
+    }
+
+    ensure_no_running_machines()?;
+    eprintln!(
+        "initializing case-sensitive Linux storage at {} ({} sparse capacity)",
+        bundle_path()?.display(),
+        DEFAULT_SIZE
+    );
+    create(DEFAULT_SIZE)?;
+    migrate()?;
+    eprintln!(
+        "case-sensitive Linux storage ready at {}",
+        root()?.display()
+    );
+    Ok(())
+}
+
+/// Storage migration must never move a volume that a live VM is using.
+pub(crate) fn ensure_no_running_machines() -> Result<()> {
+    let running = crate::db::Db::open()
+        .and_then(|db| db.list_machines())
+        .map(|machines| {
+            machines
+                .iter()
+                .filter(|machine| {
+                    machine.status == "running"
+                        && machine.pid.map(crate::db::pid_alive).unwrap_or(false)
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    if running > 0 {
+        bail!(
+            "{running} machine(s) still running — stop them before bsdkrun initializes its \
+             case-sensitive Linux store"
+        );
+    }
+    Ok(())
+}
+
 /// Detach the sparsebundle. `force` unmounts even with open files.
 pub fn detach(force: bool) -> Result<()> {
     let mnt = root()?;
@@ -318,13 +377,20 @@ pub fn describe() -> Result<String> {
     let (bundle, mnt) = (bundle_path()?, root()?);
     if !bundle.is_dir() {
         let cache = crate::fetch::cache_dir()?;
+        let state = crate::db::state_dir()?;
         return Ok(format!(
-            "no store — the image cache is on {}, which is {}",
+            "no store — image cache {} is {}; machine state {} is {}",
             cache.display(),
             if is_case_sensitive(&cache) {
                 "case-sensitive"
             } else {
-                "case-INSENSITIVE (nix guests will fail)"
+                "case-INSENSITIVE"
+            },
+            state.display(),
+            if is_case_sensitive(&state) {
+                "case-sensitive"
+            } else {
+                "case-INSENSITIVE (Linux guests require the sparse store)"
             }
         ));
     }

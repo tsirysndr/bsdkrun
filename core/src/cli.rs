@@ -171,7 +171,7 @@ pub enum Command {
     /// Manage persistent volumes (list / remove).
     Volume(VolumeArgs),
 
-    /// Manage the case-sensitive store that nix guests need (macOS only).
+    /// Manage the case-sensitive Linux rootfs store (macOS only).
     #[cfg(target_os = "macos")]
     Store(StoreArgs),
 
@@ -567,8 +567,8 @@ pub enum VolumeCmd {
     Rm(VolumeRmArgs),
 }
 
-/// macOS formats the boot volume case-insensitively, which collapses nix store
-/// paths that differ only by case and breaks every nix guest. These commands
+/// macOS formats the boot volume case-insensitively, which collapses Linux
+/// paths that differ only by case. These commands
 /// `bsdkrun kvm` — the KVM readiness check. macOS uses Hypervisor.framework
 /// (gated by an entitlement, not a device node), so there is nothing for this
 /// to inspect there and the subcommand is not compiled on macOS.
@@ -582,8 +582,8 @@ pub struct KvmArgs {
 
 /// macOS formats the boot volume case-insensitively, which collapses nix store
 /// paths that differ only by case and breaks every nix guest. These commands
-/// manage the case-sensitive APFS sparsebundle that holds image rootfs trees
-/// and named volumes instead. Linux hosts are already case-sensitive and need
+/// manage the case-sensitive APFS sparsebundle that holds OCI rootfs trees and
+/// named volumes instead. Linux hosts are already case-sensitive and need
 /// none of this, so the subcommand is not compiled there.
 #[cfg(target_os = "macos")]
 #[derive(Parser, Serialize, Deserialize)]

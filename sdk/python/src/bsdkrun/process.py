@@ -9,8 +9,7 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
-from collections.abc import Mapping
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from .binary import resolve_binary

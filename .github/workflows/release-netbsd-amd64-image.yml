@@ -88,9 +88,11 @@ jobs:
           rm -rf "$WORK"; mkdir -p "$ROOT"
           cd "$WORK"
 
-          # Minimal sets + the MICROVM kernel, all from one snapshot (so the
-          # kernel's /stand modules match the userland). HTTPS via curl.
-          for s in base etc; do
+          # Full build-capable sets + the MICROVM kernel, all from the 11.0
+          # release (so the kernel's /stand modules match the userland). The
+          # compiler, assembler, headers, and libraries live in comp; without
+          # it the image cannot bootstrap NetBSD build.sh host tools.
+          for s in base comp etc man misc modules; do
             curl -fL -o "$s.tar.xz" "$BASEURL/sets/$s.tar.xz"
           done
           curl -fL -o netbsd-MICROVM.gz "$BASEURL/kernel/netbsd-MICROVM.gz"

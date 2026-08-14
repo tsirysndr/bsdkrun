@@ -46,7 +46,7 @@ jobs:
         uses: cross-platform-actions/action@v1.3.0
         with:
           operating_system: netbsd
-          version: "10.1"
+          version: "11.0"
           architecture: x86-64
           shell: bash
           memory: 8G
@@ -60,7 +60,6 @@ jobs:
           # NOTE: the script runs inside the NetBSD VM, which does NOT inherit the
           # host runner's env, so `env:` vars are invisible here. Interpolate the
           # workflow inputs into the script text directly instead.
-          SNAP="${{ inputs.snapshot }}"
           AGENT_URL="${{ inputs.agent_url }}"
           WS="$(pwd)"                       # synced workspace (checkout + artifacts)
           mkdir -p "$WS/dist"
@@ -81,9 +80,9 @@ jobs:
           #      the sets' root ownership + setuid bits when run as root; MAKEDEV
           #      needs root to mknod the /dev nodes the guest boots from (the sets
           #      ship none); and makefs must run as root to preserve all of that.
-          sudo env SNAP="$SNAP" WS="$WS" AGENT_BIN="$AGENT_BIN" /bin/sh -eux <<'ROOTEOF'
+          sudo env WS="$WS" AGENT_BIN="$AGENT_BIN" /bin/sh -eux <<'ROOTEOF'
           export PATH=/sbin:/usr/sbin:/bin:/usr/bin:/usr/pkg/bin
-          BASEURL="https://nycdn.netbsd.org/pub/NetBSD-daily/HEAD/${SNAP}/amd64/binary"
+          BASEURL="https://cdn.netbsd.org/pub/NetBSD/NetBSD-11.0/amd64/binary"
           WORK=/var/tmp/nbimg
           ROOT="$WORK/rootfs"
           rm -rf "$WORK"; mkdir -p "$ROOT"

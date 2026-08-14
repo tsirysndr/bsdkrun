@@ -2,6 +2,7 @@ package bsdkrun
 
 import (
 	"encoding/json"
+	"io"
 	"regexp"
 	"strconv"
 	"strings"
@@ -82,6 +83,8 @@ type ExecBuilder struct {
 	tty      bool
 	logLevel int
 	check    bool
+	stdout   io.Writer
+	stderr   io.Writer
 }
 
 // Command starts building a guest command: a program name plus (optional)
@@ -126,6 +129,12 @@ func (b *ExecBuilder) TTY() *ExecBuilder {
 	return b
 }
 
+// Stdout streams stdout to w while retaining it in the returned Result.
+func (b *ExecBuilder) Stdout(w io.Writer) *ExecBuilder { b.stdout = w; return b }
+
+// Stderr streams stderr to w while retaining it in the returned Result.
+func (b *ExecBuilder) Stderr(w io.Writer) *ExecBuilder { b.stderr = w; return b }
+
 // LogLevel sets bsdkrun's global --log-level for this invocation.
 func (b *ExecBuilder) LogLevel(level int) *ExecBuilder {
 	b.logLevel = level
@@ -158,7 +167,7 @@ func (b *ExecBuilder) Run() (*Result, error) {
 	cliArgs = append(cliArgs, b.box.ID)
 	cliArgs = append(cliArgs, argv...)
 
-	res, err := Run(cliArgs, &RunOpts{Stdin: b.stdin, LogLevel: b.logLevel})
+	res, err := Run(cliArgs, &RunOpts{Stdin: b.stdin, LogLevel: b.logLevel, Stdout: b.stdout, Stderr: b.stderr})
 	if err != nil {
 		return nil, err
 	}

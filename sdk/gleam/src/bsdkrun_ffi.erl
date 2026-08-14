@@ -5,7 +5,7 @@
 -module(bsdkrun_ffi).
 
 -export([
-    run/4,
+    run/6,
     run_inherit/2,
     find_executable/1,
     get_env/1,
@@ -28,7 +28,7 @@
 %% via the environment so no shell quoting of user data is ever required.
 %%
 %% Returns the Gleam `cli.Output` record — `{output, Stdout, Stderr, ExitCode}`.
-run(Bin, Args, Env, Stdin) ->
+run(Bin, Args, Env, Stdin, OnStdout, OnStderr) ->
     StderrPath = tmp_path("stderr"),
     %% `Stdin` is a Gleam `Option(String)`: `none` or `{some, Binary}`.
     {Redirects, StdinEnv, Cleanup} =
@@ -46,7 +46,8 @@ run(Bin, Args, Env, Stdin) ->
     PortEnv = [{"__BSDKRUN_STDERR", StderrPath} | StdinEnv] ++ env_pairs(Env),
     try
         {Stdout, Code} =
-            port_run("/bin/sh", ["-c", Script, "sh", Bin | Args], PortEnv),
+            port_run_stream("/bin/sh", ["-c", Script, "sh", Bin | Args], PortEnv,
+                            OnStdout, OnStderr, StderrPath),
         {output, Stdout, read_file_or_empty(StderrPath), Code}
     after
         _ = file:delete(StderrPath),
@@ -75,6 +76,37 @@ port_run(Executable, Args, Env) ->
     ],
     Port = erlang:open_port({spawn_executable, Executable}, Opts),
     collect(Port, []).
+
+port_run_stream(Executable, Args, Env, OnStdout, OnStderr, StderrPath) ->
+    Opts = [{args, Args}, {env, Env}, binary, exit_status, use_stdio, hide],
+    Port = erlang:open_port({spawn_executable, Executable}, Opts),
+    collect_stream(Port, [], OnStdout, OnStderr, StderrPath, 0).
+
+collect_stream(Port, Acc, OnStdout, OnStderr, Path, Offset) ->
+    NewOffset = emit_file_delta(Path, Offset, OnStderr),
+    receive
+        {Port, {data, Data}} ->
+            emit(OnStdout, Data),
+            collect_stream(Port, [Data | Acc], OnStdout, OnStderr, Path, NewOffset);
+        {Port, {exit_status, Code}} ->
+            _ = emit_file_delta(Path, NewOffset, OnStderr),
+            {iolist_to_binary(lists:reverse(Acc)), Code};
+        {'EXIT', Port, _Reason} -> {iolist_to_binary(lists:reverse(Acc)), 1}
+    after 10 ->
+        collect_stream(Port, Acc, OnStdout, OnStderr, Path, NewOffset)
+    end.
+
+emit(none, _Data) -> ok;
+emit({some, Fun}, Data) -> Fun(Data).
+
+emit_file_delta(Path, Offset, Callback) ->
+    case file:read_file(Path) of
+        {ok, Contents} when byte_size(Contents) > Offset ->
+            Size = byte_size(Contents),
+            emit(Callback, binary:part(Contents, Offset, Size - Offset)),
+            Size;
+        _ -> Offset
+    end.
 
 %% Messages from a single port arrive in order, so every `data` chunk emitted
 %% before the child exited is already queued ahead of `exit_status`.

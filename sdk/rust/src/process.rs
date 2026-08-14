@@ -35,6 +35,17 @@ pub(crate) fn run_full(
     stdin: Option<&[u8]>,
     log_level: u32,
 ) -> Result<RawResult> {
+    run_full_stream(args, env, stdin, log_level, None, None)
+}
+
+pub(crate) fn run_full_stream(
+    args: &[String],
+    env: &[(String, String)],
+    stdin: Option<&[u8]>,
+    log_level: u32,
+    mut on_stdout: Option<Box<dyn Write + Send>>,
+    mut on_stderr: Option<Box<dyn Write + Send>>,
+) -> Result<RawResult> {
     let binary = resolve_binary()?;
     let mut cmd = Command::new(binary);
     cmd.args(with_globals(args, log_level));
@@ -62,14 +73,35 @@ pub(crate) fn run_full(
         let mut handle = child.stderr.take().expect("stderr was piped");
         std::thread::spawn(move || {
             let mut buf = Vec::new();
-            let _ = handle.read_to_end(&mut buf);
+            let mut chunk = [0_u8; 8192];
+            loop {
+                match handle.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&chunk[..n]);
+                        if let Some(w) = on_stderr.as_mut() {
+                            let _ = w.write_all(&chunk[..n]);
+                        }
+                    }
+                }
+            }
             buf
         })
     };
 
     let mut stdout_buf = Vec::new();
     if let Some(mut out) = child.stdout.take() {
-        out.read_to_end(&mut stdout_buf)?;
+        let mut chunk = [0_u8; 8192];
+        loop {
+            let n = out.read(&mut chunk)?;
+            if n == 0 {
+                break;
+            }
+            stdout_buf.extend_from_slice(&chunk[..n]);
+            if let Some(w) = on_stdout.as_mut() {
+                w.write_all(&chunk[..n])?;
+            }
+        }
     }
     let stderr_buf = stderr_thread.join().unwrap_or_default();
     if let Some(t) = stdin_thread {

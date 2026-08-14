@@ -1,3 +1,25 @@
+defmodule Bsdkrun.Cli.StreamCollector do
+  @moduledoc false
+  defstruct callback: nil, chunks: []
+end
+
+defimpl Collectable, for: Bsdkrun.Cli.StreamCollector do
+  def into(original) do
+    {original,
+     fn
+       acc, {:cont, chunk} ->
+         if acc.callback, do: acc.callback.(chunk)
+         %{acc | chunks: [chunk | acc.chunks]}
+
+       acc, :done ->
+         acc
+
+       _acc, :halt ->
+         :ok
+     end}
+  end
+end
+
 defmodule Bsdkrun.Cli do
   @moduledoc """
   Shells out to the `bsdkrun` binary via `System.cmd/3`.
@@ -18,6 +40,8 @@ defmodule Bsdkrun.Cli do
           {:log_level, non_neg_integer()}
           | {:env, map() | keyword()}
           | {:stdin, iodata()}
+          | {:on_stdout, (binary() -> any())}
+          | {:on_stderr, (binary() -> any())}
 
   @doc """
   Run `bsdkrun <args>` to completion, buffering stdout/stderr separately.
@@ -58,17 +82,34 @@ defmodule Bsdkrun.Cli do
     env = [{"__BSDKRUN_STDERR", stderr_path} | stdin_env] ++ extra_env
 
     try do
+      on_stdout = Keyword.get(opts, :on_stdout)
+      on_stderr = Keyword.get(opts, :on_stderr)
+
+      stderr_task =
+        if on_stderr do
+          parent = self()
+          Task.async(fn -> stream_file(stderr_path, on_stderr, parent, 0) end)
+        end
+
       {stdout, code} =
         System.cmd("/bin/sh", ["-c", script, "sh", bin] ++ full,
           env: env,
-          stderr_to_stdout: false
+          stderr_to_stdout: false,
+          into: %Bsdkrun.Cli.StreamCollector{callback: on_stdout}
         )
+
+      stdout = IO.iodata_to_binary(Enum.reverse(stdout.chunks))
 
       stderr =
         case File.read(stderr_path) do
           {:ok, contents} -> contents
           _ -> ""
         end
+
+      if stderr_task do
+        send(stderr_task.pid, {:stop, self()})
+        Task.await(stderr_task)
+      end
 
       %{stdout: stdout, stderr: stderr, exit_code: code}
     after
@@ -99,5 +140,22 @@ defmodule Bsdkrun.Cli do
       System.tmp_dir!(),
       "bsdkrun-#{System.unique_integer([:positive])}-#{label}"
     )
+  end
+
+  defp stream_file(path, callback, owner, offset) do
+    contents =
+      case File.read(path) do
+        {:ok, data} -> data
+        _ -> ""
+      end
+
+    size = byte_size(contents)
+    if size > offset, do: callback.(binary_part(contents, offset, size - offset))
+
+    receive do
+      {:stop, ^owner} -> :ok
+    after
+      10 -> stream_file(path, callback, owner, size)
+    end
   end
 end

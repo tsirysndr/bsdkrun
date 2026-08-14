@@ -29,6 +29,10 @@ export interface ExecOptions {
   throwOnError?: boolean;
   /** Per-command bsdkrun log level (default 0 — quiet). */
   logLevel?: number;
+  /** Receive stdout incrementally while the command runs (it is also captured). */
+  onStdout?: (chunk: Uint8Array) => void;
+  /** Receive stderr incrementally while the command runs (it is also captured). */
+  onStderr?: (chunk: Uint8Array) => void;
 }
 
 /** Options for {@link Sandbox.logs}. */
@@ -226,6 +230,8 @@ export class Sandbox {
       stdin: opts.stdin,
       signal: opts.signal,
       logLevel: opts.logLevel,
+      onStdout: opts.onStdout,
+      onStderr: opts.onStderr,
     });
     const result = new CommandResult(
       res.stdout,

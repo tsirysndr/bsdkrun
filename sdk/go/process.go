@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -26,6 +27,9 @@ type RunOpts struct {
 	// so the SDK's captured output stays clean; raise it for boot
 	// diagnostics).
 	LogLevel int
+	// Stdout/Stderr receive output live while it is also captured in RawResult.
+	Stdout io.Writer
+	Stderr io.Writer
 }
 
 // withGlobals prepends the global --log-level flag to every invocation.
@@ -64,6 +68,12 @@ func Run(args []string, opts *RunOpts) (RawResult, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	if opts != nil && opts.Stdout != nil {
+		cmd.Stdout = io.MultiWriter(&stdout, opts.Stdout)
+	}
+	if opts != nil && opts.Stderr != nil {
+		cmd.Stderr = io.MultiWriter(&stderr, opts.Stderr)
+	}
 
 	runErr := cmd.Run()
 	result := RawResult{Stdout: stdout.String(), Stderr: stderr.String()}

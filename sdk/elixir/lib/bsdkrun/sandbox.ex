@@ -204,6 +204,8 @@ defmodule Bsdkrun.Sandbox do
     * `:cwd`           — working directory (emulated via `sh -c 'cd …'`).
     * `:throw_on_error`— return `{:error, _}` on a non-zero exit (default false).
     * `:log_level`     — per-command bsdkrun log level (default 0).
+    * `:on_stdout`     — function called with stdout chunks as they arrive.
+    * `:on_stderr`     — function called with stderr chunks as they arrive.
 
   Returns `{:ok, %Bsdkrun.Types.Result{}}`. With `throw_on_error: true`, a
   non-zero exit yields `{:error, %Bsdkrun.Error{}}` instead.
@@ -239,7 +241,9 @@ defmodule Bsdkrun.Sandbox do
     res =
       Cli.run(args,
         stdin: Keyword.get(opts, :stdin),
-        log_level: Keyword.get(opts, :log_level, 0)
+        log_level: Keyword.get(opts, :log_level, 0),
+        on_stdout: Keyword.get(opts, :on_stdout),
+        on_stderr: Keyword.get(opts, :on_stderr)
       )
 
     result = %Result{

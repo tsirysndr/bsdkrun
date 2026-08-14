@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 from collections.abc import Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .binary import resolve_binary
@@ -37,6 +39,8 @@ def run(
     env: Mapping[str, str] | None = None,
     stdin: str | bytes | None = None,
     log_level: int | None = None,
+    on_stdout: Callable[[bytes], None] | None = None,
+    on_stderr: Callable[[bytes], None] | None = None,
 ) -> RawResult:
     """Run ``bsdkrun <args>`` to completion, buffering stdout/stderr.
 
@@ -57,17 +61,36 @@ def run(
     else:
         input_bytes = stdin.encode("utf-8")
 
-    completed = subprocess.run(
+    child = subprocess.Popen(
         [binary, *_with_globals(args, log_level)],
         env=child_env,
-        input=input_bytes,
-        capture_output=True,
-        check=False,
+        stdin=subprocess.PIPE if input_bytes is not None else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
+    stdout = bytearray()
+    stderr = bytearray()
+
+    def drain(pipe: object, captured: bytearray, callback: Callable[[bytes], None] | None) -> None:
+        while chunk := pipe.read(8192):  # type: ignore[attr-defined]
+            captured.extend(chunk)
+            if callback:
+                callback(chunk)
+
+    out_thread = threading.Thread(target=drain, args=(child.stdout, stdout, on_stdout))
+    err_thread = threading.Thread(target=drain, args=(child.stderr, stderr, on_stderr))
+    out_thread.start()
+    err_thread.start()
+    if input_bytes is not None and child.stdin is not None:
+        child.stdin.write(input_bytes)
+        child.stdin.close()
+    exit_code = child.wait()
+    out_thread.join()
+    err_thread.join()
     return RawResult(
-        stdout=completed.stdout.decode("utf-8", "replace"),
-        stderr=completed.stderr.decode("utf-8", "replace"),
-        exit_code=completed.returncode,
+        stdout=bytes(stdout).decode("utf-8", "replace"),
+        stderr=bytes(stderr).decode("utf-8", "replace"),
+        exit_code=exit_code,
     )
 
 
@@ -78,9 +101,12 @@ def run_checked(
     env: Mapping[str, str] | None = None,
     stdin: str | bytes | None = None,
     log_level: int | None = None,
+    on_stdout: Callable[[bytes], None] | None = None,
+    on_stderr: Callable[[bytes], None] | None = None,
 ) -> RawResult:
     """Like :func:`run`, but raise :class:`CommandFailed` on a non-zero exit."""
-    result = run(args, env=env, stdin=stdin, log_level=log_level)
+    result = run(args, env=env, stdin=stdin, log_level=log_level,
+                 on_stdout=on_stdout, on_stderr=on_stderr)
     if result.exit_code != 0:
         raise CommandFailed(result.exit_code, result.stdout, result.stderr, label)
     return result

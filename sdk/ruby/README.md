@@ -91,6 +91,8 @@ box.exec("ruby",
   cwd: "/app",
   stdin: "data on stdin",
   tty: true,                 # allocate a PTY
+  on_stdout: ->(chunk) { $stdout.write(chunk) },
+  on_stderr: ->(chunk) { $stderr.write(chunk) },
   throw_on_error: true)      # raise on non-zero exit (default: false)
 
 # Vercel-Sandbox-style alias:
@@ -104,6 +106,10 @@ result.lines        # non-empty stdout lines
 
 `exec` returns a `Bsdkrun::Result`. It only raises `CommandFailed` when you pass
 `throw_on_error: true` (or call `result.throw_if_failed!`).
+
+The callbacks run as chunks arrive, and the same bytes remain buffered in the
+returned result. They do not require `tty`; a PTY changes command semantics and
+may merge stderr into stdout.
 
 ## Lifecycle & inventory
 

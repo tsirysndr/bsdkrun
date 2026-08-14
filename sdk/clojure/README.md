@@ -32,13 +32,13 @@ and every namespace is a set of functions over plain maps.
 Via `deps.edn`:
 
 ```clojure
-io.github.tsirysndr/bsdkrun {:mvn/version "0.2.1"}
+io.github.tsirysndr/bsdkrun {:mvn/version "0.2.2"}
 ```
 
 Via Leiningen:
 
 ```clojure
-[io.github.tsirysndr/bsdkrun "0.2.1"]
+[io.github.tsirysndr/bsdkrun "0.2.2"]
 ```
 
 ### The `bsdkrun` binary
@@ -95,7 +95,8 @@ banner reported one, which only BSD guests do).
 pass an argv vector (or a bare program name plus `:args`).
 
 ```clojure
-(require '[bsdkrun.types :as types])
+(require '[bsdkrun.types :as types]
+         '[clojure.java.io :as io])
 
 (sandbox/exec! box ["ls" "-la" "/etc"])
 
@@ -104,6 +105,8 @@ pass an argv vector (or a bare program name plus `:args`).
    :env {"X" "hi"}
    :cwd "/app"
    :stdin "data on stdin"
+   :on-stdout #(io/copy (java.io.ByteArrayInputStream. %) System/out)
+   :on-stderr #(io/copy (java.io.ByteArrayInputStream. %) System/err)
    :tty true                    ; allocate a PTY
    :throw-on-error true})       ; throw on non-zero exit (default: false)
 
@@ -119,6 +122,10 @@ pass an argv vector (or a bare program name plus `:args`).
 `exec!` returns a plain Result map (`{:stdout ... :stderr ... :exit-code ...
 :command ...}`). It only throws when you pass `:throw-on-error true` (or
 call `(bsdkrun.types/throw-if-failed! result)` yourself).
+
+The callbacks receive byte arrays as chunks arrive, while `:stdout` and
+`:stderr` remain fully buffered in the result. Streaming is independent of
+`:tty`; a PTY changes command semantics and may merge stderr into stdout.
 
 ## Lifecycle & inventory
 

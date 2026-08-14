@@ -19,7 +19,7 @@ use serde_json::Value;
 
 use crate::args::{build_create_args, strvec, CreateOpts, Kind};
 use crate::error::{Error, Result};
-use crate::process::{checked, run_full, spawn};
+use crate::process::{checked, run_full, run_full_stream, spawn};
 use crate::types::{ExecResult, SandboxInfo};
 
 /// A machine id as the CLI prints it: lowercase hex, at least six digits, on a
@@ -639,6 +639,8 @@ impl Sandbox {
             stdin: None,
             tty: false,
             log_level: 0,
+            stdout: None,
+            stderr: None,
         }
     }
 
@@ -787,7 +789,6 @@ impl Sandbox {
 }
 
 /// A guest command being assembled — see [`Sandbox::command`].
-#[derive(Debug, Clone)]
 pub struct CommandBuilder {
     sandbox_id: String,
     argv: Vec<String>,
@@ -796,6 +797,8 @@ pub struct CommandBuilder {
     stdin: Option<Vec<u8>>,
     tty: bool,
     log_level: u32,
+    stdout: Option<Box<dyn std::io::Write + Send>>,
+    stderr: Option<Box<dyn std::io::Write + Send>>,
 }
 
 impl CommandBuilder {
@@ -845,6 +848,18 @@ impl CommandBuilder {
         self
     }
 
+    /// Stream stdout to `writer` while retaining it in the returned result.
+    pub fn stdout(mut self, writer: impl std::io::Write + Send + 'static) -> Self {
+        self.stdout = Some(Box::new(writer));
+        self
+    }
+
+    /// Stream stderr to `writer` while retaining it in the returned result.
+    pub fn stderr(mut self, writer: impl std::io::Write + Send + 'static) -> Self {
+        self.stderr = Some(Box::new(writer));
+        self
+    }
+
     /// Run the command to completion and capture the result.
     ///
     /// A non-zero exit is data, not an error — chain
@@ -875,7 +890,14 @@ impl CommandBuilder {
         cli.push(self.sandbox_id.clone());
         cli.extend(argv.iter().cloned());
 
-        let res = run_full(&cli, &[], self.stdin.as_deref(), self.log_level)?;
+        let res = run_full_stream(
+            &cli,
+            &[],
+            self.stdin.as_deref(),
+            self.log_level,
+            self.stdout,
+            self.stderr,
+        )?;
         Ok(ExecResult {
             stdout: res.stdout,
             stderr: res.stderr,

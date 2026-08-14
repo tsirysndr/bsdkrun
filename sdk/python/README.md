@@ -82,6 +82,8 @@ Every `create` runs the machine **detached** and returns a `Sandbox` handle.
 Pass an argv list (no shell parsing), or a program name plus `args`:
 
 ```python
+import sys
+
 box.exec(["ls", "-la", "/etc"])
 
 box.exec(
@@ -92,6 +94,8 @@ box.exec(
     stdin="data on stdin",
     tty=True,  # allocate a PTY
     throw_on_error=True,  # raise CommandFailed on a non-zero exit (default: False)
+    on_stdout=lambda chunk: sys.stdout.buffer.write(chunk),
+    on_stderr=lambda chunk: sys.stderr.buffer.write(chunk),
 )
 
 # Vercel-Sandbox-style alias:
@@ -101,6 +105,10 @@ print(result.stdout, result.exit_code)
 
 `exec` returns a `Result` with `.stdout`, `.stderr`, `.exit_code`, `.ok`, and
 helpers `.text()`, `.json()`, `.lines()`, `.throw_if_failed()`.
+
+The stream callbacks receive `bytes` as they arrive while the complete output
+is still captured in the returned `Result`. They are independent of `tty`;
+allocating a TTY changes command behavior and may merge stderr into stdout.
 
 ## Lifecycle & inventory
 

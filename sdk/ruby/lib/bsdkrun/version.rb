@@ -2,5 +2,5 @@
 
 module Bsdkrun
   # The bsdkrun Ruby SDK version.
-  VERSION = "0.3.1"
+  VERSION = "0.3.2"
 end

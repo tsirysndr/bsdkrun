@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from .args import build_create_args
@@ -104,6 +104,8 @@ class Sandbox:
         cwd: str | None = None,
         log_level: int | None = None,
         throw_on_error: bool = False,
+        on_stdout: Callable[[bytes], None] | None = None,
+        on_stderr: Callable[[bytes], None] | None = None,
     ) -> Result:
         """Run a command in the guest through its exec agent.
 
@@ -111,7 +113,9 @@ class Sandbox:
         with ``args``). ``env`` sets per-command variables (``-e K=V``), ``tty``
         allocates a PTY, ``cwd`` runs in a working directory, and ``stdin`` is
         piped to the command. With ``throw_on_error`` a non-zero exit raises
-        :class:`CommandFailed`.
+        :class:`CommandFailed`. ``on_stdout`` and ``on_stderr`` receive byte
+        chunks in real time while the same output remains available in the
+        returned result.
 
             box.exec(["ls", "-la", "/etc"])
             box.exec("node", args=["-e", "print(1)"], env={"X": "1"})
@@ -133,7 +137,8 @@ class Sandbox:
         cli_args.append(self.id)
         cli_args += argv
 
-        res = run(cli_args, stdin=stdin, log_level=log_level)
+        res = run(cli_args, stdin=stdin, log_level=log_level,
+                  on_stdout=on_stdout, on_stderr=on_stderr)
         result = Result(res.stdout, res.stderr, res.exit_code, f"exec {' '.join(argv)}")
         if throw_on_error:
             result.throw_if_failed()

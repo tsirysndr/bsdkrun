@@ -107,6 +107,8 @@ let result = sandbox
     .env("X", "hi")
     .cwd("/app")
     .stdin("data on stdin")
+    .stdout(std::io::stdout()) // stream live and keep capturing
+    .stderr(std::io::stderr())
     .tty(true) // allocate a PTY
     .run()?;
 
@@ -117,6 +119,10 @@ println!("{} (exit {})", result.stdout, result.exit_code);
 `stderr`, `exit_code`, and helpers `.ok()`, `.text()`, `.json::<T>()`,
 `.lines()`. A non-zero exit is **data, not an error** — chain `.ok_or_err()`
 to turn it into `Error::CommandFailed`:
+
+The `stdout` and `stderr` writers receive bytes as they arrive while the full
+streams remain in `ExecResult`. They are independent of `tty`; a PTY changes
+command semantics and may merge stderr into stdout.
 
 ```rust
 sandbox.exec(["ping", "-c1", "db"])?.ok_or_err()?;

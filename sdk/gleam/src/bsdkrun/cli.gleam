@@ -19,12 +19,18 @@ pub type Output {
 /// How to run a command. Build one with `options` and adjust with the
 /// `with_*` helpers.
 pub type Options {
-  Options(log_level: Int, env: List(#(String, String)), stdin: Option(String))
+  Options(
+    log_level: Int,
+    env: List(#(String, String)),
+    stdin: Option(String),
+    on_stdout: Option(fn(String) -> Nil),
+    on_stderr: Option(fn(String) -> Nil),
+  )
 }
 
 /// Default run options: log level `0`, no extra environment, no stdin.
 pub fn options() -> Options {
-  Options(log_level: 0, env: [], stdin: None)
+  Options(log_level: 0, env: [], stdin: None, on_stdout: None, on_stderr: None)
 }
 
 /// Set the global `--log-level` for this invocation.
@@ -42,12 +48,24 @@ pub fn with_stdin(opts: Options, data: String) -> Options {
   Options(..opts, stdin: Some(data))
 }
 
+/// Receive stdout chunks while retaining them in the completed output.
+pub fn with_stdout(opts: Options, callback: fn(String) -> Nil) -> Options {
+  Options(..opts, on_stdout: Some(callback))
+}
+
+/// Receive stderr chunks while retaining them in the completed output.
+pub fn with_stderr(opts: Options, callback: fn(String) -> Nil) -> Options {
+  Options(..opts, on_stderr: Some(callback))
+}
+
 @external(erlang, "bsdkrun_ffi", "run")
 fn ffi_run(
   bin: String,
   args: List(String),
   env: List(#(String, String)),
   stdin: Option(String),
+  on_stdout: Option(fn(String) -> Nil),
+  on_stderr: Option(fn(String) -> Nil),
 ) -> Output
 
 @external(erlang, "bsdkrun_ffi", "run_inherit")
@@ -58,7 +76,7 @@ fn ffi_run_inherit(bin: String, args: List(String)) -> Int
 pub fn run(args: List(String), opts: Options) -> Result(Output, Error) {
   use bin <- result.try(binary.resolve())
   let full = ["--log-level", int.to_string(opts.log_level), ..args]
-  Ok(ffi_run(bin, full, opts.env, opts.stdin))
+  Ok(ffi_run(bin, full, opts.env, opts.stdin, opts.on_stdout, opts.on_stderr))
 }
 
 /// Run `bsdkrun <args>` and fail on a non-zero exit. `label` names the command

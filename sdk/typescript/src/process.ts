@@ -15,6 +15,10 @@ export interface RunOptions {
    * SDK's captured output stays clean. Raise it for boot diagnostics.
    */
   logLevel?: number;
+  /** Called as stdout bytes arrive. Output is still captured in the result. */
+  onStdout?: (chunk: Uint8Array) => void;
+  /** Called as stderr bytes arrive. Output is still captured in the result. */
+  onStderr?: (chunk: Uint8Array) => void;
 }
 
 export interface RawResult {
@@ -47,8 +51,14 @@ export async function runCli(
 
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
-    child.stdout.on("data", (d: Buffer) => stdout.push(d));
-    child.stderr.on("data", (d: Buffer) => stderr.push(d));
+    child.stdout.on("data", (d: Buffer) => {
+      stdout.push(d);
+      opts.onStdout?.(d);
+    });
+    child.stderr.on("data", (d: Buffer) => {
+      stderr.push(d);
+      opts.onStderr?.(d);
+    });
 
     child.on("error", reject);
     child.on("close", (code) => {

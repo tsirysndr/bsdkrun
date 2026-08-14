@@ -126,6 +126,8 @@ pub type ExecOptions {
     cwd: Option(String),
     fail_on_error: Bool,
     log_level: Int,
+    on_stdout: Option(fn(String) -> Nil),
+    on_stderr: Option(fn(String) -> Nil),
   )
 }
 
@@ -139,6 +141,8 @@ pub fn exec_options() -> ExecOptions {
     cwd: None,
     fail_on_error: False,
     log_level: 0,
+    on_stdout: None,
+    on_stderr: None,
   )
 }
 
@@ -169,6 +173,22 @@ pub fn with_cwd(opts: ExecOptions, dir: String) -> ExecOptions {
 /// command exits non-zero.
 pub fn with_fail_on_error(opts: ExecOptions, fail: Bool) -> ExecOptions {
   ExecOptions(..opts, fail_on_error: fail)
+}
+
+/// Receive stdout chunks as they arrive; output is still captured.
+pub fn with_stdout(
+  opts: ExecOptions,
+  callback: fn(String) -> Nil,
+) -> ExecOptions {
+  ExecOptions(..opts, on_stdout: Some(callback))
+}
+
+/// Receive stderr chunks as they arrive; output is still captured.
+pub fn with_stderr(
+  opts: ExecOptions,
+  callback: fn(String) -> Nil,
+) -> ExecOptions {
+  ExecOptions(..opts, on_stderr: Some(callback))
 }
 
 /// Run a command in the guest through its exec agent.
@@ -211,6 +231,18 @@ pub fn exec(
   let run_opts =
     cli.options()
     |> cli.with_log_level(opts.log_level)
+    |> fn(o) {
+      case opts.on_stdout {
+        Some(cb) -> cli.with_stdout(o, cb)
+        None -> o
+      }
+    }
+    |> fn(o) {
+      case opts.on_stderr {
+        Some(cb) -> cli.with_stderr(o, cb)
+        None -> o
+      }
+    }
     |> fn(o) {
       case opts.stdin {
         Some(data) -> cli.with_stdin(o, data)

@@ -144,10 +144,12 @@
     `:cwd`             working directory, emulated via `sh -c 'cd ...'`
     `:throw-on-error`  throw `errors/command-failed` on a non-zero exit
     `:log-level`       per-command bsdkrun log level
+    `:on-stdout`       called with each stdout byte-array chunk as it arrives
+    `:on-stderr`       called with each stderr byte-array chunk as it arrives
 
   Returns `{:stdout ... :stderr ... :exit-code ... :command \"...\"}`."
   ([ref command] (exec! ref command {}))
-  ([ref command {:keys [args env tty stdin cwd throw-on-error log-level]
+  ([ref command {:keys [args env tty stdin cwd throw-on-error log-level on-stdout on-stderr]
                  :or {args [] env {} tty false throw-on-error false log-level 0}}]
    (let [argv0 (if (sequential? command) (vec command) (into [command] args))
          argv (if cwd
@@ -156,7 +158,8 @@
          cli (cond-> ["exec"] tty (conj "-t"))
          cli (into cli (mapcat (fn [[k v]] ["-e" (str (name k) "=" v)]) env))
          cli (into cli (into [(id ref)] argv))
-         res (process/run cli {:stdin stdin :log-level log-level})
+         res (process/run cli {:stdin stdin :log-level log-level
+                               :on-stdout on-stdout :on-stderr on-stderr})
          result {:stdout (:stdout res)
                  :stderr (:stderr res)
                  :exit-code (:exit-code res)

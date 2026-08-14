@@ -121,6 +121,8 @@ let assert Ok(res) =
     sandbox.exec_options()
       |> sandbox.with_env([#("RUST_LOG", "debug")])
       |> sandbox.with_stdin("one\ntwo\n")
+      |> sandbox.with_stdout(fn(chunk) { io.print(chunk) })
+      |> sandbox.with_stderr(fn(chunk) { io.print_error(chunk) })
       |> sandbox.with_cwd("/tmp"),
   )
 
@@ -134,6 +136,11 @@ res.stderr
 A non-zero exit is **not** an error by default — it comes back in the
 `CommandResult`. Pass `sandbox.with_fail_on_error(True)` to turn it into
 `error.CommandFailed` instead.
+
+The callbacks receive chunks as they arrive, while the completed
+`CommandResult` still contains all stdout and stderr. Streaming is independent
+of `with_tty`; a PTY changes command semantics and may merge stderr into
+stdout.
 
 ## Lifecycle
 

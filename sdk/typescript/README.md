@@ -139,6 +139,8 @@ await box.exec("node", {
   stdin: "data on stdin",
   tty: true,               // allocate a PTY
   throwOnError: true,      // throw on non-zero exit (default: false)
+  onStdout: chunk => process.stdout.write(chunk),
+  onStderr: chunk => process.stderr.write(chunk),
 });
 
 // Vercel-Sandbox-style alias:
@@ -147,6 +149,11 @@ const { stdout, exitCode } = await box.runCommand("uname", ["-a"]);
 
 `exec` returns a `CommandResult` with `.stdout`, `.stderr`, `.exitCode`, `.ok`,
 and helpers `.text()`, `.json()`, `.lines()`, `.throwIfFailed()`.
+
+`onStdout` and `onStderr` are optional real-time byte-stream callbacks. Output
+is still accumulated in the returned `CommandResult`, so existing buffered
+usage is unchanged. Streaming does not require `tty`; a TTY changes process
+semantics and commonly merges stderr into stdout.
 
 > `exec`/`shell` talk to a tiny in-guest agent (needs guest networking).
 > Linux guests get it injected automatically; on BSD you install it once — see

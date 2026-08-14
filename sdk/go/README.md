@@ -94,6 +94,8 @@ res, err := box.Command("node").
 	Env("X", "hi").
 	Cwd("/app").
 	Stdin("data on stdin").
+	Stdout(os.Stdout). // stream live and keep capturing
+	Stderr(os.Stderr).
 	TTY().     // allocate a PTY
 	Check().   // return *CommandFailedError on a non-zero exit
 	Run()
@@ -105,6 +107,10 @@ fmt.Println(res.Stdout, res.ExitCode)
 `Ok()`, `Text()`, `JSON(&v)`, `Lines()`, `Err()` — `Err()` returns a
 `*CommandFailedError` when the exit was non-zero, nil otherwise (the Go
 rendering of Python's `throw_if_failed`).
+
+`Stdout` and `Stderr` accept any `io.Writer`. Bytes are written in real time
+and also retained in the returned `Result`. Streaming is independent of
+`TTY`; a PTY changes command semantics and may merge stderr into stdout.
 
 ## Lifecycle & inventory
 

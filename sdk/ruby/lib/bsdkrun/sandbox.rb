@@ -109,9 +109,11 @@ module Bsdkrun
     # @param cwd [String, nil] working directory (emulated via +sh -c 'cd …'+).
     # @param throw_on_error [Boolean] raise {CommandFailed} on a non-zero exit.
     # @param log_level [Integer] per-command bsdkrun log level.
+    # @param on_stdout [Proc, nil] called with each stdout chunk as it arrives.
+    # @param on_stderr [Proc, nil] called with each stderr chunk as it arrives.
     # @return [Result]
     def exec(command, args: [], env: {}, tty: false, stdin: nil, cwd: nil,
-             throw_on_error: false, log_level: 0)
+             throw_on_error: false, log_level: 0, on_stdout: nil, on_stderr: nil)
       argv = command.is_a?(Array) ? command.dup : [command, *args]
 
       if cwd
@@ -124,7 +126,8 @@ module Bsdkrun
       env.each { |k, v| cli.push("-e", "#{k}=#{v}") }
       cli.push(@id, *argv)
 
-      res = Process.run(cli, stdin: stdin, log_level: log_level)
+      res = Process.run(cli, stdin: stdin, log_level: log_level,
+                        on_stdout: on_stdout, on_stderr: on_stderr)
       result = Result.new(
         stdout: res.stdout, stderr: res.stderr, exit_code: res.exit_code,
         command: "exec #{argv.join(' ')}"

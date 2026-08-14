@@ -100,6 +100,8 @@ Bsdkrun.exec(box, ["ls", "-la", "/etc"])
     env: %{"X" => "hi"},
     cwd: "/app",
     stdin: "data on stdin",
+    on_stdout: &IO.binwrite(:stdio, &1),
+    on_stderr: &IO.binwrite(:stderr, &1),
     tty: true,               # allocate a PTY
     throw_on_error: true     # return {:error, _} on a non-zero exit
   )
@@ -109,6 +111,10 @@ res.exit_code
 Bsdkrun.Types.Result.ok?(res)
 Bsdkrun.Types.Result.text(res)   # stdout, trailing newlines trimmed
 ```
+
+The callbacks receive binary chunks in real time while the complete streams
+remain buffered in the returned result. They are independent of `:tty`; a PTY
+changes command semantics and may merge stderr into stdout.
 
 ## Lifecycle & inventory
 

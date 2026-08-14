@@ -12,9 +12,15 @@
 
 (defn- slurp-stream
   "Read an InputStream to completion as a UTF-8 string."
-  [in]
+  [in on-chunk]
   (let [buf (ByteArrayOutputStream.)]
-    (io/copy in buf)
+    (let [chunk (byte-array 8192)]
+      (loop []
+        (let [n (.read in chunk)]
+          (when (pos? n)
+            (.write buf chunk 0 n)
+            (when on-chunk (on-chunk (java.util.Arrays/copyOf chunk n)))
+            (recur)))))
     (.toString buf "UTF-8")))
 
 (defn- build-process
@@ -34,7 +40,7 @@
 
   Returns `{:stdout ... :stderr ... :exit-code ...}`."
   ([args] (run args {}))
-  ([args {:keys [env stdin log-level] :or {env {} log-level 0}}]
+  ([args {:keys [env stdin log-level on-stdout on-stderr] :or {env {} log-level 0}}]
    (let [pb (build-process args log-level)
          penv (.environment pb)]
      (doseq [[k v] env] (.put penv (name k) (str v)))
@@ -50,8 +56,8 @@
                          (when stdin
                            (.write out (.getBytes ^String stdin "UTF-8")))
                          (.flush out)))
-           stdout-fut (future (slurp-stream (.getInputStream proc)))
-           stderr-fut (future (slurp-stream (.getErrorStream proc)))]
+           stdout-fut (future (slurp-stream (.getInputStream proc) on-stdout))
+           stderr-fut (future (slurp-stream (.getErrorStream proc) on-stderr))]
        @stdin-fut
        (let [exit-code (.waitFor proc)]
          {:stdout @stdout-fut :stderr @stderr-fut :exit-code exit-code})))))

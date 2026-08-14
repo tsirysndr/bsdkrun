@@ -137,8 +137,9 @@ class Sandbox:
         cli_args.append(self.id)
         cli_args += argv
 
-        res = run(cli_args, stdin=stdin, log_level=log_level,
-                  on_stdout=on_stdout, on_stderr=on_stderr)
+        res = run(
+            cli_args, stdin=stdin, log_level=log_level, on_stdout=on_stdout, on_stderr=on_stderr
+        )
         result = Result(res.stdout, res.stderr, res.exit_code, f"exec {' '.join(argv)}")
         if throw_on_error:
             result.throw_if_failed()

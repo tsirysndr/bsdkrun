@@ -104,8 +104,9 @@ def run_checked(
     on_stderr: Callable[[bytes], None] | None = None,
 ) -> RawResult:
     """Like :func:`run`, but raise :class:`CommandFailed` on a non-zero exit."""
-    result = run(args, env=env, stdin=stdin, log_level=log_level,
-                 on_stdout=on_stdout, on_stderr=on_stderr)
+    result = run(
+        args, env=env, stdin=stdin, log_level=log_level, on_stdout=on_stdout, on_stderr=on_stderr
+    )
     if result.exit_code != 0:
         raise CommandFailed(result.exit_code, result.stdout, result.stderr, label)
     return result

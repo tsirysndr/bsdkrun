@@ -245,7 +245,7 @@ jobs:
           # amd64 bare image has no boot-time partition-resize hook, so growing
           # the backing file later does not make the guest root filesystem larger.
           # Keep enough room for source trees and build artifacts in bsdkrun guests.
-          makefs -t ffs -B le -s 4g -o version=2,bsize=16384,fsize=2048 \
+          makefs -t ffs -B le -s 4g -o version=2,bsize=16384,fsize=2048,density=2048 \
             "$WORK/netbsd-amd64-root.img" "$ROOT"
           gzip -9 -c "$WORK/netbsd-amd64-root.img" > "$WS/dist/netbsd-amd64-root.img.gz"
           cp "$WORK/netbsd-MICROVM.gz" "$WS/dist/netbsd-MICROVM-amd64.gz"

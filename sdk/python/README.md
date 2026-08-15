@@ -144,8 +144,8 @@ if not hit.restored:
     sbx.exec(["npm", "ci"])
     sbx.cache.save("/app/node_modules", key=key, compression="zstd")
 
-caches.ls()          # every stored entry, newest first
-caches.rm([key])     # or caches.rm(all=True)
+caches.ls()  # every stored entry, newest first
+caches.rm([key])  # or caches.rm(all=True)
 ```
 
 ``restore_keys`` are prefixes tried in order when the exact key misses; within a
@@ -166,10 +166,10 @@ PNG survives the round trip.
 sbx.fs.write_file("/app/main.py", "print('hi')")
 sbx.fs.write_file("/app/logo.png", png_bytes)
 
-text  = sbx.fs.read_text("/app/out.json")
-data  = sbx.fs.read_file("/app/logo.png")
+text = sbx.fs.read_text("/app/out.json")
+data = sbx.fs.read_file("/app/logo.png")
 
-sbx.fs.upload("./src", "/app/src")                      # file or directory
+sbx.fs.upload("./src", "/app/src")  # file or directory
 sbx.fs.download("/app/dist", "./dist", recursive=True)
 ```
 

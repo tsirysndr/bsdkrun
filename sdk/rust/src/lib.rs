@@ -28,6 +28,7 @@ mod args;
 mod binary;
 mod client;
 mod error;
+mod filesystem;
 mod process;
 mod sandbox;
 pub mod transport;
@@ -45,7 +46,8 @@ pub use client::{
     ShellSession, Subscription,
 };
 pub use error::{Error, Result};
-pub use process::{run, run_checked, spawn, RawResult};
+pub use filesystem::FileSystem;
+pub use process::{run, run_binary, run_checked, spawn, BinaryResult, RawResult};
 pub use sandbox::{
     CommandBuilder, FirmwareBuilder, FreebsdBuilder, KernelBuilder, LinuxBuilder, NanosBuilder,
     NetbsdBuilder, OsvBuilder, Sandbox, Solo5Builder, SshSetupBuilder, TailscaleUpBuilder,

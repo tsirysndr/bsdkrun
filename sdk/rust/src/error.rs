@@ -37,6 +37,14 @@ pub enum Error {
     #[error("no sandbox found matching id {id:?}")]
     SandboxNotFound { id: String },
 
+    /// A guest filesystem operation was refused (see [`crate::FileSystem`]).
+    #[error("{message}")]
+    FileTransfer {
+        /// The path that could not be transferred.
+        path: String,
+        message: String,
+    },
+
     /// A GraphQL- or transport-level failure talking to a remote `bsdkrund`.
     ///
     /// `code` carries the response's `extensions.code` when the daemon set one

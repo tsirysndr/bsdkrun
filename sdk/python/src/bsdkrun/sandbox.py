@@ -9,6 +9,7 @@ from typing import Any
 
 from .args import build_create_args
 from .errors import CommandFailed, SandboxNotFound
+from .filesystem import FileSystem
 from .process import run, run_checked, spawn
 from .types import Result, SandboxInfo
 
@@ -34,6 +35,8 @@ class Sandbox:
         self.id = sandbox_id
         #: Host port forwarded to the guest's SSH, if the boot banner reported one.
         self.ssh_port = ssh_port
+        #: Read and write files in the guest.
+        self.fs = FileSystem(sandbox_id)
 
     def __repr__(self) -> str:
         return f"Sandbox(id={self.id!r})"

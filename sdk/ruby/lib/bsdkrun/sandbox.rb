@@ -32,6 +32,12 @@ module Bsdkrun
       @ssh_port = ssh_port
     end
 
+    # Read and write files in the guest.
+    # @return [FileSystem]
+    def fs
+      @fs ||= FileSystem.new(@id)
+    end
+
     class << self
       # Boot a new microVM and return a handle to it.
       #

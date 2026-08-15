@@ -877,6 +877,8 @@ bsdkrun images             # list images: pulled OCI images + fetched BSD images
 bsdkrun logs $id           # print the machine's console log
 bsdkrun logs -f $id        # follow it live
 bsdkrun exec $id uname -a  # run a command inside the guest (-t for a PTY, -e K=V for env)
+bsdkrun cp ./app.py $id:/app/app.py   # copy a file in (-r for a directory, - for stdin/stdout)
+bsdkrun cp $id:/var/log/app.log ./    # ...and back out
 bsdkrun shell $id          # open an interactive shell in the guest
 bsdkrun stop $id           # stop a running machine (BSD guests clean-poweroff first)
 bsdkrun start $id          # re-boot a stopped machine in place — resumes its own disk/rootfs

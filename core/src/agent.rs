@@ -292,6 +292,80 @@ pub fn exec_quiet(host_port: u16, argv: &[String]) -> Result<i32> {
     Ok(code)
 }
 
+/// Run `argv` in the guest with programmatic stdio: `input` is streamed to the
+/// guest's stdin, the guest's stdout is written to `out`, and stderr is captured
+/// and returned rather than printed. Returns `(exit code, stderr)`.
+///
+/// This is the primitive `bsdkrun cp` is built on. It differs from [`exec`] in
+/// the two ways a file transfer needs: the bytes come from somewhere other than
+/// the host's fd 0/1 (a file, or an in-memory tar), and the guest's stderr has
+/// to survive as a *string* so a failure can say "no such file or directory"
+/// instead of leaking a diagnostic into the copied data.
+pub fn exec_stream(
+    host_port: u16,
+    argv: &[String],
+    input: Option<Box<dyn Read + Send>>,
+    out: &mut dyn Write,
+) -> Result<(i32, String)> {
+    let stream = connect(host_port)?;
+    stream.set_nodelay(true).ok();
+    write_request(&stream, false, argv, &[]).context("sending exec request")?;
+
+    // Pump the input in a thread: the guest can block on a full socket buffer
+    // while its stdout backs up behind frames we haven't read yet, so writing
+    // and reading have to make progress independently or a large file deadlocks.
+    let mut w = stream.try_clone().context("cloning agent stream")?;
+    let pump = thread::spawn(move || -> std::io::Result<()> {
+        if let Some(mut src) = input {
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                match src.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => write_frame(&mut w, CH_STDIN, &buf[..n])?,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        // Always close stdin, including when there was no input at all: a guest
+        // reading stdin (`cat > file`) waits for EOF and would otherwise hang.
+        write_frame(&mut w, CH_STDIN, &[])
+    });
+
+    let mut reader = stream;
+    let mut stderr = Vec::new();
+    let mut code = 0;
+    let mut saw_exit = false;
+    loop {
+        match read_frame(&mut reader) {
+            Some((CH_STDOUT, data)) => out.write_all(&data).context("writing copied data")?,
+            Some((CH_STDERR, data)) => stderr.extend_from_slice(&data),
+            Some((CH_EXIT, data)) => {
+                if data.len() >= 4 {
+                    code = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as i32;
+                }
+                saw_exit = true;
+                break;
+            }
+            Some(_) => {}
+            None => break,
+        }
+    }
+    out.flush().context("flushing copied data")?;
+
+    // A broken pipe here is the guest exiting early (a failed `cat >`), which
+    // the exit code already describes far better than "write failed" does.
+    if let Ok(Err(e)) = pump.join() {
+        if e.kind() != std::io::ErrorKind::BrokenPipe && !saw_exit {
+            return Err(e).context("streaming data to the guest");
+        }
+    }
+    if !saw_exit {
+        bail!("guest agent closed the connection without an exit status");
+    }
+    Ok((code, String::from_utf8_lossy(&stderr).trim().to_string()))
+}
+
 /// Connect to the forwarded agent port, retrying briefly: gvproxy holds the
 /// forward but the guest agent may still be starting right after boot.
 fn connect(host_port: u16) -> Result<TcpStream> {

@@ -136,6 +136,7 @@ pub fn dispatch(cmd: Command) -> Result<()> {
         Command::Exec(args) => {
             commands::guest::cmd_exec(&args.id, &args.command, &args.env, args.tty)
         }
+        Command::Cp(args) => commands::cp::cmd_cp(&args.src, &args.dst, args.recursive),
         Command::Tailscale(args) => commands::guest::cmd_tailscale(&args.id, &args.args),
         Command::Ssh(args) => commands::guest::cmd_ssh(&args.id, &args.args),
         Command::Systemd(args) => {

@@ -38,6 +38,7 @@ Lifecycle:
 
 Interact:
 - `bsdkrun exec [-t] [-e K=V]... <id> <cmd>...` — run a command in a guest (via its agent).
+- `bsdkrun cp [-r] <SRC> <DST>` — copy files host<->guest, `docker cp`-style (`ID:PATH`, `-` = stdio).
 - `bsdkrun shell <id>` — attach an interactive console to a detached machine.
 - `bsdkrun logs [-f] [--boot] <id>` — show the console log (`--boot` = bsdkrun's own boot log).
 

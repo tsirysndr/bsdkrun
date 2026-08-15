@@ -128,6 +128,36 @@ The callbacks receive byte arrays as chunks arrive, while `:stdout` and
 `:stderr` remain fully buffered in the result. Streaming is independent of
 `:tty`; a PTY changes command semantics and may merge stderr into stdout.
 
+## Files
+
+`bsdkrun.filesystem` reads and writes files in the guest. Parent directories are
+created for you, and everything is byte-exact — `read-file` returns a byte array.
+
+```clojure
+(require '[bsdkrun.filesystem :as fs])
+
+(fs/write-file "web" "/app/main.py" "print('hi')")
+(fs/write-file "web" "/app/logo.png" png-bytes)
+
+(fs/read-text "web" "/app/out.json")
+(fs/read-file "web" "/app/logo.png")
+
+(fs/upload "web" "./src" "/app/src")                     ; file or directory
+(fs/download "web" "/app/dist" "./dist" {:recursive true})
+```
+
+`upload` looks at the local path to decide whether to recurse; `download` cannot
+(the path is in the guest), so say so for a directory. A directory's *contents*
+land in the destination: uploading `./src` to `/app/src` leaves the guest's
+`/app/src` holding what `./src` holds.
+
+Failures throw an `ex-info` whose `ex-data` is
+`{:bsdkrun/error :file-transfer-failed :path ...}`.
+
+> Transfers ride the same in-guest agent as `exec`, so the sandbox must be
+> running. A directory copy also needs `tar` in the guest; single files need
+> only the shell every bootable image already has.
+
 ## Lifecycle & inventory
 
 ```clojure

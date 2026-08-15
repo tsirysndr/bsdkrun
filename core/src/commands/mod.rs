@@ -12,6 +12,7 @@
 
 #[cfg(feature = "boot")]
 pub mod boot;
+pub mod cp;
 pub mod domains;
 pub mod flavor;
 pub mod guest;

@@ -62,6 +62,43 @@
        (let [exit-code (.waitFor proc)]
          {:stdout @stdout-fut :stderr @stderr-fut :exit-code exit-code})))))
 
+(defn- slurp-bytes
+  "Read an InputStream to completion as a byte array."
+  [in]
+  (let [buf (ByteArrayOutputStream.)
+        chunk (byte-array 8192)]
+    (loop []
+      (let [n (.read in chunk)]
+        (when (pos? n)
+          (.write buf chunk 0 n)
+          (recur))))
+    (.toByteArray buf)))
+
+(defn run-binary
+  "Run `bsdkrun <args>` keeping stdout as a byte array.
+
+  [[run]] decodes stdout as UTF-8, which silently replaces every invalid byte
+  — fine for JSON, ruinous for `cp ID:path -` reading a PNG. `:stdin` is a
+  byte array here for the same reason. Only stderr is decoded, because it is
+  always a message.
+
+  Returns `{:stdout <byte-array> :stderr ... :exit-code ...}`."
+  ([args] (run-binary args {}))
+  ([args {:keys [env stdin log-level] :or {env {} log-level 0}}]
+   (let [pb (build-process args log-level)
+         penv (.environment pb)]
+     (doseq [[k v] env] (.put penv (name k) (str v)))
+     (let [proc (.start pb)
+           stdin-fut (future
+                       (with-open [out (.getOutputStream proc)]
+                         (when stdin (.write out ^bytes stdin))
+                         (.flush out)))
+           stdout-fut (future (slurp-bytes (.getInputStream proc)))
+           stderr-fut (future (slurp-stream (.getErrorStream proc) nil))]
+       @stdin-fut
+       (let [exit-code (.waitFor proc)]
+         {:stdout @stdout-fut :stderr @stderr-fut :exit-code exit-code})))))
+
 (defn run!
   "Run and throw `errors/command-failed` (see `bsdkrun.errors`) on a
   non-zero exit.

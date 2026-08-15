@@ -45,6 +45,13 @@
            {:bsdkrun/error :sandbox-not-found
             :id id}))
 
+(defn file-transfer-failed
+  "A guest filesystem operation was refused (see `bsdkrun.filesystem`)."
+  [message path]
+  (ex-info message
+           {:bsdkrun/error :file-transfer-failed
+            :path path}))
+
 (defn missing-option
   "A required create-option key was absent (mirrors Ruby's `Hash#fetch`
   raising when a required option like `:image`/`:kernel`/`:firmware`/`:disk`

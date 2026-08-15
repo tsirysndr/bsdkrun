@@ -6,6 +6,7 @@
 
 -export([
     run/6,
+    run_bits/4,
     run_inherit/2,
     find_executable/1,
     get_env/1,
@@ -53,6 +54,19 @@ run(Bin, Args, Env, Stdin, OnStdout, OnStderr) ->
         _ = file:delete(StderrPath),
         [file:delete(P) || P <- Cleanup]
     end.
+
+%% Same transfer, but typed for arbitrary bytes: stdin is an `Option(BitArray)`
+%% and stdout comes back as a `BitArray` rather than a Gleam `String`.
+%%
+%% The bytes were never touched either way — `run/6` writes stdin with
+%% `file:write_file` and reads stdout straight off the port — so this only
+%% changes the Gleam-side type. It has to exist because a Gleam `String` must
+%% be valid UTF-8, and `cp ID:path -` reading a PNG is not.
+%%
+%% Returns the Gleam `cli.BinaryOutput` record.
+run_bits(Bin, Args, Env, Stdin) ->
+    {output, Stdout, Stderr, Code} = run(Bin, Args, Env, Stdin, none, none),
+    {binary_output, Stdout, Stderr, Code}.
 
 %% Run `Bin Args` with the streams wired straight to the node's own stdio, for
 %% interactive subcommands like `bsdkrun shell`. Returns the exit code.

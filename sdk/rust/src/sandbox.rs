@@ -444,6 +444,11 @@ impl Solo5Builder {
 // -- Sandbox ------------------------------------------------------------------
 
 impl Sandbox {
+    /// Read and write files in the guest.
+    pub fn fs(&self) -> crate::FileSystem {
+        crate::filesystem::FileSystem::new(&self.id)
+    }
+
     /// Boot an OCI image as a Linux microVM.
     pub fn linux(image: impl Into<String>) -> LinuxBuilder {
         LinuxBuilder {

@@ -110,6 +110,34 @@ The stream callbacks receive `bytes` as they arrive while the complete output
 is still captured in the returned `Result`. They are independent of `tty`;
 allocating a TTY changes command behavior and may merge stderr into stdout.
 
+## Files
+
+``box.fs`` reads and writes files in the guest. Parent directories are created
+for you, and everything is byte-exact — ``read_file`` returns ``bytes``, so a
+PNG survives the round trip.
+
+```python
+box.fs.write_file("/app/main.py", "print('hi')")
+box.fs.write_file("/app/logo.png", png_bytes)
+
+text  = box.fs.read_text("/app/out.json")
+data  = box.fs.read_file("/app/logo.png")
+
+box.fs.upload("./src", "/app/src")                      # file or directory
+box.fs.download("/app/dist", "./dist", recursive=True)
+```
+
+``upload`` looks at the local path to decide whether to recurse; ``download``
+cannot (the path is in the guest), so pass ``recursive=True`` for a directory. A
+directory's *contents* land in the destination: ``upload("./src", "/app/src")``
+leaves the guest's ``/app/src`` holding what ``./src`` holds.
+
+Failures raise ``FileTransferError``, which carries the offending ``path``.
+
+> Transfers ride the same in-guest agent as ``exec``, so the sandbox must be
+> running. A directory copy also needs ``tar`` in the guest; single files need
+> only the shell every bootable image already has.
+
 ## Lifecycle & inventory
 
 ```python

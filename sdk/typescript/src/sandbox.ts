@@ -1,6 +1,7 @@
 import { buildCreateArgs } from "./args.js";
 import { readAgentPort } from "./agent-protocol.js";
 import { CommandFailedError, SandboxNotFoundError } from "./errors.js";
+import { FileSystem } from "./filesystem.js";
 import { runCli, spawnCli } from "./process.js";
 import {
   CommandResult,
@@ -127,12 +128,16 @@ export class Sandbox {
   /** Run a shell script in the guest via a tagged template. */
   readonly sh: Sh;
 
+  /** Read and write files in the guest. */
+  readonly fs: FileSystem;
+
   #stateDirCache?: string;
 
   private constructor(id: string, sshPort?: number) {
     this.id = id;
     this.sshPort = sshPort;
     this.sh = createSh((script, opts) => this.#shRunner(script, opts));
+    this.fs = new FileSystem(id);
   }
 
   /** Boot a new microVM and return a handle to it. */

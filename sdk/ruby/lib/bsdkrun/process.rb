@@ -26,15 +26,23 @@ module Bsdkrun
     # @param env [Hash] extra environment merged onto the process env.
     # @param stdin [String, nil] data piped to the child's stdin.
     # @param log_level [Integer] bsdkrun global log level (0=off .. 5=trace).
+    # @param binary [Boolean] keep stdout as bytes (ASCII-8BIT) instead of text.
+    #   Needed by {FileSystem#read_file}: appending a chunk of arbitrary bytes to
+    #   a UTF-8 buffer raises Encoding::CompatibilityError, so a PNG read back
+    #   out of a guest would blow up mid-transfer rather than return.
     # @return [RawResult]
-    def run(args, env: {}, stdin: nil, log_level: 0, on_stdout: nil, on_stderr: nil)
+    def run(args, env: {}, stdin: nil, log_level: 0, on_stdout: nil, on_stderr: nil, binary: false)
       bin = Binary.resolve
       full = ["--log-level", log_level.to_s, *args]
       merged_env = env.to_h.transform_keys(&:to_s).transform_values(&:to_s)
-      out = +""
+      out = binary ? (+"").b : +""
       err = +""
       status = nil
       Open3.popen3(merged_env, bin, *full) do |child_in, child_out, child_err, wait|
+        if binary
+          child_in.binmode
+          child_out.binmode
+        end
         writer = Thread.new { child_in.write(stdin) if stdin; child_in.close }
         stdout_reader = Thread.new do
           while (chunk = child_out.readpartial(8192) rescue nil)

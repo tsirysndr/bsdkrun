@@ -116,6 +116,33 @@ The callbacks receive binary chunks in real time while the complete streams
 remain buffered in the returned result. They are independent of `:tty`; a PTY
 changes command semantics and may merge stderr into stdout.
 
+## Files
+
+`Bsdkrun.FileSystem` reads and writes files in the guest. Parent directories are
+created for you, and everything is byte-exact — `read_file/2` returns a binary.
+
+```elixir
+alias Bsdkrun.FileSystem, as: FS
+
+:ok = FS.write_file("web", "/app/main.py", "print('hi')")
+{:ok, bytes} = FS.read_file("web", "/app/out.json")
+
+:ok = FS.upload("web", "./src", "/app/src")                       # file or directory
+:ok = FS.download("web", "/app/dist", "./dist", recursive: true)
+```
+
+`upload` looks at the local path to decide whether to recurse; `download` cannot
+(the path is in the guest), so say so for a directory. A directory's *contents*
+land in the destination: uploading `./src` to `/app/src` leaves the guest's
+`/app/src` holding what `./src` holds.
+
+Failures are `{:error, %Bsdkrun.Error{kind: :file_transfer}}`, whose `:label`
+carries the offending path.
+
+> Transfers ride the same in-guest agent as `exec`, so the sandbox must be
+> running. A directory copy also needs `tar` in the guest; single files need
+> only the shell every bootable image already has.
+
 ## Lifecycle & inventory
 
 ```elixir

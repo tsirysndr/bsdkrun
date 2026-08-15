@@ -159,6 +159,9 @@ pub enum Command {
     /// Run a command inside a running machine (via its guest agent).
     Exec(ExecArgs),
 
+    /// Copy files between the host and a running machine (like `docker cp`).
+    Cp(CpArgs),
+
     /// Manage tailscale inside a running machine (install/start/status/setup).
     Tailscale(TailscaleArgs),
 
@@ -675,6 +678,31 @@ pub struct ExecArgs {
     /// Command and arguments to run inside the guest.
     #[arg(value_name = "COMMAND", required = true, trailing_var_arg = true)]
     pub command: Vec<String>,
+}
+
+/// `docker cp`-shaped: exactly one of SRC/DST carries an `ID:` prefix, and `-`
+/// is the host's stdin (as SRC) or stdout (as DST).
+#[derive(Parser, Default, Serialize, Deserialize)]
+#[command(after_help = "\
+EXAMPLES:
+  bsdkrun cp ./main.py web:/app/main.py     copy a file into the machine
+  bsdkrun cp web:/var/log/app.log ./        copy it back out
+  bsdkrun cp -r ./src web:/app              copy a directory's contents (needs tar in the guest)
+  cat a.txt | bsdkrun cp - web:/tmp/a       stream stdin in
+  bsdkrun cp web:/tmp/a - | wc -c           stream stdout out")]
+pub struct CpArgs {
+    /// Copy a directory and its contents. `-r ./src ID:/app` leaves the guest's
+    /// /app holding what ./src holds.
+    #[arg(short = 'r', long)]
+    pub recursive: bool,
+
+    /// Source: `PATH`, `ID:PATH`, or `-` for stdin.
+    #[arg(value_name = "SRC")]
+    pub src: String,
+
+    /// Destination: `PATH`, `ID:PATH`, or `-` for stdout.
+    #[arg(value_name = "DST")]
+    pub dst: String,
 }
 
 #[derive(Parser, Serialize, Deserialize)]

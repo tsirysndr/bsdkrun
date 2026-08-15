@@ -111,6 +111,33 @@ The callbacks run as chunks arrive, and the same bytes remain buffered in the
 returned result. They do not require `tty`; a PTY changes command semantics and
 may merge stderr into stdout.
 
+## Files
+
+`box.fs` reads and writes files in the guest. Parent directories are created
+for you, and everything is byte-exact — `read_file` returns a binary string.
+
+```ruby
+box.fs.write_file("/app/main.py", "print('hi')")
+box.fs.write_file("/app/logo.png", png_bytes)
+
+text  = box.fs.read_text("/app/out.json")
+bytes = box.fs.read_file("/app/logo.png")
+
+box.fs.upload("./src", "/app/src")                       # file or directory
+box.fs.download("/app/dist", "./dist", recursive: true)
+```
+
+`upload` looks at the local path to decide whether to recurse; `download` cannot
+(the path is in the guest), so say so for a directory. A directory's *contents*
+land in the destination: uploading `./src` to `/app/src` leaves the guest's
+`/app/src` holding what `./src` holds.
+
+Failures raise `Bsdkrun::FileTransferFailed`, which carries the offending `path`.
+
+> Transfers ride the same in-guest agent as `exec`, so the sandbox must be
+> running. A directory copy also needs `tar` in the guest; single files need
+> only the shell every bootable image already has.
+
 ## Lifecycle & inventory
 
 ```ruby

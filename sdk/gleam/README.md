@@ -142,6 +142,34 @@ The callbacks receive chunks as they arrive, while the completed
 of `with_tty`; a PTY changes command semantics and may merge stderr into
 stdout.
 
+## Files
+
+`bsdkrun/filesystem` reads and writes files in the guest. Parent directories are
+created for you, and everything is byte-exact — `read_file` returns a
+`BitArray`, because a Gleam `String` must be valid UTF-8 and a PNG is not.
+
+```gleam
+import bsdkrun/filesystem
+
+let assert Ok(Nil) = filesystem.write_text("web", "/app/main.py", "print(1)")
+let assert Ok(bytes) = filesystem.read_file("web", "/app/logo.png")
+let assert Ok(text) = filesystem.read_text("web", "/app/out.json")
+
+let assert Ok(Nil) = filesystem.upload("web", "./src", "/app/src", False)
+let assert Ok(Nil) = filesystem.download("web", "/app/dist", "./dist", True)
+```
+
+Both `upload` and `download` take an explicit `recursive` flag — Gleam has no
+stat in its standard library, so it cannot be inferred. A directory's *contents*
+land in the destination: uploading `./src` to `/app/src` leaves the guest's
+`/app/src` holding what `./src` holds.
+
+Failures are `error.FileTransferFailed(path, message)`.
+
+> Transfers ride the same in-guest agent as `exec`, so the sandbox must be
+> running. A directory copy also needs `tar` in the guest; single files need
+> only the shell every bootable image already has.
+
 ## Lifecycle
 
 ```gleam

@@ -16,6 +16,15 @@ pub type Output {
   Output(stdout: String, stderr: String, exit_code: Int)
 }
 
+/// A completed invocation whose stdout is kept as bytes.
+///
+/// A Gleam `String` must be valid UTF-8, which the contents of a file copied
+/// out of a guest need not be — so `bsdkrun/filesystem` reads through this
+/// instead of `Output`.
+pub type BinaryOutput {
+  BinaryOutput(stdout: BitArray, stderr: String, exit_code: Int)
+}
+
 /// How to run a command. Build one with `options` and adjust with the
 /// `with_*` helpers.
 pub type Options {
@@ -68,8 +77,26 @@ fn ffi_run(
   on_stderr: Option(fn(String) -> Nil),
 ) -> Output
 
+@external(erlang, "bsdkrun_ffi", "run_bits")
+fn ffi_run_bits(
+  bin: String,
+  args: List(String),
+  env: List(#(String, String)),
+  stdin: Option(BitArray),
+) -> BinaryOutput
+
 @external(erlang, "bsdkrun_ffi", "run_inherit")
 fn ffi_run_inherit(bin: String, args: List(String)) -> Int
+
+/// Run `bsdkrun <args>` with byte-exact stdin and stdout, whatever the exit
+/// code. Used for file transfers; everything else wants `run`.
+pub fn run_binary(
+  args: List(String),
+  stdin: Option(BitArray),
+) -> Result(BinaryOutput, Error) {
+  use bin <- result.try(binary.resolve())
+  Ok(ffi_run_bits(bin, ["--log-level", "0", ..args], [], stdin))
+}
 
 /// Run `bsdkrun <args>` to completion and return its captured output,
 /// whatever the exit code. Only binary resolution can fail here.

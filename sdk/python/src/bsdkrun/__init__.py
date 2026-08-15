@@ -28,7 +28,8 @@ from .errors import (
     GraphQLError,
     SandboxNotFound,
 )
-from .process import RawResult, run, run_checked, spawn
+from .filesystem import FileSystem, FileTransferError
+from .process import BinaryResult, RawResult, run, run_binary, run_checked, spawn
 from .sandbox import Sandbox
 from .types import (
     CommandResult,
@@ -61,9 +62,13 @@ __all__ = [
     "reset_binary_cache",
     # low-level process helpers
     "run",
+    "run_binary",
     "run_checked",
     "spawn",
     "RawResult",
+    "BinaryResult",
+    # guest filesystem
+    "FileSystem",
     # argv builder
     "build_create_args",
     # data types
@@ -81,6 +86,7 @@ __all__ = [
     "BinaryNotFound",
     "CommandFailed",
     "SandboxNotFound",
+    "FileTransferError",
     "GraphQLError",
     "AuthError",
     # metadata

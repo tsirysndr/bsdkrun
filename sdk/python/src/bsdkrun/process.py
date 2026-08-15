@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from .binary import resolve_binary
 from .errors import CommandFailed
 
-__all__ = ["RawResult", "run", "run_checked", "spawn"]
+__all__ = ["BinaryResult", "RawResult", "run", "run_binary", "run_checked", "spawn"]
 
 
 @dataclass(frozen=True)
@@ -27,12 +27,21 @@ class RawResult:
     exit_code: int
 
 
+@dataclass(frozen=True)
+class BinaryResult:
+    """Like :class:`RawResult`, but stdout is left as bytes."""
+
+    stdout: bytes
+    stderr: str
+    exit_code: int
+
+
 def _with_globals(args: list[str], log_level: int | None) -> list[str]:
     """Prepend the global ``--log-level`` flag."""
     return ["--log-level", str(log_level if log_level is not None else 0), *args]
 
 
-def run(
+def _run_raw(
     args: list[str],
     *,
     env: Mapping[str, str] | None = None,
@@ -40,12 +49,10 @@ def run(
     log_level: int | None = None,
     on_stdout: Callable[[bytes], None] | None = None,
     on_stderr: Callable[[bytes], None] | None = None,
-) -> RawResult:
-    """Run ``bsdkrun <args>`` to completion, buffering stdout/stderr.
+) -> tuple[bytes, bytes, int]:
+    """Run ``bsdkrun <args>`` and return ``(stdout, stderr, exit_code)`` as bytes.
 
-    ``env`` is merged onto the current process environment. ``stdin``, if given,
-    is piped to the child. ``log_level`` sets bsdkrun's global ``--log-level``
-    (defaults to 0 — quiet).
+    The undecoded form both :func:`run` and :func:`run_binary` are built on.
     """
     binary = resolve_binary()
     child_env = dict(os.environ)
@@ -86,11 +93,50 @@ def run(
     exit_code = child.wait()
     out_thread.join()
     err_thread.join()
-    return RawResult(
-        stdout=bytes(stdout).decode("utf-8", "replace"),
-        stderr=bytes(stderr).decode("utf-8", "replace"),
-        exit_code=exit_code,
+    return bytes(stdout), bytes(stderr), exit_code
+
+
+def run(
+    args: list[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    stdin: str | bytes | None = None,
+    log_level: int | None = None,
+    on_stdout: Callable[[bytes], None] | None = None,
+    on_stderr: Callable[[bytes], None] | None = None,
+) -> RawResult:
+    """Run ``bsdkrun <args>`` to completion, buffering stdout/stderr.
+
+    ``env`` is merged onto the current process environment. ``stdin``, if given,
+    is piped to the child. ``log_level`` sets bsdkrun's global ``--log-level``
+    (defaults to 0 — quiet).
+    """
+    out, err, code = _run_raw(
+        args, env=env, stdin=stdin, log_level=log_level, on_stdout=on_stdout, on_stderr=on_stderr
     )
+    return RawResult(
+        stdout=out.decode("utf-8", "replace"),
+        stderr=err.decode("utf-8", "replace"),
+        exit_code=code,
+    )
+
+
+def run_binary(
+    args: list[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    stdin: str | bytes | None = None,
+    log_level: int | None = None,
+) -> BinaryResult:
+    """Run ``bsdkrun <args>`` and keep stdout as raw bytes.
+
+    :func:`run` decodes stdout as UTF-8 with ``errors="replace"``, which quietly
+    rewrites every invalid byte — harmless for JSON, ruinous for
+    ``cp ID:path -`` reading an image. Only stderr is decoded here, because it
+    is always a message.
+    """
+    out, err, code = _run_raw(args, env=env, stdin=stdin, log_level=log_level)
+    return BinaryResult(stdout=out, stderr=err.decode("utf-8", "replace"), exit_code=code)
 
 
 def run_checked(
@@ -105,7 +151,12 @@ def run_checked(
 ) -> RawResult:
     """Like :func:`run`, but raise :class:`CommandFailed` on a non-zero exit."""
     result = run(
-        args, env=env, stdin=stdin, log_level=log_level, on_stdout=on_stdout, on_stderr=on_stderr
+        args,
+        env=env,
+        stdin=stdin,
+        log_level=log_level,
+        on_stdout=on_stdout,
+        on_stderr=on_stderr,
     )
     if result.exit_code != 0:
         raise CommandFailed(result.exit_code, result.stdout, result.stderr, label)

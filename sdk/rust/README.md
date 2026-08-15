@@ -132,6 +132,33 @@ struct Info { hostname: String }
 let info: Info = sandbox.exec(["cat", "/etc/info.json"])?.json()?;
 ```
 
+## Files
+
+`Sandbox::fs()` reads and writes files in the guest. Parent directories are
+created for you, and everything is byte-exact.
+
+```rust
+let fs = sandbox.fs();
+fs.write_file("/app/main.py", b"print('hi')")?;
+
+let text  = fs.read_to_string("/app/out.json")?;
+let bytes = fs.read_file("/app/logo.png")?;
+
+fs.upload("./src", "/app/src")?;             // file or directory
+fs.download("/app/dist", "./dist", true)?;   // true = recursive
+```
+
+`upload` looks at the local path to decide whether to recurse; `download` cannot
+(the path is in the guest), so say so for a directory. A directory's *contents*
+land in the destination: uploading `./src` to `/app/src` leaves the guest's
+`/app/src` holding what `./src` holds.
+
+Failures are `Error::FileTransfer { path, message }`.
+
+> Transfers ride the same in-guest agent as `exec`, so the sandbox must be
+> running. A directory copy also needs `tar` in the guest; single files need
+> only the shell every bootable image already has.
+
 ## Lifecycle & inventory
 
 ```rust

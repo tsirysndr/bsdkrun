@@ -62,8 +62,16 @@ export {
 } from "./preflight.js";
 export type { PreflightEnv } from "./preflight.js";
 
-export { runCli, spawnCli } from "./process.js";
-export type { RunOptions, RawResult, SpawnOptions } from "./process.js";
+export { runCli, runCliBinary, spawnCli } from "./process.js";
+export type {
+  RunOptions,
+  RawResult,
+  BinaryResult,
+  SpawnOptions,
+} from "./process.js";
+
+export { FileSystem, FileTransferError } from "./filesystem.js";
+export type { FsOptions, DownloadOptions } from "./filesystem.js";
 
 export { buildCreateArgs } from "./args.js";
 

@@ -112,6 +112,34 @@ rendering of Python's `throw_if_failed`).
 and also retained in the returned `Result`. Streaming is independent of
 `TTY`; a PTY changes command semantics and may merge stderr into stdout.
 
+## Files
+
+`Sandbox.FS()` reads and writes files in the guest. Parent directories are
+created for you, and everything is byte-exact.
+
+```go
+fs := box.FS()
+fs.WriteTextFile("/app/main.py", "print('hi')")
+fs.WriteFile("/app/logo.png", pngBytes)
+
+text, _  := fs.ReadTextFile("/app/out.json")
+bytes, _ := fs.ReadFile("/app/logo.png")
+
+fs.Upload("./src", "/app/src")              // file or directory
+fs.Download("/app/dist", "./dist", true)    // true = recursive
+```
+
+`upload` looks at the local path to decide whether to recurse; `download` cannot
+(the path is in the guest), so say so for a directory. A directory's *contents*
+land in the destination: uploading `./src` to `/app/src` leaves the guest's
+`/app/src` holding what `./src` holds.
+
+Failures are a `*FileTransferError`, which carries the offending `Path`.
+
+> Transfers ride the same in-guest agent as `exec`, so the sandbox must be
+> running. A directory copy also needs `tar` in the guest; single files need
+> only the shell every bootable image already has.
+
 ## Lifecycle & inventory
 
 ```go

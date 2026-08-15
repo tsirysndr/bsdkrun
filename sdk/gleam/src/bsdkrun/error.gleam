@@ -31,6 +31,7 @@ pub type Error {
   BinaryNotFound(searched: List(String))
   CommandFailed(exit_code: Int, stdout: String, stderr: String, label: String)
   SandboxNotFound(id: String)
+  FileTransferFailed(path: String, message: String)
   DecodeFailed(label: String, raw: String)
   InvalidOptions(message: String)
   GraphqlError(message: String, code: Option(String))
@@ -45,6 +46,8 @@ pub fn to_string(error: Error) -> String {
       "could not find the \"bsdkrun\" binary. Set BSDKRUN_BIN, add it to PATH, "
       <> "or call bsdkrun/binary.set_binary_path. Looked in: "
       <> string.join(searched, ", ")
+
+    FileTransferFailed(_path, message) -> message
 
     CommandFailed(exit_code, _stdout, stderr, label) -> {
       let detail = case string.trim(stderr) {

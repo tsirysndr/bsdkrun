@@ -159,6 +159,34 @@ semantics and commonly merges stderr into stdout.
 > Linux guests get it injected automatically; on BSD you install it once — see
 > the [bsdkrun README](../../README.md#the-exec-agent).
 
+## Files
+
+`sandbox.fs` reads and writes files in the guest. Parent directories are created
+for you, and everything is byte-exact — `readFile` hands back a `Buffer`, so a
+PNG survives the round trip.
+
+```ts
+await box.fs.writeFile("/app/main.py", "print('hi')");
+await box.fs.writeFile("/app/logo.png", pngBytes);
+
+const text  = await box.fs.readTextFile("/app/out.json");
+const bytes = await box.fs.readFile("/app/logo.png");
+
+await box.fs.upload("./src", "/app/src");                       // file or directory
+await box.fs.download("/app/dist", "./dist", { recursive: true });
+```
+
+`upload` looks at the local path to decide whether to recurse; `download` cannot
+(the path is in the guest), so pass `recursive` for a directory. A directory's
+*contents* land in the destination: `upload("./src", "/app/src")` leaves the
+guest's `/app/src` holding what `./src` holds.
+
+Failures throw `FileTransferError`, which carries the offending `path`.
+
+> Transfers ride the same in-guest agent as `exec`, so the sandbox must be
+> running. A directory copy also needs `tar` in the guest; single files need
+> only the shell every bootable image already has.
+
 ## Lifecycle & inventory
 
 ```ts

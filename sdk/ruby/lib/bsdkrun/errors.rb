@@ -50,6 +50,19 @@ module Bsdkrun
     end
   end
 
+  # A guest filesystem operation was refused (see {FileSystem}).
+  class FileTransferFailed < Error
+    # @return [String] the path that could not be transferred.
+    attr_reader :path
+
+    # @param message [String]
+    # @param path [String]
+    def initialize(message, path)
+      @path = path
+      super(message)
+    end
+  end
+
   # A GraphQL request to a remote +bsdkrund+ daemon failed — a transport
   # failure, a non-JSON response, or a +body["errors"]+ entry that was not an
   # auth failure. Mirrors +web/src/lib/graphql.ts+'s +GraphQLError+.

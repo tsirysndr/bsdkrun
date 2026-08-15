@@ -24,6 +24,7 @@ defmodule Bsdkrun.Error do
           :binary_not_found
           | :command_failed
           | :sandbox_not_found
+          | :file_transfer
           | :auth_error
           | :graphql_error
           | :config_error
@@ -89,6 +90,16 @@ defmodule Bsdkrun.Error do
       kind: :sandbox_not_found,
       message: "no sandbox found matching id #{inspect(id)}"
     }
+  end
+
+  @doc """
+  Build a `:file_transfer` error — a guest filesystem operation was refused.
+
+  `label` carries the path that could not be transferred.
+  """
+  @spec file_transfer(String.t(), String.t()) :: t()
+  def file_transfer(message, path) do
+    %__MODULE__{kind: :file_transfer, message: message, label: path}
   end
 
   @doc "Build an `:auth_error` — the daemon rejected the bearer token."

@@ -83,6 +83,24 @@ Remove machine(s) and their state dir. Refuses a running machine unless `-f` (st
 Run a command inside the guest via its agent. `-t/--tty` for interactive (like `docker exec -it`);
 `-e K=V` sets env (repeatable).
 
+### `cp [-r] <SRC> <DST>`
+Copy files between the host and a running machine, like `docker cp`. Exactly one side carries an
+`ID:` prefix; `-` is the host's stdin (as SRC) or stdout (as DST). `-r/--recursive` copies a
+directory's *contents* into the destination, so `-r ./src ID:/app` leaves the guest's `/app`
+holding what `./src` holds.
+
+```sh
+bsdkrun cp ./main.py web:/app/main.py     # in (parent dirs are created)
+bsdkrun cp web:/var/log/app.log ./        # out (a directory destination keeps the basename)
+bsdkrun cp -r ./src web:/app              # a whole tree
+cat a.txt | bsdkrun cp - web:/tmp/a       # stream in
+bsdkrun cp web:/tmp/a - | wc -c           # stream out
+```
+
+The transfer rides the guest's exec agent (`cat`, plus `tar` for `-r`), so the machine must be
+running and its image needs a shell — which every image that boots under bsdkrun already has. An
+image without `tar` can still copy files one at a time; `-r` reports that specifically.
+
 ### `shell <id>`
 Attach an interactive console to a running (detached) machine.
 

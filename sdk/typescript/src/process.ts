@@ -27,6 +27,13 @@ export interface RawResult {
   exitCode: number;
 }
 
+/** Like {@link RawResult}, but stdout is left as bytes. */
+export interface BinaryResult {
+  stdout: Buffer;
+  stderr: string;
+  exitCode: number;
+}
+
 /** Prepend the global `--log-level` flag. */
 function withGlobals(args: string[], logLevel: number | undefined): string[] {
   return ["--log-level", String(logLevel ?? 0), ...args];
@@ -64,6 +71,49 @@ export async function runCli(
     child.on("close", (code) => {
       resolve({
         stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+        exitCode: code ?? 0,
+      });
+    });
+
+    if (opts.stdin !== undefined && child.stdin) {
+      child.stdin.write(opts.stdin);
+      child.stdin.end();
+    } else {
+      child.stdin?.end();
+    }
+  });
+}
+
+/**
+ * Run `bsdkrun <args>` and keep stdout as raw bytes.
+ *
+ * `runCli` decodes stdout as UTF-8, which silently replaces every invalid byte
+ * with U+FFFD — fine for JSON and command output, ruinous for `cp ID:path -`
+ * reading a PNG. Only stderr is decoded here, because it is always a message.
+ */
+export async function runCliBinary(
+  args: string[],
+  opts: RunOptions = {},
+): Promise<BinaryResult> {
+  const preflightEnv = await ensurePreflight();
+  const bin = resolveBinary();
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, withGlobals(args, opts.logLevel), {
+      env: { ...process.env, ...preflightEnv, ...opts.env },
+      stdio: ["pipe", "pipe", "pipe"],
+      signal: opts.signal,
+    });
+
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (d: Buffer) => stdout.push(d));
+    child.stderr.on("data", (d: Buffer) => stderr.push(d));
+
+    child.on("error", reject);
+    child.on("close", (code) => {
+      resolve({
+        stdout: Buffer.concat(stdout),
         stderr: Buffer.concat(stderr).toString("utf8"),
         exitCode: code ?? 0,
       });

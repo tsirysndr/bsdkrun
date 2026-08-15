@@ -43,9 +43,27 @@ pub(crate) fn run_full_stream(
     env: &[(String, String)],
     stdin: Option<&[u8]>,
     log_level: u32,
+    on_stdout: Option<Box<dyn Write + Send>>,
+    on_stderr: Option<Box<dyn Write + Send>>,
+) -> Result<RawResult> {
+    let (stdout, stderr, exit_code) =
+        run_raw(args, env, stdin, log_level, on_stdout, on_stderr)?;
+    Ok(RawResult {
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        exit_code,
+    })
+}
+
+/// The undecoded form of [`run_full_stream`]: `(stdout, stderr, exit code)`.
+fn run_raw(
+    args: &[String],
+    env: &[(String, String)],
+    stdin: Option<&[u8]>,
+    log_level: u32,
     mut on_stdout: Option<Box<dyn Write + Send>>,
     mut on_stderr: Option<Box<dyn Write + Send>>,
-) -> Result<RawResult> {
+) -> Result<(Vec<u8>, Vec<u8>, i32)> {
     let binary = resolve_binary()?;
     let mut cmd = Command::new(binary);
     cmd.args(with_globals(args, log_level));
@@ -109,10 +127,33 @@ pub(crate) fn run_full_stream(
     }
     let status = child.wait()?;
 
-    Ok(RawResult {
-        stdout: String::from_utf8_lossy(&stdout_buf).into_owned(),
-        stderr: String::from_utf8_lossy(&stderr_buf).into_owned(),
-        exit_code: status.code().unwrap_or(-1),
+    Ok((stdout_buf, stderr_buf, status.code().unwrap_or(-1)))
+}
+
+/// Like [`RawResult`], but stdout is left as bytes.
+#[derive(Debug, Clone)]
+pub struct BinaryResult {
+    pub stdout: Vec<u8>,
+    pub stderr: String,
+    pub exit_code: i32,
+}
+
+/// Run `bsdkrun <args>` and keep stdout as raw bytes.
+///
+/// [`run`] decodes stdout with `from_utf8_lossy`, which silently replaces every
+/// invalid byte with U+FFFD — fine for JSON, ruinous for `cp ID:path -` reading
+/// a PNG. Only stderr is decoded here, because it is always a message.
+pub fn run_binary<I, S>(args: I, stdin: Option<&[u8]>) -> Result<BinaryResult>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let argv: Vec<String> = args.into_iter().map(Into::into).collect();
+    let (stdout, stderr, exit_code) = run_raw(&argv, &[], stdin, 0, None, None)?;
+    Ok(BinaryResult {
+        stdout,
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        exit_code,
     })
 }
 

@@ -464,6 +464,7 @@ func TestRunLinuxInputShape(t *testing.T) {
 		},
 		"volume":        nil,
 		"mounts":        []string{},
+		"attachDisk":    []string{},
 		"env":           []string{"X=1"},
 		"entrypoint":    nil,
 		"initramfs":     false,

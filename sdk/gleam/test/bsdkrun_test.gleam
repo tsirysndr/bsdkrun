@@ -95,14 +95,17 @@ pub fn multiple_ports_test() {
   ])
 }
 
-/// Linux takes `-v` but not the disk-boot flags; the BSD kinds take both.
-pub fn linux_ignores_disk_flags_test() {
+/// Linux takes `-v` and `--attach-disk` but not `--persist` (a BSD root-disk
+/// flag; the Linux rootfs is virtio-fs).
+pub fn linux_disk_flags_test() {
   args.linux("alpine")
   |> args.with_persist(True)
   |> args.with_volume("data")
   |> args.with_attach_disk(["/tmp/x.img"])
   |> build
-  |> should.equal(["linux", "alpine", "-d", "-v", "data"])
+  |> should.equal([
+    "linux", "alpine", "-d", "-v", "data", "--attach-disk", "/tmp/x.img",
+  ])
 }
 
 /// Linux-only setters are no-ops on other guest kinds rather than errors.

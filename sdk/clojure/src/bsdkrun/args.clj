@@ -31,6 +31,16 @@
       (when (:mac net) ["--mac" (:mac net)])
       (when (:network net) ["--network" (:network net)])))))
 
+(defn env-args
+  "`-e K=V` per entry, sorted by key.
+
+  A map has no argv order of its own, so sorting is what makes the command line
+  — and the tests that assert on it — deterministic. The guest sees the same
+  environment either way."
+  [env]
+  (mapcat (fn [[k v]] ["-e" (str (name k) "=" v)])
+          (sort-by (comp name key) env)))
+
 (defn name-args
   "`--name` flag if a name is set."
   [o]
@@ -65,6 +75,7 @@
     (mapcat (fn [m] ["--mount" m]) (util/as-seq (:mounts opts)))
     (mapcat (fn [d] ["--attach-disk" d]) (util/as-seq (:attach-disk opts)))
     (when (:entrypoint opts) ["--entrypoint" (:entrypoint opts)])
+    (env-args (:env opts))
     (when (:console opts) ["--console" (:console opts)])
     (net-args (:net opts))
     (name-args opts)

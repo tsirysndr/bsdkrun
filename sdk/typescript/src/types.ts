@@ -78,6 +78,12 @@ export interface LinuxCreateOptions extends BaseCreateOptions {
   attachDisk?: string[];
   /** Override the image entrypoint. */
   entrypoint?: string;
+  /**
+   * Environment variables for the guest's entrypoint (`-e K=V`). These are
+   * merged over the image's own config, so setting a key the image already
+   * defines replaces it rather than adding a duplicate.
+   */
+  env?: Record<string, string>;
   /** Guest console device (default `hvc0`). */
   console?: string;
   /** Command (and args) to run instead of the image's default Cmd. */

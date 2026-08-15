@@ -26,8 +26,8 @@
 
 mod args;
 mod binary;
-mod client;
 pub mod cache;
+mod client;
 mod error;
 mod filesystem;
 mod process;
@@ -41,13 +41,13 @@ pub mod system;
 pub mod volumes;
 
 pub use binary::{reset_binary_cache, resolve_binary, set_binary_path};
+pub use cache::{Cache, CacheEntry, RestoreResult};
 pub use client::{
     BsdOs, Client, FollowLogsBuilder, RunBsdBuilder, RunFlavorBuilder, RunLinuxBuilder,
     RunNanosBuilder, RunOsvBuilder, RunSolo5Builder, RunUnikraftBuilder, ShellBuilder,
     ShellSession, Subscription,
 };
 pub use error::{Error, Result};
-pub use cache::{Cache, CacheEntry, RestoreResult};
 pub use filesystem::FileSystem;
 pub use process::{run, run_binary, run_checked, spawn, BinaryResult, RawResult};
 pub use sandbox::{

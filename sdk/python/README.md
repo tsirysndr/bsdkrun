@@ -77,6 +77,25 @@ Sandbox.create(os="kernel", kernel="netbsd", format="elf", disk="root.raw")
 
 Every `create` runs the machine **detached** and returns a `Sandbox` handle.
 
+### Environment variables
+
+``env`` sets the guest environment for the machine's entrypoint. It is merged
+over the image's own config, so a key the image already defines is replaced
+rather than duplicated.
+
+```python
+sbx = Sandbox.create(
+    os="linux",
+    image="node:22",
+    env={"NODE_ENV": "production", "PORT": "3000"},
+    command=["node", "server.js"],
+)
+```
+
+Linux guests only — BSD guests boot their own init, so there is no generated
+init to export into; set those from ``exec`` after boot. For a single command
+rather than the whole machine, ``exec`` takes its own ``env``.
+
 ## Running commands
 
 Pass an argv list (no shell parsing), or a program name plus `args`:

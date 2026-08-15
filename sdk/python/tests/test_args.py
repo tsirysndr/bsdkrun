@@ -17,6 +17,23 @@ class TestBuildCreateArgs(unittest.TestCase):
             ["linux", "alpine", "-d"],
         )
 
+    def test_linux_env_is_emitted_sorted_by_key(self):
+        # A dict has no argv order of its own, so the builder sorts — otherwise
+        # the same options would produce a different command line run to run.
+        args = build_create_args(
+            os="linux", image="alpine", env={"ZED": "3", "ALPHA": "1", "MID": "2"}
+        )
+        self.assertEqual(
+            args,
+            ["linux", "alpine", "-d", "-e", "ALPHA=1", "-e", "MID=2", "-e", "ZED=3"],
+        )
+
+    def test_linux_without_env_emits_nothing(self):
+        self.assertEqual(build_create_args(os="linux", image="alpine"), ["linux", "alpine", "-d"])
+        self.assertEqual(
+            build_create_args(os="linux", image="alpine", env={}), ["linux", "alpine", "-d"]
+        )
+
     def test_linux_full(self):
         args = build_create_args(
             os="linux",

@@ -82,6 +82,24 @@ bsdkrun.OSv("loader.img").Cmdline("/hello.so").Create()
 Every `Create` runs the machine **detached** and returns a `*Sandbox` handle
 (with `ID`, and `SSHPort` when the boot banner reported one).
 
+### Environment variables
+
+`Env` sets the guest environment for the machine's entrypoint. It is merged over
+the image's own config, so a key the image already defines is replaced rather
+than duplicated.
+
+```go
+sbx, _ := bsdkrun.NewSandbox().Linux("node:22").
+    Env("NODE_ENV", "production").
+    Env("PORT", "3000").
+    Command("node", "server.js").
+    Create()
+```
+
+Linux guests only — BSD guests boot their own init, so there is no generated
+init to export into; set those from `Exec` after boot. For a single command
+rather than the whole machine, `Command` takes its own env.
+
 ## Running commands
 
 Pass an argv directly to `Exec`, or chain options on `Command`:

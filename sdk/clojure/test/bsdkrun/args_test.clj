@@ -121,3 +121,16 @@
 
 (deftest no-net-when-net-absent
   (is (= [] (args/net-args nil))))
+
+(deftest linux-env-is-emitted-sorted-by-key
+  ;; A map has no argv order of its own, so the builder sorts by key —
+  ;; otherwise the same options would produce a different command line.
+  (is (= ["linux" "alpine" "-d" "-e" "ALPHA=1" "-e" "MID=2" "-e" "ZED=3"]
+         (args/linux-args {:image "alpine" :env {"ZED" "3" "ALPHA" "1" "MID" "2"}})))
+  ;; Keyword keys are the idiomatic Clojure spelling and must work too.
+  (is (= ["linux" "alpine" "-d" "-e" "ALPHA=1" "-e" "ZED=3"]
+         (args/linux-args {:image "alpine" :env {:ZED "3" :ALPHA "1"}}))))
+
+(deftest linux-without-env-emits-nothing
+  (is (= ["linux" "alpine" "-d"] (args/linux-args {:image "alpine"})))
+  (is (= ["linux" "alpine" "-d"] (args/linux-args {:image "alpine" :env {}}))))

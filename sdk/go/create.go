@@ -201,6 +201,25 @@ func (b *CreateBuilder) Entrypoint(entrypoint string) *CreateBuilder {
 	return b
 }
 
+// Env sets an environment variable for the guest's entrypoint (-e K=V, linux).
+// Merged over the image's own config, so a key the image already defines is
+// replaced rather than duplicated.
+func (b *CreateBuilder) Env(key, value string) *CreateBuilder {
+	if b.spec.Env == nil {
+		b.spec.Env = map[string]string{}
+	}
+	b.spec.Env[key] = value
+	return b
+}
+
+// Envs sets several environment variables at once.
+func (b *CreateBuilder) Envs(vars map[string]string) *CreateBuilder {
+	for k, v := range vars {
+		b.Env(k, v)
+	}
+	return b
+}
+
 // Console selects the guest console device (linux).
 func (b *CreateBuilder) Console(console string) *CreateBuilder {
 	b.spec.Console = console

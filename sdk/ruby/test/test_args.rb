@@ -148,4 +148,24 @@ class TestArgs < Minitest::Test
     info = Bsdkrun::SandboxInfo.from_row("id" => "abc123")
     assert_equal([], info.ports)
   end
+  # A hash has no argv order of its own, so the builder sorts by key —
+  # otherwise the same options would produce a different command line run to
+  # run.
+  def test_linux_env_is_emitted_sorted_by_key
+    args = Bsdkrun::Args.build_create_args(
+      os: "linux", image: "alpine", env: { "ZED" => "3", "ALPHA" => "1", "MID" => "2" }
+    )
+    assert_equal(
+      ["linux", "alpine", "-d", "-e", "ALPHA=1", "-e", "MID=2", "-e", "ZED=3"],
+      args
+    )
+  end
+
+  def test_linux_without_env_emits_nothing
+    assert_equal(["linux", "alpine", "-d"],
+                 Bsdkrun::Args.build_create_args(os: "linux", image: "alpine"))
+    assert_equal(["linux", "alpine", "-d"],
+                 Bsdkrun::Args.build_create_args(os: "linux", image: "alpine", env: {}))
+  end
+
 end

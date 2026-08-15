@@ -252,6 +252,26 @@ impl LinuxBuilder {
         self
     }
 
+    /// Set an environment variable for the guest's entrypoint (`-e K=V`,
+    /// repeatable). Merged over the image's own config, so a key the image
+    /// already defines is replaced rather than duplicated.
+    pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.opts.env.push((key.into(), value.into()));
+        self
+    }
+
+    /// Set several environment variables at once.
+    pub fn envs<K, V>(mut self, vars: impl IntoIterator<Item = (K, V)>) -> Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.opts
+            .env
+            .extend(vars.into_iter().map(|(k, v)| (k.into(), v.into())));
+        self
+    }
+
     /// Console device (`--console`).
     pub fn console(mut self, console: impl Into<String>) -> Self {
         self.opts.console = Some(console.into());
@@ -1067,6 +1087,28 @@ mod tests {
 
     fn s(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// A caller can add variables in any order, so the builder sorts by key —
+    /// otherwise the same builder chain would produce a different command line.
+    #[test]
+    fn linux_env_is_emitted_sorted_by_key() {
+        assert_eq!(
+            Sandbox::linux("alpine")
+                .env("ZED", "3")
+                .env("ALPHA", "1")
+                .envs([("MID", "2")])
+                .to_args(),
+            s(&["linux", "alpine", "-d", "-e", "ALPHA=1", "-e", "MID=2", "-e", "ZED=3"])
+        );
+    }
+
+    #[test]
+    fn linux_without_env_emits_nothing() {
+        assert_eq!(
+            Sandbox::linux("alpine").to_args(),
+            s(&["linux", "alpine", "-d"])
+        );
     }
 
     #[test]

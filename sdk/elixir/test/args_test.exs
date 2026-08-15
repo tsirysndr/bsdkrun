@@ -235,4 +235,23 @@ defmodule Bsdkrun.ArgsTest do
     argv = Args.build_create(%{"os" => "linux", "image" => "alpine", "name" => "x"})
     assert argv == ["linux", "alpine", "-d", "--name", "x"]
   end
+
+  describe "linux env" do
+    # A map has no argv order of its own, so the builder sorts by key —
+    # otherwise the same options would produce a different command line.
+    test "is emitted sorted by key" do
+      assert Bsdkrun.Args.build_create(
+               os: "linux",
+               image: "alpine",
+               env: %{"ZED" => "3", "ALPHA" => "1", "MID" => "2"}
+             ) == ["linux", "alpine", "-d", "-e", "ALPHA=1", "-e", "MID=2", "-e", "ZED=3"]
+    end
+
+    test "emits nothing when absent or empty" do
+      assert Bsdkrun.Args.build_create(os: "linux", image: "alpine") == ["linux", "alpine", "-d"]
+
+      assert Bsdkrun.Args.build_create(os: "linux", image: "alpine", env: %{}) ==
+               ["linux", "alpine", "-d"]
+    end
+  end
 end

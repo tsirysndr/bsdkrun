@@ -105,6 +105,24 @@ args.linux("alpine")
 |> sandbox.create
 ```
 
+### Environment variables
+
+`with_env` sets the guest environment for the machine's entrypoint. It is merged
+over the image's own config, so a key the image already defines is replaced
+rather than duplicated.
+
+```gleam
+let assert Ok(sbx) =
+  args.linux("node:22")
+  |> args.with_env([#("NODE_ENV", "production"), #("PORT", "3000")])
+  |> args.with_command(["node", "server.js"])
+  |> sandbox.create
+```
+
+Linux guests only — BSD guests boot their own init, so there is no generated
+init to export into; set those from `exec` after boot. Pairs are emitted sorted
+by key, so the argv does not depend on the order you added them.
+
 ## Running commands
 
 `bsdkrun.exec` covers the common case. For env vars, a TTY, stdin, or a working

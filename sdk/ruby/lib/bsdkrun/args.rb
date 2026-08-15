@@ -28,6 +28,17 @@ module Bsdkrun
     # +--name+ flag if a name is set.
     # @param o [Hash]
     # @return [Array<String>]
+    # +-e K=V+ per entry, sorted by key.
+    #
+    # A hash has no argv order of its own, so sorting is what makes the command
+    # line — and the tests that assert on it — deterministic. The guest sees the
+    # same environment either way.
+    def env_args(env)
+      return [] if env.nil? || env.empty?
+
+      env.to_h.sort_by { |k, _| k.to_s }.flat_map { |k, v| ["-e", "#{k}=#{v}"] }
+    end
+
     def name_args(o)
       o[:name] ? ["--name", o[:name].to_s] : []
     end
@@ -83,6 +94,7 @@ module Bsdkrun
       Array(opts[:mounts]).each { |m| a.push("--mount", m) }
       Array(opts[:attach_disk]).each { |d| a.push("--attach-disk", d) }
       a.push("--entrypoint", opts[:entrypoint]) if opts[:entrypoint]
+      a.concat(env_args(opts[:env]))
       a.push("--console", opts[:console]) if opts[:console]
       a.concat(net_args(opts[:net])).concat(name_args(opts)).concat(vm_args(opts))
       cmd = opts[:command]

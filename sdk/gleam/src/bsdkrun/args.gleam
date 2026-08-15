@@ -18,6 +18,7 @@ import bsdkrun/error.{type Error, InvalidOptions}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 
 /// A host-to-guest TCP port forward.
 pub type Port {
@@ -34,6 +35,9 @@ pub type Guest {
     kernel_version: Option(String),
     initramfs: Bool,
     entrypoint: Option(String),
+    /// Guest environment for the entrypoint, as `#(key, value)` pairs. Emitted
+    /// sorted by key, so the argv does not depend on insertion order.
+    env: List(#(String, String)),
     console: Option(String),
     mounts: List(String),
     command: List(String),
@@ -166,6 +170,7 @@ pub fn linux(image: String) -> CreateOptions {
       kernel_version: None,
       initramfs: False,
       entrypoint: None,
+      env: [],
       console: None,
       mounts: [],
       command: [],
@@ -319,6 +324,20 @@ pub fn with_entrypoint(
   }
 }
 
+/// Set environment variables for the guest's entrypoint (`-e K=V`, Linux
+/// guests only). Merged over the image's own config, so a key the image
+/// already defines is replaced rather than duplicated.
+pub fn with_env(
+  opts: CreateOptions,
+  env: List(#(String, String)),
+) -> CreateOptions {
+  case opts.guest {
+    Linux(..) as g ->
+      CreateOptions(..opts, guest: Linux(..g, env: list.append(g.env, env)))
+    _ -> opts
+  }
+}
+
 // --- BSD-only setters -------------------------------------------------------
 
 /// Pin the release to fetch (FreeBSD / NetBSD guests only).
@@ -372,6 +391,7 @@ fn try_guest(
       kernel_version:,
       initramfs:,
       entrypoint:,
+      env:,
       console:,
       mounts:,
       command: _,
@@ -384,6 +404,7 @@ fn try_guest(
           flag("--initramfs", initramfs),
           multi("--mount", mounts),
           opt("--entrypoint", entrypoint),
+          env_args(env),
           opt("--console", console),
         ]),
       )
@@ -561,6 +582,17 @@ fn flag(name: String, enabled: Bool) -> List(String) {
     True -> [name]
     False -> []
   }
+}
+
+/// `-e K=V` per entry, sorted by key.
+///
+/// A caller can add variables in any order, so sorting is what makes the argv —
+/// and the tests that assert on it — deterministic. The guest sees the same
+/// environment either way.
+fn env_args(env: List(#(String, String))) -> List(String) {
+  env
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  |> list.flat_map(fn(pair) { ["-e", pair.0 <> "=" <> pair.1] })
 }
 
 fn multi(flag: String, values: List(String)) -> List(String) {

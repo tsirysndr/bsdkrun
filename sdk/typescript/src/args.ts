@@ -17,6 +17,21 @@ function netArgs(net: NetworkOptions | undefined): string[] {
   return a;
 }
 
+/**
+ * `-e K=V` for each entry, sorted by key.
+ *
+ * A map has no inherent order, so sorting is what makes the argv — and the
+ * tests that assert on it — deterministic. The guest sees the same environment
+ * either way.
+ */
+function envArgs(env: Record<string, string> | undefined): string[] {
+  const a: string[] = [];
+  for (const k of Object.keys(env ?? {}).sort()) {
+    a.push("-e", `${k}=${env![k]}`);
+  }
+  return a;
+}
+
 function nameArgs(o: { name?: string }): string[] {
   return o.name ? ["--name", o.name] : [];
 }
@@ -51,6 +66,7 @@ export function buildCreateArgs(opts: CreateOptions): string[] {
       for (const m of opts.mounts ?? []) a.push("--mount", m);
       for (const d of opts.attachDisk ?? []) a.push("--attach-disk", d);
       if (opts.entrypoint) a.push("--entrypoint", opts.entrypoint);
+      a.push(...envArgs(opts.env));
       if (opts.console) a.push("--console", opts.console);
       a.push(...netArgs(opts.net), ...nameArgs(opts), ...vmArgs(opts));
       if (opts.command?.length) a.push("--", ...opts.command);

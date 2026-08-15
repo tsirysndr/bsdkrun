@@ -44,6 +44,20 @@ defmodule Bsdkrun.Args do
     Enum.map(args, &to_string/1)
   end
 
+  # `-e K=V` per entry, sorted by key.
+  #
+  # A map has no argv order of its own, so sorting is what makes the command
+  # line — and the tests that assert on it — deterministic. The guest sees the
+  # same environment either way.
+  defp env_args(nil), do: []
+
+  defp env_args(env) do
+    env
+    |> Enum.map(fn {k, v} -> {to_string(k), to_string(v)} end)
+    |> Enum.sort_by(fn {k, _} -> k end)
+    |> Enum.flat_map(fn {k, v} -> ["-e", "#{k}=#{v}"] end)
+  end
+
   # --- per-guest-kind builders ------------------------------------------------
 
   defp linux(o) do
@@ -55,6 +69,7 @@ defmodule Bsdkrun.Args do
     |> multi(o, :mounts, "--mount")
     |> multi(o, :attach_disk, "--attach-disk")
     |> opt(o, :entrypoint, "--entrypoint")
+    |> concat(env_args(o[:env]))
     |> opt(o, :console, "--console")
     |> concat(net_args(o[:net]))
     |> concat(name_args(o))

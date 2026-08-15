@@ -97,6 +97,19 @@ def _require(opts: Mapping[str, Any], field: str, os_kind: str) -> Any:
     return value
 
 
+def _env_args(env: Mapping[str, Any] | None) -> list[str]:
+    """``-e K=V`` per entry, sorted by key.
+
+    A mapping has no argv order of its own, so sorting is what makes the
+    command line — and the tests that assert on it — deterministic. The guest
+    sees the same environment either way.
+    """
+    a: list[str] = []
+    for key in sorted(env or {}):
+        a += ["-e", f"{key}={env[key]}"]
+    return a
+
+
 def build_create_args(*, os: str, **opts: Any) -> list[str]:
     """Build the full ``bsdkrun`` argv (minus the binary and global flags).
 
@@ -124,6 +137,7 @@ def build_create_args(*, os: str, **opts: Any) -> list[str]:
             a += ["--attach-disk", disk]
         if opts.get("entrypoint"):
             a += ["--entrypoint", opts["entrypoint"]]
+        a += _env_args(opts.get("env"))
         if opts.get("console"):
             a += ["--console", opts["console"]]
         a += _net_args(net) + _name_args(opts) + _vm_args(opts)

@@ -70,6 +70,8 @@ pub(crate) struct CreateOpts {
     pub initramfs_path: Option<String>,
     pub cmdline: Option<String>,
     pub entrypoint: Option<String>,
+    /// Guest environment for the entrypoint, as sorted `K=V` pairs.
+    pub env: Vec<(String, String)>,
     pub console: Option<String>,
     pub gic: Option<String>,
     pub force: bool,
@@ -86,6 +88,18 @@ pub(crate) struct CreateOpts {
     pub cpus: Option<u32>,
     pub mem: Option<u32>,
     pub log_level: Option<u32>,
+}
+
+/// `-e K=V` per entry, sorted by key, so the argv is deterministic regardless
+/// of how the caller built the list. The guest sees the same environment either
+/// way.
+fn push_env(a: &mut Vec<String>, env: &[(String, String)]) {
+    let mut pairs: Vec<&(String, String)> = env.iter().collect();
+    pairs.sort_by(|x, y| x.0.cmp(&y.0));
+    for (key, value) in pairs {
+        a.push("-e".into());
+        a.push(format!("{key}={value}"));
+    }
 }
 
 fn push_opt(out: &mut Vec<String>, flag: &str, value: &Option<String>) {
@@ -161,6 +175,7 @@ pub(crate) fn build_create_args(kind: Kind, o: &CreateOpts) -> Vec<String> {
                 a.push(disk.clone());
             }
             push_opt(&mut a, "--entrypoint", &o.entrypoint);
+            push_env(&mut a, &o.env);
             push_opt(&mut a, "--console", &o.console);
             common_tail(o, &mut a);
             if !o.command.is_empty() {

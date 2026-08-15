@@ -191,3 +191,31 @@ describe("buildCreateArgs", () => {
     expect(args).toContain("root.raw");
   });
 });
+
+describe("buildCreateArgs env", () => {
+  // Object key order is not something a caller should have to think about, so
+  // the builder sorts — otherwise the same options could produce a different
+  // command line.
+  test("emits -e K=V sorted by key", () => {
+    expect(
+      buildCreateArgs({
+        os: "linux",
+        image: "alpine",
+        env: { ZED: "3", ALPHA: "1", MID: "2" },
+      }),
+    ).toEqual(["linux", "alpine", "-d", "-e", "ALPHA=1", "-e", "MID=2", "-e", "ZED=3"]);
+  });
+
+  test("emits nothing without env", () => {
+    expect(buildCreateArgs({ os: "linux", image: "alpine" })).toEqual([
+      "linux",
+      "alpine",
+      "-d",
+    ]);
+    expect(buildCreateArgs({ os: "linux", image: "alpine", env: {} })).toEqual([
+      "linux",
+      "alpine",
+      "-d",
+    ]);
+  });
+});

@@ -46,8 +46,7 @@ pub(crate) fn run_full_stream(
     on_stdout: Option<Box<dyn Write + Send>>,
     on_stderr: Option<Box<dyn Write + Send>>,
 ) -> Result<RawResult> {
-    let (stdout, stderr, exit_code) =
-        run_raw(args, env, stdin, log_level, on_stdout, on_stderr)?;
+    let (stdout, stderr, exit_code) = run_raw(args, env, stdin, log_level, on_stdout, on_stderr)?;
     Ok(RawResult {
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
         stderr: String::from_utf8_lossy(&stderr).into_owned(),

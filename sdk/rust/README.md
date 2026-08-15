@@ -94,6 +94,24 @@ Sandbox::osv("loader.img").cmdline("/hello.so").create()?;
 Every builder also has `.to_args()`, returning the exact argv `create()` would
 run — handy for debugging and what the unit tests assert on.
 
+### Environment variables
+
+`.env()` sets the guest environment for the machine's entrypoint. It is merged
+over the image's own config, so a key the image already defines is replaced
+rather than duplicated.
+
+```rust
+let sbx = Sandbox::linux("node:22")
+    .env("NODE_ENV", "production")
+    .envs([("PORT", "3000")])
+    .command(["node", "server.js"])
+    .create()?;
+```
+
+Linux guests only — BSD guests boot their own init, so there is no generated
+init to export into; set those from `exec` after boot. For a single command
+rather than the whole machine, the command builder takes its own env.
+
 ## Running commands
 
 Pass an argv (no shell parsing), or build a command fluently:

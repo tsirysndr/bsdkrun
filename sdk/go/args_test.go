@@ -226,3 +226,32 @@ func TestUnknownOSErrors(t *testing.T) {
 		t.Fatal("expected an error for os plan9")
 	}
 }
+
+// A Go map has no iteration order at all, so the builder sorts by key —
+// otherwise the same spec would produce a different command line run to run.
+func TestLinuxEnvIsEmittedSortedByKey(t *testing.T) {
+	got, err := BuildCreateArgs(CreateSpec{
+		OS:    "linux",
+		Image: "alpine",
+		Env:   map[string]string{"ZED": "3", "ALPHA": "1", "MID": "2"},
+	})
+	if err != nil {
+		t.Fatalf("BuildCreateArgs: %v", err)
+	}
+	want := []string{"linux", "alpine", "-d", "-e", "ALPHA=1", "-e", "MID=2", "-e", "ZED=3"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestLinuxWithoutEnvEmitsNothing(t *testing.T) {
+	for _, env := range []map[string]string{nil, {}} {
+		got, err := BuildCreateArgs(CreateSpec{OS: "linux", Image: "alpine", Env: env})
+		if err != nil {
+			t.Fatalf("BuildCreateArgs: %v", err)
+		}
+		if !reflect.DeepEqual(got, []string{"linux", "alpine", "-d"}) {
+			t.Errorf("env %v: got %v", env, got)
+		}
+	}
+}

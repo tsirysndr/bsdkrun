@@ -25,6 +25,25 @@ pub fn linux_minimal_test() {
   |> should.equal(["linux", "alpine", "-d"])
 }
 
+/// A caller can add variables in any order, so the builder sorts by key —
+/// otherwise the same pipeline would produce a different command line.
+pub fn linux_env_sorted_test() {
+  args.linux("alpine")
+  |> args.with_env([#("ZED", "3"), #("ALPHA", "1")])
+  |> args.with_env([#("MID", "2")])
+  |> build
+  |> should.equal([
+    "linux", "alpine", "-d", "-e", "ALPHA=1", "-e", "MID=2", "-e", "ZED=3",
+  ])
+}
+
+pub fn linux_without_env_test() {
+  args.linux("alpine")
+  |> args.with_env([])
+  |> build
+  |> should.equal(["linux", "alpine", "-d"])
+}
+
 pub fn linux_full_test() {
   args.linux("alpine")
   |> args.with_name("web")

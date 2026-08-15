@@ -2,6 +2,7 @@ package bsdkrun
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 )
 
@@ -50,8 +51,12 @@ type CreateSpec struct {
 	Initramfs  bool
 	Mounts     []string
 	Entrypoint string
-	Console    string
-	Command    []string
+	// Env is the guest environment for the entrypoint (-e K=V). It is merged
+	// over the image's own config, so a key the image already defines is
+	// replaced rather than duplicated.
+	Env     map[string]string
+	Console string
+	Command []string
 
 	// freebsd / netbsd.
 	Version  string
@@ -137,6 +142,24 @@ func requireField(value, field, osKind string) error {
 // flags) for a create. Every path ends with -d (detached) so create yields a
 // handle. It mirrors the Python SDK's build_create_args exactly, including
 // argument ordering.
+// envArgs emits `-e K=V` per entry, sorted by key.
+//
+// A Go map has no iteration order at all, so sorting is what keeps the argv —
+// and the tests that assert on it — deterministic. The guest sees the same
+// environment either way.
+func envArgs(env map[string]string) []string {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	a := make([]string, 0, len(keys)*2)
+	for _, k := range keys {
+		a = append(a, "-e", k+"="+env[k])
+	}
+	return a
+}
+
 func BuildCreateArgs(spec CreateSpec) ([]string, error) {
 	tail := func(a []string) []string {
 		a = append(a, netArgs(spec.Net)...)
@@ -171,6 +194,7 @@ func BuildCreateArgs(spec CreateSpec) ([]string, error) {
 		if spec.Entrypoint != "" {
 			a = append(a, "--entrypoint", spec.Entrypoint)
 		}
+		a = append(a, envArgs(spec.Env)...)
 		if spec.Console != "" {
 			a = append(a, "--console", spec.Console)
 		}

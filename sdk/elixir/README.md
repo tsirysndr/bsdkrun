@@ -252,11 +252,25 @@ Bsdkrun.Sandbox.new(os: :linux, image: "alpine")
 |> Bsdkrun.exec!(["uname", "-a"])
 ```
 
+Environment variables chain the same way, and **merge** rather than replace —
+so a pipeline can build them up in pieces instead of the last call winning:
+
+```elixir
+Bsdkrun.Sandbox.new(os: :linux, image: "node:22")
+|> Bsdkrun.Sandbox.with_env(%{"NODE_ENV" => "production"})
+|> Bsdkrun.Sandbox.with_env("PORT", "3000")
+|> Bsdkrun.Sandbox.with_command(["node", "server.js"])
+|> Bsdkrun.Sandbox.create!()
+```
+
+`with_env/2` takes a map or a list of `{key, value}` pairs; `with_env/3` sets
+one. Keys and values are stringified either way.
+
 Nothing is sent to `bsdkrun` until `create/1`/`create!/1` runs. Besides
-`with_volume/2`, `with_network/2` and `with_port(s)/2` above, there's
-`with_mount(s)/2`, `with_disk/2`, `with_cpus/2`, `with_mem/2`, `with_name/2`,
-`with_command/2`, and `with_opt/3` as an escape hatch for any other
-`create/1` option.
+`with_volume/2`, `with_network/2`, `with_port(s)/2` and `with_env/2,3` above,
+there's `with_mount(s)/2`, `with_disk/2`, `with_cpus/2`, `with_mem/2`,
+`with_name/2`, `with_command/2`, and `with_opt/3` as an escape hatch for any
+other `create/1` option.
 
 `exec!/3`, `logs!/2`, `status!/1`, `Sandbox.ssh_setup!/2` and
 `Sandbox.tailscale_up!/2` return their unwrapped value instead (a `Result`,

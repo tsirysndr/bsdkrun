@@ -154,6 +154,32 @@ defmodule Bsdkrun.Sandbox do
   @spec with_command(Builder.t(), [String.t()]) :: Builder.t()
   def with_command(%Builder{} = b, cmd), do: put_opt(b, :command, cmd)
 
+  @doc """
+  Set environment variables for the guest's entrypoint (Linux guests).
+
+  Merges rather than replaces, so it composes down a pipeline instead of the
+  last call winning:
+
+      Bsdkrun.Sandbox.new(os: :linux, image: "node:22")
+      |> Bsdkrun.Sandbox.with_env(%{"NODE_ENV" => "production"})
+      |> Bsdkrun.Sandbox.with_env("PORT", "3000")
+      |> Bsdkrun.Sandbox.create!()
+
+  Accepts a map or a list of `{key, value}` pairs; both are stringified. The
+  variables are merged over the image's own config, so a key the image already
+  defines is replaced rather than duplicated.
+  """
+  @spec with_env(Builder.t(), map() | [{term(), term()}]) :: Builder.t()
+  def with_env(%Builder{} = b, vars) when is_map(vars) or is_list(vars) do
+    Enum.reduce(vars, b, fn {key, value}, acc -> with_env(acc, key, value) end)
+  end
+
+  @doc "Set one environment variable — see `with_env/2`."
+  @spec with_env(Builder.t(), term(), term()) :: Builder.t()
+  def with_env(%Builder{} = b, key, value) do
+    merge_opt(b, :env, to_string(key), to_string(value))
+  end
+
   @doc "Set an arbitrary `create/1` option — the escape hatch for anything not wrapped above."
   @spec with_opt(Builder.t(), atom(), term()) :: Builder.t()
   def with_opt(%Builder{} = b, key, value) when is_atom(key), do: put_opt(b, key, value)
@@ -502,6 +528,12 @@ defmodule Bsdkrun.Sandbox do
 
   defp append_opt(%Builder{opts: opts} = b, key, value) do
     %{b | opts: Map.update(opts, key, [value], &(&1 ++ [value]))}
+  end
+
+  # Like `put_opt`, but for an option that is itself a map — so repeated calls
+  # accumulate instead of the last one winning.
+  defp merge_opt(%Builder{opts: opts} = b, key, inner_key, value) do
+    %{b | opts: Map.update(opts, key, %{inner_key => value}, &Map.put(&1, inner_key, value))}
   end
 
   defp put_net(%Builder{opts: opts} = b, key, value) do

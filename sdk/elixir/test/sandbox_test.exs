@@ -40,6 +40,44 @@ defmodule Bsdkrun.SandboxTest do
       assert builder.opts.command == ["node", "server.js"]
     end
 
+    # `with_env` merges rather than replaces — otherwise only the last call in a
+    # pipeline would survive, which is the opposite of how the rest of the
+    # `with_*` family reads.
+    test "with_env/2 and with_env/3 accumulate across a pipeline" do
+      builder =
+        Sandbox.new(os: :linux, image: "node:22")
+        |> Sandbox.with_env(%{"NODE_ENV" => "production"})
+        |> Sandbox.with_env("PORT", "3000")
+        |> Sandbox.with_env([{"ZED", "3"}, {:ALPHA, 1}])
+
+      assert builder.opts.env == %{
+               "NODE_ENV" => "production",
+               "PORT" => "3000",
+               "ZED" => "3",
+               "ALPHA" => "1"
+             }
+    end
+
+    test "with_env/3 replaces a key it has already set" do
+      builder =
+        Sandbox.new(os: :linux, image: "alpine")
+        |> Sandbox.with_env("PORT", "3000")
+        |> Sandbox.with_env("PORT", "8080")
+
+      assert builder.opts.env == %{"PORT" => "8080"}
+    end
+
+    test "a builder's env reaches the argv, sorted" do
+      argv =
+        Sandbox.new(os: :linux, image: "alpine")
+        |> Sandbox.with_env(%{"ZED" => "3", "ALPHA" => "1"})
+        |> Map.fetch!(:opts)
+        |> Keyword.new()
+        |> Bsdkrun.Args.build_create()
+
+      assert argv == ["linux", "alpine", "-d", "-e", "ALPHA=1", "-e", "ZED=3"]
+    end
+
     test "with_network/2, with_port(s)/2 and with_disk/2 accumulate under :net / :attach_disk" do
       builder =
         Sandbox.new(os: :linux, image: "alpine")

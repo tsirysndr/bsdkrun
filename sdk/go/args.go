@@ -165,6 +165,9 @@ func BuildCreateArgs(spec CreateSpec) ([]string, error) {
 		for _, mount := range spec.Mounts {
 			a = append(a, "--mount", mount)
 		}
+		for _, disk := range spec.AttachDisk {
+			a = append(a, "--attach-disk", disk)
+		}
 		if spec.Entrypoint != "" {
 			a = append(a, "--entrypoint", spec.Entrypoint)
 		}

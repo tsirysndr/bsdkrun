@@ -127,6 +127,7 @@ function linuxInput(spec: RunSpec) {
     },
     volume: orNull(spec.volume),
     mounts: clean(spec.mounts),
+    attachDisk: clean(spec.attach_disks),
     entrypoint: orNull(spec.entrypoint),
     initramfs: spec.initramfs,
     repo: orNull(spec.repo),

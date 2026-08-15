@@ -58,6 +58,7 @@ export interface RunLinuxOptions {
   net?: NetOptions;
   volume?: string;
   mounts?: string[];
+  attachDisk?: string[];
   env?: string[];
   entrypoint?: string;
   initramfs?: boolean;

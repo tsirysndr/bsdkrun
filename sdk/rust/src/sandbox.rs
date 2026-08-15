@@ -237,6 +237,15 @@ impl LinuxBuilder {
         self
     }
 
+    /// Attach an extra raw disk as virtio-blk, `"PATH"` or `"PATH:ro"`
+    /// (`--attach-disk`, repeatable). With the default virtio-fs rootfs the
+    /// first attachment is the guest's `/dev/vda` — format and mount it in the
+    /// guest for native-speed I/O.
+    pub fn attach_disk(mut self, disk: impl Into<String>) -> Self {
+        self.opts.attach_disk.push(disk.into());
+        self
+    }
+
     /// Override the image entrypoint (`--entrypoint`).
     pub fn entrypoint(mut self, entrypoint: impl Into<String>) -> Self {
         self.opts.entrypoint = Some(entrypoint.into());

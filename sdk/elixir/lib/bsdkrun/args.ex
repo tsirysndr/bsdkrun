@@ -53,6 +53,7 @@ defmodule Bsdkrun.Args do
     |> flag(o, :initramfs, "--initramfs")
     |> opt(o, :volume, "-v")
     |> multi(o, :mounts, "--mount")
+    |> multi(o, :attach_disk, "--attach-disk")
     |> opt(o, :entrypoint, "--entrypoint")
     |> opt(o, :console, "--console")
     |> concat(net_args(o[:net]))

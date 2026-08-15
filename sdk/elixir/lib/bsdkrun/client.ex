@@ -364,6 +364,7 @@ defmodule Bsdkrun.Client do
       net: net_input(Map.get(o, :net)),
       volume: Map.get(o, :volume),
       mounts: Map.get(o, :mounts, []),
+      attachDisk: Map.get(o, :attach_disk, []),
       env: env_list(Map.get(o, :env, [])),
       entrypoint: Map.get(o, :entrypoint),
       initramfs: Map.get(o, :initramfs, false),

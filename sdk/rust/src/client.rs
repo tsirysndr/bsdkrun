@@ -337,6 +337,7 @@ impl Client {
             net: NetOpts::default(),
             volume: None,
             mounts: Vec::new(),
+            attach_disk: Vec::new(),
             env: Vec::new(),
             entrypoint: None,
             initramfs: false,
@@ -781,6 +782,7 @@ pub struct RunLinuxBuilder {
     net: NetOpts,
     volume: Option<String>,
     mounts: Vec<String>,
+    attach_disk: Vec<String>,
     env: Vec<String>,
     entrypoint: Option<String>,
     initramfs: bool,
@@ -809,6 +811,13 @@ impl RunLinuxBuilder {
     /// Share a host directory into the guest, `"HOST:GUEST"` (repeatable).
     pub fn mount(mut self, mount: impl Into<String>) -> Self {
         self.mounts.push(mount.into());
+        self
+    }
+
+    /// Attach a raw disk image as virtio-blk, `"PATH"` or `"PATH:ro"`
+    /// (repeatable).
+    pub fn attach_disk(mut self, disk: impl Into<String>) -> Self {
+        self.attach_disk.push(disk.into());
         self
     }
 
@@ -876,6 +885,7 @@ impl RunLinuxBuilder {
             "net": net_input(&self.net),
             "volume": self.volume,
             "mounts": self.mounts,
+            "attachDisk": self.attach_disk,
             "env": self.env,
             "entrypoint": self.entrypoint,
             "initramfs": self.initramfs,

@@ -74,6 +74,8 @@ export interface LinuxCreateOptions extends BaseCreateOptions {
   volume?: string;
   /** Bind-mount host dirs into the guest: `"HOST:GUEST"` or `"HOST:GUEST:ro"`. */
   mounts?: string[];
+  /** Extra disks to attach as virtio-blk. `"PATH"` or `"PATH:ro"`. */
+  attachDisk?: string[];
   /** Override the image entrypoint. */
   entrypoint?: string;
   /** Guest console device (default `hvc0`). */

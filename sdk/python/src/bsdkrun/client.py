@@ -174,6 +174,7 @@ def _run_linux_input(opts: Mapping[str, Any]) -> dict[str, Any]:
         "net": _net_input(opts.get("net")),
         "volume": opts.get("volume"),
         "mounts": list(opts.get("mounts") or []),
+        "attachDisk": list(opts.get("attach_disk") or []),
         "env": list(opts.get("env") or []),
         "entrypoint": opts.get("entrypoint"),
         "initramfs": bool(opts.get("initramfs", False)),

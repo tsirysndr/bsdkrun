@@ -156,6 +156,10 @@ pub(crate) fn build_create_args(kind: Kind, o: &CreateOpts) -> Vec<String> {
                 a.push("--mount".into());
                 a.push(mount.clone());
             }
+            for disk in &o.attach_disk {
+                a.push("--attach-disk".into());
+                a.push(disk.clone());
+            }
             push_opt(&mut a, "--entrypoint", &o.entrypoint);
             push_opt(&mut a, "--console", &o.console);
             common_tail(o, &mut a);

@@ -98,6 +98,7 @@ pub struct RunLinuxOpts {
     pub net: NetOpts,
     pub volume: Option<String>,
     pub mounts: Vec<String>,
+    pub attach_disk: Vec<String>,
     pub env: Vec<String>,
     pub entrypoint: Option<String>,
     pub initramfs: bool,
@@ -125,6 +126,11 @@ impl RunLinuxOpts {
             initramfs: self.initramfs,
             volume: self.volume.clone(),
             mounts: self.mounts.clone(),
+            attach_disk: self
+                .attach_disk
+                .iter()
+                .filter_map(|d| d.parse().ok())
+                .collect(),
             entrypoint: self.entrypoint.clone(),
             env: self.env.clone(),
             console: self.console.clone().unwrap_or(d.console),
@@ -1042,6 +1048,21 @@ mod tests {
         .to_command();
         assert!(tty, "a shell is only meaningful on a terminal");
         assert!(matches!(cmd, CoreCommand::Shell(a) if a.id == "abc"));
+    }
+
+    #[test]
+    fn a_linux_run_parses_its_attached_disks() {
+        let opts = RunLinuxOpts {
+            image: "alpine".into(),
+            attach_disk: vec!["/tmp/build.img".into(), "/tmp/ro.img:ro".into()],
+            ..Default::default()
+        };
+        let CoreCommand::Linux(a) = opts.to_command() else {
+            panic!("not a linux command");
+        };
+        assert_eq!(a.attach_disk.len(), 2);
+        assert!(!a.attach_disk[0].read_only);
+        assert!(a.attach_disk[1].read_only);
     }
 
     #[test]

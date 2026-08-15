@@ -81,6 +81,60 @@ pub(crate) fn machine_rootfs_dir(id: &str, vdir: &std::path::Path) -> std::path:
     vdir.to_path_buf()
 }
 
+/// File in a machine's state dir recording its `--attach-disk` specs, so
+/// `start` can re-attach the same disks (the machines DB row doesn't carry
+/// them).
+const ATTACHED_DISKS_FILE: &str = "attached-disks.json";
+
+/// Record `--attach-disk` specs in the machine's state dir for restarts. Paths
+/// are made absolute (a later `start` runs from a different cwd). An empty
+/// list clears the record.
+pub(crate) fn save_attached_disks(vdir: &std::path::Path, disks: &[crate::cli::DiskSpec]) {
+    let file = vdir.join(ATTACHED_DISKS_FILE);
+    if disks.is_empty() {
+        let _ = std::fs::remove_file(&file);
+        return;
+    }
+    let abs: Vec<crate::cli::DiskSpec> = disks
+        .iter()
+        .map(|d| crate::cli::DiskSpec {
+            path: std::fs::canonicalize(&d.path).unwrap_or_else(|_| d.path.clone()),
+            read_only: d.read_only,
+        })
+        .collect();
+    match serde_json::to_vec(&abs) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&file, json) {
+                tracing::warn!(file = %file.display(), "could not record attached disks: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("could not encode attached disks: {e}"),
+    }
+}
+
+/// Load the disks recorded by [`save_attached_disks`]. A disk whose image file
+/// has since disappeared is skipped with a warning rather than failing the
+/// whole restart.
+pub(crate) fn load_attached_disks(vdir: &std::path::Path) -> Vec<crate::cli::DiskSpec> {
+    let Ok(bytes) = std::fs::read(vdir.join(ATTACHED_DISKS_FILE)) else {
+        return vec![];
+    };
+    let disks: Vec<crate::cli::DiskSpec> = serde_json::from_slice(&bytes).unwrap_or_default();
+    disks
+        .into_iter()
+        .filter(|d| {
+            let ok = d.path.exists();
+            if !ok {
+                tracing::warn!(
+                    path = %d.path.display(),
+                    "recorded attach-disk image is gone; restarting without it"
+                );
+            }
+            ok
+        })
+        .collect()
+}
+
 /// Resolve a `--volume NAME` to its directory under `<state>/volumes`, rejecting
 /// names that could escape it.
 pub(crate) fn volume_dir(name: &str) -> Result<PathBuf> {

@@ -170,6 +170,8 @@ message RunLinuxRequest {
   optional string repo = 12;
   // Command to run instead of the image's default Cmd.
   repeated string command = 13;
+  // Raw disk images attached as virtio-blk, each "PATH[:ro]".
+  repeated string attach_disk = 14;
 }
 
 // `freebsd` / `netbsd`.

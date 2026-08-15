@@ -390,6 +390,8 @@ pub struct RunLinuxInput {
     #[graphql(default)]
     pub mounts: Vec<String>,
     #[graphql(default)]
+    pub attach_disk: Vec<String>,
+    #[graphql(default)]
     pub env: Vec<String>,
     pub entrypoint: Option<String>,
     #[graphql(default)]
@@ -809,6 +811,7 @@ impl Mutation {
             net: input.net.map(Into::into).unwrap_or_default(),
             volume: input.volume,
             mounts: input.mounts,
+            attach_disk: input.attach_disk,
             env: input.env,
             entrypoint: input.entrypoint,
             initramfs: input.initramfs,
@@ -1224,6 +1227,7 @@ impl Subscription_ {
             net: input.net.map(Into::into).unwrap_or_default(),
             volume: input.volume,
             mounts: input.mounts,
+            attach_disk: input.attach_disk,
             env: input.env,
             entrypoint: input.entrypoint,
             initramfs: input.initramfs,

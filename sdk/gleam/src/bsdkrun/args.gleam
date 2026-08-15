@@ -488,7 +488,11 @@ fn try_guest(
 /// the full persist / volume / attach-disk set.
 fn disk_args(opts: CreateOptions) -> List(String) {
   case opts.guest {
-    Linux(..) -> opt("-v", opts.volume)
+    Linux(..) ->
+      list.flatten([
+        opt("-v", opts.volume),
+        multi("--attach-disk", opts.attach_disk),
+      ])
     // A unikernel has no disk, so there is nothing to persist or attach.
     Unikraft(..) -> []
     // Solo5 block devices are declared by the unikernel and backed via

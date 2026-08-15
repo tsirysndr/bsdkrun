@@ -63,6 +63,7 @@
     (when (:initramfs opts) ["--initramfs"])
     (when (:volume opts) ["-v" (:volume opts)])
     (mapcat (fn [m] ["--mount" m]) (util/as-seq (:mounts opts)))
+    (mapcat (fn [d] ["--attach-disk" d]) (util/as-seq (:attach-disk opts)))
     (when (:entrypoint opts) ["--entrypoint" (:entrypoint opts)])
     (when (:console opts) ["--console" (:console opts)])
     (net-args (:net opts))

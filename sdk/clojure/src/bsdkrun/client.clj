@@ -498,6 +498,7 @@
                :net (net-input (:net opts))
                :volume (:volume opts)
                :mounts (vec (or (:mounts opts) []))
+               :attachDisk (vec (or (:attach-disk opts) []))
                :env (env->list (:env opts))
                :entrypoint (:entrypoint opts)
                :initramfs (boolean (:initramfs opts))

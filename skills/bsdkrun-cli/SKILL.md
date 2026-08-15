@@ -80,10 +80,11 @@ Disks, images, volumes:
 - `--cpus <N>` / `--mem <MiB>` — resources (defaults 1 / 512).
 - `--port <HOST:GUEST>` — forward a host TCP port (repeatable), e.g. `--port 2222:22`.
 - `-v, --volume <NAME>` — persist the rootfs/disk to a named volume.
+- `--attach-disk PATH[:ro]` — attach an extra raw disk image as virtio-blk (repeatable).
 - `--no-net` — boot with no NIC (disables the agent → no `exec`/`shell`).
 - `--repo <URL>` — clone a git repo into the guest and `cd` into it on shell open.
 - Linux only: `--mount HOST:GUEST[:ro]`, `--entrypoint`, `-e K=V`, `--initramfs`, `--kernel(-version)`.
-- BSD only: `--version`, `--persist`, `--attach-disk PATH[:ro]`, `--disk-size 8G`, `--verbose`.
+- BSD only: `--version`, `--persist`, `--disk-size 8G`, `--verbose`.
 
 ## Key behaviors to remember
 

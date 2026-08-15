@@ -81,6 +81,7 @@ module Bsdkrun
       a.push("--initramfs") if opts[:initramfs]
       a.push("-v", opts[:volume]) if opts[:volume]
       Array(opts[:mounts]).each { |m| a.push("--mount", m) }
+      Array(opts[:attach_disk]).each { |d| a.push("--attach-disk", d) }
       a.push("--entrypoint", opts[:entrypoint]) if opts[:entrypoint]
       a.push("--console", opts[:console]) if opts[:console]
       a.concat(net_args(opts[:net])).concat(name_args(opts)).concat(vm_args(opts))

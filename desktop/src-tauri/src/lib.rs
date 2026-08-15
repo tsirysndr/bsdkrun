@@ -670,7 +670,7 @@ pub struct RunSpec {
     pub mounts: Vec<String>,
     #[serde(default)]
     pub ports: Vec<String>,
-    /// Extra virtio-blk disks to attach (BSD only), `PATH[:ro]`.
+    /// Extra virtio-blk disks to attach (Linux and BSD), `PATH[:ro]`.
     #[serde(default)]
     pub attach_disks: Vec<String>,
     /// Grow the guest root disk to this size before boot (BSD only), e.g. `8G`.
@@ -773,6 +773,12 @@ fn build_run_args(spec: &RunSpec) -> Result<Vec<String>, BkError> {
             if !m.is_empty() {
                 a.push("--mount".into());
                 a.push(m.clone());
+            }
+        }
+        for d in &spec.attach_disks {
+            if !d.is_empty() {
+                a.push("--attach-disk".into());
+                a.push(d.clone());
             }
         }
         let image = nonempty(&spec.image)

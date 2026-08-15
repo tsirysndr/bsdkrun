@@ -283,6 +283,7 @@ impl Bsdkrun for BsdkrunService {
             net: net_opts(r.net),
             volume: r.volume,
             mounts: r.mounts,
+            attach_disk: r.attach_disk,
             env: r.env,
             entrypoint: r.entrypoint,
             initramfs: r.initramfs,

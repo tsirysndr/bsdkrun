@@ -49,6 +49,7 @@ export function buildCreateArgs(opts: CreateOptions): string[] {
       if (opts.initramfs) a.push("--initramfs");
       if (opts.volume) a.push("-v", opts.volume);
       for (const m of opts.mounts ?? []) a.push("--mount", m);
+      for (const d of opts.attachDisk ?? []) a.push("--attach-disk", d);
       if (opts.entrypoint) a.push("--entrypoint", opts.entrypoint);
       if (opts.console) a.push("--console", opts.console);
       a.push(...netArgs(opts.net), ...nameArgs(opts), ...vmArgs(opts));

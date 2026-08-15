@@ -255,7 +255,8 @@ export default function RunDialog() {
           ? lines(data.mounts)
           : [],
       ports: lines(data.ports),
-      attach_disks: bsd ? lines(data.attachDisks) : [],
+      attach_disks:
+        bsd || data.kind === "linux" ? lines(data.attachDisks) : [],
       disk_size: bsd && data.diskSize.trim() ? data.diskSize.trim() : null,
       repo: unikernel || !data.repo.trim() ? null : data.repo.trim(),
       network: data.network.trim() ? data.network.trim() : null,
@@ -867,7 +868,7 @@ export default function RunDialog() {
                   )}
                 />
 
-                {bsd && (
+                {(bsd || kind === "linux") && (
                   <Controller
                     control={control}
                     name="attachDisks"

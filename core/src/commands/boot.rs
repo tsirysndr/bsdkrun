@@ -22,7 +22,10 @@ use super::flavor::{
 use super::guest::{
     agent_error, agent_target, guest_os_kind, interactive_shell_argv, interactive_shell_env,
 };
-use super::{basename, machine_dir_or_tmp, machine_rootfs_dir, volume_dir};
+use super::{
+    basename, load_attached_disks, machine_dir_or_tmp, machine_rootfs_dir, save_attached_disks,
+    volume_dir,
+};
 
 /// Attach any `--attach-disk` images after the root disk. Block ids are
 /// `data0`, `data1`, … — libkrun only requires them to be unique.
@@ -777,6 +780,7 @@ pub(crate) fn firmware_machine(
     if let (Some(name), Some(dir)) = (run.volume.as_deref(), &volume) {
         db::record_volume(name, "firmware", &image, &dir.to_string_lossy());
     }
+    save_attached_disks(&vdir, attach);
     let result = run_machine(
         &machine_id,
         &vdir,
@@ -1006,6 +1010,7 @@ pub(crate) fn boot_freebsd_pvh(args: BsdArgs, disk_override: Option<PathBuf>) ->
     if let (Some(name), Some(dir)) = (args.run.volume.as_deref(), &volume) {
         db::record_volume(name, "freebsd", &image, &dir.to_string_lossy());
     }
+    save_attached_disks(&vdir, &args.attach_disk);
     let result = run_machine(
         &machine_id,
         &vdir,
@@ -1123,6 +1128,7 @@ pub(crate) fn boot_netbsd_disk(mut args: BsdArgs, disk_override: Option<PathBuf>
     if let (Some(name), Some(dir)) = (args.run.volume.as_deref(), &volume) {
         db::record_volume(name, "netbsd", &image, &dir.to_string_lossy());
     }
+    save_attached_disks(&vdir, &args.attach_disk);
     let result = run_machine(
         &machine_id,
         &vdir,
@@ -1619,6 +1625,7 @@ pub(crate) fn boot_linux_from(
     if let (Some(name), Some(dir)) = (args.volume.as_deref(), &volume) {
         db::record_volume(name, "linux", &args.image, &dir.to_string_lossy());
     }
+    save_attached_disks(&vdir, &args.attach_disk);
     // Linux never uses the SMP-shutdown watchdog: it redirects fd 2, which
     // libkrun's implicit virtio-console (hvc0) claims for the guest.
     let result = run_machine(
@@ -1670,6 +1677,9 @@ pub(crate) fn configure_linux_ctx(
         ctx.add_virtiofs(&linux::mount_tag(i), &m.host)
             .with_context(|| format!("sharing --mount host dir {}", m.host.display()))?;
     }
+    // Raw disks (`--attach-disk`) as virtio-blk. With a virtio-fs root there is
+    // no root block device, so the first one is the guest's /dev/vda.
+    attach_extra_disks(ctx, &args.attach_disk)?;
     // We boot our own init in every virtio-fs mode (not libkrun's init.krun,
     // which is for the bundled libkrunfw kernel).
     match root {
@@ -2231,6 +2241,9 @@ pub(crate) fn cmd_start(id: &str) -> Result<()> {
             initramfs: false,
             volume: volume.clone(),
             mounts: vec![],
+            // Re-attach the disks recorded at the original boot, so guest data
+            // living on a block device survives stop/start.
+            attach_disk: load_attached_disks(&legacy_machine_dir),
             entrypoint: None,
             env: vec![],
             console: "hvc0".to_string(),
@@ -2322,7 +2335,9 @@ pub(crate) fn cmd_start(id: &str) -> Result<()> {
             version: None, // bundled image (as originally booted)
             firmware: None,
             force: false,
-            attach_disk: vec![],
+            // Re-attach the extra disks recorded at the original boot (e.g. a
+            // build disk) — dropping them here silently unmounts guest data.
+            attach_disk: load_attached_disks(&machine_dir_or_tmp(&vm.id)),
             disk_size: None,
             run: RunConfig {
                 detach: true,
@@ -2382,6 +2397,7 @@ pub(crate) fn flavor_linux_args(
         initramfs: false,
         volume,
         mounts: vec![],
+        attach_disk: vec![],
         entrypoint: None,
         env,
         console: "hvc0".to_string(),
@@ -2470,6 +2486,7 @@ pub(crate) fn cmd_flavor_build(name: &str, key: &str, cpus: u8, mem: u32) -> Res
         initramfs: false,
         volume: Some(vol),
         mounts: vec![],
+        attach_disk: vec![],
         entrypoint: None,
         env: spec.env.clone(),
         console: "hvc0".to_string(),

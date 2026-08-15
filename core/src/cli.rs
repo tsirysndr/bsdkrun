@@ -845,6 +845,16 @@ pub struct LinuxArgs {
     #[arg(long = "mount", value_name = "HOST:GUEST[:ro]")]
     pub mounts: Vec<String>,
 
+    /// Attach a raw disk image as a virtio-blk block device (repeatable).
+    /// Format: `PATH[:ro]` — append `:ro` for a read-only attachment. Unlike
+    /// the virtio-fs rootfs, a block device gives the guest native-speed I/O
+    /// (its own page cache, no per-file host round-trips) — format it inside
+    /// the guest (e.g. `mkfs.ext4`) and mount it for I/O-heavy work like
+    /// compiling. With the default virtio-fs root, the first attachment
+    /// appears as `/dev/vda`. Re-attached automatically on `start`.
+    #[arg(long = "attach-disk", value_name = "PATH[:ro]")]
+    pub attach_disk: Vec<DiskSpec>,
+
     /// Override the image's entrypoint (like `docker run --entrypoint`).
     #[arg(long)]
     pub entrypoint: Option<String>,
@@ -1388,6 +1398,7 @@ impl Default for LinuxArgs {
             initramfs: false,
             volume: None,
             mounts: vec![],
+            attach_disk: vec![],
             entrypoint: None,
             env: vec![],
             console: "hvc0".to_string(),

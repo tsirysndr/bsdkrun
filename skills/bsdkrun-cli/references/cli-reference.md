@@ -18,6 +18,7 @@ Run an OCI image (Docker Hub / any registry) as a Linux machine.
 - `--initramfs` — load whole rootfs into RAM instead of virtio-fs (for kernels lacking CONFIG_VIRTIO_FS).
 - `-v, --volume <NAME>` — persist rootfs to a named volume (CoW-clones the image first; reuse to keep changes).
 - `--mount <HOST:GUEST[:ro]>` — bind-mount a host dir over virtio-fs (repeatable; Linux only).
+- `--attach-disk <PATH[:ro]>` — extra virtio-blk disk (repeatable; `:ro` for read-only).
 - `--entrypoint <EP>` — override the image entrypoint.
 - `-e, --env <K=V>` — set a guest env var (repeatable).
 - `--console <DEV>` — guest console device (default `hvc0`; use `ttyS0` only with a matching setup).

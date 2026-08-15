@@ -952,6 +952,9 @@ Each `--mount HOST:GUEST[:ro]` becomes a virtio-fs share the generated init moun
 (the host dir must exist; `GUEST` must be absolute). Reads and writes pass straight through to the
 host, and it composes with `-v` (persistent volume) and every Linux root mode.
 
+Linux guests can also attach **raw disk images** as `virtio-blk` devices with
+`--attach-disk PATH[:ro]` (repeatable) — see [Disks](#disks).
+
 How it works — no daemon:
 
 - **`-d` detached** — bsdkrun forks; the child `setsid`s, wires the guest console (`hvc0`) to a
@@ -1414,9 +1417,12 @@ The root disk is attached read-write as `virtio-blk` (`--disk`). Attach **additi
   --attach-disk images/blobs.raw:ro
 ```
 
-Extra disks appear in the guest as the next `virtio-blk` devices (e.g. FreeBSD `vtbd1`, `vtbd2`…),
-in the order given. Create a blank one with `truncate -s 8G data.raw` (then partition/newfs it in
-the guest), or grow an existing image with [`bsdkrun grow`](#resizing-the-disk).
+`--attach-disk` works on the BSD guests (`freebsd`/`netbsd`/`firmware`/`kernel`) and on `linux`
+guests alike. Extra disks appear in the guest as the next `virtio-blk` devices in the order given
+(e.g. FreeBSD `vtbd1`, `vtbd2`…). A `linux` guest's rootfs is virtio-fs — there is no root block
+device — so its first attached disk is `/dev/vda`, the next `/dev/vdb`, and so on. Create a blank one with
+`truncate -s 8G data.raw` (then partition/newfs it in the guest), or grow an existing image with
+[`bsdkrun grow`](#resizing-the-disk).
 
 ---
 

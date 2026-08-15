@@ -86,6 +86,10 @@ pub fn stop(id: &str) -> Result<String> {
             let code = if clean {
                 Some(0)
             } else {
+                // A Linux guest's rootfs writes land on the host FS, but any
+                // `--attach-disk` block device buffers dirty pages in the guest —
+                // flush them before the VMM is killed so its ext4 stays intact.
+                sync_attached_disks(&vm);
                 unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
                 // The process exits 128+SIGTERM on our signal handler; record that
                 // so `ps` shows a Docker-style "Exited (143)".
@@ -178,6 +182,21 @@ pub(crate) fn is_bsd_machine(vm: &db::MachineRow) -> bool {
         "firmware" | "kernel" | "freebsd" | "netbsd"
     ) || vm.image.to_lowercase().starts_with("freebsd")
         || vm.image.to_lowercase().starts_with("netbsd")
+}
+
+/// Best-effort `sync` in a guest that has attached block disks, via its agent,
+/// before the VMM is torn down. Journaled filesystems (ext4) then replay to a
+/// consistent state even though the guest itself dies on SIGTERM.
+pub(crate) fn sync_attached_disks(vm: &db::MachineRow) {
+    let vdir = std::path::PathBuf::from(&vm.state_dir);
+    if super::load_attached_disks(&vdir).is_empty() {
+        return;
+    }
+    let Some(port) = agent::read_port(&vdir) else {
+        return;
+    };
+    let argv = ["sh".to_string(), "-c".to_string(), "sync".to_string()];
+    let _ = agent::exec_quiet(port, &argv);
 }
 
 /// Cleanly power off a running BSD guest via its agent (`shutdown -p now`) and

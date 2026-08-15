@@ -78,6 +78,7 @@ type RunLinuxBuilder struct {
 	net           runNet
 	volume        *string
 	mounts        []string
+	attachDisk    []string
 	env           []string
 	entrypoint    *string
 	initramfs     bool
@@ -150,6 +151,12 @@ func (b *RunLinuxBuilder) Mount(hostGuest string) *RunLinuxBuilder {
 	return b
 }
 
+// AttachDisk attaches an extra disk ("PATH" or "PATH:ro"). Repeatable.
+func (b *RunLinuxBuilder) AttachDisk(disk string) *RunLinuxBuilder {
+	b.attachDisk = append(b.attachDisk, disk)
+	return b
+}
+
 // Env sets a guest environment variable. Repeatable.
 func (b *RunLinuxBuilder) Env(key, value string) *RunLinuxBuilder {
 	b.env = append(b.env, key+"="+value)
@@ -198,6 +205,7 @@ func (b *RunLinuxBuilder) Launch() (string, error) {
 		"net":           b.net.input(),
 		"volume":        optString(b.volume),
 		"mounts":        stringsOrEmpty(b.mounts),
+		"attachDisk":    stringsOrEmpty(b.attachDisk),
 		"env":           stringsOrEmpty(b.env),
 		"entrypoint":    optString(b.entrypoint),
 		"initramfs":     b.initramfs,

@@ -293,6 +293,7 @@ module Bsdkrun
         net: net_input(o[:net]),
         volume: o[:volume],
         mounts: o[:mounts] || [],
+        attachDisk: o[:attach_disk] || [],
         env: o[:env] || [],
         entrypoint: o[:entrypoint],
         initramfs: o[:initramfs] || false,

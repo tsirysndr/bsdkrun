@@ -73,6 +73,7 @@ banner reported one, which only BSD guests do).
   :mem 1024
   :volume "web"                              ; persistent CoW rootfs
   :mounts ["~/project:/src" "~/data:/data:ro"]
+  :attach-disk ["data.raw" "blobs.raw:ro"]   ; extra virtio-blk disks
   :net {:ports ["8080:80" "2222:22"]}
   :command ["node" "server.js"]})            ; args after `--`
 

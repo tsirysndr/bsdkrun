@@ -120,6 +120,8 @@ def build_create_args(*, os: str, **opts: Any) -> list[str]:
             a += ["-v", opts["volume"]]
         for mount in opts.get("mounts") or []:
             a += ["--mount", mount]
+        for disk in opts.get("attach_disk") or []:
+            a += ["--attach-disk", disk]
         if opts.get("entrypoint"):
             a += ["--entrypoint", opts["entrypoint"]]
         if opts.get("console"):

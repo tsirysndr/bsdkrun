@@ -3,7 +3,7 @@
 # `cargo build` here never drags libkrun into the link.
 [package]
 name = "bsdkrun-sdk"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 rust-version = "1.75"
 description = "Rust SDK for bsdkrun — a Firecracker-style microVM launcher for BSD, Linux, and unikernel guests"

@@ -48,9 +48,9 @@ puts <<~BANNER
     Bsdkrun.system        probe, fetch, versions, grow_disk
     ps, last              every machine / the newest one
 
-    box = Bsdkrun::Sandbox.create(os: "linux", image: "alpine")
-    box.exec(["uname", "-a"]).text
-    box.stop
+    sbx = Bsdkrun::Sandbox.create(os: "linux", image: "alpine")
+    sbx.exec(["uname", "-a"]).text
+    sbx.stop
 BANNER
 
 IRB.start(__FILE__)

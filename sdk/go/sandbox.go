@@ -73,9 +73,9 @@ func parseSandboxRows(stdout string) ([]SandboxInfo, error) {
 // ExecBuilder configures a command to run in the guest through its exec
 // agent. Build one with Sandbox.Command, chain options, then Run:
 //
-//	box.Command("node").Args("-e", "print(1)").Env("X", "hi").Cwd("/app").Run()
+//	sbx.Command("node").Args("-e", "print(1)").Env("X", "hi").Cwd("/app").Run()
 type ExecBuilder struct {
-	box      *Sandbox
+	sbx      *Sandbox
 	argv     []string
 	env      []string
 	cwd      string
@@ -90,7 +90,7 @@ type ExecBuilder struct {
 // Command starts building a guest command: a program name plus (optional)
 // initial arguments.
 func (s *Sandbox) Command(name string, args ...string) *ExecBuilder {
-	return &ExecBuilder{box: s, argv: append([]string{name}, args...)}
+	return &ExecBuilder{sbx: s, argv: append([]string{name}, args...)}
 }
 
 // Args appends arguments to the command.
@@ -164,7 +164,7 @@ func (b *ExecBuilder) Run() (*Result, error) {
 	for _, pair := range b.env {
 		cliArgs = append(cliArgs, "-e", pair)
 	}
-	cliArgs = append(cliArgs, b.box.ID)
+	cliArgs = append(cliArgs, b.sbx.ID)
 	cliArgs = append(cliArgs, argv...)
 
 	res, err := Run(cliArgs, &RunOpts{Stdin: b.stdin, LogLevel: b.logLevel, Stdout: b.stdout, Stderr: b.stderr})
@@ -187,7 +187,7 @@ func (b *ExecBuilder) Run() (*Result, error) {
 
 // Exec is the shorthand for running an argv directly:
 //
-//	box.Exec("uname", "-a")
+//	sbx.Exec("uname", "-a")
 func (s *Sandbox) Exec(argv ...string) (*Result, error) {
 	if len(argv) == 0 {
 		return s.Command("").Run()
@@ -277,14 +277,14 @@ func (s *Sandbox) Remove(force bool) error {
 // UpdateBuilder changes the recorded vCPU / RAM; changes apply on the next
 // Start.
 type UpdateBuilder struct {
-	box  *Sandbox
+	sbx  *Sandbox
 	cpus int
 	mem  int
 }
 
 // Update starts an update: chain Cpus/Mem, then Apply.
 func (s *Sandbox) Update() *UpdateBuilder {
-	return &UpdateBuilder{box: s}
+	return &UpdateBuilder{sbx: s}
 }
 
 // Cpus sets the vCPU count.
@@ -301,7 +301,7 @@ func (b *UpdateBuilder) Mem(mib int) *UpdateBuilder {
 
 // Apply records the change.
 func (b *UpdateBuilder) Apply() error {
-	args := []string{"update", b.box.ID}
+	args := []string{"update", b.sbx.ID}
 	if b.cpus != 0 {
 		args = append(args, "--cpus", strconv.Itoa(b.cpus))
 	}
@@ -347,14 +347,14 @@ func (s *Sandbox) agent(family string, action []string, env map[string]string) (
 // SSHSetupBuilder installs SSH keys in the guest (`ssh setup`, via the
 // agent). With no Key, the CLI installs your local ~/.ssh/*.pub keys.
 type SSHSetupBuilder struct {
-	box  *Sandbox
+	sbx  *Sandbox
 	user string
 	keys []string
 }
 
 // SSHSetup starts an ssh setup: chain User/Key, then Run.
 func (s *Sandbox) SSHSetup() *SSHSetupBuilder {
-	return &SSHSetupBuilder{box: s}
+	return &SSHSetupBuilder{sbx: s}
 }
 
 // User targets a guest user.
@@ -379,13 +379,13 @@ func (b *SSHSetupBuilder) Run() (*Result, error) {
 	for _, key := range b.keys {
 		action = append(action, "--key", key)
 	}
-	return b.box.agent("ssh", action, nil)
+	return b.sbx.agent("ssh", action, nil)
 }
 
 // TailscaleBuilder puts a guest on your tailnet (`tailscale setup`, via the
 // agent).
 type TailscaleBuilder struct {
-	box      *Sandbox
+	sbx      *Sandbox
 	authkey  string
 	hostname string
 	args     []string
@@ -394,7 +394,7 @@ type TailscaleBuilder struct {
 // TailscaleUp starts a tailscale setup: chain AuthKey/Hostname/Args, then
 // Run.
 func (s *Sandbox) TailscaleUp() *TailscaleBuilder {
-	return &TailscaleBuilder{box: s}
+	return &TailscaleBuilder{sbx: s}
 }
 
 // AuthKey is forwarded as the TS_AUTHKEY env var (kept off the arg list).
@@ -426,5 +426,5 @@ func (b *TailscaleBuilder) Run() (*Result, error) {
 	if b.authkey != "" {
 		env = map[string]string{"TS_AUTHKEY": b.authkey}
 	}
-	return b.box.agent("tailscale", action, env)
+	return b.sbx.agent("tailscale", action, env)
 }

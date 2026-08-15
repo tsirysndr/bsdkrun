@@ -4,9 +4,9 @@
 //// import bsdkrun/args
 //// import bsdkrun/sandbox
 ////
-//// let assert Ok(box) = sandbox.create(args.linux("alpine"))
-//// let assert Ok(res) = sandbox.exec(box, ["uname", "-a"], sandbox.exec_options())
-//// let assert Ok(box) = sandbox.stop(box)
+//// let assert Ok(sbx) = sandbox.create(args.linux("alpine"))
+//// let assert Ok(res) = sandbox.exec(sbx, ["uname", "-a"], sandbox.exec_options())
+//// let assert Ok(sbx) = sandbox.stop(sbx)
 //// ```
 ////
 //// Functions that act on a machine take a `Sandbox`; use `from_id` to build
@@ -14,8 +14,8 @@
 ////
 //// The lifecycle operations — `stop`, `start`, `remove`, `update`,
 //// `connect_network`, `disconnect_network` — return `Result(Sandbox, Error)`,
-//// the same `box` back rather than `Nil`, so a sequence of them chains with
-//// `|>` through `result.try` instead of re-threading `box` by hand:
+//// the same `sbx` back rather than `Nil`, so a sequence of them chains with
+//// `|>` through `result.try` instead of re-threading `sbx` by hand:
 ////
 //// ```gleam
 //// import gleam/result
@@ -197,7 +197,7 @@ pub fn with_stderr(
 /// `fail_on_error` with a non-zero exit); an ordinary non-zero exit is
 /// reported in the returned `CommandResult`.
 pub fn exec(
-  box: Sandbox,
+  sbx: Sandbox,
   command: List(String),
   opts: ExecOptions,
 ) -> Result(CommandResult, Error) {
@@ -224,7 +224,7 @@ pub fn exec(
         let #(k, v) = pair
         ["-e", k <> "=" <> v]
       }),
-      [box.id],
+      [sbx.id],
       argv,
     ])
 
@@ -270,19 +270,19 @@ pub fn exec(
 // --- logs -------------------------------------------------------------------
 
 /// Read the machine's console log.
-pub fn logs(box: Sandbox) -> Result(String, Error) {
-  read_logs(box, False)
+pub fn logs(sbx: Sandbox) -> Result(String, Error) {
+  read_logs(sbx, False)
 }
 
 /// Read bsdkrun's own boot log for the machine.
-pub fn boot_logs(box: Sandbox) -> Result(String, Error) {
-  read_logs(box, True)
+pub fn boot_logs(sbx: Sandbox) -> Result(String, Error) {
+  read_logs(sbx, True)
 }
 
-fn read_logs(box: Sandbox, boot: Bool) -> Result(String, Error) {
+fn read_logs(sbx: Sandbox, boot: Bool) -> Result(String, Error) {
   let argv = case boot {
-    True -> ["logs", "--boot", box.id]
-    False -> ["logs", box.id]
+    True -> ["logs", "--boot", sbx.id]
+    False -> ["logs", sbx.id]
   }
 
   cli.checked(argv, "bsdkrun logs", cli.options())
@@ -292,96 +292,96 @@ fn read_logs(box: Sandbox, boot: Bool) -> Result(String, Error) {
 // --- lifecycle --------------------------------------------------------------
 
 /// Stop the machine — BSD guests get a clean poweroff, Linux gets SIGTERM.
-/// Returns `box` back (not `Nil`), so this composes with `use` into a
+/// Returns `sbx` back (not `Nil`), so this composes with `use` into a
 /// lifecycle sequence.
-pub fn stop(box: Sandbox) -> Result(Sandbox, Error) {
-  cli.checked(["stop", box.id], "bsdkrun stop", cli.options())
-  |> result.replace(box)
+pub fn stop(sbx: Sandbox) -> Result(Sandbox, Error) {
+  cli.checked(["stop", sbx.id], "bsdkrun stop", cli.options())
+  |> result.replace(sbx)
 }
 
 /// Restart a stopped machine in place: same id, disk, and resources. Returns
-/// `box` back (not `Nil`), so this composes with `use` into a lifecycle
+/// `sbx` back (not `Nil`), so this composes with `use` into a lifecycle
 /// sequence.
-pub fn start(box: Sandbox) -> Result(Sandbox, Error) {
-  cli.checked(["start", box.id], "bsdkrun start", cli.options())
-  |> result.replace(box)
+pub fn start(sbx: Sandbox) -> Result(Sandbox, Error) {
+  cli.checked(["start", sbx.id], "bsdkrun start", cli.options())
+  |> result.replace(sbx)
 }
 
 /// Remove the machine and its state. `force` stops it first if it is
-/// running. Returns `box` back (not `Nil`) — it no longer resolves via
+/// running. Returns `sbx` back (not `Nil`) — it no longer resolves via
 /// `list`/`get`, but the handle itself is still valid data to hold onto (an
 /// id to log, e.g.).
-pub fn remove(box: Sandbox, force: Bool) -> Result(Sandbox, Error) {
+pub fn remove(sbx: Sandbox, force: Bool) -> Result(Sandbox, Error) {
   let argv = case force {
-    True -> ["rm", "--force", box.id]
-    False -> ["rm", box.id]
+    True -> ["rm", "--force", sbx.id]
+    False -> ["rm", sbx.id]
   }
   cli.checked(argv, "bsdkrun rm", cli.options())
-  |> result.replace(box)
+  |> result.replace(sbx)
 }
 
-/// Change the recorded vCPU / RAM. Applies on the next `start`. Returns `box`
+/// Change the recorded vCPU / RAM. Applies on the next `start`. Returns `sbx`
 /// back (not `Nil`), so this composes with `use` into a lifecycle sequence.
 pub fn update(
-  box: Sandbox,
+  sbx: Sandbox,
   cpus: Option(Int),
   mem: Option(Int),
 ) -> Result(Sandbox, Error) {
   let argv =
     list.flatten([
-      ["update", box.id],
+      ["update", sbx.id],
       flag_int("--cpus", cpus),
       flag_int("--mem", mem),
     ])
 
   cli.checked(argv, "bsdkrun update", cli.options())
-  |> result.replace(box)
+  |> result.replace(sbx)
 }
 
 /// Join or switch this machine to a global network. Applies on the next
-/// `start`. Returns `box` back (not `Nil`), so this composes with `use` into
+/// `start`. Returns `sbx` back (not `Nil`), so this composes with `use` into
 /// a lifecycle sequence — the network equivalent of `bsdkrun/args`'s
 /// `with_network` for a machine that already exists.
 pub fn connect_network(
-  box: Sandbox,
+  sbx: Sandbox,
   network: String,
 ) -> Result(Sandbox, Error) {
   cli.checked(
-    ["network", "connect", box.id, network],
+    ["network", "connect", sbx.id, network],
     "bsdkrun network connect",
     cli.options(),
   )
-  |> result.replace(box)
+  |> result.replace(sbx)
 }
 
 /// Detach this machine from its network. Applies on the next `start`.
-/// Returns `box` back (not `Nil`), so this composes with `use` into a
+/// Returns `sbx` back (not `Nil`), so this composes with `use` into a
 /// lifecycle sequence.
-pub fn disconnect_network(box: Sandbox) -> Result(Sandbox, Error) {
+pub fn disconnect_network(sbx: Sandbox) -> Result(Sandbox, Error) {
   cli.checked(
-    ["network", "disconnect", box.id],
+    ["network", "disconnect", sbx.id],
     "bsdkrun network disconnect",
     cli.options(),
   )
-  |> result.replace(box)
+  |> result.replace(sbx)
 }
 
 // --- status -----------------------------------------------------------------
 
 /// This machine's current status row, or `None` if it is gone.
-pub fn status(box: Sandbox) -> Result(Option(SandboxInfo), Error) {
+pub fn status(sbx: Sandbox) -> Result(Option(SandboxInfo), Error) {
   use all <- result.try(list_all(True))
 
   Ok(
-    list.find(all, fn(m) { m.id == box.id })
+    list.find(all, fn(m) { m.id == sbx.id })
     |> option.from_result,
   )
 }
 
 /// Whether the machine is currently running. A machine that cannot be found
 /// counts as not running.
-pub fn is_running(box: Sandbox) -> Bool {
-  case status(box) {
+pub fn is_running(sbx: Sandbox) -> Bool {
+  case status(sbx) {
     Ok(Some(info)) -> info.running
     _ -> False
   }
@@ -392,7 +392,7 @@ pub fn is_running(box: Sandbox) -> Bool {
 /// Install SSH keys in the guest via the agent. With no `keys`, the CLI
 /// installs your local `~/.ssh/*.pub`.
 pub fn ssh_setup(
-  box: Sandbox,
+  sbx: Sandbox,
   user: Option(String),
   keys: List(String),
 ) -> Result(CommandResult, Error) {
@@ -403,13 +403,13 @@ pub fn ssh_setup(
       list.flat_map(keys, fn(k) { ["--key", k] }),
     ])
 
-  agent(box, "ssh", action, [])
+  agent(sbx, "ssh", action, [])
 }
 
 /// Put the guest on your tailnet via the agent. The auth key is passed through
 /// the environment as `TS_AUTHKEY`, so it never lands in an argument list.
 pub fn tailscale_up(
-  box: Sandbox,
+  sbx: Sandbox,
   authkey: Option(String),
   hostname: Option(String),
   extra: List(String),
@@ -422,17 +422,17 @@ pub fn tailscale_up(
     None -> []
   }
 
-  agent(box, "tailscale", action, env)
+  agent(sbx, "tailscale", action, env)
 }
 
 fn agent(
-  box: Sandbox,
+  sbx: Sandbox,
   family: String,
   action: List(String),
   env: List(#(String, String)),
 ) -> Result(CommandResult, Error) {
   let run_opts = cli.options() |> cli.with_env(env)
-  use out <- result.try(cli.run([family, box.id, ..action], run_opts))
+  use out <- result.try(cli.run([family, sbx.id, ..action], run_opts))
 
   let label = family <> " " <> string.join(action, " ")
 
@@ -450,8 +450,8 @@ fn agent(
 
 /// Attach an interactive shell to the machine, inheriting this node's stdio.
 /// Blocks until the shell exits and returns its exit status.
-pub fn shell(box: Sandbox) -> Result(Int, Error) {
-  cli.run_inherit(["shell", box.id])
+pub fn shell(sbx: Sandbox) -> Result(Int, Error) {
+  cli.run_inherit(["shell", sbx.id])
 }
 
 // --- internals --------------------------------------------------------------

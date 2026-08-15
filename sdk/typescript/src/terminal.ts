@@ -45,7 +45,7 @@ export interface WebSocketLike {
  * to {@link write}; call {@link resize} from xterm's `onResize`.
  *
  * ```ts
- * const term = await box.terminal({ cols: 120, rows: 30 });
+ * const term = await sbx.terminal({ cols: 120, rows: 30 });
  * term.onData((chunk) => xterm.write(chunk));
  * xterm.onData((input) => term.write(input));
  * xterm.onResize(({ cols, rows }) => term.resize(cols, rows));

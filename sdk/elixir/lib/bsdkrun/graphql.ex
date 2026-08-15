@@ -51,7 +51,7 @@ defmodule Bsdkrun.GraphQL do
   # `daemon/src/client.rs`'s own remote client uses
   # (`ClientTlsConfig::new().with_native_roots()`) and what every other
   # language's HTTP client (`fetch`, `httpx`, `net/http`, ...) does out of
-  # the box. A loopback daemon's typically self-signed certificate (see
+  # the sbx. A loopback daemon's typically self-signed certificate (see
   # daemon/README.md) therefore needs a real certificate — or a reverse
   # proxy terminating TLS with one — to be reached over `https://` from this
   # SDK, exactly as it would from a browser; skipping verification by

@@ -10,7 +10,7 @@ class RawValue {
  * care — the string is spliced in as-is, so only pass trusted content.
  *
  * ```ts
- * await box.sh`ls ${raw("-la /etc")}`;
+ * await sbx.sh`ls ${raw("-la /etc")}`;
  * ```
  */
 export function raw(value: string): RawValue {

@@ -11,10 +11,10 @@
 //// import bsdkrun/types
 ////
 //// pub fn main() {
-////   let assert Ok(box) = bsdkrun.create(args.linux("alpine"))
-////   let assert Ok(res) = bsdkrun.exec(box, ["uname", "-a"])
+////   let assert Ok(sbx) = bsdkrun.create(args.linux("alpine"))
+////   let assert Ok(res) = bsdkrun.exec(sbx, ["uname", "-a"])
 ////   echo types.text(res)
-////   let assert Ok(box) = bsdkrun.stop(box)
+////   let assert Ok(sbx) = bsdkrun.stop(sbx)
 //// }
 //// ```
 ////
@@ -65,40 +65,40 @@ pub fn list_all(all: Bool) -> Result(List(SandboxInfo), Error) {
 /// Run a command in the guest with the default options. Use
 /// `bsdkrun/sandbox.exec` when you need env vars, a TTY, stdin, or a cwd.
 pub fn exec(
-  box: Sandbox,
+  sbx: Sandbox,
   command: List(String),
 ) -> Result(CommandResult, Error) {
-  sandbox.exec(box, command, sandbox.exec_options())
+  sandbox.exec(sbx, command, sandbox.exec_options())
 }
 
 /// Read the machine's console log.
-pub fn logs(box: Sandbox) -> Result(String, Error) {
-  sandbox.logs(box)
+pub fn logs(sbx: Sandbox) -> Result(String, Error) {
+  sandbox.logs(sbx)
 }
 
-/// Stop the machine. Returns `box` back (not `Nil`) — see `bsdkrun/sandbox`.
-pub fn stop(box: Sandbox) -> Result(Sandbox, Error) {
-  sandbox.stop(box)
+/// Stop the machine. Returns `sbx` back (not `Nil`) — see `bsdkrun/sandbox`.
+pub fn stop(sbx: Sandbox) -> Result(Sandbox, Error) {
+  sandbox.stop(sbx)
 }
 
-/// Restart a stopped machine in place. Returns `box` back (not `Nil`) — see
+/// Restart a stopped machine in place. Returns `sbx` back (not `Nil`) — see
 /// `bsdkrun/sandbox`.
-pub fn start(box: Sandbox) -> Result(Sandbox, Error) {
-  sandbox.start(box)
+pub fn start(sbx: Sandbox) -> Result(Sandbox, Error) {
+  sandbox.start(sbx)
 }
 
 /// Remove the machine and its state. `force` stops it first if running.
-/// Returns `box` back (not `Nil`) — see `bsdkrun/sandbox`.
-pub fn remove(box: Sandbox, force: Bool) -> Result(Sandbox, Error) {
-  sandbox.remove(box, force)
+/// Returns `sbx` back (not `Nil`) — see `bsdkrun/sandbox`.
+pub fn remove(sbx: Sandbox, force: Bool) -> Result(Sandbox, Error) {
+  sandbox.remove(sbx, force)
 }
 
 /// This machine's current status row, or `None` if it is gone.
-pub fn status(box: Sandbox) -> Result(Option(SandboxInfo), Error) {
-  sandbox.status(box)
+pub fn status(sbx: Sandbox) -> Result(Option(SandboxInfo), Error) {
+  sandbox.status(sbx)
 }
 
 /// Whether the machine is currently running.
-pub fn is_running(box: Sandbox) -> Bool {
-  sandbox.is_running(box)
+pub fn is_running(sbx: Sandbox) -> Bool {
+  sandbox.is_running(sbx)
 }

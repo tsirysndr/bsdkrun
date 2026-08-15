@@ -32,10 +32,10 @@ class FileSystem:
 
     Reached as :attr:`~bsdkrun.sandbox.Sandbox.fs`::
 
-        box.fs.write_file("/app/main.py", "print('hi')")
-        text = box.fs.read_text("/app/out.json")
-        box.fs.upload("./src", "/app/src")
-        box.fs.download("/app/dist", "./dist", recursive=True)
+        sbx.fs.write_file("/app/main.py", "print('hi')")
+        text = sbx.fs.read_text("/app/out.json")
+        sbx.fs.upload("./src", "/app/src")
+        sbx.fs.download("/app/dist", "./dist", recursive=True)
     """
 
     def __init__(self, sandbox_id: str) -> None:

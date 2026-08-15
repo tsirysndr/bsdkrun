@@ -10,7 +10,7 @@ import (
 // constructor (Linux, FreeBSD, NetBSD, Firmware, Kernel, Nanos, OSv,
 // Unikraft, Solo5), chain options, then Create:
 //
-//	box, err := bsdkrun.Linux("alpine").
+//	sbx, err := bsdkrun.Linux("alpine").
 //		Cpus(2).Mem(1024).
 //		Volume("web").
 //		Mount("~/project:/src").

@@ -7,16 +7,16 @@
  */
 import { Sandbox } from "../src/index.js";
 
-const box = await Sandbox.create({ os: "linux", image: "alpine" });
-console.log("booted sandbox", box.id);
+const sbx = await Sandbox.create({ os: "linux", image: "alpine" });
+console.log("booted sandbox", sbx.id);
 
 // `sh` is a tagged template — interpolations are shell-quoted for you.
-const who = await box.sh`whoami`.text();
+const who = await sbx.sh`whoami`.text();
 console.log("running as:", who);
 
 // `exec` takes argv directly (no shell parsing) — the safe default.
-const uname = await box.exec(["uname", "-a"]);
+const uname = await sbx.exec(["uname", "-a"]);
 console.log("kernel:", uname.text());
 
-await box.stop();
+await sbx.stop();
 console.log("stopped");

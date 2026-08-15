@@ -20,16 +20,16 @@ import type { Terminal } from "../../src/index.js";
 const html = readFileSync(join(import.meta.dir, "index.html"), "utf8");
 
 console.log("booting sandbox...");
-const box = await Sandbox.create({
+const sbx = await Sandbox.create({
   os: "linux",
   image: "alpine",
   command: ["sleep", "86400"],
 });
-console.log("sandbox", box.id, "ready");
+console.log("sandbox", sbx.id, "ready");
 
 // Wait for the in-guest agent to answer before accepting terminals.
 for (let i = 0; i < 20; i++) {
-  if ((await box.exec(["true"])).exitCode === 0) break;
+  if ((await sbx.exec(["true"])).exitCode === 0) break;
   await new Promise((r) => setTimeout(r, 1500));
 }
 
@@ -50,7 +50,7 @@ const server = Bun.serve<WsData>({
   },
   websocket: {
     async open(ws) {
-      const term = await box.terminal({ command: ["/bin/sh"], cols: 100, rows: 30 });
+      const term = await sbx.terminal({ command: ["/bin/sh"], cols: 100, rows: 30 });
       ws.data.term = term;
       // Guest output -> browser.
       term.onData((chunk) => ws.send(chunk.toString("utf8")));
@@ -81,6 +81,6 @@ console.log(`\n  open http://localhost:${server.port}\n`);
 
 process.on("SIGINT", async () => {
   console.log("\nstopping sandbox...");
-  await box.stop().catch(() => {});
+  await sbx.stop().catch(() => {});
   process.exit(0);
 });

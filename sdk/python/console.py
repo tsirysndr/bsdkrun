@@ -51,9 +51,9 @@ binary: {binary}
   run, run_checked   low-level CLI helpers (argv in, RawResult out)
   ps()               shorthand for Sandbox.list(all=True)
 
-  box = Sandbox.create(os="linux", image="alpine")
-  box.exec(["uname", "-a"]).text()
-  box.stop()
+  sbx = Sandbox.create(os="linux", image="alpine")
+  sbx.exec(["uname", "-a"]).text()
+  sbx.stop()
 """
 
 

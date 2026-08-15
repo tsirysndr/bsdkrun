@@ -21,10 +21,10 @@ func (e *FileTransferError) Error() string { return e.Message }
 // Every call goes through the guest's exec agent, so the sandbox has to be
 // running — there is no offline write.
 //
-//	box.FS().WriteFile("/app/main.py", []byte("print('hi')"))
-//	text, _ := box.FS().ReadTextFile("/app/out.json")
-//	box.FS().Upload("./src", "/app/src")
-//	box.FS().Download("/app/dist", "./dist", true)
+//	sbx.FS().WriteFile("/app/main.py", []byte("print('hi')"))
+//	text, _ := sbx.FS().ReadTextFile("/app/out.json")
+//	sbx.FS().Upload("./src", "/app/src")
+//	sbx.FS().Download("/app/dist", "./dist", true)
 type FileSystem struct {
 	id string
 }

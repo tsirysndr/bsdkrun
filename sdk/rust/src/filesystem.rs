@@ -13,11 +13,11 @@ use crate::process::{run, run_binary};
 /// ```no_run
 /// # use bsdkrun_sdk::Sandbox;
 /// # fn main() -> bsdkrun_sdk::Result<()> {
-/// let box_ = Sandbox::get("web")?;
-/// box_.fs().write_file("/app/main.py", b"print('hi')")?;
-/// let out = box_.fs().read_to_string("/app/out.json")?;
-/// box_.fs().upload("./src", "/app/src")?;
-/// box_.fs().download("/app/dist", "./dist", true)?;
+/// let sbx = Sandbox::get("web")?;
+/// sbx.fs().write_file("/app/main.py", b"print('hi')")?;
+/// let out = sbx.fs().read_to_string("/app/out.json")?;
+/// sbx.fs().upload("./src", "/app/src")?;
+/// sbx.fs().download("/app/dist", "./dist", true)?;
 /// # Ok(())
 /// # }
 /// ```

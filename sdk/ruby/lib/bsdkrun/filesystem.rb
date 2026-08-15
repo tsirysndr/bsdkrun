@@ -7,10 +7,10 @@ module Bsdkrun
   # running — there is no offline write.
   #
   # @example
-  #   box.fs.write_file("/app/main.py", "print('hi')")
-  #   box.fs.read_text("/app/out.json")
-  #   box.fs.upload("./src", "/app/src")
-  #   box.fs.download("/app/dist", "./dist", recursive: true)
+  #   sbx.fs.write_file("/app/main.py", "print('hi')")
+  #   sbx.fs.read_text("/app/out.json")
+  #   sbx.fs.upload("./src", "/app/src")
+  #   sbx.fs.download("/app/dist", "./dist", recursive: true)
   class FileSystem
     # @param id [String] the machine's id.
     def initialize(id)

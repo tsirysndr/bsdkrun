@@ -18,17 +18,17 @@ func TestE2ELinuxBootAndExec(t *testing.T) {
 		t.Fatal("bsdkrun probe failed; is the toolchain provisioned?")
 	}
 
-	box, err := Linux("alpine").Command("sleep", "300").Create()
+	sbx, err := Linux("alpine").Command("sleep", "300").Create()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
-		if err := box.Remove(true); err != nil {
+		if err := sbx.Remove(true); err != nil {
 			t.Errorf("remove: %v", err)
 		}
 	}()
 
-	res, err := box.Exec("uname", "-a")
+	res, err := sbx.Exec("uname", "-a")
 	if err != nil {
 		t.Fatal(err)
 	}

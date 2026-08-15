@@ -3,9 +3,9 @@ defmodule Bsdkrun.Sandbox do
   A handle to a running (or stopped) `bsdkrun` microVM. Create one with
   `create/1`, reconnect with `get/1`, or enumerate with `list/1`.
 
-      {:ok, box} = Bsdkrun.Sandbox.create(os: :linux, image: "alpine")
-      {:ok, res} = Bsdkrun.Sandbox.exec(box, ["uname", "-a"])
-      :ok = Bsdkrun.Sandbox.stop(box)
+      {:ok, sbx} = Bsdkrun.Sandbox.create(os: :linux, image: "alpine")
+      {:ok, res} = Bsdkrun.Sandbox.exec(sbx, ["uname", "-a"])
+      :ok = Bsdkrun.Sandbox.stop(sbx)
 
   Every fallible function returns `{:ok, value}` or `{:error, %Bsdkrun.Error{}}`,
   with a bang counterpart that unwraps or raises. Functions that act on a

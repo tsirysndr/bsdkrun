@@ -93,7 +93,7 @@ esac
 func TestCreateParsesIDAndSSHPort(t *testing.T) {
 	argv := installFakeBinary(t)
 
-	box, err := Linux("alpine").
+	sbx, err := Linux("alpine").
 		Cpus(2).Mem(1024).
 		Volume("web").
 		Mount("~/project:/src").
@@ -103,11 +103,11 @@ func TestCreateParsesIDAndSSHPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if box.ID != "abc123def456" {
-		t.Fatalf("id: %q", box.ID)
+	if sbx.ID != "abc123def456" {
+		t.Fatalf("id: %q", sbx.ID)
 	}
-	if box.SSHPort != 2201 {
-		t.Fatalf("ssh port: %d", box.SSHPort)
+	if sbx.SSHPort != 2201 {
+		t.Fatalf("ssh port: %d", sbx.SSHPort)
 	}
 
 	records := argv()
@@ -131,9 +131,9 @@ func TestCreateParsesIDAndSSHPort(t *testing.T) {
 
 func TestExecBuilderArgv(t *testing.T) {
 	argv := installFakeBinary(t)
-	box := &Sandbox{ID: "abc123def456"}
+	sbx := &Sandbox{ID: "abc123def456"}
 
-	res, err := box.Command("node").
+	res, err := sbx.Command("node").
 		Args("-e", "1").
 		Env("X", "hi").
 		Cwd("/app").
@@ -164,8 +164,8 @@ func TestExecBuilderArgv(t *testing.T) {
 
 func TestExecCheckReturnsCommandFailed(t *testing.T) {
 	installFakeBinary(t)
-	box := &Sandbox{ID: "abc123def456"}
-	res, err := box.Command("false").Check().Run()
+	sbx := &Sandbox{ID: "abc123def456"}
+	res, err := sbx.Command("false").Check().Run()
 	var cmdErr *CommandFailedError
 	if !errors.As(err, &cmdErr) || cmdErr.ExitCode != 7 {
 		t.Fatalf("err: %v", err)
@@ -177,8 +177,8 @@ func TestExecCheckReturnsCommandFailed(t *testing.T) {
 
 func TestExecShorthand(t *testing.T) {
 	argv := installFakeBinary(t)
-	box := &Sandbox{ID: "abc123def456"}
-	if _, err := box.Exec("uname", "-a"); err != nil {
+	sbx := &Sandbox{ID: "abc123def456"}
+	if _, err := sbx.Exec("uname", "-a"); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"--log-level", "0", "exec", "abc123def456", "uname", "-a"}
@@ -203,9 +203,9 @@ func TestListStatusAndGet(t *testing.T) {
 	}
 
 	// Prefix reconnection.
-	box, err := GetSandbox("abc123")
-	if err != nil || box.ID != "abc123def456" {
-		t.Fatalf("box=%v err=%v", box, err)
+	sbx, err := GetSandbox("abc123")
+	if err != nil || sbx.ID != "abc123def456" {
+		t.Fatalf("sbx=%v err=%v", sbx, err)
 	}
 
 	var nfErr *SandboxNotFoundError
@@ -213,11 +213,11 @@ func TestListStatusAndGet(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 
-	info, err := box.Status()
+	info, err := sbx.Status()
 	if err != nil || info == nil || info.Network != "devnet" {
 		t.Fatalf("info=%v err=%v", info, err)
 	}
-	running, err := box.IsRunning()
+	running, err := sbx.IsRunning()
 	if err != nil || !running {
 		t.Fatalf("running=%v err=%v", running, err)
 	}
@@ -225,24 +225,24 @@ func TestListStatusAndGet(t *testing.T) {
 
 func TestLifecycleArgv(t *testing.T) {
 	argv := installFakeBinary(t)
-	box := &Sandbox{ID: "abc123def456"}
+	sbx := &Sandbox{ID: "abc123def456"}
 
-	if err := box.Stop(); err != nil {
+	if err := sbx.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	if err := box.Start(); err != nil {
+	if err := sbx.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if err := box.Update().Cpus(4).Mem(2048).Apply(); err != nil {
+	if err := sbx.Update().Cpus(4).Mem(2048).Apply(); err != nil {
 		t.Fatal(err)
 	}
-	if err := box.Remove(true); err != nil {
+	if err := sbx.Remove(true); err != nil {
 		t.Fatal(err)
 	}
-	if err := box.ConnectNetwork("devnet"); err != nil {
+	if err := sbx.ConnectNetwork("devnet"); err != nil {
 		t.Fatal(err)
 	}
-	if err := box.DisconnectNetwork(); err != nil {
+	if err := sbx.DisconnectNetwork(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -262,12 +262,12 @@ func TestLifecycleArgv(t *testing.T) {
 
 func TestLogs(t *testing.T) {
 	argv := installFakeBinary(t)
-	box := &Sandbox{ID: "abc123def456"}
-	out, err := box.Logs()
+	sbx := &Sandbox{ID: "abc123def456"}
+	out, err := sbx.Logs()
 	if err != nil || out != "console log\n" {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
-	if _, err := box.BootLogs(); err != nil {
+	if _, err := sbx.BootLogs(); err != nil {
 		t.Fatal(err)
 	}
 	records := argv()
@@ -282,8 +282,8 @@ func TestLogs(t *testing.T) {
 
 func TestSSHSetupArgv(t *testing.T) {
 	argv := installFakeBinary(t)
-	box := &Sandbox{ID: "abc123def456"}
-	res, err := box.SSHSetup().User("tsiry").Key("~/.ssh/work.pub").Run()
+	sbx := &Sandbox{ID: "abc123def456"}
+	res, err := sbx.SSHSetup().User("tsiry").Key("~/.ssh/work.pub").Run()
 	if err != nil {
 		t.Fatal(err)
 	}

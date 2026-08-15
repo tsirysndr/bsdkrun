@@ -8,10 +8,10 @@ defmodule Bsdkrun do
   argv, shells out via `System.cmd/3`, and parses JSON output. It has one runtime
   dependency (`:jason`).
 
-      {:ok, box} = Bsdkrun.create(os: :linux, image: "alpine")
-      {:ok, res} = Bsdkrun.exec(box, ["uname", "-a"])
+      {:ok, sbx} = Bsdkrun.create(os: :linux, image: "alpine")
+      {:ok, res} = Bsdkrun.exec(sbx, ["uname", "-a"])
       IO.puts(Bsdkrun.Types.Result.text(res))
-      :ok = Bsdkrun.stop(box)
+      :ok = Bsdkrun.stop(sbx)
 
   Or, with the bang variants, as one `|>` chain — see `Bsdkrun.Sandbox` for
   the chaining rules:

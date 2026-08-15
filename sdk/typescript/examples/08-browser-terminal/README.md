@@ -19,7 +19,7 @@ xterm.js (browser)  ──WebSocket──▶  Bun server  ──TCP (agent proto
 ```
 
 - The server boots an Alpine sandbox and, per WebSocket connection, opens
-  `box.terminal({ command: ["/bin/sh"] })`.
+  `sbx.terminal({ command: ["/bin/sh"] })`.
 - `term.onData(chunk => ws.send(chunk))` streams guest output to the browser;
   the page writes it into xterm.
 - Browser input is sent over the socket and `term.write(text)` forwards it to

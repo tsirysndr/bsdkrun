@@ -36,7 +36,7 @@ binary: #{binary}
   Networks, System   global networks; probe, fetch, versions, grow_disk
   ps/0, last/0       every machine / the newest one
 
-  {:ok, box} = Sandbox.create(os: :linux, image: "alpine")
-  {:ok, res} = Sandbox.exec(box, ["uname", "-a"])
+  {:ok, sbx} = Sandbox.create(os: :linux, image: "alpine")
+  {:ok, res} = Sandbox.exec(sbx, ["uname", "-a"])
   Types.Result.text(res)
 """)

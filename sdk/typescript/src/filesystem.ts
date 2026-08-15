@@ -38,10 +38,10 @@ export class FileTransferError extends BsdkrunError {
  * the sandbox has to be running — there is no offline write.
  *
  * ```ts
- * await box.fs.writeFile("/app/main.py", "print('hi')");
- * const out = await box.fs.readTextFile("/app/out.json");
- * await box.fs.upload("./src", "/app/src");
- * await box.fs.download("/app/dist", "./dist", { recursive: true });
+ * await sbx.fs.writeFile("/app/main.py", "print('hi')");
+ * const out = await sbx.fs.readTextFile("/app/out.json");
+ * await sbx.fs.upload("./src", "/app/src");
+ * await sbx.fs.download("/app/dist", "./dist", { recursive: true });
  * ```
  */
 export class FileSystem {
@@ -51,8 +51,8 @@ export class FileSystem {
    * Write `data` to `path` in the guest, creating parent directories as needed.
    *
    * ```ts
-   * await box.fs.writeFile("/app/main.py", "print('hi')");
-   * await box.fs.writeFile("/app/logo.png", pngBytes);
+   * await sbx.fs.writeFile("/app/main.py", "print('hi')");
+   * await sbx.fs.writeFile("/app/logo.png", pngBytes);
    * ```
    */
   async writeFile(
@@ -70,7 +70,7 @@ export class FileSystem {
    * Read `path` from the guest as bytes.
    *
    * ```ts
-   * const bytes = await box.fs.readFile("/app/logo.png");
+   * const bytes = await sbx.fs.readFile("/app/logo.png");
    * ```
    */
   async readFile(path: string, opts: FsOptions = {}): Promise<Buffer> {

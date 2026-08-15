@@ -78,20 +78,42 @@ pub fn pull(reference: &str) -> Result<Image> {
         .map(|ls| ls.iter().filter_map(|l| l["size"].as_i64()).sum())
         .unwrap_or(0);
 
+    let layers = image_manifest["layers"]
+        .as_array()
+        .context("image manifest has no layers")?
+        .clone();
+    let layer_digests: Vec<String> = layers
+        .iter()
+        .filter_map(|l| l["digest"].as_str().map(str::to_string))
+        .collect();
+
     // Content-addressed cache: identical image contents => identical config
     // digest => reuse the already-extracted rootfs.
+    //
+    // Reuse needs the completion marker, not just the tree: a pull that lost a
+    // layer part-way (ENOSPC, a short download) still leaves a plausible-looking
+    // rootfs behind, and the cache is keyed by content so every later run would
+    // reuse it forever. A half-extracted rootfs boots into a kernel panic —
+    // "Requested init /.bsdkrun-init failed (error -2)" — because ENOENT there
+    // is the *interpreter* of our init's `#!/bin/sh`, not the init itself.
     let dir = crate::fetch::oci_cache_dir()?.join(digest_to_dirname(&config_digest));
     let rootfs = dir.join("rootfs");
     let config_path = dir.join("config.json");
     if rootfs.exists() && config_path.exists() {
-        info!(path = %rootfs.display(), "using cached rootfs");
-        let cfg = std::fs::read(&config_path).context("reading cached image config")?;
-        return Ok(Image {
-            rootfs,
-            config: parse_config(&serde_json::from_slice(&cfg)?)?,
-            digest: config_digest,
-            size: total_size,
-        });
+        if cached_layers(&dir).as_deref() == Some(layer_digests.as_slice()) {
+            info!(path = %rootfs.display(), "using cached rootfs");
+            let cfg = std::fs::read(&config_path).context("reading cached image config")?;
+            return Ok(Image {
+                rootfs,
+                config: parse_config(&serde_json::from_slice(&cfg)?)?,
+                digest: config_digest,
+                size: total_size,
+            });
+        }
+        warn!(
+            path = %dir.display(),
+            "cached rootfs is incomplete or was extracted by an older bsdkrun — re-pulling"
+        );
     }
 
     // Fresh pull: download the config blob and every layer, then extract.
@@ -108,9 +130,6 @@ pub fn pull(reference: &str) -> Result<Image> {
     std::fs::create_dir_all(&staging_rootfs)
         .with_context(|| format!("creating {}", staging_rootfs.display()))?;
 
-    let layers = image_manifest["layers"]
-        .as_array()
-        .context("image manifest has no layers")?;
     let total_bytes: u64 = layers.iter().filter_map(|l| l["size"].as_u64()).sum();
     info!(
         count = layers.len(),
@@ -127,6 +146,21 @@ pub fn pull(reference: &str) -> Result<Image> {
         eprintln!("  layer {}/{}  {}", i + 1, layers.len(), human_size(size));
         let blob = staging.join(format!("layer{i}.tar"));
         get_blob(&r, digest, &token, Some(&blob))?;
+        // A short blob means the transfer was cut off. bsdtar reports a truncated
+        // archive as a *warning* (exit 1) and still extracts the part it read, so
+        // without this check the missing files would be baked into the cache.
+        if size > 0 {
+            let got = std::fs::metadata(&blob).map(|m| m.len()).unwrap_or(0);
+            if got != size {
+                bail!(
+                    "layer {}/{} ({digest}) downloaded {} of {} — the transfer was cut short",
+                    i + 1,
+                    layers.len(),
+                    human_size(got),
+                    human_size(size)
+                );
+            }
+        }
         extract_layer(&blob, &staging_rootfs)
             .with_context(|| format!("extracting layer {i} ({digest})"))?;
         apply_whiteouts(&staging_rootfs)?;
@@ -138,6 +172,13 @@ pub fn pull(reference: &str) -> Result<Image> {
         serde_json::to_vec_pretty(&config_json)?,
     )
     .context("caching image config")?;
+    // Written last, and only on the success path: this is what marks the tree
+    // complete for the cache check above.
+    std::fs::write(
+        staging.join(PULL_MARKER),
+        serde_json::to_vec(&layer_digests)?,
+    )
+    .context("recording the extracted layers")?;
 
     // Swap staging into place.
     let _ = std::fs::remove_dir_all(&dir);
@@ -426,6 +467,36 @@ pub(crate) fn human_size(bytes: u64) -> String {
     }
 }
 
+/// Records the layer digests an image cache dir was built from. Its presence is
+/// what makes the tree reusable — see the cache check in `pull`.
+const PULL_MARKER: &str = "layers.json";
+
+/// Layer digests recorded for an extracted image, or `None` if the marker is
+/// missing or unreadable (an interrupted pull, or a pre-marker cache dir).
+fn cached_layers(dir: &Path) -> Option<Vec<String>> {
+    serde_json::from_slice(&std::fs::read(dir.join(PULL_MARKER)).ok()?).ok()
+}
+
+/// bsdtar messages that mean files were *lost*, not merely skipped. It reports
+/// all of these at exit 1, the same code it uses for the benign unprivileged
+/// skips, so the code alone can't tell "couldn't chown" from "disk filled up
+/// half-way through the layer".
+const FATAL_TAR_ERRORS: &[&str] = &[
+    "No space left",
+    "truncated",
+    "Unexpected EOF",
+    "Unrecognized archive format",
+    "Damaged",
+    "Write error",
+    "Input/output error",
+    "Read-only file system",
+];
+
+/// Did tar's stderr report lost data rather than a skipped attribute?
+fn tar_lost_data(stderr: &str) -> bool {
+    FATAL_TAR_ERRORS.iter().any(|m| stderr.contains(m))
+}
+
 /// Unpack a layer tarball into `rootfs`. bsdtar auto-detects the compression;
 /// `-p` preserves permissions (ownership is skipped automatically when not
 /// root, which is fine for a single-user microVM rootfs).
@@ -436,11 +507,13 @@ fn extract_layer(blob: &Path, rootfs: &Path) -> Result<()> {
     // let tar skip those rather than fail the whole extraction.
     let out = c.output().context("spawning tar")?;
     if !out.status.success() {
-        // bsdtar warns (exit 1) on skipped entries but still extracts; only treat
-        // a hard failure (exit >1) as fatal.
+        // bsdtar warns (exit 1) on skipped entries but still extracts; treat a
+        // hard failure (exit >1) as fatal — and exit 1 too when the message says
+        // data was lost rather than skipped, because tar exits 1 either way and
+        // the caller would otherwise cache the partial rootfs forever.
         let code = out.status.code().unwrap_or(-1);
         let stderr = String::from_utf8_lossy(&out.stderr);
-        if code > 1 {
+        if code > 1 || tar_lost_data(&stderr) {
             bail!(
                 "tar failed to extract layer (exit {code}): {}",
                 stderr.trim()
@@ -523,4 +596,51 @@ pub fn write_rootfs_file(rootfs: &Path, rel: &str, contents: &[u8], mode: u32) -
     f.write_all(contents)
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// tar exits 1 for both "couldn't chown" and "the disk filled up", so the
+    /// message is the only thing separating a cacheable rootfs from a ruined one.
+    #[test]
+    fn benign_tar_warnings_are_not_treated_as_lost_data() {
+        for s in [
+            "tar: Can't set user=0/group=0 for bin/busybox",
+            "tar: Can't restore time for etc/hosts",
+            "tar: dev/console: Can't create special file",
+            "",
+        ] {
+            assert!(!tar_lost_data(s), "{s:?} should be tolerated");
+        }
+    }
+
+    #[test]
+    fn tar_errors_that_lose_files_are_fatal() {
+        for s in [
+            "bin/busybox: truncated gzip input: Unknown error: -1",
+            "tar: Write error: No space left on device",
+            "tar: Unrecognized archive format",
+            "tar: Unexpected EOF in archive",
+        ] {
+            assert!(tar_lost_data(s), "{s:?} should be fatal");
+        }
+    }
+
+    /// An image cache dir is only reusable when the marker lists exactly the
+    /// layers the manifest asks for — that is what stops a half-extracted rootfs
+    /// from being served forever under its content-addressed name.
+    #[test]
+    fn cached_layers_reads_back_what_a_pull_recorded() {
+        let dir = std::env::temp_dir().join(format!("bsdkrun-oci-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(cached_layers(&dir), None, "no marker => not reusable");
+
+        let digests = vec!["sha256:aaa".to_string(), "sha256:bbb".to_string()];
+        std::fs::write(dir.join(PULL_MARKER), serde_json::to_vec(&digests).unwrap()).unwrap();
+        assert_eq!(cached_layers(&dir).as_deref(), Some(digests.as_slice()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

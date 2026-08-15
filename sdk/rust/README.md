@@ -132,6 +132,34 @@ struct Info { hostname: String }
 let info: Info = sandbox.exec(["cat", "/etc/info.json"])?.json()?;
 ```
 
+## Caching
+
+`Sandbox::cache()` saves a guest directory under a key and restores it later, so
+a rebuild can pick up where the last one left off. **A miss is not an error** —
+check `restored` rather than the `Result`.
+
+```rust
+use bsdkrun_sdk::cache::{self, Compression};
+
+let key = format!("deps-{lock_hash}");
+let hit = sbx.cache().restore(&key, None, &["deps-".to_string()])?;
+if !hit.restored {
+    sbx.exec(["npm", "ci"])?;
+    sbx.cache().save("/app/node_modules", &key, Compression::Zstd, false)?;
+}
+
+cache::list()?;                       // every stored entry, newest first
+cache::remove(&[key.clone()], false)?; // or (&[], true) for all
+```
+
+The restore keys are prefixes tried in order when the exact key misses; within a
+prefix the newest matching entry wins, and `hit.key` says which one was used.
+Formats are `Gzip` (default), `Zstd`, `Estargz` and `None`.
+
+Where entries live is host configuration, not an SDK concern: the default is
+this host's disk, and `BSDKRUN_CACHE_BACKEND=s3` + `BSDKRUN_CACHE_S3_*` (or
+`~/.config/bsdkrun/cache.toml`) points them at a bucket instead.
+
 ## Files
 
 `Sandbox::fs()` reads and writes files in the guest. Parent directories are

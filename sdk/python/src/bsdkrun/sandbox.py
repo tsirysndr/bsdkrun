@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from .args import build_create_args
+from .cache import Cache
 from .errors import CommandFailed, SandboxNotFound
 from .filesystem import FileSystem
 from .process import run, run_checked, spawn
@@ -25,9 +26,9 @@ class Sandbox:
     Create one with :meth:`create`, reconnect with :meth:`get`, or enumerate
     with :meth:`list`::
 
-        box = Sandbox.create(os="linux", image="alpine")
-        box.exec(["uname", "-a"])
-        box.stop()
+        sbx = Sandbox.create(os="linux", image="alpine")
+        sbx.exec(["uname", "-a"])
+        sbx.stop()
     """
 
     def __init__(self, sandbox_id: str, ssh_port: int | None = None) -> None:
@@ -37,6 +38,8 @@ class Sandbox:
         self.ssh_port = ssh_port
         #: Read and write files in the guest.
         self.fs = FileSystem(sandbox_id)
+        #: Save and restore guest directories under a key.
+        self.cache = Cache(sandbox_id)
 
     def __repr__(self) -> str:
         return f"Sandbox(id={self.id!r})"
@@ -120,8 +123,8 @@ class Sandbox:
         chunks in real time while the same output remains available in the
         returned result.
 
-            box.exec(["ls", "-la", "/etc"])
-            box.exec("node", args=["-e", "print(1)"], env={"X": "1"})
+            sbx.exec(["ls", "-la", "/etc"])
+            sbx.exec("node", args=["-e", "print(1)"], env={"X": "1"})
         """
         if isinstance(command, str):
             argv = [command, *(args or [])]

@@ -82,6 +82,32 @@ pub type VolumeInfo {
   )
 }
 
+/// A stored cache entry, as reported by `bsdkrun cache ls --json`.
+pub type CacheEntry {
+  CacheEntry(
+    key: String,
+    path: String,
+    compression: String,
+    size: Int,
+    created: Int,
+    digest: String,
+  )
+}
+
+/// What a `bsdkrun cache restore --json` did. A miss is not an error — check
+/// `restored`.
+pub type RestoreResult {
+  RestoreResult(
+    restored: Bool,
+    requested_key: String,
+    key: Option(String),
+    path: Option(String),
+    size: Option(Int),
+    compression: Option(String),
+    created: Option(Int),
+  )
+}
+
 /// A global network, as reported by `bsdkrun network ls --json`.
 pub type NetworkInfo {
   NetworkInfo(
@@ -209,6 +235,39 @@ pub fn port_forward_decoder() -> Decoder(PortForward) {
   use guest <- field_or("guest", 0, lenient_int())
 
   decode.success(PortForward(bind:, host:, guest:))
+}
+
+/// Decoder for one `cache ls --json` row, and for `cache save --json`.
+pub fn cache_entry_decoder() -> Decoder(CacheEntry) {
+  use key <- field_or("key", "", decode.string)
+  use path <- field_or("path", "", decode.string)
+  use compression <- field_or("compression", "", decode.string)
+  use size <- field_or("size", 0, lenient_int())
+  use created <- field_or("created", 0, lenient_int())
+  use digest <- field_or("digest", "", decode.string)
+
+  decode.success(CacheEntry(key:, path:, compression:, size:, created:, digest:))
+}
+
+/// Decoder for `cache restore --json`.
+pub fn restore_result_decoder() -> Decoder(RestoreResult) {
+  use restored <- field_or("restored", False, decode.bool)
+  use requested_key <- field_or("requested_key", "", decode.string)
+  use key <- optional_field("key", decode.string)
+  use path <- optional_field("path", decode.string)
+  use size <- optional_field("size", lenient_int())
+  use compression <- optional_field("compression", decode.string)
+  use created <- optional_field("created", lenient_int())
+
+  decode.success(RestoreResult(
+    restored:,
+    requested_key:,
+    key:,
+    path:,
+    size:,
+    compression:,
+    created:,
+  ))
 }
 
 /// Decoder for one `ps --json` row.
@@ -473,6 +532,23 @@ pub fn string_field(dyn: Dynamic, name: String, default: String) -> String {
 
 /// Decode a `--json` list payload. Blank output — which the CLI emits when
 /// there is nothing to list — decodes as the empty list.
+/// Decode a single JSON object, as `decode_rows` does for a list.
+pub fn decode_one(
+  raw: String,
+  label: String,
+  row: Decoder(a),
+) -> Result(a, Error) {
+  let payload = case string.trim(raw) {
+    "" -> "{}"
+    trimmed -> trimmed
+  }
+
+  case json.parse(payload, row) {
+    Ok(value) -> Ok(value)
+    Error(_) -> Error(DecodeFailed(label, raw))
+  }
+}
+
 pub fn decode_rows(
   raw: String,
   label: String,

@@ -1,6 +1,7 @@
 import { buildCreateArgs } from "./args.js";
 import { readAgentPort } from "./agent-protocol.js";
 import { CommandFailedError, SandboxNotFoundError } from "./errors.js";
+import { Cache } from "./cache.js";
 import { FileSystem } from "./filesystem.js";
 import { runCli, spawnCli } from "./process.js";
 import {
@@ -113,10 +114,10 @@ export function fromGraphQLMachine(m: Record<string, unknown>): SandboxInfo {
  * {@link Sandbox.list}.
  *
  * ```ts
- * const box = await Sandbox.create({ os: "linux", image: "alpine" });
- * await box.sh`echo hello`;
- * await box.exec(["uname", "-a"]);
- * await box.stop();
+ * const sbx = await Sandbox.create({ os: "linux", image: "alpine" });
+ * await sbx.sh`echo hello`;
+ * await sbx.exec(["uname", "-a"]);
+ * await sbx.stop();
  * ```
  */
 export class Sandbox {
@@ -131,6 +132,9 @@ export class Sandbox {
   /** Read and write files in the guest. */
   readonly fs: FileSystem;
 
+  /** Save and restore guest directories under a key. */
+  readonly cache: Cache;
+
   #stateDirCache?: string;
 
   private constructor(id: string, sshPort?: number) {
@@ -138,6 +142,7 @@ export class Sandbox {
     this.sshPort = sshPort;
     this.sh = createSh((script, opts) => this.#shRunner(script, opts));
     this.fs = new FileSystem(id);
+    this.cache = new Cache(id);
   }
 
   /** Boot a new microVM and return a handle to it. */
@@ -207,8 +212,8 @@ export class Sandbox {
    * env, a PTY, stdin, or a working directory.
    *
    * ```ts
-   * await box.exec(["ls", "-la", "/etc"]);
-   * await box.exec("node", { args: ["-e", "console.log(1)"], env: { X: "1" } });
+   * await sbx.exec(["ls", "-la", "/etc"]);
+   * await sbx.exec("node", { args: ["-e", "console.log(1)"], env: { X: "1" } });
    * ```
    */
   async exec(
@@ -252,7 +257,7 @@ export class Sandbox {
    * Vercel-Sandbox-style alias for {@link exec}: a program plus its args.
    *
    * ```ts
-   * const { stdout } = await box.runCommand("uname", ["-a"]);
+   * const { stdout } = await sbx.runCommand("uname", ["-a"]);
    * ```
    */
   runCommand(
@@ -386,10 +391,10 @@ export class Sandbox {
    * arbitrary args.
    *
    * ```ts
-   * await box.ssh.setup();                      // install local ~/.ssh/*.pub
-   * await box.ssh.setup({ user: "tsiry", key: "~/.ssh/work.pub" });
-   * await box.ssh.addKey("ssh-ed25519 AAAA...");
-   * await box.ssh.status();
+   * await sbx.ssh.setup();                      // install local ~/.ssh/*.pub
+   * await sbx.ssh.setup({ user: "tsiry", key: "~/.ssh/work.pub" });
+   * await sbx.ssh.addKey("ssh-ed25519 AAAA...");
+   * await sbx.ssh.status();
    * ```
    */
   get ssh() {
@@ -420,8 +425,8 @@ export class Sandbox {
    * `tailscaled` (userspace networking by default), and joins your tailnet.
    *
    * ```ts
-   * await box.tailscale.up({ authkey: "tskey-auth-...", hostname: "web" });
-   * await box.tailscale.status();
+   * await sbx.tailscale.up({ authkey: "tskey-auth-...", hostname: "web" });
+   * await sbx.tailscale.status();
    * ```
    */
   get tailscale() {
@@ -458,8 +463,8 @@ export class Sandbox {
    * `setup` errors clearly there. Manage BSD services with `rc.d` instead.
    *
    * ```ts
-   * await box.systemd.setup();   // install + mark for next boot (debian/ubuntu/fedora)
-   * await box.systemd.status();
+   * await sbx.systemd.setup();   // install + mark for next boot (debian/ubuntu/fedora)
+   * await sbx.systemd.status();
    * ```
    */
   get systemd() {
@@ -490,7 +495,7 @@ export class Sandbox {
    * `onResize` to {@link Terminal.resize}. See `examples/08-browser-terminal`.
    *
    * ```ts
-   * const term = await box.terminal({ cols: 120, rows: 30 });
+   * const term = await sbx.terminal({ cols: 120, rows: 30 });
    * term.onData((chunk) => process.stdout.write(chunk));
    * term.write("uname -a\n");
    * ```

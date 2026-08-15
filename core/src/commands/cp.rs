@@ -155,7 +155,8 @@ fn upload(id: &str, from: &Endpoint, dst: &str, recursive: bool) -> Result<()> {
 /// directory's *contents* (`-C dir .`), which is what makes `upload` land them
 /// in the destination rather than one level below it.
 fn tar_from(dir: &Path) -> Result<Box<dyn std::io::Read + Send>> {
-    let mut child = Command::new("tar")
+    let mut cmd = Command::new("tar");
+    cmd
         // macOS `tar` is bsdtar, which stores each file's extended attributes
         // in a sidecar AppleDouble member — so an uploaded directory arrives in
         // the guest with a `._main.py` next to every `main.py`, and a `._.` at
@@ -168,9 +169,10 @@ fn tar_from(dir: &Path) -> Result<Box<dyn std::io::Read + Send>> {
         .arg(dir)
         .arg(".")
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = cmd
         .spawn()
-        .with_context(|| format!("running tar to pack {}", dir.display()))?;
+        .map_err(|e| crate::fetch::spawn_error(&cmd, "packing a directory to copy", e))?;
     Ok(Box::new(child.stdout.take().expect("tar stdout is piped")))
 }
 
@@ -205,14 +207,15 @@ fn download(id: &str, src: &str, to: &Endpoint, recursive: bool) -> Result<()> {
         }
         Endpoint::Host(p) if recursive => {
             std::fs::create_dir_all(p).with_context(|| format!("creating {}", p.display()))?;
-            let mut child = Command::new("tar")
-                .arg("-xf")
+            let mut cmd = Command::new("tar");
+            cmd.arg("-xf")
                 .arg("-")
                 .arg("-C")
                 .arg(p)
-                .stdin(Stdio::piped())
+                .stdin(Stdio::piped());
+            let mut child = cmd
                 .spawn()
-                .with_context(|| format!("running tar to unpack into {}", p.display()))?;
+                .map_err(|e| crate::fetch::spawn_error(&cmd, "unpacking a copied directory", e))?;
             let mut sink = child.stdin.take().expect("tar stdin is piped");
             let res = agent::exec_stream(port, &argv, None, &mut sink);
             drop(sink); // EOF, or tar waits forever for more of the archive
@@ -253,6 +256,46 @@ fn download(id: &str, src: &str, to: &Endpoint, recursive: bool) -> Result<()> {
 
     if code != 0 {
         bail!("{}", guest_failure(&vm.id, src, code, &err, recursive));
+    }
+    Ok(())
+}
+
+// --- reused by `bsdkrun cache` -----------------------------------------------
+//
+// Saving a cache is `cp -r` out of the guest with the stream compressed instead
+// of untarred, and restoring is `cp -r` in. Sharing the scripts keeps one
+// definition of what a directory transfer means, so a fix to the guest side
+// lands in both.
+
+/// Stream a tar of the guest directory at `path` into `out`.
+pub(crate) fn stream_dir_out(
+    id: &str,
+    port: u16,
+    path: &str,
+    out: &mut dyn std::io::Write,
+) -> Result<()> {
+    let (code, err) = agent::exec_stream(port, &sh(GET_DIR, &[path.to_string()]), None, out)?;
+    if code != 0 {
+        bail!("{}", guest_failure(id, path, code, &err, true));
+    }
+    Ok(())
+}
+
+/// Unpack a tar stream into the guest at `path`, creating it if needed.
+pub(crate) fn stream_dir_in(
+    id: &str,
+    port: u16,
+    path: &str,
+    input: Box<dyn std::io::Read + Send>,
+) -> Result<()> {
+    let (code, err) = agent::exec_stream(
+        port,
+        &sh(PUT_DIR, &[path.to_string()]),
+        Some(input),
+        &mut std::io::sink(),
+    )?;
+    if code != 0 {
+        bail!("{}", guest_failure(id, path, code, &err, true));
     }
     Ok(())
 }

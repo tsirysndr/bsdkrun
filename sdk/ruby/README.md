@@ -9,14 +9,14 @@ dependencies** — just the Ruby standard library (`open3`, `json`, `pathname`).
 ```ruby
 require "bsdkrun"
 
-box = Bsdkrun::Sandbox.create(os: "linux", image: "alpine")
+sbx = Bsdkrun::Sandbox.create(os: "linux", image: "alpine")
 
 # exec argv directly, with env / stdin / a PTY / a working dir:
-puts box.exec(["uname", "-a"]).text
-box.exec(["apk", "add", "curl"], throw_on_error: true)
-box.run_command("curl", ["-fsSL", "https://example.com"])
+puts sbx.exec(["uname", "-a"]).text
+sbx.exec(["apk", "add", "curl"], throw_on_error: true)
+sbx.run_command("curl", ["-fsSL", "https://example.com"])
 
-box.stop
+sbx.stop
 ```
 
 ## Install
@@ -83,9 +83,9 @@ Every `create` runs the machine **detached** and returns a `Sandbox` handle.
 array (or a program name plus `args:`).
 
 ```ruby
-box.exec(["ls", "-la", "/etc"])
+sbx.exec(["ls", "-la", "/etc"])
 
-box.exec("ruby",
+sbx.exec("ruby",
   args: ["-e", "puts ENV['X']"],
   env: { "X" => "hi" },
   cwd: "/app",
@@ -96,7 +96,7 @@ box.exec("ruby",
   throw_on_error: true)      # raise on non-zero exit (default: false)
 
 # Vercel-Sandbox-style alias:
-result = box.run_command("uname", ["-a"])
+result = sbx.run_command("uname", ["-a"])
 result.stdout       # raw stdout
 result.text         # stdout, trailing newlines trimmed
 result.exit_code
@@ -111,20 +111,46 @@ The callbacks run as chunks arrive, and the same bytes remain buffered in the
 returned result. They do not require `tty`; a PTY changes command semantics and
 may merge stderr into stdout.
 
+## Caching
+
+`sbx.cache` saves a guest directory under a key and restores it later, so a
+rebuild can pick up where the last one left off. **A miss is not an error** —
+check `restored` rather than rescuing.
+
+```ruby
+key = "deps-#{lock_hash}"
+hit = sbx.cache.restore(key: key, restore_keys: ["deps-"])
+unless hit.restored
+  sbx.exec(["npm", "ci"])
+  sbx.cache.save("/app/node_modules", key: key, compression: "zstd")
+end
+
+Bsdkrun::Caches.ls          # every stored entry, newest first
+Bsdkrun::Caches.rm([key])   # or Bsdkrun::Caches.rm(all: true)
+```
+
+`restore_keys` are prefixes tried in order when the exact key misses; within a
+prefix the newest matching entry wins, and `hit.key` says which one was used.
+Formats are `gzip` (default), `zstd`, `estargz` and `none`.
+
+Where entries live is host configuration, not an SDK concern: the default is
+this host's disk, and `BSDKRUN_CACHE_BACKEND=s3` + `BSDKRUN_CACHE_S3_*` (or
+`~/.config/bsdkrun/cache.toml`) points them at a bucket instead.
+
 ## Files
 
-`box.fs` reads and writes files in the guest. Parent directories are created
+`sbx.fs` reads and writes files in the guest. Parent directories are created
 for you, and everything is byte-exact — `read_file` returns a binary string.
 
 ```ruby
-box.fs.write_file("/app/main.py", "print('hi')")
-box.fs.write_file("/app/logo.png", png_bytes)
+sbx.fs.write_file("/app/main.py", "print('hi')")
+sbx.fs.write_file("/app/logo.png", png_bytes)
 
-text  = box.fs.read_text("/app/out.json")
-bytes = box.fs.read_file("/app/logo.png")
+text  = sbx.fs.read_text("/app/out.json")
+bytes = sbx.fs.read_file("/app/logo.png")
 
-box.fs.upload("./src", "/app/src")                       # file or directory
-box.fs.download("/app/dist", "./dist", recursive: true)
+sbx.fs.upload("./src", "/app/src")                       # file or directory
+sbx.fs.download("/app/dist", "./dist", recursive: true)
 ```
 
 `upload` looks at the local path to decide whether to recurse; `download` cannot
@@ -141,18 +167,18 @@ Failures raise `Bsdkrun::FileTransferFailed`, which carries the offending `path`
 ## Lifecycle & inventory
 
 ```ruby
-box  = Bsdkrun::Sandbox.create(os: "linux", image: "alpine", command: ["sleep", "300"])
-same = Bsdkrun::Sandbox.get(box.id)          # reconnect (prefix ok)
+sbx  = Bsdkrun::Sandbox.create(os: "linux", image: "alpine", command: ["sleep", "300"])
+same = Bsdkrun::Sandbox.get(sbx.id)          # reconnect (prefix ok)
 all  = Bsdkrun::Sandbox.list(all: true)      # Array<SandboxInfo>
 
-box.status        # SandboxInfo | nil
-box.running?      # true / false
-box.logs          # console log (String)
-box.shell         # interactive shell (inherits the terminal)
-box.stop          # BSD guests clean-poweroff; Linux SIGTERM
-box.start         # restart in place — resumes its own disk/rootfs (data persists)
-box.update(cpus: 4, mem: 2048)               # applies on next start
-box.remove(force: true)
+sbx.status        # SandboxInfo | nil
+sbx.running?      # true / false
+sbx.logs          # console log (String)
+sbx.shell         # interactive shell (inherits the terminal)
+sbx.stop          # BSD guests clean-poweroff; Linux SIGTERM
+sbx.start         # restart in place — resumes its own disk/rootfs (data persists)
+sbx.update(cpus: 4, mem: 2048)               # applies on next start
+sbx.remove(force: true)
 ```
 
 Host-level namespaces:
@@ -174,11 +200,11 @@ Bsdkrun::System.versions("netbsd")             # Array<String>
 Bsdkrun::Sandbox.create(os: "linux", image: "alpine", net: { ports: ["2222:22"] })
 
 # agent-managed key-based SSH
-box.ssh_setup                                  # install local ~/.ssh/*.pub keys
-box.ssh_setup(user: "tsiry", key: "~/.ssh/work.pub")
+sbx.ssh_setup                                  # install local ~/.ssh/*.pub keys
+sbx.ssh_setup(user: "tsiry", key: "~/.ssh/work.pub")
 
 # put a guest on your tailnet
-box.tailscale_up(authkey: "tskey-auth-...", hostname: "web")
+sbx.tailscale_up(authkey: "tskey-auth-...", hostname: "web")
 ```
 
 ### Global networks — reach machines by name

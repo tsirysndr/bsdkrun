@@ -17,14 +17,14 @@ and every namespace is a set of functions over plain maps.
 ```clojure
 (require '[bsdkrun.sandbox :as sandbox])
 
-(def box (sandbox/create! {:os :linux :image "alpine"}))
+(def sbx (sandbox/create! {:os :linux :image "alpine"}))
 
 ;; exec argv directly, with env / stdin / a PTY / a working dir:
-(println (:stdout (sandbox/exec! box ["uname" "-a"])))
-(sandbox/exec! box ["apk" "add" "curl"] {:throw-on-error true})
-(sandbox/run-command! box "curl" ["-fsSL" "https://example.com"])
+(println (:stdout (sandbox/exec! sbx ["uname" "-a"])))
+(sandbox/exec! sbx ["apk" "add" "curl"] {:throw-on-error true})
+(sandbox/run-command! sbx "curl" ["-fsSL" "https://example.com"])
 
-(sandbox/stop! box)
+(sandbox/stop! sbx)
 ```
 
 ## Install
@@ -99,9 +99,9 @@ pass an argv vector (or a bare program name plus `:args`).
 (require '[bsdkrun.types :as types]
          '[clojure.java.io :as io])
 
-(sandbox/exec! box ["ls" "-la" "/etc"])
+(sandbox/exec! sbx ["ls" "-la" "/etc"])
 
-(sandbox/exec! box "ruby"
+(sandbox/exec! sbx "ruby"
   {:args ["-e" "puts ENV['X']"]
    :env {"X" "hi"}
    :cwd "/app"
@@ -112,7 +112,7 @@ pass an argv vector (or a bare program name plus `:args`).
    :throw-on-error true})       ; throw on non-zero exit (default: false)
 
 ;; Vercel-Sandbox-style alias:
-(def result (sandbox/run-command! box "uname" ["-a"]))
+(def result (sandbox/run-command! sbx "uname" ["-a"]))
 (:stdout result)        ; raw stdout
 (types/text result)     ; stdout, trailing newlines trimmed
 (:exit-code result)
@@ -127,6 +127,33 @@ call `(bsdkrun.types/throw-if-failed! result)` yourself).
 The callbacks receive byte arrays as chunks arrive, while `:stdout` and
 `:stderr` remain fully buffered in the result. Streaming is independent of
 `:tty`; a PTY changes command semantics and may merge stderr into stdout.
+
+## Caching
+
+`bsdkrun.cache` saves a guest directory under a key and restores it later, so a
+rebuild can pick up where the last one left off. **A miss is not an error** —
+check `:restored` rather than catching.
+
+```clojure
+(require '[bsdkrun.cache :as cache])
+
+(let [k (str "deps-" lock-hash)
+      hit (cache/restore "web" {:key k :restore-keys ["deps-"]})]
+  (when-not (:restored hit)
+    (sandbox/exec "web" ["npm" "ci"])
+    (cache/save "web" "/app/node_modules" {:key k :compression "zstd"})))
+
+(cache/ls)        ; every stored entry, newest first
+(cache/rm [k])    ; or (cache/rm [] {:all true})
+```
+
+`:restore-keys` are prefixes tried in order when the exact key misses; within a
+prefix the newest matching entry wins, and `:key` on the result says which one
+was used. Formats are `"gzip"` (default), `"zstd"`, `"estargz"` and `"none"`.
+
+Where entries live is host configuration, not an SDK concern: the default is
+this host's disk, and `BSDKRUN_CACHE_BACKEND=s3` + `BSDKRUN_CACHE_S3_*` (or
+`~/.config/bsdkrun/cache.toml`) points them at a bucket instead.
 
 ## Files
 
@@ -163,22 +190,22 @@ Failures throw an `ex-info` whose `ex-data` is
 ```clojure
 (require '[bsdkrun.sandbox :as sandbox])
 
-(def box  (sandbox/create! {:os :linux :image "alpine" :name "web-1" :command ["sleep" "300"]}))
-(def same (sandbox/get (:id box)))          ; reconnect (id prefix ok)
+(def sbx  (sandbox/create! {:os :linux :image "alpine" :name "web-1" :command ["sleep" "300"]}))
+(def same (sandbox/get (:id sbx)))          ; reconnect (id prefix ok)
 (def same (sandbox/get "web-1"))            ; ...or by its exact --name
 (def all  (sandbox/list {:all true}))       ; vector of sandbox-info maps
 
-(sandbox/status box)          ; sandbox-info map, or nil
-(sandbox/running? box)        ; true / false
-(sandbox/logs box)            ; console log (string)
-(sandbox/shell! box)          ; interactive shell (inherits the terminal)
-(sandbox/stop! box)           ; BSD guests clean-poweroff; Linux SIGTERM
-(sandbox/start! box)          ; restart in place — resumes its own disk/rootfs
-(sandbox/update! box {:cpus 4 :mem 2048})   ; applies on next start
-(sandbox/remove! box {:force true})
+(sandbox/status sbx)          ; sandbox-info map, or nil
+(sandbox/running? sbx)        ; true / false
+(sandbox/logs sbx)            ; console log (string)
+(sandbox/shell! sbx)          ; interactive shell (inherits the terminal)
+(sandbox/stop! sbx)           ; BSD guests clean-poweroff; Linux SIGTERM
+(sandbox/start! sbx)          ; restart in place — resumes its own disk/rootfs
+(sandbox/update! sbx {:cpus 4 :mem 2048})   ; applies on next start
+(sandbox/remove! sbx {:force true})
 ```
 
-Every function above takes a `ref` — a sandbox map (`box`) **or** a bare
+Every function above takes a `ref` — a sandbox map (`sbx`) **or** a bare
 id/name string — so you never have to reconnect first just to act on a
 machine you already know the name of:
 
@@ -198,7 +225,7 @@ you want the sandbox back at the end instead of the last call's result:
     (sandbox/exec! ["uname" "-a"])
     :stdout)
 
-;; doto : same box driven through every step; you get the box back
+;; doto : same sbx driven through every step; you get the sbx back
 (doto (sandbox/get "web-1")
   sandbox/start!
   (sandbox/exec! ["setup.sh"] {:throw-on-error true})
@@ -229,11 +256,11 @@ Host-level namespaces:
 (sandbox/create! {:os :linux :image "alpine" :net {:ports ["2222:22"]}})
 
 ;; agent-managed key-based SSH
-(sandbox/ssh-setup! box)                              ; install local ~/.ssh/*.pub keys
-(sandbox/ssh-setup! box {:user "tsiry" :key "~/.ssh/work.pub"})
+(sandbox/ssh-setup! sbx)                              ; install local ~/.ssh/*.pub keys
+(sandbox/ssh-setup! sbx {:user "tsiry" :key "~/.ssh/work.pub"})
 
 ;; put a guest on your tailnet
-(sandbox/tailscale-up! box {:authkey "tskey-auth-..." :hostname "web"})
+(sandbox/tailscale-up! sbx {:authkey "tskey-auth-..." :hostname "web"})
 ```
 
 ### Global networks — reach machines by name
@@ -394,7 +421,7 @@ Pattern-match on `(:bsdkrun/error (ex-data e))`:
 (require '[bsdkrun.sandbox :as sandbox])
 
 (try
-  (sandbox/exec! box ["false"] {:throw-on-error true})
+  (sandbox/exec! sbx ["false"] {:throw-on-error true})
   (catch clojure.lang.ExceptionInfo e
     (case (:bsdkrun/error (ex-data e))
       :command-failed (println "exit" (:exit-code (ex-data e)) (:stderr (ex-data e)))

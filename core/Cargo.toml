@@ -54,6 +54,19 @@ serde_json = "1"
 toml = "0.8"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tokio = { version = "1", features = ["rt", "time"] }
+# `bsdkrun cache` archives. Linked rather than shelled out to: `zstd` is not on
+# a stock macOS or a minimal Linux, and estargz cannot be produced by any CLI —
+# it needs one gzip member per tar entry, which no gzip(1) exposes.
+flate2 = "1"
+zstd = "0.13"
+tar = "0.4"
+# SigV4 for the S3 cache backend. Pure Rust and no async runtime, so the
+# "all HTTP goes through curl" rule in oci.rs still holds — we sign, curl sends.
+sha2 = "0.10"
+hmac = "0.12"
+# estargz stages the incoming tar so it can find entry boundaries; a temp file
+# rather than memory keeps a multi-gigabyte cache off the heap.
+tempfile = "3"
 actix-web = { version = "4", optional = true }
 rust-embed = { version = "8", optional = true }
 mime_guess = { version = "2", optional = true }

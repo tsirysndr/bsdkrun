@@ -21,6 +21,7 @@
 
 pub mod agent;
 pub mod api;
+pub mod cache;
 pub mod cli;
 pub mod commands;
 pub mod console;
@@ -137,6 +138,22 @@ pub fn dispatch(cmd: Command) -> Result<()> {
             commands::guest::cmd_exec(&args.id, &args.command, &args.env, args.tty)
         }
         Command::Cp(args) => commands::cp::cmd_cp(&args.src, &args.dst, args.recursive),
+        Command::Cache(args) => match args.cmd {
+            CacheCmd::Save(a) => {
+                let (id, path) = split_target(&a.target)?;
+                let path = path.ok_or_else(|| {
+                    anyhow::anyhow!("`cache save` needs the directory to archive: ID:PATH")
+                })?;
+                commands::cache::cmd_save(id, path, &a.key, a.compression.parse()?, a.force, a.json)
+            }
+            CacheCmd::Restore(a) => {
+                let (id, path) = split_target(&a.target)?;
+                commands::cache::cmd_restore(id, path, &a.key, &a.restore_keys, a.json)
+            }
+            CacheCmd::Ls(a) => commands::cache::cmd_ls(a.json),
+            CacheCmd::Rm(a) => commands::cache::cmd_rm(&a.keys, a.all),
+        },
+        Command::Doctor(args) => commands::doctor::cmd_doctor(args.json),
         Command::Tailscale(args) => commands::guest::cmd_tailscale(&args.id, &args.args),
         Command::Ssh(args) => commands::guest::cmd_ssh(&args.id, &args.args),
         Command::Systemd(args) => {
@@ -220,4 +237,15 @@ fn serve_ui(args: cli::UiArgs) -> Result<()> {
 #[cfg(all(feature = "boot", not(feature = "ui")))]
 fn serve_ui(_args: cli::UiArgs) -> Result<()> {
     anyhow::bail!("this build has no web UI compiled in")
+}
+
+/// Split a `cache` target into `(id, path)`. The path is optional so
+/// `cache restore web` can mean "back where it came from".
+#[cfg(feature = "boot")]
+fn split_target(target: &str) -> Result<(&str, Option<&str>)> {
+    match target.split_once(':') {
+        Some((id, path)) if !id.is_empty() && !path.is_empty() => Ok((id, Some(path))),
+        Some(_) => anyhow::bail!("expected ID:PATH, got {target:?}"),
+        None => Ok((target, None)),
+    }
 }

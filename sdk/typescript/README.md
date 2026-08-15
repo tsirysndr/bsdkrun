@@ -11,16 +11,16 @@ binary, so it has zero npm dependencies.
 ```ts
 import { Sandbox } from "@bsdkrun/sdk";
 
-const box = await Sandbox.create({ os: "linux", image: "alpine" });
+const sbx = await Sandbox.create({ os: "linux", image: "alpine" });
 
 // Tagged-template shell — interpolations are shell-quoted for you:
-const kernel = await box.sh`uname -a`.text();
+const kernel = await sbx.sh`uname -a`.text();
 
 // ...or exec argv directly, with env / stdin / a PTY / a working dir:
-await box.exec(["apk", "add", "curl"]);
-await box.runCommand("curl", ["-fsSL", "https://example.com"]);
+await sbx.exec(["apk", "add", "curl"]);
+await sbx.runCommand("curl", ["-fsSL", "https://example.com"]);
 
-await box.stop();
+await sbx.stop();
 ```
 
 ## Install
@@ -110,14 +110,14 @@ Best for quick shell one-liners. Interpolated values are **single-quoted**
 
 ```ts
 const dir = "/etc";
-await box.sh`ls -la ${dir}`;                 // quoted
-await box.sh`grep ${pattern} /var/log/*`;    // quoted
+await sbx.sh`ls -la ${dir}`;                 // quoted
+await sbx.sh`grep ${pattern} /var/log/*`;    // quoted
 
-await box.sh`cat /nope`.nothrow();           // don't throw on non-zero exit
-await box.sh`echo $X`.env({ X: "1" }).text();
+await sbx.sh`cat /nope`.nothrow();           // don't throw on non-zero exit
+await sbx.sh`echo $X`.env({ X: "1" }).text();
 
 import { raw } from "@bsdkrun/sdk";
-await box.sh`ls ${raw("-la /var")}`;         // spliced verbatim (trusted only)
+await sbx.sh`ls ${raw("-la /var")}`;         // spliced verbatim (trusted only)
 ```
 
 An `sh` call is lazy and awaitable; `.text()`, `.json()`, `.lines()` are
@@ -130,9 +130,9 @@ The primary programmatic entrypoint. No shell parsing; pass an argv array (or a
 program name plus `args`). Richer options than `sh`:
 
 ```ts
-await box.exec(["ls", "-la", "/etc"]);
+await sbx.exec(["ls", "-la", "/etc"]);
 
-await box.exec("node", {
+await sbx.exec("node", {
   args: ["-e", "console.log(process.env.X)"],
   env: { X: "hi" },
   cwd: "/app",
@@ -144,7 +144,7 @@ await box.exec("node", {
 });
 
 // Vercel-Sandbox-style alias:
-const { stdout, exitCode } = await box.runCommand("uname", ["-a"]);
+const { stdout, exitCode } = await sbx.runCommand("uname", ["-a"]);
 ```
 
 `exec` returns a `CommandResult` with `.stdout`, `.stderr`, `.exitCode`, `.ok`,
@@ -159,6 +159,34 @@ semantics and commonly merges stderr into stdout.
 > Linux guests get it injected automatically; on BSD you install it once — see
 > the [bsdkrun README](../../README.md#the-exec-agent).
 
+## Caching
+
+`sandbox.cache` saves a guest directory under a key and restores it later, so a
+rebuild can pick up where the last one left off. **A miss is not an error** —
+check `restored` rather than catching.
+
+```ts
+import { caches } from "@bsdkrun/sdk";
+
+const key = `deps-${lockHash}`;
+const hit = await sbx.cache.restore({ key, restoreKeys: ["deps-"] });
+if (!hit.restored) {
+  await sbx.exec(["npm", "ci"]);
+  await sbx.cache.save("/app/node_modules", { key, compression: "zstd" });
+}
+
+await caches.list();          // every stored entry, newest first
+await caches.remove([key]);   // or removeCache([], { all: true })
+```
+
+`restoreKeys` are prefixes tried in order when the exact key misses; within a
+prefix the newest matching entry wins, and `hit.key` says which one was used.
+Formats are `gzip` (default), `zstd`, `estargz` and `none`.
+
+Where entries live is host configuration, not an SDK concern: the default is
+this host's disk, and `BSDKRUN_CACHE_BACKEND=s3` + `BSDKRUN_CACHE_S3_*` (or
+`~/.config/bsdkrun/cache.toml`) points them at a bucket instead.
+
 ## Files
 
 `sandbox.fs` reads and writes files in the guest. Parent directories are created
@@ -166,14 +194,14 @@ for you, and everything is byte-exact — `readFile` hands back a `Buffer`, so a
 PNG survives the round trip.
 
 ```ts
-await box.fs.writeFile("/app/main.py", "print('hi')");
-await box.fs.writeFile("/app/logo.png", pngBytes);
+await sbx.fs.writeFile("/app/main.py", "print('hi')");
+await sbx.fs.writeFile("/app/logo.png", pngBytes);
 
-const text  = await box.fs.readTextFile("/app/out.json");
-const bytes = await box.fs.readFile("/app/logo.png");
+const text  = await sbx.fs.readTextFile("/app/out.json");
+const bytes = await sbx.fs.readFile("/app/logo.png");
 
-await box.fs.upload("./src", "/app/src");                       // file or directory
-await box.fs.download("/app/dist", "./dist", { recursive: true });
+await sbx.fs.upload("./src", "/app/src");                       // file or directory
+await sbx.fs.download("/app/dist", "./dist", { recursive: true });
 ```
 
 `upload` looks at the local path to decide whether to recurse; `download` cannot
@@ -190,19 +218,19 @@ Failures throw `FileTransferError`, which carries the offending `path`.
 ## Lifecycle & inventory
 
 ```ts
-const box  = await Sandbox.create({ os: "linux", image: "alpine", command: ["sleep","300"] });
-const same = await Sandbox.get(box.id);        // reconnect (prefix ok)
+const sbx  = await Sandbox.create({ os: "linux", image: "alpine", command: ["sleep","300"] });
+const same = await Sandbox.get(sbx.id);        // reconnect (prefix ok)
 const list = await Sandbox.list({ all: true }); // SandboxInfo[]
 
-await box.status();      // SandboxInfo | null
-await box.isRunning();   // boolean
-await box.logs();        // console log (string)
-box.followLogs();        // live stream (child process)
-box.shell();             // interactive shell (inherits the terminal)
-await box.stop();        // BSD guests clean-poweroff; Linux SIGTERM
-await box.start();       // restart in place — resumes its own disk/rootfs (data persists)
-await box.update({ cpus: 4, mem: 2048 }); // applies on next start
-await box.remove({ force: true });
+await sbx.status();      // SandboxInfo | null
+await sbx.isRunning();   // boolean
+await sbx.logs();        // console log (string)
+sbx.followLogs();        // live stream (child process)
+sbx.shell();             // interactive shell (inherits the terminal)
+await sbx.stop();        // BSD guests clean-poweroff; Linux SIGTERM
+await sbx.start();       // restart in place — resumes its own disk/rootfs (data persists)
+await sbx.update({ cpus: 4, mem: 2048 }); // applies on next start
+await sbx.remove({ force: true });
 ```
 
 `stop`/`start` **persist your data**: `start` resumes the machine's own
@@ -224,13 +252,13 @@ await versions("netbsd");
 
 ## Interactive terminal (xterm.js in the browser)
 
-`box.terminal()` opens a PTY session in the guest, streamed over the agent's TCP
+`sbx.terminal()` opens a PTY session in the guest, streamed over the agent's TCP
 protocol — with **live window-resize**. It's shaped to drop straight into
 [xterm.js](https://xtermjs.org): pipe output in, forward keystrokes out, resize
 on demand.
 
 ```ts
-const term = await box.terminal({ command: ["/bin/sh"], cols: 120, rows: 30 });
+const term = await sbx.terminal({ command: ["/bin/sh"], cols: 120, rows: 30 });
 
 term.onData((chunk) => xterm.write(chunk));      // guest → xterm
 xterm.onData((input) => term.write(input));      // xterm → guest
@@ -243,7 +271,7 @@ Server-side, bridge it to a browser over a WebSocket in one call:
 
 ```ts
 wss.on("connection", async (ws) => {
-  const term = await box.terminal();
+  const term = await sbx.terminal();
   term.bindWebSocket(ws);   // wires output, input, and {"resize":[c,r]} frames
 });
 ```
@@ -258,18 +286,18 @@ complete Bun server + xterm.js page.
 await Sandbox.create({ os: "linux", image: "alpine", net: { ports: ["2222:22"] } });
 
 // agent-managed key-based SSH (typed helpers)
-await box.ssh.setup();                              // install local ~/.ssh/*.pub keys
-await box.ssh.setup({ user: "tsiry", key: "~/.ssh/work.pub" });
-await box.ssh.addKey("ssh-ed25519 AAAA...");
-await box.ssh.status();
+await sbx.ssh.setup();                              // install local ~/.ssh/*.pub keys
+await sbx.ssh.setup({ user: "tsiry", key: "~/.ssh/work.pub" });
+await sbx.ssh.addKey("ssh-ed25519 AAAA...");
+await sbx.ssh.status();
 
 // put a guest on your tailnet
-await box.tailscale.up({ authkey: "tskey-auth-...", hostname: "web" });
-await box.tailscale.status();
+await sbx.tailscale.up({ authkey: "tskey-auth-...", hostname: "web" });
+await sbx.tailscale.status();
 
 // turn a Linux guest into a systemd system (debian/ubuntu/fedora only —
 // not Alpine, not the BSD guests)
-await box.systemd.setup();
+await sbx.systemd.setup();
 ```
 
 ### Global networks — reach machines by name

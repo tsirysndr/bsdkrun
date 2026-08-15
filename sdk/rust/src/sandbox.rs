@@ -4,14 +4,14 @@
 //! ```no_run
 //! use bsdkrun_sdk::Sandbox;
 //!
-//! let boxx = Sandbox::linux("alpine")
+//! let sbx = Sandbox::linux("alpine")
 //!     .cpus(2)
 //!     .mem(1024)
 //!     .port("8080:80")
 //!     .command(["sleep", "300"])
 //!     .create()?;
-//! println!("{}", boxx.exec(["uname", "-a"])?.text());
-//! boxx.stop()?;
+//! println!("{}", sbx.exec(["uname", "-a"])?.text());
+//! sbx.stop()?;
 //! # Ok::<(), bsdkrun_sdk::Error>(())
 //! ```
 
@@ -447,6 +447,11 @@ impl Sandbox {
     /// Read and write files in the guest.
     pub fn fs(&self) -> crate::FileSystem {
         crate::filesystem::FileSystem::new(&self.id)
+    }
+
+    /// Save and restore guest directories under a key.
+    pub fn cache(&self) -> crate::Cache {
+        crate::cache::Cache::new(&self.id)
     }
 
     /// Boot an OCI image as a Linux microVM.

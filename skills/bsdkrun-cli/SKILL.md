@@ -39,6 +39,10 @@ Lifecycle:
 Interact:
 - `bsdkrun exec [-t] [-e K=V]... <id> <cmd>...` — run a command in a guest (via its agent).
 - `bsdkrun cp [-r] <SRC> <DST>` — copy files host<->guest, `docker cp`-style (`ID:PATH`, `-` = stdio).
+- `bsdkrun cache save <id>:<path> --key K [-c gzip|zstd|estargz|none]` — archive a guest dir.
+- `bsdkrun cache restore <id>[:<path>] --key K [--restore-keys PREFIX...]` — put it back (a miss exits 0).
+- `bsdkrun cache ls` / `bsdkrun cache rm <key>... | --all` — list and remove entries.
+- `bsdkrun doctor [--json]` — check the host can run machines; exits 1 on any failure.
 - `bsdkrun shell <id>` — attach an interactive console to a detached machine.
 - `bsdkrun logs [-f] [--boot] <id>` — show the console log (`--boot` = bsdkrun's own boot log).
 

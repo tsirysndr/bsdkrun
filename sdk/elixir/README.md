@@ -7,14 +7,14 @@ The SDK shells out to the `bsdkrun` binary via `System.cmd/3`, so its only
 runtime dependency is [`jason`](https://hex.pm/packages/jason) for JSON parsing.
 
 ```elixir
-{:ok, box} = Bsdkrun.create(os: :linux, image: "alpine")
+{:ok, sbx} = Bsdkrun.create(os: :linux, image: "alpine")
 
 # argv exec — no shell parsing; env / stdin / a PTY / a working dir:
-{:ok, res} = Bsdkrun.exec(box, ["uname", "-a"])
+{:ok, res} = Bsdkrun.exec(sbx, ["uname", "-a"])
 IO.puts(Bsdkrun.Types.Result.text(res))
 
-{:ok, _} = Bsdkrun.exec(box, ["apk", "add", "curl"])
-:ok = Bsdkrun.stop(box)
+{:ok, _} = Bsdkrun.exec(sbx, ["apk", "add", "curl"])
+:ok = Bsdkrun.stop(sbx)
 ```
 
 Or, with the bang variants, as one `|>` chain:
@@ -92,10 +92,10 @@ Bsdkrun.create(os: :kernel, kernel: "netbsd", format: "elf", disk: "root.raw")
 parsing) or a bare program name with `:args`, plus options:
 
 ```elixir
-Bsdkrun.exec(box, ["ls", "-la", "/etc"])
+Bsdkrun.exec(sbx, ["ls", "-la", "/etc"])
 
 {:ok, res} =
-  Bsdkrun.exec(box, "node",
+  Bsdkrun.exec(sbx, "node",
     args: ["-e", "IO.puts System.get_env(\"X\")"],
     env: %{"X" => "hi"},
     cwd: "/app",
@@ -115,6 +115,35 @@ Bsdkrun.Types.Result.text(res)   # stdout, trailing newlines trimmed
 The callbacks receive binary chunks in real time while the complete streams
 remain buffered in the returned result. They are independent of `:tty`; a PTY
 changes command semantics and may merge stderr into stdout.
+
+## Caching
+
+`Bsdkrun.Cache` saves a guest directory under a key and restores it later, so a
+rebuild can pick up where the last one left off. **A miss is not an error** — it
+comes back as `{:ok, %{restored: false}}`.
+
+```elixir
+alias Bsdkrun.Cache
+
+key = "deps-" <> lock_hash
+{:ok, hit} = Cache.restore("web", key: key, restore_keys: ["deps-"])
+
+unless hit.restored do
+  Bsdkrun.Sandbox.exec("web", ["npm", "ci"])
+  Cache.save("web", "/app/node_modules", key: key, compression: "zstd")
+end
+
+Cache.list()          # every stored entry, newest first
+Cache.remove([key])   # or Cache.remove([], all: true)
+```
+
+`:restore_keys` are prefixes tried in order when the exact key misses; within a
+prefix the newest matching entry wins, and `hit.key` says which one was used.
+Formats are `"gzip"` (default), `"zstd"`, `"estargz"` and `"none"`.
+
+Where entries live is host configuration, not an SDK concern: the default is
+this host's disk, and `BSDKRUN_CACHE_BACKEND=s3` + `BSDKRUN_CACHE_S3_*` (or
+`~/.config/bsdkrun/cache.toml`) points them at a bucket instead.
 
 ## Files
 
@@ -146,17 +175,17 @@ carries the offending path.
 ## Lifecycle & inventory
 
 ```elixir
-{:ok, box}  = Bsdkrun.create(os: :linux, image: "alpine", command: ["sleep", "300"])
-{:ok, same} = Bsdkrun.get(box.id)          # reconnect (prefix ok)
+{:ok, sbx}  = Bsdkrun.create(os: :linux, image: "alpine", command: ["sleep", "300"])
+{:ok, same} = Bsdkrun.get(sbx.id)          # reconnect (prefix ok)
 {:ok, list} = Bsdkrun.list(all: true)      # [%Bsdkrun.Types.SandboxInfo{}]
 
-Bsdkrun.Sandbox.status(box)      # {:ok, %SandboxInfo{} | nil}
-Bsdkrun.Sandbox.running?(box)    # boolean
-Bsdkrun.logs(box)                # {:ok, console_log}
-Bsdkrun.stop(box)                # BSD guests clean-poweroff; Linux SIGTERM
-Bsdkrun.start(box)               # restart in place — resumes disk/rootfs
-Bsdkrun.Sandbox.update(box, cpus: 4, mem: 2048)  # applies on next start
-Bsdkrun.remove(box, force: true)
+Bsdkrun.Sandbox.status(sbx)      # {:ok, %SandboxInfo{} | nil}
+Bsdkrun.Sandbox.running?(sbx)    # boolean
+Bsdkrun.logs(sbx)                # {:ok, console_log}
+Bsdkrun.stop(sbx)                # BSD guests clean-poweroff; Linux SIGTERM
+Bsdkrun.start(sbx)               # restart in place — resumes disk/rootfs
+Bsdkrun.Sandbox.update(sbx, cpus: 4, mem: 2048)  # applies on next start
+Bsdkrun.remove(sbx, force: true)
 ```
 
 `SandboxInfo.kind` is an atom — `:linux`, `:freebsd`, `:netbsd`, `:firmware`,

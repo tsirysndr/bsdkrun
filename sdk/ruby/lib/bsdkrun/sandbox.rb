@@ -9,9 +9,9 @@ module Bsdkrun
   # with {Sandbox.list}.
   #
   # @example
-  #   box = Bsdkrun::Sandbox.create(os: "linux", image: "alpine")
-  #   box.exec(["uname", "-a"]).text
-  #   box.stop
+  #   sbx = Bsdkrun::Sandbox.create(os: "linux", image: "alpine")
+  #   sbx.exec(["uname", "-a"]).text
+  #   sbx.stop
   class Sandbox
     ID_RE = /\A[0-9a-f]{6,}\z/
     SSH_PORT_RE = /ssh -p (\d+)/
@@ -36,6 +36,12 @@ module Bsdkrun
     # @return [FileSystem]
     def fs
       @fs ||= FileSystem.new(@id)
+    end
+
+    # Save and restore guest directories under a key.
+    # @return [Cache]
+    def cache
+      @cache ||= Cache.new(@id)
     end
 
     class << self

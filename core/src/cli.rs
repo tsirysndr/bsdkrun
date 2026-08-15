@@ -162,6 +162,12 @@ pub enum Command {
     /// Copy files between the host and a running machine (like `docker cp`).
     Cp(CpArgs),
 
+    /// Save and restore a guest directory under a key (host disk or S3).
+    Cache(CacheArgs),
+
+    /// Check that this host can run machines, and say what to fix if not.
+    Doctor(DoctorArgs),
+
     /// Manage tailscale inside a running machine (install/start/status/setup).
     Tailscale(TailscaleArgs),
 
@@ -703,6 +709,106 @@ pub struct CpArgs {
     /// Destination: `PATH`, `ID:PATH`, or `-` for stdout.
     #[arg(value_name = "DST")]
     pub dst: String,
+}
+
+/// Save and restore guest directories under a key, so a rebuild can pick up
+/// where the last one left off.
+#[derive(Parser, Serialize, Deserialize)]
+#[command(after_help = "\
+EXAMPLES:
+  bsdkrun cache save web:/root/.cargo --key cargo-$(shasum Cargo.lock | cut -c1-12)
+  bsdkrun cache restore web --key cargo-abc123 --restore-keys cargo-
+  bsdkrun cache ls
+  bsdkrun cache rm cargo-abc123
+
+Entries go to the host disk by default. Point them at S3 with
+BSDKRUN_CACHE_BACKEND=s3 and BSDKRUN_CACHE_S3_BUCKET, or ~/.config/bsdkrun/cache.toml.")]
+pub struct CacheArgs {
+    #[command(subcommand)]
+    pub cmd: CacheCmd,
+}
+
+#[derive(clap::Subcommand, Serialize, Deserialize)]
+pub enum CacheCmd {
+    /// Archive a guest directory and store it under a key.
+    Save(CacheSaveArgs),
+    /// Restore a stored tree into a machine.
+    Restore(CacheRestoreArgs),
+    /// List stored entries.
+    Ls(CacheLsArgs),
+    /// Remove stored entries.
+    Rm(CacheRmArgs),
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct CacheSaveArgs {
+    /// What to archive, as `ID:PATH` (the machine must be running).
+    #[arg(value_name = "ID:PATH")]
+    pub target: String,
+
+    /// Key to store it under. Make it name the content — a lockfile hash is the
+    /// usual choice — so a changed dependency set gets a different entry.
+    #[arg(short = 'k', long)]
+    pub key: String,
+
+    /// Archive format: gzip (default), zstd, estargz, or none.
+    #[arg(short = 'c', long, default_value = "gzip", value_name = "FORMAT")]
+    pub compression: String,
+
+    /// Replace an entry that already has this key.
+    #[arg(short = 'f', long)]
+    pub force: bool,
+
+    /// Print the result as JSON instead of a human summary.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct CacheRestoreArgs {
+    /// Where to restore, as `ID` or `ID:PATH`. Without a path, the entry goes
+    /// back to the directory it was saved from.
+    #[arg(value_name = "ID[:PATH]")]
+    pub target: String,
+
+    /// Key to look for.
+    #[arg(short = 'k', long)]
+    pub key: String,
+
+    /// Prefixes to fall back on when the key misses, most preferred first.
+    /// Within a prefix the newest matching entry wins.
+    #[arg(long, value_name = "PREFIX", num_args = 1..)]
+    pub restore_keys: Vec<String>,
+
+    /// Print the result as JSON. `restored` says whether anything was found,
+    /// and `key` which entry a `--restore-keys` fallback landed on.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Default, Serialize, Deserialize)]
+pub struct CacheLsArgs {
+    /// Print the entries as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct CacheRmArgs {
+    /// Remove every entry in the store.
+    #[arg(long, conflicts_with = "keys")]
+    pub all: bool,
+
+    /// Key(s) to remove.
+    #[arg(value_name = "KEY", required_unless_present = "all")]
+    pub keys: Vec<String>,
+}
+
+#[derive(Parser, Default, Serialize, Deserialize)]
+pub struct DoctorArgs {
+    /// Print the report as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Parser, Serialize, Deserialize)]

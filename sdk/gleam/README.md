@@ -47,10 +47,10 @@ import bsdkrun/args
 import bsdkrun/types
 
 pub fn main() {
-  let assert Ok(box) = bsdkrun.create(args.linux("alpine"))
-  let assert Ok(res) = bsdkrun.exec(box, ["uname", "-a"])
+  let assert Ok(sbx) = bsdkrun.create(args.linux("alpine"))
+  let assert Ok(res) = bsdkrun.exec(sbx, ["uname", "-a"])
   echo types.text(res)
-  let assert Ok(box) = bsdkrun.stop(box)
+  let assert Ok(sbx) = bsdkrun.stop(sbx)
 }
 ```
 
@@ -116,7 +116,7 @@ import bsdkrun/types
 
 let assert Ok(res) =
   sandbox.exec(
-    box,
+    sbx,
     ["sh", "-c", "cat > out.txt && wc -l < out.txt"],
     sandbox.exec_options()
       |> sandbox.with_env([#("RUST_LOG", "debug")])
@@ -141,6 +141,34 @@ The callbacks receive chunks as they arrive, while the completed
 `CommandResult` still contains all stdout and stderr. Streaming is independent
 of `with_tty`; a PTY changes command semantics and may merge stderr into
 stdout.
+
+## Caching
+
+`bsdkrun/cache` saves a guest directory under a key and restores it later, so a
+rebuild can pick up where the last one left off. **A miss is not an error** — it
+comes back as `Ok` with `restored: False`.
+
+```gleam
+import bsdkrun/cache
+import gleam/option.{None, Some}
+
+let assert Ok(hit) = cache.restore("web", key, None, ["deps-"])
+case hit.restored {
+  False -> cache.save("web", "/app/node_modules", key, cache.Zstd, False)
+  True -> Ok(cache.CacheEntry("", "", "", 0, 0, ""))
+}
+
+cache.list()               // every stored entry, newest first
+cache.remove([key], False) // or ([], True) for all
+```
+
+The restore keys are prefixes tried in order when the exact key misses; within a
+prefix the newest matching entry wins, and `hit.key` says which one was used.
+Formats are `Gzip` (default), `Zstd`, `Estargz` and `Uncompressed`.
+
+Where entries live is host configuration, not an SDK concern: the default is
+this host's disk, and `BSDKRUN_CACHE_BACKEND=s3` + `BSDKRUN_CACHE_S3_*` (or
+`~/.config/bsdkrun/cache.toml`) points them at a bucket instead.
 
 ## Files
 
@@ -173,23 +201,23 @@ Failures are `error.FileTransferFailed(path, message)`.
 ## Lifecycle
 
 ```gleam
-bsdkrun.stop(box)              // Ok(box) back — not Ok(Nil)
-bsdkrun.start(box)             // restart in place: same id, disk, resources
-bsdkrun.remove(box, True)      // force: stop first if running
-bsdkrun.status(box)            // Ok(Some(SandboxInfo)) or Ok(None) if gone
-bsdkrun.is_running(box)
-bsdkrun.logs(box)              // console log
-sandbox.boot_logs(box)         // bsdkrun's own boot log
-sandbox.update(box, Some(4), Some(4096))  // cpus, mem — applies on next start
-sandbox.connect_network(box, "devnet")    // join/switch — applies on next start
-sandbox.disconnect_network(box)
-sandbox.shell(box)             // interactive shell, inherits stdio
+bsdkrun.stop(sbx)              // Ok(sbx) back — not Ok(Nil)
+bsdkrun.start(sbx)             // restart in place: same id, disk, resources
+bsdkrun.remove(sbx, True)      // force: stop first if running
+bsdkrun.status(sbx)            // Ok(Some(SandboxInfo)) or Ok(None) if gone
+bsdkrun.is_running(sbx)
+bsdkrun.logs(sbx)              // console log
+sandbox.boot_logs(sbx)         // bsdkrun's own boot log
+sandbox.update(sbx, Some(4), Some(4096))  // cpus, mem — applies on next start
+sandbox.connect_network(sbx, "devnet")    // join/switch — applies on next start
+sandbox.disconnect_network(sbx)
+sandbox.shell(sbx)             // interactive shell, inherits stdio
 ```
 
 `stop`, `start`, `remove`, `update`, `connect_network` and `disconnect_network`
-all return `Result(Sandbox, Error)` — the same `box`, not `Nil` — so a
+all return `Result(Sandbox, Error)` — the same `sbx`, not `Nil` — so a
 sequence of them chains with `|>` through `gleam/result.try` instead of
-re-threading `box` by hand:
+re-threading `sbx` by hand:
 
 ```gleam
 import gleam/result
@@ -237,11 +265,11 @@ resolve via the network's DNS, NetBSD via a synced `/etc/hosts` block.
 
 ```gleam
 // install key-based SSH via the guest agent
-sandbox.ssh_setup(box, None, [])                       // your local ~/.ssh/*.pub
-sandbox.ssh_setup(box, Some("tsiry"), ["~/.ssh/work.pub"])
+sandbox.ssh_setup(sbx, None, [])                       // your local ~/.ssh/*.pub
+sandbox.ssh_setup(sbx, Some("tsiry"), ["~/.ssh/work.pub"])
 
 // put the guest on your tailnet
-sandbox.tailscale_up(box, Some("tskey-auth-…"), Some("web"), [])
+sandbox.tailscale_up(sbx, Some("tskey-auth-…"), Some("web"), [])
 ```
 
 The Tailscale auth key travels in the environment as `TS_AUTHKEY`, so it never

@@ -27,6 +27,7 @@
 mod args;
 mod binary;
 mod client;
+pub mod cache;
 mod error;
 mod filesystem;
 mod process;
@@ -46,6 +47,7 @@ pub use client::{
     ShellSession, Subscription,
 };
 pub use error::{Error, Result};
+pub use cache::{Cache, CacheEntry, RestoreResult};
 pub use filesystem::FileSystem;
 pub use process::{run, run_binary, run_checked, spawn, BinaryResult, RawResult};
 pub use sandbox::{

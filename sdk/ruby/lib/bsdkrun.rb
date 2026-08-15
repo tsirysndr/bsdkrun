@@ -5,6 +5,7 @@ require_relative "bsdkrun/errors"
 require_relative "bsdkrun/binary"
 require_relative "bsdkrun/process"
 require_relative "bsdkrun/args"
+require_relative "bsdkrun/cache"
 require_relative "bsdkrun/filesystem"
 require_relative "bsdkrun/types"
 require_relative "bsdkrun/sandbox"
@@ -24,9 +25,9 @@ require_relative "bsdkrun/client"
 # @example
 #   require "bsdkrun"
 #
-#   box = Bsdkrun::Sandbox.create(os: "linux", image: "alpine")
-#   puts box.exec(["uname", "-a"]).text
-#   box.stop
+#   sbx = Bsdkrun::Sandbox.create(os: "linux", image: "alpine")
+#   puts sbx.exec(["uname", "-a"]).text
+#   sbx.stop
 module Bsdkrun
   class << self
     # Force the SDK to use a specific +bsdkrun+ binary, bypassing discovery.

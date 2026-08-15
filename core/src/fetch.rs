@@ -813,9 +813,42 @@ fn write_freebsd_loader_env(raw: &Path, env: &str) -> Result<()> {
 
 /// Run a command, streaming its stdout/stderr, and error if it fails.
 pub(crate) fn run(cmd: &mut Command, what: &str) -> Result<()> {
-    let status = cmd.status().with_context(|| format!("spawning {what}"))?;
+    let status = cmd.status().map_err(|e| spawn_error(cmd, what, e))?;
     if !status.success() {
         bail!("{what} exited with {status}");
     }
     Ok(())
+}
+
+/// Explain a failed spawn, naming the tool when it simply isn't installed.
+///
+/// bsdkrun shells out to a handful of host tools rather than linking their
+/// libraries — `curl` for every download, `tar` for every archive. When one is
+/// absent the raw error is `No such file or directory (os error 2)` attached to
+/// whatever we were *doing*, which reads like the URL or the path was wrong and
+/// sends you looking in the wrong place entirely.
+pub(crate) fn spawn_error(cmd: &Command, what: &str, e: std::io::Error) -> anyhow::Error {
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    if e.kind() == std::io::ErrorKind::NotFound {
+        anyhow::anyhow!(
+            "{what} needs `{program}`, which is not on PATH.{}",
+            install_hint(&program)
+        )
+    } else {
+        anyhow::Error::new(e).context(format!("spawning {program} for {what}"))
+    }
+}
+
+/// How to get one of the host tools bsdkrun shells out to.
+fn install_hint(program: &str) -> String {
+    let pkg = match program {
+        "curl" => "curl",
+        "tar" => "tar (bsdtar or GNU tar)",
+        "gzip" => "gzip",
+        other => return format!(" Install {other} and try again."),
+    };
+    format!(
+        " Install {pkg}: `brew install {program}` on macOS, \
+         or your distribution's package of the same name."
+    )
 }

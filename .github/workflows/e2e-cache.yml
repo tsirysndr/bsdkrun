@@ -1,0 +1,201 @@
+name: "e2e (cache: disk + S3/MinIO)"
+
+# Boots a real OCI microVM under KVM and validates `bsdkrun cache` end to end:
+# save a guest directory and restore it byte for byte in every archive format
+# (gzip / zstd / estargz / none), against both backends.
+#
+# The S3 half runs against a real MinIO rather than a mock.
+# SigV4 either produces a request a server accepts or it does not, and when it
+# does not the answer is a flat 403 that names none of the five derivation
+# steps — so the only signing test worth having is one that talks to something
+# that verifies signatures. It also pins the behaviour that broke on first
+# contact with a real bucket: the 404 from the "is this key already cached?"
+# probe is an answer, not an error.
+#
+# Only GitHub's x86_64 runners expose /dev/kvm (the arm64 runners don't), so CI
+# runs amd64 here; arm64 (macOS Hypervisor.framework) is validated on a dev
+# machine.
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - "core/**"
+      - "agent/**"
+      - "src/**"
+      - "build.rs"
+      - "tests/e2e_cache.sh"
+      - "tests/estargz_interop.sh"
+      - ".github/workflows/e2e-cache.yml"
+  push:
+    branches:
+      - "main"
+    paths:
+      - "core/**"
+      - "agent/**"
+      - "src/**"
+      - "build.rs"
+      - "tests/e2e_cache.sh"
+      - "tests/estargz_interop.sh"
+      - ".github/workflows/e2e-cache.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cache:
+    name: x86_64
+    runs-on: ubuntu-latest # x86_64; has /dev/kvm
+    timeout-minutes: 30 # never hang the runner if a guest doesn't power off
+
+    steps:
+      # `submodules` for library/solo5: core/build.rs builds the Solo5 tender
+      # from it, and without it the build merely warns — so the binary under
+      # test would quietly differ from the one that ships.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Enable KVM
+        run: |
+          set -eux
+          test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 0666 /dev/kvm
+          ls -l /dev/kvm
+
+      - name: Install build deps (incl. libkrun/libkrunfw build requirements)
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl ca-certificates xz-utils python3 \
+            python3-pyelftools pkg-config patchelf patch cpio kmod rsync zstd \
+            flex bison bc libelf-dev libssl-dev \
+            clang libclang-dev llvm-dev musl-tools libseccomp-dev
+
+      - name: Install gvproxy (user-mode networking)
+        run: |
+          set -eux
+          sudo curl -fL -o /usr/local/bin/gvproxy \
+            https://github.com/containers/gvisor-tap-vsock/releases/latest/download/gvproxy-linux-amd64
+          sudo chmod +x /usr/local/bin/gvproxy
+          gvproxy --help >/dev/null 2>&1 || which gvproxy
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+
+      # Same cache key as e2e-linux.yml / e2e-linux-disk.yml so the three share
+      # one libkrunfw build (a Linux kernel from source, ~15-20 min).
+      - name: Restore libkrun build
+        id: libkrun-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v16
+
+      - name: Build libkrun (cache miss)
+        if: steps.libkrun-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          git clone --depth 1 -b v5.5.0 https://github.com/containers/libkrunfw
+          ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
+          git clone --depth 1 -b feat/pvh-boot https://github.com/tsirysndr/libkrun
+          ( cd libkrun && make -j"$(nproc)" BLK=1 NET=1 )
+
+      - name: Save libkrun build
+        if: steps.libkrun-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v16
+
+      - name: Install libkrun
+        run: |
+          set -eux
+          ( cd libkrunfw && sudo make install )
+          ( cd libkrun && sudo make install BLK=1 NET=1 )
+          echo "PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo /usr/local/lib64 | sudo tee /etc/ld.so.conf.d/libkrun.conf
+          sudo ldconfig
+          ls -l /usr/local/lib64/libkrun.so*
+
+      - name: Build bsdkrun
+        run: cargo build --release
+
+      - name: Build guest agent (static musl)
+        run: |
+          set -eux
+          ( cd agent && cargo build --release --target x86_64-unknown-linux-musl )
+          echo "BSDKRUN_AGENT_LINUX=$PWD/agent/target/x86_64-unknown-linux-musl/release/bsdkrun-agent" >> "$GITHUB_ENV"
+
+      - name: bsdkrun doctor
+        # Not a gate on the cache itself — it is the fastest way to see, in the
+        # log of a failed run, whether the host was ever able to run machines.
+        run: target/release/bsdkrun doctor || true
+
+      # Started with `docker run`, not a `services:` container: MinIO's
+      # entrypoint needs the `server /data` argument, and `services:` has no way
+      # to pass one — the workaround people reach for is a different image whose
+      # default command happens to be right, which is a worse dependency than
+      # one explicit line.
+      - name: Start MinIO
+        run: |
+          set -eux
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=bsdkruntest \
+            -e MINIO_ROOT_PASSWORD=bsdkruntest123 \
+            minio/minio:latest server /data
+          # Wait for it rather than sleeping: a fixed sleep is either too short
+          # on a slow runner or wasted on a fast one.
+          for _ in $(seq 60); do
+            if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1; then
+              echo "minio is live"; break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null
+
+      # `mc` rather than curl: creating a bucket is itself a signed request, and
+      # using the vendor's client keeps this step from becoming a second,
+      # untested implementation of SigV4.
+      - name: Create the MinIO bucket
+        env:
+          MC_HOST_local: http://bsdkruntest:bsdkruntest123@127.0.0.1:9000
+        run: |
+          set -eux
+          curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /tmp/mc
+          chmod +x /tmp/mc
+          /tmp/mc mb --ignore-existing local/bsdkrun-cache
+          /tmp/mc ls local/
+
+      - name: e2e — cache save/restore across formats, on disk and on S3
+        env:
+          BSDKRUN_BIN: target/release/bsdkrun
+          S3_ENDPOINT: http://127.0.0.1:9000
+          S3_BUCKET: bsdkrun-cache
+          AWS_ACCESS_KEY_ID: bsdkruntest
+          AWS_SECRET_ACCESS_KEY: bsdkruntest123
+          AWS_REGION: us-east-1
+        run: ./tests/e2e_cache.sh
+
+      # The archive is meant to be the artifact containerd consumes, so check it
+      # with containerd's own reader rather than ours. A format that only our
+      # code can read would pass every test above and still be wrong.
+      - name: Verify the estargz archive with containerd's reader
+        env:
+          BSDKRUN_BIN: target/release/bsdkrun
+        run: ./tests/estargz_interop.sh
+
+      - name: MinIO logs (on failure)
+        if: failure()
+        run: docker logs minio 2>&1 | tail -50

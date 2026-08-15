@@ -101,6 +101,42 @@ The transfer rides the guest's exec agent (`cat`, plus `tar` for `-r`), so the m
 running and its image needs a shell — which every image that boots under bsdkrun already has. An
 image without `tar` can still copy files one at a time; `-r` reports that specifically.
 
+### `cache save <ID:PATH> --key <KEY> [-c FORMAT] [--force]`
+Archive a guest directory and store it under a key. `--compression` is `gzip` (default), `zstd`,
+`estargz` or `none`. Saving over an existing key needs `--force`.
+
+### `cache restore <ID[:PATH]> --key <KEY> [--restore-keys PREFIX...]`
+Restore a stored tree. Without a path it goes back where it was saved from. `--restore-keys` are
+prefixes tried in order when the exact key misses; within a prefix the newest entry wins. **A miss
+is not an error** — it prints `cache miss` and exits 0, so a first run needs no `|| true`.
+
+### `cache ls [--json]` / `cache rm <KEY>... | --all`
+List and remove entries.
+
+```sh
+bsdkrun cache save web:/root/.cargo --key cargo-$(shasum Cargo.lock | cut -c1-12)
+bsdkrun cache restore web --key cargo-abc123 --restore-keys cargo-
+bsdkrun cache ls
+bsdkrun cache rm --all
+```
+
+Entries go to the host disk (`<cache>/caches`) by default. For a shared store, set
+`BSDKRUN_CACHE_BACKEND=s3` and `BSDKRUN_CACHE_S3_BUCKET`, or write `~/.config/bsdkrun/cache.toml`:
+
+```toml
+backend = "s3"
+
+[s3]
+bucket   = "my-ci-cache"
+region   = "us-east-1"
+prefix   = "bsdkrun"                                  # optional
+endpoint = "https://<id>.r2.cloudflarestorage.com"    # optional: R2, MinIO, …
+```
+
+Credentials come from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (+ `AWS_SESSION_TOKEN`) only,
+never from the file, so the config stays safe to commit. Saving needs `tar` in the guest;
+compression happens on the host, so the image needs no compressor of its own.
+
 ### `shell <id>`
 Attach an interactive console to a running (detached) machine.
 
@@ -215,6 +251,14 @@ Grow a raw disk image (only enlarges, e.g. `8G`/`4096M`); the guest expands its 
 
 ### `probe`
 Check that libkrun links and a context/HVF can be initialized (connectivity/health check).
+
+---
+
+### `doctor [--json]`
+Check that this host can run machines and print what to fix. Covers the host tools bsdkrun shells
+out to (`curl`, `tar`), the hypervisor, the macOS code signature and its hypervisor entitlement,
+gvproxy, the state/cache directories, the case-sensitive store, and the cache backend. Exits 1 if
+anything failed, so CI can gate on it.
 
 ---
 

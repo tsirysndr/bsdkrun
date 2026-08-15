@@ -6,10 +6,10 @@
  * ```ts
  * import { Sandbox } from "@bsdkrun/sdk";
  *
- * const box = await Sandbox.create({ os: "linux", image: "alpine" });
- * const out = await box.sh`uname -a`.text();
- * await box.exec(["apk", "add", "curl"]);
- * await box.stop();
+ * const sbx = await Sandbox.create({ os: "linux", image: "alpine" });
+ * const out = await sbx.sh`uname -a`.text();
+ * await sbx.exec(["apk", "add", "curl"]);
+ * await sbx.stop();
  * ```
  */
 
@@ -72,6 +72,15 @@ export type {
 
 export { FileSystem, FileTransferError } from "./filesystem.js";
 export type { FsOptions, DownloadOptions } from "./filesystem.js";
+
+export { Cache, caches, listCaches, removeCache } from "./cache.js";
+export type {
+  CacheEntry,
+  Compression,
+  RestoreResult,
+  SaveOptions,
+  RestoreOptions,
+} from "./cache.js";
 
 export { buildCreateArgs } from "./args.js";
 

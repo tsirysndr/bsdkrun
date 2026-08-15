@@ -11,19 +11,19 @@ fluent: builders chain and end in a terminal call returning `(T, error)`.
 ```go
 import bsdkrun "github.com/tsirysndr/bsdkrun/sdk/go"
 
-box, err := bsdkrun.Linux("alpine").Create()
+sbx, err := bsdkrun.Linux("alpine").Create()
 if err != nil {
 	log.Fatal(err)
 }
 
 // exec argv directly, or chain env / stdin / a PTY / a working dir:
-res, _ := box.Exec("uname", "-a")
+res, _ := sbx.Exec("uname", "-a")
 fmt.Println(res.Text())
 
-box.Exec("apk", "add", "curl")
-box.Command("curl").Args("-fsSL", "https://example.com").Run()
+sbx.Exec("apk", "add", "curl")
+sbx.Command("curl").Args("-fsSL", "https://example.com").Run()
 
-box.Stop()
+sbx.Stop()
 ```
 
 ## Install
@@ -87,9 +87,9 @@ Every `Create` runs the machine **detached** and returns a `*Sandbox` handle
 Pass an argv directly to `Exec`, or chain options on `Command`:
 
 ```go
-box.Exec("ls", "-la", "/etc")
+sbx.Exec("ls", "-la", "/etc")
 
-res, err := box.Command("node").
+res, err := sbx.Command("node").
 	Args("-e", "print(1)").
 	Env("X", "hi").
 	Cwd("/app").
@@ -112,13 +112,39 @@ rendering of Python's `throw_if_failed`).
 and also retained in the returned `Result`. Streaming is independent of
 `TTY`; a PTY changes command semantics and may merge stderr into stdout.
 
+## Caching
+
+`Sandbox.Cache()` saves a guest directory under a key and restores it later, so
+a rebuild can pick up where the last one left off. **A miss is not an error** —
+check `Restored` rather than the error.
+
+```go
+key := "deps-" + lockHash
+hit, _ := sbx.Cache().Restore(bsdkrun.RestoreOptions{Key: key, RestoreKeys: []string{"deps-"}})
+if !hit.Restored {
+    sbx.Exec("npm", "ci")
+    sbx.Cache().Save("/app/node_modules", bsdkrun.SaveOptions{Key: key, Compression: bsdkrun.Zstd})
+}
+
+bsdkrun.ListCaches()                       // every stored entry, newest first
+bsdkrun.RemoveCache([]string{key}, false)  // or (nil, true) for all
+```
+
+`RestoreKeys` are prefixes tried in order when the exact key misses; within a
+prefix the newest matching entry wins, and `hit.Key` says which one was used.
+Formats are `Gzip` (default), `Zstd`, `Estargz` and `NoCompression`.
+
+Where entries live is host configuration, not an SDK concern: the default is
+this host's disk, and `BSDKRUN_CACHE_BACKEND=s3` + `BSDKRUN_CACHE_S3_*` (or
+`~/.config/bsdkrun/cache.toml`) points them at a bucket instead.
+
 ## Files
 
 `Sandbox.FS()` reads and writes files in the guest. Parent directories are
 created for you, and everything is byte-exact.
 
 ```go
-fs := box.FS()
+fs := sbx.FS()
 fs.WriteTextFile("/app/main.py", "print('hi')")
 fs.WriteFile("/app/logo.png", pngBytes)
 
@@ -143,18 +169,18 @@ Failures are a `*FileTransferError`, which carries the offending `Path`.
 ## Lifecycle & inventory
 
 ```go
-box, _ := bsdkrun.Linux("alpine").Command("sleep", "300").Create()
-same, _ := bsdkrun.GetSandbox(box.ID)   // reconnect (prefix ok)
+sbx, _ := bsdkrun.Linux("alpine").Command("sleep", "300").Create()
+same, _ := bsdkrun.GetSandbox(sbx.ID)   // reconnect (prefix ok)
 rows, _ := bsdkrun.ListSandboxes(true)  // []SandboxInfo, incl. exited
 
-box.Status()     // *SandboxInfo (nil if gone)
-box.IsRunning()  // bool
-box.Logs()       // console log; box.BootLogs() for the boot log
-box.Shell()      // interactive shell (inherits the terminal)
-box.Stop()       // BSD guests clean-poweroff; Linux SIGTERM
-box.Start()      // restart in place — resumes its own disk/rootfs (data persists)
-box.Update().Cpus(4).Mem(2048).Apply()  // applies on next start
-box.Remove(true) // force: stop first if running
+sbx.Status()     // *SandboxInfo (nil if gone)
+sbx.IsRunning()  // bool
+sbx.Logs()       // console log; sbx.BootLogs() for the boot log
+sbx.Shell()      // interactive shell (inherits the terminal)
+sbx.Stop()       // BSD guests clean-poweroff; Linux SIGTERM
+sbx.Start()      // restart in place — resumes its own disk/rootfs (data persists)
+sbx.Update().Cpus(4).Mem(2048).Apply()  // applies on next start
+sbx.Remove(true) // force: stop first if running
 ```
 
 Host-level namespaces:
@@ -206,11 +232,11 @@ refreshes an existing network without restarting members.
 
 ```go
 // agent-managed key-based SSH
-box.SSHSetup().Run() // install local ~/.ssh/*.pub keys
-box.SSHSetup().User("tsiry").Key("~/.ssh/work.pub").Run()
+sbx.SSHSetup().Run() // install local ~/.ssh/*.pub keys
+sbx.SSHSetup().User("tsiry").Key("~/.ssh/work.pub").Run()
 
 // put a guest on your tailnet
-box.TailscaleUp().AuthKey("tskey-auth-...").Hostname("web").Run()
+sbx.TailscaleUp().AuthKey("tskey-auth-...").Hostname("web").Run()
 ```
 
 ## Connecting to a remote daemon

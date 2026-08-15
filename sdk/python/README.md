@@ -10,14 +10,14 @@ runtime dependencies** — stdlib only, Python 3.10+.
 ```python
 from bsdkrun import Sandbox
 
-box = Sandbox.create(os="linux", image="alpine")
+sbx = Sandbox.create(os="linux", image="alpine")
 
 # exec argv directly, with env / stdin / a PTY / a working dir:
-print(box.exec(["uname", "-a"]).text())
-box.exec(["apk", "add", "curl"])
-box.run_command("curl", ["-fsSL", "https://example.com"])
+print(sbx.exec(["uname", "-a"]).text())
+sbx.exec(["apk", "add", "curl"])
+sbx.run_command("curl", ["-fsSL", "https://example.com"])
 
-box.stop()
+sbx.stop()
 ```
 
 ## Install
@@ -84,9 +84,9 @@ Pass an argv list (no shell parsing), or a program name plus `args`:
 ```python
 import sys
 
-box.exec(["ls", "-la", "/etc"])
+sbx.exec(["ls", "-la", "/etc"])
 
-box.exec(
+sbx.exec(
     "node",
     args=["-e", "print(1)"],
     env={"X": "hi"},
@@ -99,7 +99,7 @@ box.exec(
 )
 
 # Vercel-Sandbox-style alias:
-result = box.run_command("uname", ["-a"])
+result = sbx.run_command("uname", ["-a"])
 print(result.stdout, result.exit_code)
 ```
 
@@ -110,21 +110,48 @@ The stream callbacks receive `bytes` as they arrive while the complete output
 is still captured in the returned `Result`. They are independent of `tty`;
 allocating a TTY changes command behavior and may merge stderr into stdout.
 
+## Caching
+
+``sbx.cache`` saves a guest directory under a key and restores it later, so a
+rebuild can pick up where the last one left off. **A miss is not an error** —
+check ``restored`` rather than catching.
+
+```python
+from bsdkrun import caches
+
+key = f"deps-{lock_hash}"
+hit = sbx.cache.restore(key=key, restore_keys=["deps-"])
+if not hit.restored:
+    sbx.exec(["npm", "ci"])
+    sbx.cache.save("/app/node_modules", key=key, compression="zstd")
+
+caches.ls()          # every stored entry, newest first
+caches.rm([key])     # or caches.rm(all=True)
+```
+
+``restore_keys`` are prefixes tried in order when the exact key misses; within a
+prefix the newest matching entry wins, and ``hit.key`` says which one was used.
+Formats are ``gzip`` (default), ``zstd``, ``estargz`` and ``none``.
+
+Where entries live is host configuration, not an SDK concern: the default is
+this host's disk, and `BSDKRUN_CACHE_BACKEND=s3` + `BSDKRUN_CACHE_S3_*` (or
+`~/.config/bsdkrun/cache.toml`) points them at a bucket instead.
+
 ## Files
 
-``box.fs`` reads and writes files in the guest. Parent directories are created
+``sbx.fs`` reads and writes files in the guest. Parent directories are created
 for you, and everything is byte-exact — ``read_file`` returns ``bytes``, so a
 PNG survives the round trip.
 
 ```python
-box.fs.write_file("/app/main.py", "print('hi')")
-box.fs.write_file("/app/logo.png", png_bytes)
+sbx.fs.write_file("/app/main.py", "print('hi')")
+sbx.fs.write_file("/app/logo.png", png_bytes)
 
-text  = box.fs.read_text("/app/out.json")
-data  = box.fs.read_file("/app/logo.png")
+text  = sbx.fs.read_text("/app/out.json")
+data  = sbx.fs.read_file("/app/logo.png")
 
-box.fs.upload("./src", "/app/src")                      # file or directory
-box.fs.download("/app/dist", "./dist", recursive=True)
+sbx.fs.upload("./src", "/app/src")                      # file or directory
+sbx.fs.download("/app/dist", "./dist", recursive=True)
 ```
 
 ``upload`` looks at the local path to decide whether to recurse; ``download``
@@ -141,18 +168,18 @@ Failures raise ``FileTransferError``, which carries the offending ``path``.
 ## Lifecycle & inventory
 
 ```python
-box = Sandbox.create(os="linux", image="alpine", command=["sleep", "300"])
-same = Sandbox.get(box.id)  # reconnect (prefix ok)
+sbx = Sandbox.create(os="linux", image="alpine", command=["sleep", "300"])
+same = Sandbox.get(sbx.id)  # reconnect (prefix ok)
 rows = Sandbox.list(all=True)  # list[SandboxInfo]
 
-box.status()  # SandboxInfo | None
-box.is_running()  # bool
-box.logs()  # console log (str)
-box.shell()  # interactive shell (inherits the terminal)
-box.stop()  # BSD guests clean-poweroff; Linux SIGTERM
-box.start()  # restart in place — resumes its own disk/rootfs (data persists)
-box.update(cpus=4, mem=2048)  # applies on next start
-box.remove(force=True)
+sbx.status()  # SandboxInfo | None
+sbx.is_running()  # bool
+sbx.logs()  # console log (str)
+sbx.shell()  # interactive shell (inherits the terminal)
+sbx.stop()  # BSD guests clean-poweroff; Linux SIGTERM
+sbx.start()  # restart in place — resumes its own disk/rootfs (data persists)
+sbx.update(cpus=4, mem=2048)  # applies on next start
+sbx.remove(force=True)
 ```
 
 Host-level namespaces:
@@ -208,11 +235,11 @@ an existing network without restarting members.
 
 ```python
 # agent-managed key-based SSH
-box.ssh_setup()  # install local ~/.ssh/*.pub keys
-box.ssh_setup(user="tsiry", key="~/.ssh/work.pub")
+sbx.ssh_setup()  # install local ~/.ssh/*.pub keys
+sbx.ssh_setup(user="tsiry", key="~/.ssh/work.pub")
 
 # put a guest on your tailnet
-box.tailscale_up(authkey="tskey-auth-...", hostname="web")
+sbx.tailscale_up(authkey="tskey-auth-...", hostname="web")
 ```
 
 ## Connecting to a remote daemon

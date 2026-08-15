@@ -344,6 +344,7 @@ async fn run_linux_builds_the_expected_command() {
             }),
             volume: Some("data".into()),
             mounts: vec!["/host:/guest:ro".into()],
+            attach_disk: vec!["/tmp/extra.img:ro".into()],
             env: vec!["A=1".into(), "B=2".into()],
             entrypoint: None,
             initramfs: false,
@@ -369,6 +370,8 @@ async fn run_linux_builds_the_expected_command() {
     assert_eq!(a["net"]["name"], "web");
     assert_eq!(a["volume"], "data");
     assert_eq!(a["mounts"][0], "/host:/guest:ro");
+    assert_eq!(a["attach_disk"][0]["path"], "/tmp/extra.img");
+    assert_eq!(a["attach_disk"][0]["read_only"], true);
     assert_eq!(a["env"][0], "A=1");
     assert_eq!(a["env"][1], "B=2");
     assert_eq!(a["command"], serde_json::json!(["sh", "-c", "echo hi"]));

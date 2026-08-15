@@ -98,8 +98,10 @@ jobs:
           curl -fL -o netbsd-MICROVM.gz "$BASEURL/kernel/netbsd-MICROVM.gz"
 
           # Populate the rootfs (root -> correct ownership + setuid bits; NetBSD
-          # tar autodetects xz).
-          for s in base etc; do
+          # tar autodetects xz). comp is required even for base tools: NetBSD 11
+          # ships /usr/bin/ld in base but its libgnuctf.so.2 dependency in comp,
+          # so a base-only image has a linker that cannot start.
+          for s in base comp etc man misc modules; do
             tar -xpf "$s.tar.xz" -C "$ROOT"
           done
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from .errors import CommandFailed
 from .process import run
@@ -43,7 +43,7 @@ class CacheEntry:
     digest: str = ""
 
     @staticmethod
-    def _from(row: dict) -> CacheEntry:
+    def _from(row: dict[str, Any]) -> CacheEntry:
         return CacheEntry(
             key=str(row.get("key", "")),
             path=str(row.get("path", "")),
@@ -71,11 +71,19 @@ class RestoreResult:
     created: int | None = None
 
 
-def _json(args: list[str], label: str) -> dict:
+def _json(args: list[str], label: str) -> dict[str, Any]:
     result = run(args)
     if result.exit_code != 0:
         raise CommandFailed(result.exit_code, result.stdout, result.stderr, label)
-    return json.loads(result.stdout or "{}")
+    decoded: Any = json.loads(result.stdout or "{}")
+    if not isinstance(decoded, dict):
+        raise CommandFailed(
+            result.exit_code,
+            result.stdout,
+            f"expected a JSON object from {label}, got {type(decoded).__name__}",
+            label,
+        )
+    return decoded
 
 
 class Cache:
@@ -137,7 +145,15 @@ def list_caches() -> list[CacheEntry]:
     result = run(["cache", "ls", "--json"])
     if result.exit_code != 0:
         raise CommandFailed(result.exit_code, result.stdout, result.stderr, "bsdkrun cache ls")
-    return [CacheEntry._from(r) for r in json.loads(result.stdout or "[]")]
+    decoded: Any = json.loads(result.stdout or "[]")
+    if not isinstance(decoded, list):
+        raise CommandFailed(
+            result.exit_code,
+            result.stdout,
+            f"expected a JSON array from bsdkrun cache ls, got {type(decoded).__name__}",
+            "bsdkrun cache ls",
+        )
+    return [CacheEntry._from(row) for row in decoded]
 
 
 def remove_cache(keys: str | list[str] | None = None, *, all: bool = False) -> None:

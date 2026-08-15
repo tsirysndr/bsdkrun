@@ -104,9 +104,10 @@ def _env_args(env: Mapping[str, Any] | None) -> list[str]:
     command line — and the tests that assert on it — deterministic. The guest
     sees the same environment either way.
     """
+    pairs = env or {}
     a: list[str] = []
-    for key in sorted(env or {}):
-        a += ["-e", f"{key}={env[key]}"]
+    for key in sorted(pairs):
+        a += ["-e", f"{key}={pairs[key]}"]
     return a
 
 

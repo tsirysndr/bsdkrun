@@ -33,11 +33,11 @@
 
    {:group "sdk" :ns 'console.sdk
     :cmds [[:deps        "Fetch deps. lang (atom) ∈ :elixir :gleam. Usage: (deps :elixir)"]
-           [:test        "Run one SDK's tests. lang ∈ :clojure :ruby :python :elixir :gleam :typescript :go :rust. Usage: (test :clojure)"]
+           [:test        "Run one SDK's tests. lang ∈ :clojure :ruby :python :elixir :gleam :typescript :go :rust :scala. Usage: (test :clojure)"]
            [:lint        "Lint. lang ∈ :python. Usage: (lint :python)"]
-           [:build       "Build the distributable artifact. lang ∈ :clojure :ruby :python :typescript. Usage: (build :clojure)"]
+           [:build       "Build the distributable artifact. lang ∈ :clojure :ruby :python :typescript :scala. Usage: (build :clojure)"]
            [:install     "Install locally. lang ∈ :clojure (~/.m2). Usage: (install :clojure)"]
-           [:publish     "Publish to the registry. lang ∈ :clojure :ruby :python :typescript :elixir :gleam :rust. Usage: (publish :clojure)"]
+           [:publish     "Publish to the registry. lang ∈ :clojure :ruby :python :typescript :elixir :gleam :rust :scala. Usage: (publish :clojure)"]
            [:test-all    "Every SDK's unit-test suite in turn"]
            [:dir         "The repo-root-relative dir for lang. Usage: (dir :ruby)"]]}
 

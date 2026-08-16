@@ -33,5 +33,37 @@ lazy val root = (project in file("."))
       "-Wunused:all",
       "-Xfatal-warnings"
     ),
-    Test / fork := true
+    Test / fork := true,
+
+    // -- publishing ---------------------------------------------------------
+    //
+    // Maven Central, through Sonatype's Central Portal. The groupId is
+    // `io.github.tsirysndr`, matching the clojure SDK's — an `io.github.<user>`
+    // namespace is verified by proving ownership of that GitHub account, which
+    // is far less setup than the DNS record a custom domain would need.
+    //
+    //   sbt publishSigned          # stage a signed bundle locally
+    //   sbt sonatypeBundleRelease  # upload and release it
+    //
+    // Needs a published GPG key and ~/.sbt/1.0/sonatype.sbt with the portal
+    // token. Credentials are never read from this file, the same rule the S3
+    // cache config follows.
+    publishTo := sonatypePublishToBundle.value,
+    sonatypeCredentialHost := "central.sonatype.com",
+    publishMavenStyle := true,
+    // Central rejects a POM without these.
+    scmInfo := Some(
+      ScmInfo(
+        url("https://github.com/tsirysndr/bsdkrun"),
+        "scm:git:git@github.com:tsirysndr/bsdkrun.git"
+      )
+    ),
+    developers := List(
+      Developer(
+        id = "tsirysndr",
+        name = "Tsiry Sandratraina",
+        email = "tsiry.sndr@rocksky.app",
+        url = url("https://github.com/tsirysndr")
+      )
+    )
   )

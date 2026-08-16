@@ -25,7 +25,8 @@
    :gleam      "sdk/gleam"
    :typescript "sdk/typescript"
    :go         "sdk/go"
-   :rust       "sdk/rust"})
+   :rust       "sdk/rust"
+   :scala      "sdk/scala"})
 
 (defn- ->lang
   "Coerce a language argument to a keyword, so both `:clojure` and
@@ -69,7 +70,7 @@
 
 (defn test
   "Run one SDK's unit-test suite — the same command CI runs. lang ∈
-  :clojure :ruby :python :elixir :gleam :typescript :go :rust.
+  :clojure :ruby :python :elixir :gleam :typescript :go :rust :scala.
   Usage: (test :clojure)"
   [lang]
   (case (->lang lang)
@@ -91,7 +92,12 @@
     :rust       (run-steps (dir :rust)
                             ["cargo" "fmt" "--check"]
                             ["cargo" "clippy" "--" "-D" "warnings"]
-                            ["cargo" "test"])))
+                            ["cargo" "test"])
+    ;; `compile` is also the warnings gate: build.sbt sets -Xfatal-warnings,
+    ;; the equivalent of elixir's --warnings-as-errors above.
+    :scala      (run-steps (dir :scala)
+                            ["sbt" "-batch" "compile" "Test/compile"]
+                            ["sbt" "-batch" "test"])))
 
 (defn lint
   "lang ∈ :python — ruff check + ruff format --check + mypy, the same three
@@ -106,13 +112,18 @@
 
 (defn build
   "Build one SDK's distributable artifact. lang ∈ :clojure (jar) :ruby
-  (.gem) :python (wheel + sdist) :typescript (tsc). Usage: (build :clojure)"
+  (.gem) :python (wheel + sdist) :typescript (tsc) :scala (jar + sources +
+  javadoc). Usage: (build :clojure)"
   [lang]
   (case (->lang lang)
     :clojure    (sh/sh ["clj" "-T:build" "jar"] {:dir (dir :clojure)})
     :ruby       (sh/sh ["gem" "build" "bsdkrun.gemspec"] {:dir (dir :ruby)})
     :python     (sh/sh ["uv" "build"] {:dir (dir :python)})
     :typescript (sh/sh ["bun" "run" "build"] {:dir (dir :typescript)})
+    ;; Maven Central requires the -sources and -javadoc jars, so `package`
+    ;; alone would not be a publishable build.
+    :scala      (run-steps (dir :scala)
+                            ["sbt" "-batch" "package" "packageSrc" "packageDoc"])
     (throw (ex-info (str "build: no build step wired for " (name lang)) {:lang lang}))))
 
 (defn install
@@ -141,7 +152,7 @@
 
 (defn publish
   "Publish one SDK to its registry — Clojars/RubyGems/PyPI/npm/Hex/crates.io.
-  lang ∈ :clojure :ruby :python :typescript :elixir :gleam :rust. Extra args
+  lang ∈ :clojure :ruby :python :typescript :elixir :gleam :rust :scala. Extra args
   pass through to the underlying publisher (e.g. a tag, or --dry-run where
   the tool supports one).
 
@@ -164,6 +175,13 @@
     :elixir     (sh/sh (into ["mix" "hex.publish"] (map str args)) {:dir (dir :elixir)})
     :gleam      (sh/sh (into ["gleam" "publish"] (map str args)) {:dir (dir :gleam)})
     :rust       (sh/sh (into ["cargo" "publish"] (map str args)) {:dir (dir :rust)})
+    ;; Two steps, unlike the others: Maven Central takes a *signed bundle*,
+    ;; staged locally by publishSigned and then uploaded and released by
+    ;; sonatypeBundleRelease. Needs a published GPG key and a Central Portal
+    ;; token in ~/.sbt/1.0/sonatype.sbt.
+    :scala      (run-steps (dir :scala)
+                            ["sbt" "-batch" "publishSigned"]
+                            (into ["sbt" "-batch" "sonatypeBundleRelease"] (map str args)))
     ;; Go has no registry push — a module is "published" by tagging the repo
     ;; (sdk/go/vX.Y.Z) and letting the proxy fetch it.
     (throw (ex-info (str "publish: no publish step wired for " (name lang)) {:lang lang}))))

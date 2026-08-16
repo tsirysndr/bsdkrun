@@ -40,13 +40,13 @@
   sdk:deps     {:doc  "Fetch deps. Usage: bb sdk:deps <elixir|gleam>"
                :task (do (require 'console.sdk)
                          ((resolve 'console.sdk/deps) (keyword (first *command-line-args*))))}
-  sdk:test     {:doc  "Run one SDK's tests. Usage: bb sdk:test <clojure|ruby|python|elixir|gleam|typescript|go|rust>"
+  sdk:test     {:doc  "Run one SDK's tests. Usage: bb sdk:test <clojure|ruby|python|elixir|gleam|typescript|go|rust|scala>"
                :task (do (require 'console.sdk)
                          ((resolve 'console.sdk/test) (keyword (first *command-line-args*))))}
   sdk:lint     {:doc  "Lint. Usage: bb sdk:lint <python>"
                :task (do (require 'console.sdk)
                          ((resolve 'console.sdk/lint) (keyword (first *command-line-args*))))}
-  sdk:build    {:doc  "Build the distributable artifact. Usage: bb sdk:build <clojure|ruby|python|typescript>"
+  sdk:build    {:doc  "Build the distributable artifact. Usage: bb sdk:build <clojure|ruby|python|typescript|scala>"
                :task (do (require 'console.sdk)
                          ((resolve 'console.sdk/build) (keyword (first *command-line-args*))))}
   sdk:install  {:doc  "Install locally. Usage: bb sdk:install <clojure>"

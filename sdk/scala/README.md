@@ -217,6 +217,54 @@ sbt test           # unit suites
 BSDKRUN_E2E=1 BSDKRUN_BIN=../../target/release/bsdkrun sbt "testOnly bsdkrun.E2ESuite"
 ```
 
+## Publishing
+
+The artifact goes to **Maven Central** — the only registry Scala's
+`libraryDependencies` resolves from by default. (GitHub Packages works too, but
+consumers would need to authenticate to fetch it, which is wrong for a public
+SDK.)
+
+The coordinate is `io.github.tsirysndr:bsdkrun_3`. sbt's `%%` appends the
+Scala binary suffix, so it does not collide with the Clojure SDK's
+`io.github.tsirysndr/bsdkrun` — which lives on Clojars in any case.
+
+One-time setup, none of which this repo can do for you:
+
+1. A [Central Portal](https://central.sonatype.com) account, with the
+   `io.github.tsirysndr` namespace verified. An `io.github.<user>` namespace is
+   verified by proving you own that GitHub account; a custom domain would need
+   a DNS TXT record instead.
+2. A GPG key published to a keyserver — Central rejects unsigned artifacts.
+3. The portal token in `~/.sbt/1.0/sonatype.sbt`:
+
+   ```scala
+   credentials += Credentials(
+     "Sonatype Nexus Repository Manager",
+     "central.sonatype.com",
+     "<token-username>",
+     "<token-password>"
+   )
+   ```
+
+Then, from `sdk/scala`:
+
+```sh
+sbt publishSigned          # stage a signed bundle under target/sonatype-staging
+sbt sonatypeBundleRelease  # upload it and release
+```
+
+Or through the monorepo console, which wraps both steps:
+
+```sh
+bb sdk:publish scala       # from tools/console
+```
+
+`sbt publishM2` installs to `~/.m2` for testing the artifact locally without
+touching the registry. Central requires the `-sources` and `-javadoc` jars and
+a POM carrying name/description/url/licenses/scm/developers; `build.sbt` sets
+all of that, so a plain `sbt package` is *not* a publishable build — use
+`bb sdk:build scala`, which runs `package packageSrc packageDoc`.
+
 ## License
 
 MIT

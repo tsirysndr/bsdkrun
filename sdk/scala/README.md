@@ -252,16 +252,31 @@ One-time setup, none of which this repo can do for you:
    echo "pinentry-program $(brew --prefix)/bin/pinentry-mac" >> ~/.gnupg/gpg-agent.conf
    gpgconf --kill gpg-agent
    ```
-3. The portal token in `~/.sbt/1.0/sonatype.sbt`:
+3. A **Central Portal user token** — <https://central.sonatype.com> → your
+   account → *Generate User Token*. That yields a token username and password;
+   your login credentials will not work.
+
+   Put them in `~/.sbt/1.0/sonatype.sbt` (note `1.0/` — sbt 1.x ignores a file
+   at `~/.sbt/sonatype.sbt`), and `chmod 600` it:
 
    ```scala
    credentials += Credentials(
-     "Sonatype Nexus Repository Manager",
-     "central.sonatype.com",
+     "Sonatype Nexus Repository Manager",       // realm — fixed
+     "ossrh-staging-api.central.sonatype.com",  // must match sonatypeCredentialHost
      "<token-username>",
      "<token-password>"
    )
    ```
+
+   The realm and host are looked up as a pair: if either differs from
+   `sonatypeCredentialHost` in `build.sbt`, sbt reports *"No credential is
+   found for &lt;host&gt;"* rather than an authentication error.
+
+   On the host — it is **not** `central.sonatype.com`. This plugin speaks the
+   legacy Nexus staging API, which the Portal does not serve: `/service/local/…`
+   there returns a 404 HTML page, and only at upload time. Sonatype runs
+   `ossrh-staging-api.central.sonatype.com` as a compatibility service for that
+   tooling.
 
 Then, from `sdk/scala`:
 

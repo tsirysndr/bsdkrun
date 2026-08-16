@@ -61,7 +61,11 @@ lazy val root = (project in file("."))
     // `developers` entry below.
     pgpSigningKey := Some("CE4443A333319648"),
     publishTo := sonatypePublishToBundle.value,
-    sonatypeCredentialHost := "central.sonatype.com",
+    // NOT "central.sonatype.com". The Portal does not serve the legacy Nexus
+    // staging API this plugin speaks — `/service/local/...` there returns a 404
+    // HTML page, and the failure only shows up at upload. Sonatype runs this
+    // compatibility host for exactly that tooling; it answers the same paths.
+    sonatypeCredentialHost := "ossrh-staging-api.central.sonatype.com",
     publishMavenStyle := true,
     // Central rejects a POM without these.
     scmInfo := Some(

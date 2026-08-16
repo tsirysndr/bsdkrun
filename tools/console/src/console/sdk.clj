@@ -175,13 +175,14 @@
     :elixir     (sh/sh (into ["mix" "hex.publish"] (map str args)) {:dir (dir :elixir)})
     :gleam      (sh/sh (into ["gleam" "publish"] (map str args)) {:dir (dir :gleam)})
     :rust       (sh/sh (into ["cargo" "publish"] (map str args)) {:dir (dir :rust)})
-    ;; Two steps, unlike the others: Maven Central takes a *signed bundle*,
-    ;; staged locally by publishSigned and then uploaded and released by
-    ;; sonatypeBundleRelease. Needs a published GPG key and a Central Portal
-    ;; token in ~/.sbt/1.0/sonatype.sbt.
+    ;; Two steps: `publishSigned` stages a signed bundle, then the bundle is
+    ;; POSTed to the Central Portal. NOT `sonatypeBundleRelease` — sbt-sonatype
+    ;; speaks the legacy Nexus staging API, which the Portal does not serve, so
+    ;; that task dies on a 400 for an unsupported endpoint. Needs a published
+    ;; GPG key and CENTRAL_TOKEN_USERNAME / CENTRAL_TOKEN_PASSWORD.
     :scala      (run-steps (dir :scala)
                             ["sbt" "-batch" "publishSigned"]
-                            (into ["sbt" "-batch" "sonatypeBundleRelease"] (map str args)))
+                            (into ["./publish-central.sh"] (map str args)))
     ;; Go has no registry push — a module is "published" by tagging the repo
     ;; (sdk/go/vX.Y.Z) and letting the proxy fetch it.
     (throw (ex-info (str "publish: no publish step wired for " (name lang)) {:lang lang}))))

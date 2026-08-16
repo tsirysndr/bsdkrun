@@ -252,44 +252,50 @@ One-time setup, none of which this repo can do for you:
    echo "pinentry-program $(brew --prefix)/bin/pinentry-mac" >> ~/.gnupg/gpg-agent.conf
    gpgconf --kill gpg-agent
    ```
+
 3. A **Central Portal user token** — <https://central.sonatype.com> → your
    account → *Generate User Token*. That yields a token username and password;
-   your login credentials will not work.
+   your login credentials will not work. They go in the environment, not in a
+   file:
 
-   Put them in `~/.sbt/1.0/sonatype.sbt` (note `1.0/` — sbt 1.x ignores a file
-   at `~/.sbt/sonatype.sbt`), and `chmod 600` it:
-
-   ```scala
-   credentials += Credentials(
-     "Sonatype Nexus Repository Manager",       // realm — fixed
-     "ossrh-staging-api.central.sonatype.com",  // must match sonatypeCredentialHost
-     "<token-username>",
-     "<token-password>"
-   )
+   ```sh
+   export CENTRAL_TOKEN_USERNAME=...
+   export CENTRAL_TOKEN_PASSWORD=...
    ```
-
-   The realm and host are looked up as a pair: if either differs from
-   `sonatypeCredentialHost` in `build.sbt`, sbt reports *"No credential is
-   found for &lt;host&gt;"* rather than an authentication error.
-
-   On the host — it is **not** `central.sonatype.com`. This plugin speaks the
-   legacy Nexus staging API, which the Portal does not serve: `/service/local/…`
-   there returns a 404 HTML page, and only at upload time. Sonatype runs
-   `ossrh-staging-api.central.sonatype.com` as a compatibility service for that
-   tooling.
 
 Then, from `sdk/scala`:
 
 ```sh
-sbt publishSigned          # stage a signed bundle under target/sonatype-staging
-sbt sonatypeBundleRelease  # upload it and release
+sbt publishSigned      # stage a signed bundle under target/sonatype-staging
+./publish-central.sh   # zip it and POST it to the Portal
 ```
 
-Or through the monorepo console, which wraps both steps:
+Or through the monorepo console, which runs both:
 
 ```sh
-bb sdk:publish scala       # from tools/console
+bb sdk:publish scala   # from tools/console
 ```
+
+`publish-central.sh` leaves the deployment staged for you to review and release
+at <https://central.sonatype.com/publishing/deployments>; pass
+`PUBLISHING_TYPE=AUTOMATIC` to release as soon as validation passes.
+
+### Why not `sbt sonatypeBundleRelease`
+
+sbt-sonatype (3.12.2, the newest) speaks the **legacy Nexus staging API**, which
+the Central Portal does not serve — `https://central.sonatype.com/service/local/…`
+returns a 404 HTML page. Sonatype runs `ossrh-staging-api.central.sonatype.com`
+as a compatibility host, and the plugin authenticates against it, but it
+implements only part of that API and the release path dies on:
+
+```
+400 Bad Request: Endpoint /service/local/staging/profile_repositories not supported
+```
+
+So the plugin is used only for what it does well — building a correctly signed
+bundle in Maven layout — and the upload goes straight to the Portal's own API.
+That also means **no `~/.sbt/1.0/sonatype.sbt` is needed**; nothing in the
+staging step authenticates.
 
 `sbt publishM2` installs to `~/.m2` for testing the artifact locally without
 touching the registry. Central requires the `-sources` and `-javadoc` jars and

@@ -1,9 +1,12 @@
 name: e2e (SDK / Ubuntu KVM)
 
-# Builds bsdkrun + the guest agent under KVM, then runs the TypeScript SDK's
-# unit + end-to-end tests (the e2e suite boots a real Alpine microVM and drives
-# it through the SDK). Ubuntu-only: only GitHub's x86_64 runners expose
+# Builds bsdkrun + the guest agent under KVM, then runs the TypeScript and
+# Scala SDKs' unit + end-to-end suites (each boots a real Alpine microVM and
+# drives it through its SDK). Ubuntu-only: only GitHub's x86_64 runners expose
 # /dev/kvm, which the boot path needs.
+#
+# Both SDKs share one bsdkrun build — the expensive part of this job is libkrun
+# and the guest agent, not the SDK under test.
 
 on:
   workflow_dispatch: {}
@@ -15,12 +18,14 @@ on:
       - "agent/**"
       - "build.rs"
       - "sdk/typescript/**"
+      - "sdk/scala/**"
       - ".github/workflows/e2e-sdk.yml"
   pull_request:
     paths:
       - "src/**"
       - "agent/**"
       - "sdk/typescript/**"
+      - "sdk/scala/**"
       - ".github/workflows/e2e-sdk.yml"
 
 permissions:
@@ -159,6 +164,24 @@ jobs:
           BSDKRUN_BIN: ${{ github.workspace }}/target/release/bsdkrun
           BSDKRUN_E2E: "1"
         run: bun test test/e2e.test.ts
+
+      # The JDK, Scala and sbt versions come from sdk/scala/mise.toml, so CI and
+      # a developer's checkout build against exactly the same toolchain.
+      - uses: jdx/mise-action@v2
+        with:
+          working_directory: sdk/scala
+          cache: true
+
+      - name: Scala SDK unit tests
+        working-directory: sdk/scala
+        run: sbt -batch test
+
+      - name: Scala SDK e2e tests (boots a real microVM)
+        working-directory: sdk/scala
+        env:
+          BSDKRUN_BIN: ${{ github.workspace }}/target/release/bsdkrun
+          BSDKRUN_E2E: "1"
+        run: sbt -batch "testOnly bsdkrun.E2ESuite"
 
       - name: Dump machine state on failure
         if: failure()

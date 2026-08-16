@@ -1,0 +1,15 @@
+# Toolchain for the Scala SDK, pinned so a checkout builds the same way
+# everywhere — `mise install` in this directory is the whole setup step.
+#
+# Java 21 rather than the newest LTS: it is the widest-deployed target a
+# library can ask of its consumers, and everything here needs only Java 11+
+# (`java.net.http` supplies the HTTP and WebSocket client, which is why the
+# SDK has no transport dependency at all).
+#
+# The Scala version matches `scalaVersion` in build.sbt. sbt fetches its own
+# compiler, so this pin is for anyone reaching for `scala`/`scalac` directly.
+# The sbt pin is the *launcher*; it still honours project/build.properties.
+[tools]
+java = "temurin-21.0.12+8.0.LTS"
+scala = "3.3.8"
+sbt = "1.10.2"

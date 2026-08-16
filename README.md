@@ -129,7 +129,7 @@ one CLI, no daemon required.
 - **TUI dashboard** — [live panels](#tui--the-terminal-dashboard) for machines, images, volumes and
   networks, with fuzzy search, a new-machine wizard, and a follow-mode log viewer.
 - **Desktop app** — machines list with a tabbed terminal panel (the screenshot up top).
-- **SDKs for eight languages** — [TypeScript, Python, Ruby, Elixir, Gleam, Clojure, Go, and Rust](#sdks):
+- **SDKs for nine languages** — [TypeScript, Python, Ruby, Elixir, Gleam, Clojure, Go, Rust, and Scala](#sdks):
   thin, stateless wrappers around the binary.
 - **Agent skill** — the [full CLI reference](#agent-skill) packaged for coding agents
   (`npx skills add tsirysndr/bsdkrun`).
@@ -1603,6 +1603,7 @@ long-lived state, so the SDKs are safe to use from short-lived processes and scr
 | **Clojure**    | `io.github.tsirysndr/bsdkrun` | [`sdk/clojure`](sdk/clojure) | No runtime dependencies beyond `org.clojure/clojure` + `data.json`. A "sandbox" is a plain map — no object hierarchy. Docs on [cljdoc.org](https://cljdoc.org/d/io.github.tsirysndr/bsdkrun). |
 | **Go**         | `github.com/tsirysndr/bsdkrun/sdk/go` | [`sdk/go`](sdk/go) | Zero third-party dependencies — stdlib only, hand-rolled `graphql-transport-ws`. Fluent builders ending in `(T, error)`. |
 | **Rust**       | `bsdkrun-sdk`  | [`sdk/rust`](sdk/rust)             | Blocking, no async runtime. Fluent consuming builders; standalone crate outside the workspace.             |
+| **Scala**      | `io.github.tsirysndr::bsdkrun` | [`sdk/scala`](sdk/scala) | Scala 3, blocking, `Either[BsdkrunError, A]` throughout. One dependency (upickle) — HTTP and WebSocket come from `java.net.http`. Toolchain pinned with mise. |
 
 Elixir publishes as **`bsdkrun_ex`** because Hex is a single namespace and the Gleam SDK
 already takes `bsdkrun` there; its modules are unaffected.

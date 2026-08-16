@@ -1,9 +1,11 @@
-name: sdk unit (Python / Ruby / Elixir / Gleam / Clojure / Go / Rust)
+name: sdk unit (Python / Ruby / Elixir / Gleam / Clojure / Go / Rust / Scala)
 
 # Unit + argv-builder tests for the non-TypeScript SDKs. These never boot a
 # guest, so they need no /dev/kvm and no libkrun — they exercise argv building,
 # JSON decoding, error rendering, and (for Gleam) real subprocess round-trips
-# through the Erlang FFI. The TypeScript SDK's e2e suite lives in e2e-sdk.yml.
+# through the Erlang FFI. The TypeScript and Scala e2e suites — the ones that
+# boot a real guest — live in e2e-sdk.yml; the Scala job here runs only the
+# unit half, which `BSDKRUN_E2E` gates.
 
 on:
   workflow_dispatch: {}
@@ -18,6 +20,7 @@ on:
       - "sdk/clojure/**"
       - "sdk/go/**"
       - "sdk/rust/**"
+      - "sdk/scala/**"
       - ".github/workflows/sdk-unit.yml"
   pull_request:
     paths:
@@ -28,6 +31,7 @@ on:
       - "sdk/clojure/**"
       - "sdk/go/**"
       - "sdk/rust/**"
+      - "sdk/scala/**"
       - ".github/workflows/sdk-unit.yml"
 
 permissions:
@@ -152,3 +156,24 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
       - run: cargo test
+
+  scala:
+    name: scala
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # The JDK, Scala and sbt versions come from sdk/scala/mise.toml, so CI and
+      # a developer's checkout build against exactly the same toolchain.
+      - uses: jdx/mise-action@v2
+        with:
+          working_directory: sdk/scala
+          cache: true
+      # `-Xfatal-warnings` is on in build.sbt, so this is also the warnings gate
+      # — the equivalent of elixir's `mix compile --warnings-as-errors`.
+      - name: compile
+        working-directory: sdk/scala
+        run: sbt -batch compile Test/compile
+      - name: test
+        working-directory: sdk/scala
+        run: sbt -batch test

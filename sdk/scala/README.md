@@ -234,7 +234,24 @@ One-time setup, none of which this repo can do for you:
    `io.github.tsirysndr` namespace verified. An `io.github.<user>` namespace is
    verified by proving you own that GitHub account; a custom domain would need
    a DNS TXT record instead.
-2. A GPG key published to a keyserver — Central rejects unsigned artifacts.
+2. A GPG key **published to a keyserver**. Central verifies the signature and
+   rejects a key it cannot find, so signing with an unpublished key produces a
+   bundle that fails only at upload. `build.sbt` pins `pgpSigningKey` to the
+   published one rather than letting gpg pick its default — check yours with:
+
+   ```sh
+   curl -sI "https://keys.openpgp.org/vks/v1/by-keyid/<KEYID>" | head -1
+   ```
+
+   On macOS, signing from sbt also needs a **GUI pinentry**, because sbt gives
+   its `gpg` subprocess no terminal and the default curses pinentry then fails
+   with `Inappropriate ioctl for device`:
+
+   ```sh
+   brew install pinentry-mac
+   echo "pinentry-program $(brew --prefix)/bin/pinentry-mac" >> ~/.gnupg/gpg-agent.conf
+   gpgconf --kill gpg-agent
+   ```
 3. The portal token in `~/.sbt/1.0/sonatype.sbt`:
 
    ```scala

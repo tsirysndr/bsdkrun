@@ -12,6 +12,12 @@ ThisBuild / version := "0.1.0"
 // cross-build is a `crossScalaVersions` line away if one is ever wanted.
 ThisBuild / scalaVersion := "3.3.4"
 
+// Declared so downstream tooling can reason about eviction: sbt warns on every
+// publish without it, and Maven Central consumers get better conflict
+// resolution with it. `early-semver` is the right scheme for 0.x, where a minor
+// bump is allowed to break.
+ThisBuild / versionScheme := Some("early-semver")
+
 lazy val root = (project in file("."))
   .settings(
     name := "bsdkrun",
@@ -48,6 +54,12 @@ lazy val root = (project in file("."))
     // Needs a published GPG key and ~/.sbt/1.0/sonatype.sbt with the portal
     // token. Credentials are never read from this file, the same rule the S3
     // cache config follows.
+    // Sign with a specific key, not gpg's default. Central verifies the
+    // signature against a public keyserver and rejects a key it cannot find —
+    // and the default key on this machine (tsiry@novity.io) is not published,
+    // while this one is, on keys.openpgp.org. It is also the key matching the
+    // `developers` entry below.
+    pgpSigningKey := Some("CE4443A333319648"),
     publishTo := sonatypePublishToBundle.value,
     sonatypeCredentialHost := "central.sonatype.com",
     publishMavenStyle := true,

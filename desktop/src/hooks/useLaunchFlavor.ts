@@ -2,6 +2,7 @@ import { useSetAtom } from "jotai";
 import { useCallback } from "react";
 import { api } from "../lib/api";
 import { launchStateAtom } from "../state/atoms";
+import { useAiAgents, useStartAgent } from "../lib/queries";
 import type { RunSpec } from "../lib/types";
 
 /** A short unique id for correlating a launch's streamed events. */
@@ -18,11 +19,30 @@ function newLaunchId(): string {
  */
 export function useLaunchFlavor() {
   const setLaunch = useSetAtom(launchStateAtom);
+  const { data: agents = [] } = useAiAgents();
+  const startAgent = useStartAgent();
   return useCallback(
     (
       name: string,
       opts?: { ports?: string[]; volume?: string | null; repo?: string | null },
     ) => {
+      // An AI agent flavor is not something to boot and walk away from — the
+      // point of it is the TUI. Route it to the agent panel, which installs
+      // the flavor (streamed) if needed and then opens a terminal on it.
+      const agent = agents.find((a) => a.flavor === name || a.id === name);
+      if (agent) {
+        startAgent(agent.id, null, false).catch((e) =>
+          setLaunch({
+            launchId: newLaunchId(),
+            name: agent.label,
+            mode: "launch",
+            lines: [],
+            status: "error",
+            error: String(e),
+          }),
+        );
+        return;
+      }
       const launchId = newLaunchId();
       setLaunch({ launchId, name, mode: "launch", lines: [], status: "running" });
       api
@@ -41,7 +61,7 @@ export function useLaunchFlavor() {
           ),
         );
     },
-    [setLaunch],
+    [setLaunch, agents, startAgent],
   );
 }
 

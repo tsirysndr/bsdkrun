@@ -20,8 +20,8 @@ use tauri::{Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use bsdkrun::{
-    BkError, DockerContainer, DockerStatus, Flavor, Image, Machine, Network, Snapshot,
-    VersionEntry, Volume,
+    AiAgent, AiSession, BkError, DockerContainer, DockerStatus, Flavor, Image, Machine, Network,
+    Snapshot, VersionEntry, Volume,
 };
 use target::Target;
 use term::{LogStreams, Terminals};
@@ -227,6 +227,133 @@ async fn list_versions(
 async fn list_flavors(state: State<'_, AppState>) -> Result<Vec<Flavor>, BkError> {
     let bin = state.binary()?;
     bsdkrun::list_flavors(&bin).await
+}
+
+// ---- ai agents ---------------------------------------------------------------
+//
+// A sandbox is a machine, so the panel's terminal is the ordinary `term_open`
+// with the agent's argv — there is no separate streaming path here.
+
+#[tauri::command]
+async fn ai_agents(state: State<'_, AppState>) -> Result<Vec<AiAgent>, BkError> {
+    let bin = state.binary()?;
+    bsdkrun::ai_agents(&bin).await
+}
+
+#[tauri::command]
+async fn ai_sessions(state: State<'_, AppState>) -> Result<Vec<AiSession>, BkError> {
+    let bin = state.binary()?;
+    bsdkrun::ai_sessions(&bin).await
+}
+
+/// Start (or reuse) a sandbox — `bsdkrun ai start <agent> -d`. Returns its
+/// machine id, which the panel then opens a terminal into.
+///
+/// The flavor build (first launch of an agent) happens inside this call, which
+/// is why the UI streams it through `launch_agent` instead when the agent is
+/// not yet installed.
+#[tauri::command]
+async fn ai_start(
+    state: State<'_, AppState>,
+    agent: String,
+    workspace: Option<String>,
+    new_session: bool,
+) -> Result<String, BkError> {
+    let bin = state.binary()?;
+    let mut args: Vec<String> = vec!["ai".into(), "start".into(), agent, "-d".into()];
+    match workspace.filter(|w| !w.is_empty()) {
+        Some(w) => {
+            args.push("--workspace".into());
+            args.push(w);
+        }
+        // The desktop app has no "current directory" worth sharing, so an
+        // unset workspace means an isolated sandbox rather than the app's cwd.
+        None => args.push("--no-workspace".into()),
+    }
+    if new_session {
+        args.push("--new".into());
+    }
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let out = bsdkrun::run(&bin, &refs).await?;
+    Ok(out
+        .split_whitespace()
+        .next_back()
+        .unwrap_or_default()
+        .to_string())
+}
+
+/// Start a sandbox with **streamed** progress, for an agent whose flavor is not
+/// built yet: the first launch installs a toolchain and takes minutes, and a
+/// silent spinner for that long reads as a hang.
+///
+/// Emits the same `flavor://log` / `flavor://done` events the flavor launcher
+/// uses, so the existing progress modal renders it unchanged.
+#[tauri::command]
+async fn launch_agent(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    launch_id: String,
+    agent: String,
+    workspace: Option<String>,
+    new_session: bool,
+) -> Result<(), String> {
+    let bin = state.binary().map_err(|e| e.to_string())?;
+    let mut args: Vec<String> = vec!["ai".into(), "start".into(), agent, "-d".into()];
+    match workspace.filter(|w| !w.is_empty()) {
+        Some(w) => {
+            args.push("--workspace".into());
+            args.push(w);
+        }
+        None => args.push("--no-workspace".into()),
+    }
+    if new_session {
+        args.push("--new".into());
+    }
+    stream_bsdkrun(
+        app,
+        bin,
+        args,
+        launch_id,
+        // The last line is the machine id, as with a flavor launch: the panel
+        // reads it off `flavor://done` and opens a terminal into it.
+        true,
+        "timed out starting the agent sandbox",
+    );
+    Ok(())
+}
+
+/// The argv that starts an agent's TUI in a sandbox, for `term_open`.
+#[tauri::command]
+async fn ai_shell_command(
+    state: State<'_, AppState>,
+    agent: String,
+    machine_id: String,
+) -> Result<Vec<String>, BkError> {
+    let bin = state.binary()?;
+    let out = bsdkrun::run(&bin, &["ai", "__shell-command", &agent, &machine_id]).await?;
+    serde_json::from_str(out.trim()).map_err(|e| BkError::Parse(e.to_string()))
+}
+
+#[tauri::command]
+async fn ai_stop(state: State<'_, AppState>, agent: String) -> Result<(), BkError> {
+    let bin = state.binary()?;
+    bsdkrun::run(&bin, &["ai", "stop", &agent]).await?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn ai_remove(
+    state: State<'_, AppState>,
+    agent: String,
+    keep_home: bool,
+) -> Result<(), BkError> {
+    let bin = state.binary()?;
+    let mut args = vec!["ai", "rm", &agent];
+    if keep_home {
+        args.push("--keep-home");
+    }
+    bsdkrun::run(&bin, &args).await?;
+    Ok(())
 }
 
 // ---- docker ----------------------------------------------------------------
@@ -1368,6 +1495,13 @@ pub fn run() {
             list_volumes,
             list_versions,
             list_flavors,
+            ai_agents,
+            ai_sessions,
+            ai_start,
+            ai_shell_command,
+            launch_agent,
+            ai_stop,
+            ai_remove,
             docker_status,
             docker_containers,
             docker_start,

@@ -4,7 +4,14 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useCallback } from "react";
-import { api } from "./api";
+import { useSetAtom } from "jotai";
+import {
+  agentPanelOpenAtom,
+  agentSelectedAtom,
+  agentSessionAtom,
+  launchStateAtom,
+} from "../state/atoms";
+import { api, onFlavorDone } from "./api";
 import type { NewFlavor, RunSpec } from "./types";
 
 export const qk = {
@@ -13,6 +20,8 @@ export const qk = {
   volumes: ["volumes"] as const,
   // Every machine's list lives under the same "snapshots" prefix, so one
   // invalidate after a mutation refreshes the global view and each machine's.
+  aiAgents: ["ai", "agents"] as const,
+  aiSessions: ["ai", "sessions"] as const,
   dockerStatus: ["docker", "status"] as const,
   dockerContainers: (all: boolean) => ["docker", "containers", all] as const,
   snapshots: (machine?: string | null) =>
@@ -269,6 +278,130 @@ export function useCommitMachine() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.flavors });
       // A BSD machine is powered off to take a consistent snapshot.
+      qc.invalidateQueries({ queryKey: qk.machines });
+    },
+  });
+}
+
+// ---- ai agents ---------------------------------------------------------------
+
+export function useAiAgents(enabled = true) {
+  return useQuery({
+    queryKey: qk.aiAgents,
+    queryFn: () => api.aiAgents(),
+    enabled,
+    // The "installed" flag flips when a first launch finishes building, and
+    // that is what the panel's copy keys off.
+    refetchInterval: 15000,
+    staleTime: 5000,
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useAiSessions(enabled = true) {
+  return useQuery({
+    queryKey: qk.aiSessions,
+    queryFn: () => api.aiSessions(),
+    enabled,
+    refetchInterval: 8000,
+    placeholderData: (prev) => prev,
+  });
+}
+
+/**
+ * Start (or reuse) an agent sandbox and point the panel's terminal at it.
+ *
+ * An agent whose flavor is not built yet installs a toolchain on first run —
+ * minutes — so that path goes through the streaming progress modal and resolves
+ * when it reports the new machine id. An installed agent boots in about a
+ * second and skips the modal entirely.
+ */
+export function useStartAgent() {
+  const qc = useQueryClient();
+  const setSession = useSetAtom(agentSessionAtom);
+  const setOpen = useSetAtom(agentPanelOpenAtom);
+  const setSelected = useSetAtom(agentSelectedAtom);
+  const setLaunch = useSetAtom(launchStateAtom);
+
+  return useCallback(
+    async (agent: string, workspace: string | null, newSession: boolean) => {
+      setSelected(agent);
+      setOpen(true);
+
+      const agents = await qc.ensureQueryData({
+        queryKey: qk.aiAgents,
+        queryFn: () => api.aiAgents(),
+      });
+      const info = agents.find((a) => a.id === agent);
+      const label = info?.label ?? agent;
+
+      const machineId = info?.installed
+        ? await api.aiStart(agent, workspace, newSession)
+        : await streamInstall(setLaunch, label, agent, workspace, newSession);
+
+      const command = await api.aiShellCommand(agent, machineId);
+      setSession({
+        // A fresh key remounts the terminal — a new PTY for a new sandbox.
+        key: `${machineId}-${Date.now()}`,
+        agent,
+        machineId,
+        command,
+      });
+      qc.invalidateQueries({ queryKey: ["ai"] });
+      qc.invalidateQueries({ queryKey: qk.machines });
+      return machineId;
+    },
+    [qc, setSession, setOpen, setSelected, setLaunch],
+  );
+}
+
+/**
+ * First run of an agent: stream the flavor build into the progress modal, and
+ * resolve with the machine id it reports.
+ */
+function streamInstall(
+  setLaunch: (s: any) => void,
+  label: string,
+  agent: string,
+  workspace: string | null,
+  newSession: boolean,
+): Promise<string> {
+  const launchId = `agent-${agent}-${Date.now()}`;
+  setLaunch({
+    launchId,
+    name: `${label} (installing)`,
+    mode: "launch",
+    lines: [],
+    status: "running",
+  });
+  return new Promise<string>((resolve, reject) => {
+    let unlisten: (() => void) | null = null;
+    onFlavorDone((p) => {
+      if (p.launch_id !== launchId) return;
+      unlisten?.();
+      if (p.error || !p.id) {
+        reject(new Error(p.error || "the sandbox did not report an id"));
+      } else {
+        resolve(p.id);
+      }
+    }).then((u) => {
+      unlisten = u;
+    });
+    api.launchAgent(launchId, agent, workspace, newSession).catch((e) => {
+      unlisten?.();
+      reject(e);
+    });
+  });
+}
+
+export function useStopAgent() {
+  const qc = useQueryClient();
+  const setSession = useSetAtom(agentSessionAtom);
+  return useMutation({
+    mutationFn: (agent: string) => api.aiStop(agent),
+    onSuccess: () => {
+      setSession(null);
+      qc.invalidateQueries({ queryKey: ["ai"] });
       qc.invalidateQueries({ queryKey: qk.machines });
     },
   });

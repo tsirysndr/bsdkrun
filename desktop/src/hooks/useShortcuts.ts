@@ -10,6 +10,7 @@ import {
   runOpenAtom,
   settingsOpenAtom,
   shortcutsOpenAtom,
+  agentPanelOpenAtom,
   terminalCollapsedAtom,
   terminalTabsAtom,
   viewAtom,
@@ -31,6 +32,7 @@ export function useShortcuts() {
   const setSettings = useSetAtom(settingsOpenAtom);
   const setShortcuts = useSetAtom(shortcutsOpenAtom);
   const setView = useSetAtom(viewAtom);
+  const setAgentPanel = useSetAtom(agentPanelOpenAtom);
   const openHostTerminal = useSetAtom(openHostTerminalAtom);
   const setTermCollapsed = useSetAtom(terminalCollapsedAtom);
   const termTabs = useAtomValue(terminalTabsAtom);
@@ -64,6 +66,9 @@ export function useShortcuts() {
         break;
       case "settings":
         setSettings(true);
+        break;
+      case "agent-panel":
+        setAgentPanel((v) => !v);
         break;
       case "shortcuts":
         setShortcuts(true);
@@ -112,6 +117,13 @@ export function useShortcuts() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPalette(true);
+        return;
+      }
+      // ⌘J / Ctrl+J toggles the AI agent panel, everywhere — including while
+      // typing, since the panel's own terminal counts as an input.
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "j") {
+        e.preventDefault();
+        setAgentPanel((v) => !v);
         return;
       }
       // Ctrl+` toggles the bottom terminal panel (VS Code-style), everywhere.

@@ -187,6 +187,7 @@ pub fn dispatch(cmd: Command) -> Result<()> {
             AiCmd::Ls(a) => commands::ai::cmd_sessions(a.json),
             AiCmd::Stop(a) => commands::ai::cmd_stop(&a.agent),
             AiCmd::Rm(a) => commands::ai::cmd_rm(&a.agent, a.keep_home),
+            AiCmd::ShellCommand(a) => commands::ai::cmd_shell_command(&a.agent, &a.machine),
         },
         // The per-agent aliases: `bsdkrun claude` is `ai start claude --cwd`.
         Command::Claude(a) => commands::boot::cmd_ai_start(a.into_start("claude")),

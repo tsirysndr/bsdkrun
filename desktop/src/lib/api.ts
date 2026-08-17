@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AiAgent,
+  AiSession,
   Flavor,
   Image,
   Machine,
@@ -53,6 +55,27 @@ export const api = {
   createFlavor: (spec: NewFlavor) => invoke<void>("create_flavor", { ...spec }),
   commitMachine: (id: string, name: string, description: string) =>
     invoke<string>("commit_machine", { id, name, description }),
+
+  // AI agent sandboxes. A sandbox is a machine, so its terminal is the
+  // ordinary `termOpen` with the agent's argv.
+  aiAgents: () => invoke<AiAgent[]>("ai_agents"),
+  aiSessions: () => invoke<AiSession[]>("ai_sessions"),
+  /** Starts or reuses a sandbox; returns its machine id. */
+  aiStart: (agent: string, workspace: string | null, newSession: boolean) =>
+    invoke<string>("ai_start", { agent, workspace, newSession }),
+  /** Same, but streams the first-run flavor build into the progress modal. */
+  launchAgent: (
+    launchId: string,
+    agent: string,
+    workspace: string | null,
+    newSession: boolean,
+  ) => invoke<void>("launch_agent", { launchId, agent, workspace, newSession }),
+  /** The argv that starts the agent's TUI in a sandbox. */
+  aiShellCommand: (agent: string, machineId: string) =>
+    invoke<string[]>("ai_shell_command", { agent, machineId }),
+  aiStop: (agent: string) => invoke<void>("ai_stop", { agent }),
+  aiRemove: (agent: string, keepHome: boolean) =>
+    invoke<void>("ai_remove", { agent, keepHome }),
 
   // Docker: one dind microVM the host's own `docker` CLI drives.
   dockerStatus: () => invoke<DockerStatus>("docker_status"),
@@ -165,5 +188,15 @@ export const onFlavorLog = (cb: (p: FlavorLog) => void): Promise<UnlistenFn> =>
   listen<FlavorLog>("flavor://log", (e) => cb(e.payload));
 export const onFlavorDone = (cb: (p: FlavorDone) => void): Promise<UnlistenFn> =>
   listen<FlavorDone>("flavor://done", (e) => cb(e.payload));
+/**
+ * Ask the user for a folder to share with an agent. `null` when cancelled —
+ * distinct from `""`, which would mean "share nothing".
+ */
+export async function pickWorkspace(): Promise<string | null> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({ directory: true, multiple: false });
+  return typeof picked === "string" ? picked : null;
+}
+
 export const onMenuAction = (cb: (action: string) => void): Promise<UnlistenFn> =>
   listen<string>("menu://action", (e) => cb(e.payload));

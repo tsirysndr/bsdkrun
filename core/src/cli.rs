@@ -489,6 +489,23 @@ pub enum AiCmd {
     Stop(AiAgentArgs),
     /// Remove an agent's sandboxes and (unless `--keep-home`) its saved login.
     Rm(AiRmArgs),
+    /// (internal) Print the argv that starts an agent's TUI, as JSON.
+    ///
+    /// The desktop app opens its terminal with this rather than rebuilding the
+    /// wrapper (skills symlink, `cd`, `exec`) — the daemon's `aiShellCommand`
+    /// query answers from the same function, so there is one definition.
+    #[command(name = "__shell-command", hide = true)]
+    ShellCommand(AiShellCommandArgs),
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct AiShellCommandArgs {
+    #[arg(value_name = "AGENT")]
+    pub agent: String,
+
+    /// The sandbox whose recorded workspace the command should `cd` into.
+    #[arg(value_name = "MACHINE")]
+    pub machine: String,
 }
 
 #[derive(Parser, Serialize, Deserialize)]

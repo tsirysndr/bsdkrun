@@ -8,6 +8,8 @@ import {
   IconCircleFilled,
   IconLayoutSidebar,
   IconLayoutSidebarFilled,
+  IconLayoutSidebarRight,
+  IconLayoutSidebarRightFilled,
   IconLayoutBottombar,
   IconLayoutBottombarFilled,
   IconTerminal2,
@@ -18,6 +20,7 @@ import {
   openHostTerminalAtom,
   paletteOpenAtom,
   runOpenAtom,
+  agentPanelOpenAtom,
   sidebarVisibleAtom,
   terminalCollapsedAtom,
   terminalTabsAtom,
@@ -31,6 +34,7 @@ export default function TopBar() {
   const setRunOpen = useSetAtom(runOpenAtom);
   const setPalette = useSetAtom(paletteOpenAtom);
   const [sidebar, setSidebar] = useAtom(sidebarVisibleAtom);
+  const [agentPanel, setAgentPanel] = useAtom(agentPanelOpenAtom);
   const [termCollapsed, setTermCollapsed] = useAtom(terminalCollapsedAtom);
   const termTabs = useAtomValue(terminalTabsAtom);
   const openHostTerminal = useSetAtom(openHostTerminalAtom);
@@ -106,6 +110,27 @@ export default function TopBar() {
               <IconLayoutBottombar size={18} />
             ) : (
               <IconLayoutBottombarFilled size={18} />
+            )}
+          </Button>
+        </Tooltip>
+
+        <Tooltip
+          content={
+            agentPanel ? "Hide the AI agent panel (⌘J)" : "AI agent panel (⌘J)"
+          }
+          placement="bottom"
+        >
+          <Button
+            isIconOnly
+            size="sm"
+            variant="light"
+            className="no-drag text-foreground-400 hover:text-foreground"
+            onPress={() => setAgentPanel((v) => !v)}
+          >
+            {agentPanel ? (
+              <IconLayoutSidebarRightFilled size={18} />
+            ) : (
+              <IconLayoutSidebarRight size={18} />
             )}
           </Button>
         </Tooltip>

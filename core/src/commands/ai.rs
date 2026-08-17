@@ -124,6 +124,20 @@ pub fn attach_argv(agent: &Agent, workspace: Option<&str>) -> Vec<String> {
     ai::tui_argv(agent, workspace)
 }
 
+/// `bsdkrun ai __shell-command <agent> <machine>` — the argv, as JSON.
+pub(crate) fn cmd_shell_command(agent: &str, machine: &str) -> Result<()> {
+    let agent = ai::require(agent)?;
+    let workspace = db::Db::open()
+        .and_then(|db| db.find_machine(machine))
+        .ok()
+        .and_then(|m| ai::workspace_of(std::path::Path::new(&m.state_dir)));
+    println!(
+        "{}",
+        serde_json::to_string(&ai::tui_argv(agent, workspace.as_deref()))?
+    );
+    Ok(())
+}
+
 /// Find the machine to attach to for `agent`, if one is running.
 pub fn running_machine(agent: &str) -> Result<Option<db::MachineRow>> {
     let Some(session) = ai::running_session(agent)? else {

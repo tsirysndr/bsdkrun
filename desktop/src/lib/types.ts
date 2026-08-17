@@ -75,6 +75,34 @@ export interface Volume {
   tracked: boolean;
 }
 
+/** A coding agent bsdkrun can sandbox (`bsdkrun ai agents`). */
+export interface AiAgent {
+  /** Stable id — `claude`, `codex`, … Also the CLI alias. */
+  id: string;
+  label: string;
+  /** The catalog flavor that installs it. */
+  flavor: string;
+  description: string;
+  /**
+   * Its flavor is provisioned, so a sandbox boots in a second. False means the
+   * first launch installs a toolchain — minutes, streamed into the progress
+   * modal rather than hidden behind a spinner.
+   */
+  installed: boolean;
+  running: number;
+}
+
+/** One agent sandbox. It is a machine, so `logs`/`stop` work on `id`. */
+export interface AiSession {
+  id: string;
+  name: string;
+  agent: string;
+  running: boolean;
+  /** The directory shared into it, on the engine's host. */
+  workspace?: string | null;
+  created_at: string;
+}
+
 /**
  * The Docker engine VM's status (`bsdkrun docker status`).
  *

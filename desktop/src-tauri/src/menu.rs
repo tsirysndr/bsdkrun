@@ -101,6 +101,10 @@ fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .id("app:nav:networks")
         .accelerator("CmdOrCtrl+7")
         .build(app)?;
+    let agent_panel = MenuItemBuilder::new("AI Agent Panel")
+        .id("app:agent-panel")
+        .accelerator("CmdOrCtrl+J")
+        .build(app)?;
     let palette = MenuItemBuilder::new("Command Palette…")
         .id("app:palette")
         .accelerator("CmdOrCtrl+K")
@@ -113,6 +117,8 @@ fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .item(&nav_snapshots)
         .item(&nav_flavors)
         .item(&nav_networks)
+        .separator()
+        .item(&agent_panel)
         .separator()
         .item(&palette)
         .separator()

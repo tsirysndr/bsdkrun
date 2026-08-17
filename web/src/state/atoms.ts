@@ -136,6 +136,37 @@ export interface EditNetworkTarget {
 }
 export const editNetworkAtom = atom<EditNetworkTarget | null>(null);
 
+// ---- the right-side AI agent panel ------------------------------------------
+//
+// The panel keeps its terminal mounted while hidden (see `AgentPanel`), so a
+// session survives being toggled away — which is the whole point of docking it
+// rather than opening a tab.
+
+/** Whether the right panel is shown. */
+export const agentPanelOpenAtom = atom<boolean>(false);
+
+/** Panel width in px (drag-to-resize; persists across toggles). */
+export const agentPanelWidthAtom = atom<number>(460);
+
+/** Expand the panel over the whole workspace. */
+export const agentPanelFullscreenAtom = atom<boolean>(false);
+
+/** Which agent the dropdown has selected. */
+export const agentSelectedAtom = atom<string>("claude");
+
+/** The host directory shared with the agent, or null for an isolated sandbox. */
+export const agentWorkspaceAtom = atom<string | null>(null);
+
+/** The live session: the sandbox machine and the argv that starts its TUI. */
+export interface AgentSession {
+  /** Remounts the terminal when it changes — a new session, a new pane. */
+  key: string;
+  agent: string;
+  machineId: string;
+  command: string[];
+}
+export const agentSessionAtom = atom<AgentSession | null>(null);
+
 // Live state of a streaming flavor launch/build (the progress modal). null ⇒ closed.
 export interface LaunchState {
   launchId: string;

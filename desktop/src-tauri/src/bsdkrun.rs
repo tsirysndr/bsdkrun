@@ -422,6 +422,44 @@ pub async fn list_snapshots(bin: &Target, machine: Option<&str>) -> Result<Vec<S
     serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
 }
 
+/// A coding agent bsdkrun can sandbox (mirrors `bsdkrun ai agents --json`).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AiAgent {
+    pub id: String,
+    pub label: String,
+    pub flavor: String,
+    #[serde(default)]
+    pub description: String,
+    /// Its flavor is provisioned, so a sandbox boots in a second. False means
+    /// the first launch builds it — minutes, with streamed output.
+    pub installed: bool,
+    #[serde(default)]
+    pub running: i64,
+}
+
+/// One agent sandbox (mirrors `bsdkrun ai ls --json`).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AiSession {
+    pub id: String,
+    pub name: String,
+    pub agent: String,
+    pub running: bool,
+    #[serde(default)]
+    pub workspace: Option<String>,
+    #[serde(default)]
+    pub created_at: String,
+}
+
+pub async fn ai_agents(bin: &Target) -> Result<Vec<AiAgent>, BkError> {
+    let out = run(bin, &["ai", "agents", "--json"]).await?;
+    serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
+}
+
+pub async fn ai_sessions(bin: &Target) -> Result<Vec<AiSession>, BkError> {
+    let out = run(bin, &["ai", "ls", "--json"]).await?;
+    serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
+}
+
 /// The Docker engine VM's status (mirrors `bsdkrun docker status --json`).
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DockerStatus {

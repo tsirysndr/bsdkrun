@@ -12,6 +12,8 @@
 import { gql, subscribe } from "./graphql";
 import { getConnection, setConnection, type Connection } from "./connection";
 import type {
+  AiAgent,
+  AiSession,
   Flavor,
   Image,
   Machine,
@@ -55,6 +57,9 @@ const MACHINE_FIELDS = `
   cpus mem volume stateDir createdAt finishedAt network netIp origin
   ports { bind host guest }
 `;
+
+const AI_AGENT_FIELDS = `id label flavor description installed running`;
+const AI_SESSION_FIELDS = `id name agent running workspace createdAt`;
 
 const DOCKER_STATUS_FIELDS = `
   running machineId machineRunning socket socketReady apiPort version
@@ -506,6 +511,73 @@ export const api = {
     );
     if (d.commitMachine.exitCode !== 0) throw new Error(d.commitMachine.stderr.trim());
     return name;
+  },
+
+  // ---- ai agents --------------------------------------------------------------
+
+  aiAgents: async (): Promise<AiAgent[]> => {
+    const d = await gql<{ aiAgents: AiAgent[] }>(
+      `{ aiAgents { ${AI_AGENT_FIELDS} } }`,
+    );
+    return d.aiAgents;
+  },
+
+  aiSessions: async (): Promise<AiSession[]> => {
+    const d = await gql<{ aiSessions: any[] }>(
+      `{ aiSessions { ${AI_SESSION_FIELDS} } }`,
+    );
+    return d.aiSessions.map((s) => ({ ...s, created_at: s.createdAt ?? "" }));
+  },
+
+  aiStart: async (
+    agent: string,
+    workspace: string | null,
+    newSession: boolean,
+  ): Promise<string> => {
+    const d = await gql<{ aiStart: string }>(
+      `mutation($i:AiStartInput!){ aiStart(input:$i) }`,
+      { i: { agent, workspace: orNull(workspace ?? undefined), new: newSession } },
+    );
+    return d.aiStart;
+  },
+
+  /**
+   * The web app has no streaming boot channel of its own, so a first launch
+   * simply takes as long as it takes; the panel shows an installing state
+   * rather than a progress log.
+   */
+  launchAgent: async (
+    _launchId: string,
+    agent: string,
+    workspace: string | null,
+    newSession: boolean,
+  ): Promise<void> => {
+    await api.aiStart(agent, workspace, newSession);
+  },
+
+  /** The argv that starts the agent's TUI in a sandbox. */
+  aiShellCommand: async (agent: string, machineId: string): Promise<string[]> => {
+    const d = await gql<{ aiShellCommand: string[] }>(
+      `query($a:String!,$m:String!){ aiShellCommand(agent:$a, machineId:$m) }`,
+      { a: agent, m: machineId },
+    );
+    return d.aiShellCommand;
+  },
+
+  aiStop: async (agent: string) => {
+    const d = await gql<{ aiStop: { exitCode: number; stderr: string } }>(
+      `mutation($a:String!){ aiStop(agent:$a){ exitCode stderr } }`,
+      { a: agent },
+    );
+    if (d.aiStop.exitCode !== 0) throw new Error(d.aiStop.stderr.trim());
+  },
+
+  aiRemove: async (agent: string, keepHome: boolean) => {
+    const d = await gql<{ aiRemove: { exitCode: number; stderr: string } }>(
+      `mutation($a:String!,$k:Boolean!){ aiRemove(agent:$a, keepHome:$k){ exitCode stderr } }`,
+      { a: agent, k: keepHome },
+    );
+    if (d.aiRemove.exitCode !== 0) throw new Error(d.aiRemove.stderr.trim());
   },
 
   // ---- docker ---------------------------------------------------------------
@@ -971,5 +1043,22 @@ export const onFlavorLog = (cb: (p: FlavorLog) => void) => listen<FlavorLog>("fl
 export const onFlavorDone = (cb: (p: FlavorDone) => void) =>
   listen<FlavorDone>("flavor://done", cb);
 /** Native menus are a desktop-shell feature; nothing emits this on the web. */
+/**
+ * Ask for a folder to share with an agent.
+ *
+ * A browser cannot open a native directory picker that yields a *path*, and
+ * the path has to exist on the daemon's host anyway — which is not this
+ * machine when the daemon is remote. So this asks for the path directly, and
+ * says whose filesystem it means.
+ */
+export async function pickWorkspace(): Promise<string | null> {
+  const answer = window.prompt(
+    "Folder to share with the agent.\n\nThis path is on the machine running bsdkrund, not on this computer.",
+    "",
+  );
+  const trimmed = answer?.trim();
+  return trimmed ? trimmed : null;
+}
+
 export const onMenuAction = (_cb: (action: string) => void): Promise<UnlistenFn> =>
   Promise.resolve(() => {});

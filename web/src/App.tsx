@@ -12,6 +12,7 @@ import ImagesView from "./components/ImagesView";
 import VolumesView from "./components/VolumesView";
 import SnapshotsView from "./components/SnapshotsView";
 import ContainersView from "./components/ContainersView";
+import AgentPanel from "./components/AgentPanel";
 import FlavorsView from "./components/FlavorsView";
 import NetworksView from "./components/NetworksView";
 import RunDialog from "./components/RunDialog";
@@ -58,6 +59,7 @@ function Workspace() {
             {view === "flavors" && <FlavorsView />}
             {view === "networks" && <NetworksView />}
           </div>
+          <AgentPanel />
         </div>
         <TerminalPanel />
       </div>

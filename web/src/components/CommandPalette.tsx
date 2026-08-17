@@ -16,12 +16,14 @@ import {
   IconPlayerPlayFilled,
   IconBrandDocker,
   IconCamera,
+  IconSparkles,
   IconCpu,
   IconGitBranch,
   IconTerminal2,
   IconCornerDownLeft,
 } from "@tabler/icons-react";
 import {
+  agentPanelOpenAtom,
   branchTargetAtom,
   commitTargetAtom,
   editResourcesAtom,
@@ -35,6 +37,7 @@ import {
   viewAtom,
 } from "../state/atoms";
 import {
+  useAiAgents,
   useFlavors,
   useMachines,
   useRefreshAll,
@@ -43,6 +46,7 @@ import {
   useStopMachine,
 } from "../lib/queries";
 import { useLaunchFlavor } from "../hooks/useLaunchFlavor";
+import { useStartAgent } from "../lib/queries";
 import { useToast } from "../state/toast";
 import { isUnikraft, kindColor, shortId } from "../lib/format";
 import type { ViewKey } from "../lib/types";
@@ -66,6 +70,9 @@ export default function CommandPalette() {
   const { data: machines = [] } = useMachines();
   const { data: flavors = [] } = useFlavors();
   const { data: snapshots = [] } = useSnapshots();
+  const { data: aiAgents = [] } = useAiAgents();
+  const startAgent = useStartAgent();
+  const setAgentPanel = useSetAtom(agentPanelOpenAtom);
   const setView = useSetAtom(viewAtom);
   const setRunOpen = useSetAtom(runOpenAtom);
   const setSettingsOpen = useSetAtom(settingsOpenAtom);
@@ -143,6 +150,17 @@ export default function CommandPalette() {
         section: "Navigate",
         icon: IconDatabase,
         run: nav("volumes"),
+      },
+      {
+        id: "agent-panel",
+        title: "Toggle the AI agent panel",
+        section: "Navigate",
+        icon: IconSparkles,
+        keywords: "ai agent claude codex gemini panel sandbox assistant",
+        run: () => {
+          setOpen(false);
+          setAgentPanel((v) => !v);
+        },
       },
       {
         id: "nav-containers",
@@ -346,6 +364,22 @@ export default function CommandPalette() {
       },
     }));
 
+    // One entry per agent: the fastest path from "I want Claude" to a prompt.
+    const agentCmds: Command[] = aiAgents.map((a) => ({
+      id: `ai-${a.id}`,
+      title: `New ${a.label} session`,
+      subtitle: a.installed
+        ? a.description
+        : `${a.description} · installs on first run`,
+      section: "AI agents",
+      icon: IconSparkles,
+      keywords: `ai agent sandbox ${a.id} ${a.flavor} chat assistant coding`,
+      run: () => {
+        setOpen(false);
+        startAgent(a.id, null, true).catch(() => {});
+      },
+    }));
+
     const flavorCmds: Command[] = flavors.map((f) => ({
       id: `flavor-${f.source}-${f.name}`,
       title: `Launch ${f.name}`,
@@ -360,8 +394,8 @@ export default function CommandPalette() {
       },
     }));
 
-    return [...base, ...machineCmds, ...snapshotCmds, ...flavorCmds];
-  }, [machines, snapshots, flavors]);
+    return [...base, ...agentCmds, ...machineCmds, ...snapshotCmds, ...flavorCmds];
+  }, [machines, snapshots, flavors, aiAgents]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

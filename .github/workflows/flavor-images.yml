@@ -9,10 +9,14 @@ name: flavor images (ghcr.io)
 # it provisions locally, and falls back silently when the image is missing, so
 # a flavor that has never been published still works.
 #
-# The Dockerfiles under `images/` are **generated** from the flavor catalog
+# The Dockerfiles under `flavors/` are **generated** from the flavor catalog
 # (`bsdkrun flavor __dockerfiles`), never hand-written: the drift check below
 # fails the run if the catalog moved and the tree was not regenerated, which is
 # what keeps a published image equal to what a local build would produce.
+#
+# `flavors/`, not `images/`: `/images` is git-ignored (it is where
+# `bsdkrun fetch` puts guest disk images), so a tree generated there is never
+# committed and this workflow dies on `ls: cannot access 'images'`.
 #
 # Manual only. These images are large and slow to build, and nothing about a
 # normal push should trigger seventeen multi-arch builds.
@@ -36,7 +40,7 @@ permissions:
 
 jobs:
   # The matrix is computed rather than written out: adding a flavor to the
-  # catalog and regenerating `images/` is all it should take to publish one.
+  # catalog and regenerating `flavors/` is all it should take to publish one.
   plan:
     name: plan
     runs-on: ubuntu-latest
@@ -53,12 +57,12 @@ jobs:
           if [ -n "${{ inputs.flavors }}" ]; then
             names="${{ inputs.flavors }}"
           else
-            names=$(ls images)
+            names=$(ls flavors)
           fi
           # A name with no generated Dockerfile is a typo, not a flavor.
           for n in $names; do
-            test -f "images/$n/Dockerfile" || {
-              echo "no images/$n/Dockerfile — is $n a provisioned flavor?" >&2
+            test -f "flavors/$n/Dockerfile" || {
+              echo "no flavors/$n/Dockerfile — is $n a provisioned flavor?" >&2
               exit 1
             }
           done
@@ -79,15 +83,16 @@ jobs:
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      # `--no-default-features` drops the `boot` feature, so this builds
-      # without libkrun — the check only needs the flavor catalog.
-      - name: Build the CLI (no hypervisor)
-        run: cargo build -p bsdkrun-core --no-default-features
-
+      # A test in `bsdkrun-core`, not `bsdkrun flavor __dockerfiles --check`:
+      # the CLI depends on core with default features on, so
+      # `cargo run -p bsdkrun --no-default-features` leaves `boot` enabled and
+      # fails at `-lkrun`. Testing core directly with the feature off links no
+      # hypervisor, and comparing generated strings to a committed tree needs
+      # none.
       - name: Check for drift
         run: |
-          cargo run -p bsdkrun --no-default-features -- flavor __dockerfiles --check \
-            || cargo run -p bsdkrun -- flavor __dockerfiles --check
+          cargo test -p bsdkrun-core --no-default-features \
+            --test flavor_dockerfiles -- --nocapture
 
   publish:
     name: ${{ matrix.flavor }}
@@ -115,7 +120,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: images/${{ matrix.flavor }}
+          context: flavors/${{ matrix.flavor }}
           platforms: ${{ inputs.platforms }}
           push: true
           tags: |

@@ -119,7 +119,7 @@ pub fn prebuilt_image(flavor: &str) -> String {
 ///
 /// Generated from the catalog rather than written by hand, so a change to a
 /// flavor's steps cannot silently diverge from the image CI publishes — the
-/// `images/` tree is regenerated and a CI check fails when it drifts.
+/// `flavors/` tree is regenerated and a CI check fails when it drifts.
 ///
 /// `None` for a flavor with nothing to provision (a bare OCI base is already
 /// what a launch would pull) or one that is not OCI-based at all.

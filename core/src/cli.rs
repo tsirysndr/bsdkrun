@@ -522,6 +522,62 @@ pub enum AiCmd {
     /// query answers from the same function, so there is one definition.
     #[command(name = "__shell-command", hide = true)]
     ShellCommand(AiShellCommandArgs),
+    /// Copy local files into a sandbox on a remote engine.
+    ///
+    /// Every other path here resolves on the machine running the engine, so
+    /// driving a VPS leaves your skills, keys and project on the laptop where
+    /// no sandbox can see them. This sends them across.
+    Upload(AiUploadArgs),
+    /// (internal) Receive an upload on the engine's host, as a tar on stdin.
+    #[command(name = "__receive", hide = true)]
+    Receive(AiReceiveArgs),
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct AiUploadArgs {
+    /// What to send: `skills`, `ssh`, or `workspace` (the current directory).
+    #[arg(long, value_name = "KIND", default_value = "workspace")]
+    pub what: String,
+
+    /// The agent whose sandbox receives it. `ssh` lands in that agent's home
+    /// volume; `skills` is shared by every agent regardless.
+    #[arg(long, default_value = "claude")]
+    pub agent: String,
+
+    /// The directory to upload, for `--what workspace`. Defaults to the
+    /// current directory.
+    #[arg(value_name = "DIR")]
+    pub dir: Option<String>,
+
+    /// Name the uploaded workspace on the engine. Defaults to the directory's
+    /// own name.
+    #[arg(long)]
+    pub name: Option<String>,
+
+    /// Include build output (`node_modules`, `target`, `.venv`, …), which is
+    /// skipped by default because it is large and regenerated anyway.
+    #[arg(long)]
+    pub all: bool,
+
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct AiReceiveArgs {
+    /// `skills`, `ssh` or `workspace`.
+    #[arg(long, value_name = "KIND")]
+    pub what: String,
+
+    #[arg(long, default_value = "claude")]
+    pub agent: String,
+
+    /// The workspace name, for `--what workspace`.
+    #[arg(long)]
+    pub name: Option<String>,
+
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Parser, Serialize, Deserialize)]
@@ -1030,7 +1086,11 @@ pub enum FlavorCmd {
 #[derive(Parser, Serialize, Deserialize)]
 pub struct FlavorDockerfilesArgs {
     /// Directory to write into (one `<flavor>/Dockerfile` per flavor).
-    #[arg(long, default_value = "images")]
+    ///
+    /// `flavors/`, not `images/`: the latter is where `bsdkrun fetch` drops
+    /// multi-gigabyte guest disk images and is git-ignored repo-wide, so a
+    /// tree generated there is never committed and CI finds nothing to build.
+    #[arg(long, default_value = "flavors")]
     pub out: String,
 
     /// Fail instead of writing when what is on disk differs — the CI check

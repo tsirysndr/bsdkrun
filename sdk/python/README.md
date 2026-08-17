@@ -304,9 +304,9 @@ a mounted UFS cannot be cloned consistently.
 
 ```python
 snap = client.snapshot(machine_id, "before-upgrade")
-client.snapshots(machine_id)             # newest first
+client.snapshots(machine_id)  # newest first
 branch_id = client.branch(snap.name, name="web-test")
-client.restore(machine_id, snap.name)    # or client.rollback(machine_id)
+client.restore(machine_id, snap.name)  # or client.rollback(machine_id)
 client.remove_snapshots([snap.name])
 ```
 

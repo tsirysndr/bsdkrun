@@ -21,9 +21,7 @@ use serde_json::{json, Value};
 use crate::args::{strvec, NetOpts};
 use crate::error::{Error, Result};
 use crate::transport::{http_request, normalize_url, ws_url, WsTransport, TOKEN_ENV, URL_ENV};
-use crate::types::{
-    CommandResult, RemoteExecResult, SandboxInfo, ShellSessionInfo, SnapshotInfo,
-};
+use crate::types::{CommandResult, RemoteExecResult, SandboxInfo, ShellSessionInfo, SnapshotInfo};
 
 // ---------------------------------------------------------------------------
 // GraphQL documents

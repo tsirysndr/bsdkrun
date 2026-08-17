@@ -122,6 +122,7 @@ impl From<ops::Image> for Image {
             size: i.size,
             rootfs: i.rootfs,
             created_at: i.created_at,
+            used_by: i.used_by,
         }
     }
 }
@@ -498,6 +499,16 @@ impl Bsdkrun for BsdkrunService {
         Ok(Response::new(ListImagesResponse {
             images: images.into_iter().map(Into::into).collect(),
         }))
+    }
+
+    async fn remove_images(
+        &self,
+        req: Request<RemoveImagesRequest>,
+    ) -> Result<Response<CommandResult>, Status> {
+        let r = req.into_inner();
+        Ok(Response::new(
+            self.ops.remove_images(&r.ids, r.force).await?,
+        ))
     }
 
     async fn fetch(

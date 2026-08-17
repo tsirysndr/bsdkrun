@@ -1318,6 +1318,17 @@ async fn remove_machine(
     Ok(())
 }
 
+/// Delete a dangling image and its rootfs — `bsdkrun image rm <id>`.
+///
+/// The engine refuses one a machine still references; the UI disables the
+/// button in that case, so reaching this is either a race or a stale list.
+#[tauri::command]
+async fn remove_image(state: State<'_, AppState>, id: String) -> Result<(), BkError> {
+    let bin = state.binary()?;
+    bsdkrun::run(&bin, &["image", "rm", &id]).await?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn remove_volume(
     state: State<'_, AppState>,
@@ -1552,6 +1563,7 @@ pub fn run() {
             stop_machine,
             restart_machine,
             remove_machine,
+            remove_image,
             remove_volume,
             machine_logs,
             ssh_action,

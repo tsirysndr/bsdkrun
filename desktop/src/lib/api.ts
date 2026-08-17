@@ -147,6 +147,8 @@ export const api = {
   restartMachine: (id: string) => invoke<string>("restart_machine", { id }),
   removeMachine: (id: string, force: boolean) =>
     invoke<void>("remove_machine", { id, force }),
+  /** Only a dangling image can go; the engine refuses one still in use. */
+  removeImage: (id: string) => invoke<void>("remove_image", { id }),
   removeVolume: (name: string, force: boolean) =>
     invoke<void>("remove_volume", { name, force }),
 

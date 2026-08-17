@@ -1,0 +1,149 @@
+name: flavor images (ghcr.io)
+
+# Publishes the provisioned flavors as OCI images, so a first
+# `bsdkrun flavor run <name>` (or `bsdkrun claude`) pulls one instead of
+# booting a VM and installing a toolchain in it — minutes, every time, on
+# every machine.
+#
+# `bsdkrun` looks for `ghcr.io/tsirysndr/bsdkrun-flavor-<name>:latest` before
+# it provisions locally, and falls back silently when the image is missing, so
+# a flavor that has never been published still works.
+#
+# The Dockerfiles under `images/` are **generated** from the flavor catalog
+# (`bsdkrun flavor __dockerfiles`), never hand-written: the drift check below
+# fails the run if the catalog moved and the tree was not regenerated, which is
+# what keeps a published image equal to what a local build would produce.
+#
+# Manual only. These images are large and slow to build, and nothing about a
+# normal push should trigger seventeen multi-arch builds.
+on:
+  workflow_dispatch:
+    inputs:
+      flavors:
+        description: >-
+          Space-separated flavor names to publish (e.g. "claude-code codex").
+          Empty publishes every flavor with a generated Dockerfile.
+        required: false
+        default: ""
+      platforms:
+        description: Platforms to build for.
+        required: false
+        default: linux/amd64,linux/arm64
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # The matrix is computed rather than written out: adding a flavor to the
+  # catalog and regenerating `images/` is all it should take to publish one.
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      flavors: ${{ steps.pick.outputs.flavors }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick the flavors to build
+        id: pick
+        run: |
+          set -eu
+          if [ -n "${{ inputs.flavors }}" ]; then
+            names="${{ inputs.flavors }}"
+          else
+            names=$(ls images)
+          fi
+          # A name with no generated Dockerfile is a typo, not a flavor.
+          for n in $names; do
+            test -f "images/$n/Dockerfile" || {
+              echo "no images/$n/Dockerfile — is $n a provisioned flavor?" >&2
+              exit 1
+            }
+          done
+          json=$(printf '%s\n' $names | jq -R . | jq -sc .)
+          echo "flavors=$json" >> "$GITHUB_OUTPUT"
+          echo "building: $names"
+
+  # The generated tree has to match the catalog, or the published image is not
+  # the flavor anyone gets locally.
+  check-generated:
+    name: dockerfiles are up to date
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      # `--no-default-features` drops the `boot` feature, so this builds
+      # without libkrun — the check only needs the flavor catalog.
+      - name: Build the CLI (no hypervisor)
+        run: cargo build -p bsdkrun-core --no-default-features
+
+      - name: Check for drift
+        run: |
+          cargo run -p bsdkrun --no-default-features -- flavor __dockerfiles --check \
+            || cargo run -p bsdkrun -- flavor __dockerfiles --check
+
+  publish:
+    name: ${{ matrix.flavor }}
+    needs: [plan, check-generated]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: ${{ fromJson(needs.plan.outputs.flavors) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Multi-arch: bsdkrun runs a guest of the *host's* architecture, so an
+      # arm64 Mac and an amd64 CI box each need their own image.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: images/${{ matrix.flavor }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: |
+            ghcr.io/tsirysndr/bsdkrun-flavor-${{ matrix.flavor }}:latest
+            ghcr.io/tsirysndr/bsdkrun-flavor-${{ matrix.flavor }}:${{ github.sha }}
+          # A cache per flavor: these installs are the slow part, and a rerun
+          # after one flavor fails should not rebuild the others from scratch.
+          cache-from: type=gha,scope=flavor-${{ matrix.flavor }}
+          cache-to: type=gha,scope=flavor-${{ matrix.flavor }},mode=max
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.description=bsdkrun flavor ${{ matrix.flavor }}
+            org.opencontainers.image.licenses=MIT
+
+      # Packages inherit the repository's visibility, and a private image would
+      # make `bsdkrun flavor run` fall back to a local build for everyone —
+      # silently, since the fallback is the point. Made public explicitly.
+      - name: Make the package public
+        continue-on-error: true
+        run: |
+          curl -fsSL -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/user/packages/container/bsdkrun-flavor-${{ matrix.flavor }}/visibility" \
+            -d '{"visibility":"public"}' \
+            || echo "could not set visibility — do it once in the package settings"
+
+      - name: Report
+        run: |
+          echo "published ghcr.io/tsirysndr/bsdkrun-flavor-${{ matrix.flavor }}:latest"
+          echo "pulled automatically by \`bsdkrun flavor run ${{ matrix.flavor }}\`"

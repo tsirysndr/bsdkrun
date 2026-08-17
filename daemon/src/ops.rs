@@ -1072,6 +1072,23 @@ impl Ops {
 
     // -- images --------------------------------------------------------------
 
+    /// Remove dangling images. `force` overrides the in-use check, which is
+    /// the difference between freeing disk and breaking a machine's next boot.
+    pub async fn remove_images(&self, ids: &[String], force: bool) -> OpResult<CommandResult> {
+        require_non_empty("images", ids)?;
+        let ids = ids.to_vec();
+        as_result(
+            blocking("removing images", move || {
+                let mut removed = Vec::new();
+                for id in &ids {
+                    removed.push(api::remove_image(id, force)?);
+                }
+                Ok(removed.join("\n"))
+            })
+            .await,
+        )
+    }
+
     pub async fn list_images(&self) -> OpResult<Vec<Image>> {
         blocking("listing images", api::list_images).await
     }

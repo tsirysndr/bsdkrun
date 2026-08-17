@@ -341,6 +341,9 @@ pub struct Image {
     pub size: i64,
     pub rootfs: Option<String>,
     pub created_at: Option<String>,
+    /// Machines still using it; only a dangling image can be removed.
+    #[serde(default)]
+    pub used_by: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

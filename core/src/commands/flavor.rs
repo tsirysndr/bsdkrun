@@ -1,7 +1,7 @@
 //! Flavors: the built-in catalog, user definitions in `flavors.toml`, saved
 //! snapshots, and the build that turns a definition into a bootable rootfs.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tracing::info;
 
 use crate::cli::FlavorAddArgs;
@@ -154,6 +154,60 @@ pub fn add_flavor(a: FlavorAddArgs) -> Result<String> {
     let path = flavors::upsert_user_flavor(flavor)?;
     info!(flavor = %name, file = %path.display(), "saved flavor");
     Ok(name)
+}
+
+/// `bsdkrun flavor __dockerfiles` — write (or verify) the generated tree.
+pub(crate) fn cmd_dockerfiles(out: &str, check: bool) -> Result<()> {
+    let root = std::path::Path::new(out);
+    let files = flavors::dockerfiles();
+    let mut stale = Vec::new();
+
+    for (name, contents) in &files {
+        let path = root.join(name).join("Dockerfile");
+        let current = std::fs::read_to_string(&path).ok();
+        if current.as_deref() == Some(contents.as_str()) {
+            continue;
+        }
+        if check {
+            stale.push(name.to_string());
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        std::fs::write(&path, contents).with_context(|| format!("writing {}", path.display()))?;
+        println!("{}", path.display());
+    }
+
+    // A flavor that has been removed leaves a directory behind, which would
+    // keep publishing an image nothing can launch.
+    if let Ok(entries) = std::fs::read_dir(root) {
+        let known: Vec<&str> = files.iter().map(|(n, _)| *n).collect();
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if e.path().is_dir() && !known.contains(&name.as_str()) {
+                if check {
+                    stale.push(format!("{name} (no such flavor)"));
+                } else {
+                    crate::host::force_remove_dir_all(&e.path());
+                    println!("removed {}", e.path().display());
+                }
+            }
+        }
+    }
+
+    if !stale.is_empty() {
+        anyhow::bail!(
+            "the generated Dockerfiles are out of date ({}) — run \
+             `bsdkrun flavor __dockerfiles` and commit the result",
+            stale.join(", ")
+        );
+    }
+    if !check {
+        println!("{} flavor image(s) in {out}", files.len());
+    }
+    Ok(())
 }
 
 /// A resolved Linux flavor: the base image plus its defaults and provisioning

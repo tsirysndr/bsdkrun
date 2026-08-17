@@ -131,6 +131,9 @@ pub enum Command {
     /// List downloaded images.
     Images(ImagesArgs),
 
+    /// Manage images (`image rm <id>`).
+    Image(ImageArgs),
+
     /// Stop a running machine.
     Stop(IdArgs),
 
@@ -469,6 +472,29 @@ pub struct CommitArgs {
     /// Optional description.
     #[arg(short, long, default_value = "")]
     pub description: String,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct ImageArgs {
+    #[command(subcommand)]
+    pub cmd: ImageCmd,
+}
+
+#[derive(Subcommand, Serialize, Deserialize)]
+pub enum ImageCmd {
+    /// Remove dangling images (ones no machine uses) and their rootfs.
+    Rm(ImageRmArgs),
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct ImageRmArgs {
+    /// Image id, a unique prefix, or its reference.
+    #[arg(value_name = "IMAGE", required = true)]
+    pub ids: Vec<String>,
+
+    /// Remove even when machines still reference it. They will not boot.
+    #[arg(short, long)]
+    pub force: bool,
 }
 
 #[derive(Parser, Serialize, Deserialize)]
@@ -993,6 +1019,24 @@ pub enum FlavorCmd {
     /// (internal) Provision a flavor into its build cache. Used by `run`/`build`.
     #[command(name = "__build", hide = true)]
     BuildInternal(FlavorBuildArgs),
+    /// (internal) Write the generated Dockerfiles for every provisioned flavor.
+    ///
+    /// They are generated from the catalog rather than hand-written, so the
+    /// images CI publishes cannot drift from what a local build would produce.
+    #[command(name = "__dockerfiles", hide = true)]
+    Dockerfiles(FlavorDockerfilesArgs),
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct FlavorDockerfilesArgs {
+    /// Directory to write into (one `<flavor>/Dockerfile` per flavor).
+    #[arg(long, default_value = "images")]
+    pub out: String,
+
+    /// Fail instead of writing when what is on disk differs — the CI check
+    /// that a flavor change was accompanied by a regenerated tree.
+    #[arg(long)]
+    pub check: bool,
 }
 
 #[derive(Parser, Serialize, Deserialize)]

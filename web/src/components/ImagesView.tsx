@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   Button,
   Table,
@@ -10,14 +10,16 @@ import {
   Tooltip,
 } from "@heroui/react";
 import { useAtomValue, useSetAtom } from "jotai";
-import { IconStack2, IconPlayerPlayFilled } from "@tabler/icons-react";
+import { IconStack2, IconPlayerPlayFilled, IconTrash } from "@tabler/icons-react";
 import { filterAtom, runOpenAtom, runPrefillAtom } from "../state/atoms";
-import { useImages } from "../lib/queries";
+import { useImages, useRemoveImage } from "../lib/queries";
 import { ago, fullDate, humanSize, shortId } from "../lib/format";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState, ViewShell } from "./ViewShell";
 import { TableSkeleton } from "./Skeletons";
 import { useInfiniteRows } from "../hooks/useInfiniteRows";
 import { useListNavigation } from "../hooks/useListNavigation";
+import { useToast } from "../state/toast";
 import type { Image } from "../lib/types";
 
 /** Guess a run kind from a fetched-image reference (freebsd-15.1 / netbsd-…). */
@@ -27,8 +29,15 @@ function refKind(ref: string): "linux" | "freebsd" | "netbsd" {
   return "linux";
 }
 
+/** An image a machine still references cannot be removed — its rootfs is what
+ *  that machine boots from. */
+const inUse = (im: Image) => (im.used_by?.length ?? 0) > 0;
+
 export default function ImagesView() {
   const { data: images = [], isLoading } = useImages();
+  const removeMutation = useRemoveImage();
+  const [removeTarget, setRemoveTarget] = useState<Image | null>(null);
+  const toast = useToast();
   const filter = useAtomValue(filterAtom).toLowerCase();
   const setRunOpen = useSetAtom(runOpenAtom);
   const setPrefill = useSetAtom(runPrefillAtom);
@@ -136,7 +145,7 @@ export default function ImagesView() {
                 </Tooltip>
               </TableCell>
               <TableCell>
-                <div className="flex justify-end">
+                <div className="flex justify-end gap-1">
                   <Tooltip content="Run this image" placement="top">
                     <Button
                       isIconOnly
@@ -147,6 +156,29 @@ export default function ImagesView() {
                     >
                       <IconPlayerPlayFilled size={15} />
                     </Button>
+                  </Tooltip>
+                  <Tooltip
+                    content={
+                      inUse(im)
+                        ? `In use by ${im.used_by!.join(", ")} — remove those machines first`
+                        : "Delete image"
+                    }
+                    placement="top"
+                  >
+                    {/* A span so the tooltip still fires on a disabled button:
+                        "why can I not delete this" is the question here. */}
+                    <span>
+                      <Button
+                        isIconOnly
+                        size="sm"
+                        variant="light"
+                        color="danger"
+                        isDisabled={inUse(im)}
+                        onPress={() => setRemoveTarget(im)}
+                      >
+                        <IconTrash size={16} />
+                      </Button>
+                    </span>
                   </Tooltip>
                 </div>
               </TableCell>
@@ -163,6 +195,34 @@ export default function ImagesView() {
           Loading more… ({visible} of {rows.length})
         </div>
       )}
+
+      <ConfirmDialog
+        open={!!removeTarget}
+        title="Delete image?"
+        body={
+          <>
+            This deletes{" "}
+            <span className="font-mono text-foreground-300">
+              {removeTarget?.reference}
+            </span>{" "}
+            and its extracted rootfs. Running it again re-pulls it.
+          </>
+        }
+        confirmLabel="Delete"
+        danger
+        onConfirm={async () => {
+          if (!removeTarget) return;
+          const im = removeTarget;
+          setRemoveTarget(null);
+          try {
+            await removeMutation.mutateAsync(im.id);
+            toast("success", `Deleted ${im.reference}`);
+          } catch (e) {
+            toast("error", "Failed to delete the image", String(e));
+          }
+        }}
+        onClose={() => setRemoveTarget(null)}
+      />
     </ViewShell>
   );
 }

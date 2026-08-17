@@ -672,6 +672,50 @@ impl Db {
     // ---- disks ----------------------------------------------------------
 
     /// Record a disk by path (idempotent). Returns its short id.
+    /// Remove an image row; returns whether one was deleted.
+    pub fn remove_image(&self, id: &str) -> Result<bool> {
+        self.rt
+            .block_on(async {
+                let r = sqlx::query("DELETE FROM images WHERE id = ?")
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(r.rows_affected() > 0)
+            })
+            .map_err(Into::into)
+    }
+
+    /// One image by id, full or a unique prefix.
+    pub fn find_image(&self, prefix: &str) -> Result<Option<ImageRow>> {
+        if prefix.is_empty() {
+            return Ok(None);
+        }
+        self.rt
+            .block_on(async {
+                let rows = sqlx::query(
+                    "SELECT id, reference, digest, size, rootfs, created_at
+                     FROM images WHERE id = ? OR reference = ? OR id LIKE ?",
+                )
+                .bind(prefix)
+                .bind(prefix)
+                .bind(format!("{prefix}%"))
+                .fetch_all(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(match rows.len() {
+                    1 => rows.into_iter().next().map(|r| ImageRow {
+                        id: r.get("id"),
+                        reference: r.get("reference"),
+                        digest: r.get("digest"),
+                        size: r.get("size"),
+                        rootfs: r.get("rootfs"),
+                        created_at: r.get("created_at"),
+                    }),
+                    _ => None,
+                })
+            })
+            .map_err(Into::into)
+    }
+
     pub fn upsert_disk(&self, path: &str, size: Option<i64>) -> Result<String> {
         self.rt
             .block_on(async {

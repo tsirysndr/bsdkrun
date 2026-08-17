@@ -116,6 +116,7 @@ const toImage = (i: any): Image => ({
   size: i.size,
   rootfs: i.rootfs ?? null,
   created_at: i.createdAt ?? null,
+  used_by: i.usedBy ?? [],
 });
 
 const toVolume = (v: any): Volume => ({
@@ -391,9 +392,19 @@ export const api = {
     return d.machines.map(toMachine);
   },
 
+  /** Only a dangling image can go; the engine refuses one still in use. */
+  removeImage: async (id: string) => {
+    const d = await gql<{ removeImages: { exitCode: number; stderr: string } }>(
+      `mutation($i:[String!]!){ removeImages(ids:$i){ exitCode stderr } }`,
+      { i: [id] },
+    );
+    if (d.removeImages.exitCode !== 0)
+      throw new Error(d.removeImages.stderr.trim());
+  },
+
   listImages: async (): Promise<Image[]> => {
     const d = await gql<{ images: any[] }>(
-      `{ images { id reference digest size rootfs createdAt } }`,
+      `{ images { id reference digest size rootfs createdAt usedBy } }`,
     );
     return d.images.map(toImage);
   },

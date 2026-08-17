@@ -234,6 +234,14 @@ export function useRemoveMachine() {
   });
 }
 
+export function useRemoveImage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.removeImage(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.images }),
+  });
+}
+
 export function useRemoveVolume() {
   const qc = useQueryClient();
   return useMutation({

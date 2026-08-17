@@ -30,6 +30,7 @@ pub use crate::ai::{
 };
 pub use crate::commands::flavor::{add_flavor, remove_flavor};
 pub use crate::commands::guest::{guest_os_kind, interactive_term, is_bsd};
+pub use crate::commands::images::remove_image;
 pub use crate::commands::machines::{commit, remove_machine, stop, update};
 pub use crate::commands::snapshot::{
     create as create_snapshot, remove as remove_snapshot, restore as restore_snapshot,
@@ -90,6 +91,10 @@ pub struct Image {
     pub size: i64,
     pub rootfs: Option<String>,
     pub created_at: Option<String>,
+    /// Machines still using it. Only a dangling image (none) can be removed,
+    /// so a UI can disable its delete button rather than let it fail.
+    #[serde(default)]
+    pub used_by: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -265,10 +270,18 @@ pub fn list_images() -> Result<Vec<Image>> {
     // database, so a listing is complete however the image got here.
     reconcile_bsd_images();
     let db = db::Db::open()?;
+    // One machine listing for the whole image list: `image_users` per image
+    // would re-read the table once per row.
+    let machines = db.list_machines().unwrap_or_default();
     Ok(db
         .list_images()?
         .into_iter()
         .map(|im| Image {
+            used_by: machines
+                .iter()
+                .filter(|m| m.image == im.reference || m.image == im.id)
+                .map(|m| m.name.clone().unwrap_or_else(|| m.id.clone()))
+                .collect(),
             id: im.id,
             reference: im.reference,
             digest: Some(im.digest),

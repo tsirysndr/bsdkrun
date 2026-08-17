@@ -139,6 +139,8 @@ pub struct Image {
     pub size: f64,
     pub rootfs: Option<String>,
     pub created_at: Option<String>,
+    /// Machines still using it. Only a dangling image (none) can be removed.
+    pub used_by: Vec<String>,
 }
 
 impl From<ops::Image> for Image {
@@ -150,6 +152,7 @@ impl From<ops::Image> for Image {
             size: i.size as f64,
             rootfs: i.rootfs,
             created_at: i.created_at,
+            used_by: i.used_by,
         }
     }
 }
@@ -1236,6 +1239,22 @@ impl Mutation {
         Ok(api(ctx)?
             .ops
             .snapshot(&id, name, &description)
+            .await
+            .map_err(gql_err)?
+            .into())
+    }
+
+    /// Remove dangling images and their extracted rootfs. `force` removes one
+    /// machines still reference — they will not boot afterwards.
+    async fn remove_images(
+        &self,
+        ctx: &Context<'_>,
+        ids: Vec<String>,
+        #[graphql(default)] force: bool,
+    ) -> async_graphql::Result<CommandResult> {
+        Ok(api(ctx)?
+            .ops
+            .remove_images(&ids, force)
             .await
             .map_err(gql_err)?
             .into())

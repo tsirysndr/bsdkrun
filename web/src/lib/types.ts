@@ -64,6 +64,12 @@ export interface Image {
   size: number;
   rootfs: string | null;
   created_at: string | null;
+  /**
+   * Machines still using it. Only a dangling image (none) can be removed —
+   * its rootfs is shared by every machine cloned from it, so deleting one in
+   * use is not a mess to warn about, it is a machine that cannot boot.
+   */
+  used_by?: string[];
 }
 
 export interface Volume {

@@ -2475,6 +2475,21 @@ pub(crate) fn ensure_flavor_built(
         info!(flavor = name, key = %key, "using cached flavor build");
         return Ok(rootfs);
     }
+
+    // Before provisioning a VM for minutes, try the image CI publishes for
+    // this flavor: it is the same steps (see `flavors::dockerfile`) already
+    // run. A miss — no image, no network, an arch we do not publish — falls
+    // through to the local build rather than failing.
+    if std::env::var_os("BSDKRUN_NO_PREBUILT").is_none() {
+        match try_prebuilt_flavor(name, &voldir, &rootfs, &marker, &key) {
+            Ok(true) => return Ok(rootfs),
+            Ok(false) => {}
+            Err(e) => info!(
+                flavor = name,
+                "prebuilt image unusable, building locally: {e:#}"
+            ),
+        }
+    }
     // Cache miss: build in a CHILD process. Provisioning ends in `process::exit`
     // (see `run_guest_command`), so it must not run in this process — we need to
     // survive it to clone + boot the real machine afterwards.
@@ -2505,6 +2520,35 @@ pub(crate) fn ensure_flavor_built(
     }
     std::fs::write(&marker, key.as_bytes()).ok();
     Ok(rootfs)
+}
+
+/// Pull the published image for a flavor into its build cache, if there is one.
+///
+/// Returns whether it was used. The pulled rootfs is CoW-cloned into the same
+/// build volume a local provisioning would have filled, so everything
+/// downstream — the marker, the per-machine clone, `flavor rm` — is unchanged.
+fn try_prebuilt_flavor(
+    name: &str,
+    voldir: &std::path::Path,
+    rootfs: &std::path::Path,
+    marker: &std::path::Path,
+    key: &str,
+) -> Result<bool> {
+    // Only flavors with a generated Dockerfile are published; anything else
+    // (a bare OCI base, a BSD image) has nothing to pull.
+    if flavors::dockerfile(name).is_none() {
+        return Ok(false);
+    }
+    let reference = flavors::prebuilt_image(name);
+    info!(flavor = name, image = %reference, "looking for a prebuilt flavor image");
+    let image = oci::pull(&reference)?;
+
+    host::force_remove_dir_all(voldir);
+    std::fs::create_dir_all(voldir).with_context(|| format!("creating {}", voldir.display()))?;
+    host::cow_copy(&image.rootfs, rootfs, true)?;
+    std::fs::write(marker, key.as_bytes()).ok();
+    info!(flavor = name, "using the prebuilt flavor image");
+    Ok(true)
 }
 
 /// Hidden `bsdkrun flavor __build` — the child that provisions a flavor into its

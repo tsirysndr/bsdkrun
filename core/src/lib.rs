@@ -131,6 +131,9 @@ pub fn dispatch(cmd: Command) -> Result<()> {
         ),
         Command::Ps(args) => commands::machines::cmd_ps(args.all, args.json),
         Command::Images(args) => commands::images::cmd_images(args.json),
+        Command::Image(args) => match args.cmd {
+            ImageCmd::Rm(a) => commands::images::cmd_image_rm(&a.ids, a.force),
+        },
         Command::Stop(args) => commands::machines::cmd_stop(&args.id),
         Command::Start(args) => commands::boot::cmd_start(&args.id),
         Command::Update(args) => commands::machines::cmd_update(&args.id, args.cpus, args.mem),
@@ -244,6 +247,7 @@ pub fn dispatch(cmd: Command) -> Result<()> {
             FlavorCmd::Build(a) => {
                 commands::boot::cmd_flavor_prebuild(&a.name, a.vm.cpus, a.vm.mem, a.force)
             }
+            FlavorCmd::Dockerfiles(a) => commands::flavor::cmd_dockerfiles(&a.out, a.check),
             FlavorCmd::BuildInternal(a) => {
                 commands::boot::cmd_flavor_build(&a.name, &a.key, a.vm.cpus, a.vm.mem)
             }

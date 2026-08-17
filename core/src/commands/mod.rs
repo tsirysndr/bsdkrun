@@ -10,6 +10,7 @@
 //! CLI. `api` and the helpers underneath are what such a build is for.
 #![cfg_attr(not(feature = "boot"), allow(dead_code))]
 
+pub mod ai;
 #[cfg(feature = "boot")]
 pub mod boot;
 pub mod cache;

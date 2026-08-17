@@ -11,8 +11,8 @@ use crate::cli::*;
 use crate::krun::Ctx;
 use crate::net::{Gvproxy, PortForward};
 use crate::{
-    agent, console, db, docker, fetch, flavors, host, id, krun, linux, names, nanos, net, network,
-    oci, osv, tty, unikraft, watchdog,
+    agent, ai, console, db, docker, fetch, flavors, host, id, krun, linux, names, nanos, net,
+    network, oci, osv, tty, unikraft, watchdog,
 };
 
 use super::flavor::{
@@ -2571,6 +2571,115 @@ pub(crate) fn cmd_flavor_prebuild(name: &str, cpus: u8, mem: u32, force: bool) -
     info!(flavor = name, rootfs = %built.display(), "flavor built");
     println!("{name}");
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// AI agent sandboxes
+// ---------------------------------------------------------------------------
+
+/// `bsdkrun ai start <agent>` / `bsdkrun claude` — boot a sandbox and, unless
+/// told otherwise, hand the terminal to the agent's TUI.
+///
+/// The default is to *reuse* the agent's running sandbox: an agent's login and
+/// its skills live on volumes, but re-booting a VM per invocation would still
+/// throw away everything it had loaded. `--new` boots a second one against the
+/// same home volume, so two sessions can run side by side.
+pub(crate) fn cmd_ai_start(args: AiStartArgs) -> Result<()> {
+    let agent = ai::require(&args.agent)?;
+    // The CLI shares the directory it was run in; the daemon and the UIs pass
+    // an explicit path (or none). That is the whole difference between them.
+    let workspace = ai::resolve_workspace(args.workspace.as_deref(), args.cwd)?;
+
+    let existing = if args.new {
+        None
+    } else {
+        super::ai::running_machine(agent.id)?
+    };
+
+    let vm = match existing {
+        Some(vm) => {
+            info!(id = %vm.id, agent = agent.id, "reusing the running sandbox");
+            vm
+        }
+        None => {
+            super::ai::announce(agent, workspace.as_deref(), true);
+            // The boot forks and the parent returns, but the id was minted
+            // here, so the row can be read back directly rather than guessed at.
+            let id = boot_ai_sandbox(agent, workspace.as_deref(), &args)?;
+            db::Db::open()?.find_machine(&id)?
+        }
+    };
+
+    if args.detach {
+        println!("{}", vm.id);
+        return Ok(());
+    }
+
+    // Attach: replace this process with an interactive exec into the guest, so
+    // the agent's TUI owns the terminal exactly as if it were running locally.
+    let ws = workspace.as_ref().map(|w| w.to_string_lossy().into_owned());
+    let argv = super::ai::attach_argv(agent, ws.as_deref());
+    super::guest::cmd_exec(&vm.id, &argv, &[], true)
+}
+
+/// Boot one sandbox VM for an agent.
+fn boot_ai_sandbox(
+    agent: &ai::Agent,
+    workspace: Option<&std::path::Path>,
+    args: &AiStartArgs,
+) -> Result<String> {
+    let spec = resolve_linux_flavor(agent.flavor).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{} has no flavor named {:?} — this is a bsdkrun bug",
+            agent.label,
+            agent.flavor
+        )
+    })?;
+
+    let machine_id = id::short_id();
+    let vdir = machine_dir_or_tmp(&machine_id);
+    ai::record_workspace(&vdir, workspace);
+
+    // The agent's toolchain is installed once into a cached build volume; the
+    // first launch streams that build, later ones clone it and boot instantly.
+    let built = ensure_flavor_built(&spec, agent.flavor, args.vm.cpus, args.vm.mem)?;
+
+    id::set_override(&machine_id);
+    let name = ai::next_name(agent.id)?;
+    names::set_override(&name);
+
+    info!(agent = agent.id, sandbox = %name, "booting the agent sandbox");
+    let largs = LinuxArgs {
+        image: spec.image.clone(),
+        kernel: None,
+        kernel_version: linux::DEFAULT_KERNEL_VERSION.to_string(),
+        detach: true,
+        initramfs: false,
+        // NOT a volume: the *rootfs* is per-sandbox and disposable, which is
+        // what makes a second session cheap. What persists is the home volume
+        // mounted below, holding the agent's login.
+        volume: None,
+        mounts: ai::mounts(agent, workspace)?,
+        attach_disk: vec![],
+        entrypoint: None,
+        env: vec![format!("HOME={}", ai::GUEST_HOME)],
+        console: "hvc0".to_string(),
+        net: NetConfig {
+            no_net: false,
+            ports: vec![],
+            mac: None,
+            network: None,
+            name: Some(name),
+        },
+        vm: VmConfig {
+            cpus: args.vm.cpus,
+            mem: args.vm.mem,
+        },
+        repo: None,
+        command: vec![],
+    };
+    boot_linux_from(largs, Some(built), &[])?;
+    Ok(machine_id)
 }
 
 // ---------------------------------------------------------------------------

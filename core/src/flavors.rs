@@ -288,6 +288,36 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             provision: provision![apt!["git"], npm!["@openai/codex"],],
         },
         CatalogFlavor {
+            name: "gemini",
+            category: "ai",
+            description: "Gemini CLI — Google's terminal coding agent.",
+            base: Base::Oci("node:22"),
+            ports: NONE,
+            env: NONE,
+            nix: NONE,
+            provision: provision![apt!["git", "ripgrep"], npm!["@google/gemini-cli"],],
+        },
+        CatalogFlavor {
+            name: "kilo",
+            category: "ai",
+            description: "Kilo Code — terminal AI coding agent.",
+            base: Base::Oci("node:22"),
+            ports: NONE,
+            env: NONE,
+            nix: NONE,
+            provision: provision![apt!["git"], npm!["@kilocode/cli"],],
+        },
+        CatalogFlavor {
+            name: "qwen",
+            category: "ai",
+            description: "Qwen Code — Alibaba's terminal coding agent.",
+            base: Base::Oci("node:22"),
+            ports: NONE,
+            env: NONE,
+            nix: NONE,
+            provision: provision![apt!["git"], npm!["@qwen-code/qwen-code"],],
+        },
+        CatalogFlavor {
             name: "opencode",
             category: "ai",
             description: "OpenCode — open-source terminal AI coding agent.",
@@ -323,6 +353,46 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             nix: NONE,
             provision: provision![apt!["git"], npm!["@github/copilot"],],
         },
+        // These two are *assistants*, not TUI coding agents: they run as
+        // services and talk over messaging channels, so they are flavors to
+        // boot rather than entries in `bsdkrun ai`'s dropdown.
+        CatalogFlavor {
+            name: "openclaw",
+            category: "ai",
+            description: "OpenClaw — personal AI assistant / multi-channel gateway.",
+            base: Base::Oci("node:24"),
+            ports: NONE,
+            env: NONE,
+            nix: NONE,
+            provision: provision![apt!["git", "ripgrep"], npm!["openclaw"],],
+        },
+        CatalogFlavor {
+            name: "nanoclaw",
+            category: "ai",
+            // Docker-in-Docker on purpose: nanoclaw sandboxes each of its
+            // agents in a container, so the guest needs a working dockerd —
+            // which is exactly what the `docker` flavor's base provides.
+            description: "nanoclaw — containerised AI assistant (needs Docker; run ./nanoclaw.sh).",
+            base: Base::Oci("docker:dind"),
+            ports: NONE,
+            // dind serves TLS on 2376 unless this is empty; nanoclaw's own
+            // `docker` client talks to the local socket either way, but an
+            // empty cert dir keeps the daemon from generating certs it will
+            // never use.
+            env: &["DOCKER_TLS_CERTDIR="],
+            nix: NONE,
+            // The upstream installer (`nanoclaw.sh`) is interactive by design —
+            // it pairs a messaging channel and prompts for credentials — so
+            // provisioning stops at the prerequisites and the checkout, and
+            // leaves the last step to the user in the guest's shell.
+            provision: provision![
+                "apk add --no-cache git nodejs npm curl bash >/dev/null 2>&1 || \
+                 (apt-get update && apt-get install -y git nodejs npm curl bash)",
+                "npm install -g pnpm",
+                "git clone --depth 1 https://github.com/nanocoai/nanoclaw.git /opt/nanoclaw",
+                "echo 'cd /opt/nanoclaw && ./nanoclaw.sh' > /etc/bsdkrun-motd",
+            ],
+        },
         // ---- services --------------------------------------------------
         CatalogFlavor {
             name: "postgres",
@@ -331,6 +401,16 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             base: Base::Oci("postgres:16"),
             ports: &["5432:5432"],
             env: &["POSTGRES_PASSWORD=secret", "POSTGRES_USER=postgres"],
+            nix: NONE,
+            provision: NONE,
+        },
+        CatalogFlavor {
+            name: "mariadb",
+            category: "service",
+            description: "MariaDB 11 (root password secret).",
+            base: Base::Oci("mariadb:11"),
+            ports: &["3306:3306"],
+            env: &["MARIADB_ROOT_PASSWORD=secret"],
             nix: NONE,
             provision: NONE,
         },
@@ -371,6 +451,18 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             description: "Apache httpd web server.",
             base: Base::Oci("httpd:2.4-alpine"),
             ports: &["8080:80"],
+            env: NONE,
+            nix: NONE,
+            provision: NONE,
+        },
+        CatalogFlavor {
+            name: "frankenphp",
+            category: "web",
+            // The official image is a Caddy build with PHP embedded, so there
+            // is nothing to provision: it serves /app/public out of the box.
+            description: "FrankenPHP — PHP app server built on Caddy (HTTP/2, worker mode).",
+            base: Base::Oci("dunglas/frankenphp"),
+            ports: &["8080:80", "8443:443"],
             env: NONE,
             nix: NONE,
             provision: NONE,

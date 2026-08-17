@@ -191,6 +191,26 @@ pub enum Command {
     /// the local `docker` CLI drives it — a Docker Desktop replacement.
     Docker(DockerArgs),
 
+    /// Run an AI coding agent in a sandbox VM (`ai agents` / `ai ls` / …).
+    Ai(AiArgs),
+
+    /// Claude Code in a sandbox, sharing this directory.
+    Claude(AiRunArgs),
+    /// OpenAI Codex in a sandbox, sharing this directory.
+    Codex(AiRunArgs),
+    /// Gemini CLI in a sandbox, sharing this directory.
+    Gemini(AiRunArgs),
+    /// OpenCode in a sandbox, sharing this directory.
+    Opencode(AiRunArgs),
+    /// Crush in a sandbox, sharing this directory.
+    Crush(AiRunArgs),
+    /// GitHub Copilot CLI in a sandbox, sharing this directory.
+    Copilot(AiRunArgs),
+    /// Kilo Code in a sandbox, sharing this directory.
+    Kilo(AiRunArgs),
+    /// Qwen Code in a sandbox, sharing this directory.
+    Qwen(AiRunArgs),
+
     /// Save a machine's current disk state under a name (`snapshot <ID> [NAME]`),
     /// or manage saved ones (`snapshot ls` / `snapshot rm`).
     Snapshot(SnapshotArgs),
@@ -449,6 +469,147 @@ pub struct CommitArgs {
     /// Optional description.
     #[arg(short, long, default_value = "")]
     pub description: String,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct AiArgs {
+    #[command(subcommand)]
+    pub cmd: AiCmd,
+}
+
+#[derive(Subcommand, Serialize, Deserialize)]
+pub enum AiCmd {
+    /// List the agents and whether each one is installed.
+    Agents(AiAgentsArgs),
+    /// Start (or reuse) a sandbox and attach to the agent's TUI.
+    Start(AiStartArgs),
+    /// List agent sandboxes.
+    Ls(AiLsArgs),
+    /// Stop an agent's sandboxes. Its saved login survives.
+    Stop(AiAgentArgs),
+    /// Remove an agent's sandboxes and (unless `--keep-home`) its saved login.
+    Rm(AiRmArgs),
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct AiAgentsArgs {
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct AiLsArgs {
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct AiAgentArgs {
+    /// Agent id (`claude`, `codex`, `gemini`, …).
+    #[arg(value_name = "AGENT")]
+    pub agent: String,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct AiRmArgs {
+    #[arg(value_name = "AGENT")]
+    pub agent: String,
+
+    /// Keep the volume holding the agent's login, so a later run doesn't
+    /// have to authenticate again.
+    #[arg(long)]
+    pub keep_home: bool,
+}
+
+/// `bsdkrun claude` and friends: everything `ai start` takes, minus the agent
+/// (the subcommand names it).
+#[derive(Parser, Serialize, Deserialize)]
+pub struct AiRunArgs {
+    #[command(flatten)]
+    pub vm: VmConfig,
+
+    /// Share this directory instead of the current one. Mounted at the same
+    /// path in the sandbox, so paths mean the same thing on both sides.
+    #[arg(long, value_name = "PATH")]
+    pub workspace: Option<String>,
+
+    /// Share nothing — a sandbox that cannot see any of your files.
+    #[arg(long, conflicts_with = "workspace")]
+    pub no_workspace: bool,
+
+    /// Boot a second sandbox instead of reusing the running one. The agent's
+    /// saved login is shared between them.
+    #[arg(long)]
+    pub new: bool,
+
+    /// Start it in the background and print its id, instead of attaching.
+    #[arg(short = 'd', long)]
+    pub detach: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct AiStartArgs {
+    /// Agent id (`claude`, `codex`, `gemini`, …).
+    #[arg(value_name = "AGENT", default_value = "claude")]
+    pub agent: String,
+
+    #[command(flatten)]
+    pub vm: VmConfig,
+
+    /// Share this directory. Mounted at the same path in the sandbox.
+    ///
+    /// **Resolved on the engine's host.** Driving a remote `bsdkrund` (a VPS),
+    /// this names a directory *there* — your laptop's filesystem is not
+    /// reachable from it.
+    #[arg(long, value_name = "PATH")]
+    pub workspace: Option<String>,
+
+    /// Share nothing — a sandbox that cannot see any of your files.
+    ///
+    /// Without it, a `bsdkrun ai start` typed at a terminal shares the current
+    /// directory, exactly as `bsdkrun claude` does. A *daemon* builds this
+    /// struct directly and leaves `cwd` false: its working directory is not
+    /// the caller's, and silently sharing it would be a surprise at best.
+    #[arg(long, conflicts_with = "workspace")]
+    pub no_workspace: bool,
+
+    /// Share the current directory. Set by the CLI (including the per-agent
+    /// aliases); never by a daemon.
+    #[arg(skip)]
+    pub cwd: bool,
+
+    /// Boot a second sandbox instead of reusing the running one.
+    #[arg(long)]
+    pub new: bool,
+
+    /// Start it in the background and print its id, instead of attaching.
+    #[arg(short = 'd', long)]
+    pub detach: bool,
+}
+
+impl AiRunArgs {
+    /// The `ai start` form of a per-agent alias. The alias shares the current
+    /// directory unless told otherwise — that is the whole reason it exists.
+    pub fn into_start(self, agent: &str) -> AiStartArgs {
+        AiStartArgs {
+            agent: agent.to_string(),
+            vm: self.vm,
+            cwd: !self.no_workspace && self.workspace.is_none(),
+            workspace: self.workspace,
+            no_workspace: self.no_workspace,
+            new: self.new,
+            detach: self.detach,
+        }
+    }
+}
+
+impl AiStartArgs {
+    /// Resolve "share the current directory" for a CLI invocation: default on,
+    /// off with `--no-workspace` or an explicit `--workspace`.
+    pub fn with_cli_cwd(mut self) -> Self {
+        self.cwd = !self.no_workspace && self.workspace.is_none();
+        self
+    }
 }
 
 #[derive(Parser, Serialize, Deserialize)]

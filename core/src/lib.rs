@@ -20,6 +20,9 @@
 //!     can build the same requests.
 
 pub mod agent;
+/// AI coding agents in disposable microVMs — the registry, the sandbox
+/// lifecycle, and the shared skills store.
+pub mod ai;
 pub mod api;
 pub mod cache;
 pub mod cli;
@@ -177,6 +180,23 @@ pub fn dispatch(cmd: Command) -> Result<()> {
         Command::Commit(args) => {
             commands::machines::cmd_commit(&args.id, &args.name, &args.description)
         }
+        Command::Ai(args) => match args.cmd {
+            AiCmd::Agents(a) => commands::ai::cmd_agents(a.json),
+            // Typed at a terminal, so it shares the cwd like the aliases do.
+            AiCmd::Start(a) => commands::boot::cmd_ai_start(a.with_cli_cwd()),
+            AiCmd::Ls(a) => commands::ai::cmd_sessions(a.json),
+            AiCmd::Stop(a) => commands::ai::cmd_stop(&a.agent),
+            AiCmd::Rm(a) => commands::ai::cmd_rm(&a.agent, a.keep_home),
+        },
+        // The per-agent aliases: `bsdkrun claude` is `ai start claude --cwd`.
+        Command::Claude(a) => commands::boot::cmd_ai_start(a.into_start("claude")),
+        Command::Codex(a) => commands::boot::cmd_ai_start(a.into_start("codex")),
+        Command::Gemini(a) => commands::boot::cmd_ai_start(a.into_start("gemini")),
+        Command::Opencode(a) => commands::boot::cmd_ai_start(a.into_start("opencode")),
+        Command::Crush(a) => commands::boot::cmd_ai_start(a.into_start("crush")),
+        Command::Copilot(a) => commands::boot::cmd_ai_start(a.into_start("copilot")),
+        Command::Kilo(a) => commands::boot::cmd_ai_start(a.into_start("kilo")),
+        Command::Qwen(a) => commands::boot::cmd_ai_start(a.into_start("qwen")),
         Command::Docker(args) => match args.cmd {
             DockerCmd::Start(a) => commands::boot::cmd_docker_start(a),
             DockerCmd::Stop => commands::docker::cmd_stop(),

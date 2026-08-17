@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
-import { WebLinksAddon } from "@xterm/addon-web-links";
+import { registerWebLinks } from "../lib/xtermLinks";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Button, Input, Switch, Tooltip } from "@heroui/react";
 import {
@@ -87,11 +87,9 @@ export default function LogsPane({ machineId }: { machineId: string }) {
       term.loadAddon(search);
       // A URL in a boot log (a service's address, a docs link) opens where a
       // browser actually exists: the host.
-      term.loadAddon(
-        new WebLinksAddon((_event, uri) => {
-          openUrl(uri).catch(() => {});
-        }),
-      );
+      registerWebLinks(term, (uri) => {
+        openUrl(uri).catch(() => {});
+      });
       term.open(hostRef.current);
       fit.fit();
       termRef.current = term;

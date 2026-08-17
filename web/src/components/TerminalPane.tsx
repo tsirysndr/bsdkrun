@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { WebLinksAddon } from "@xterm/addon-web-links";
+import { registerWebLinks } from "../lib/xtermLinks";
 import { api, onTermData, onTermExit } from "../lib/api";
 import type { UnlistenFn } from "../lib/api";
 import { HOST_MACHINE } from "../state/atoms";
@@ -77,11 +77,9 @@ export default function TerminalPane({
       term.loadAddon(fit);
       // URLs a guest prints become clickable. `noopener` because the target is
       // whatever a guest process chose to print.
-      term.loadAddon(
-        new WebLinksAddon((_event, uri) => {
-          window.open(uri, "_blank", "noopener,noreferrer");
-        }),
-      );
+      registerWebLinks(term, (uri) => {
+        window.open(uri, "_blank", "noopener,noreferrer");
+      });
       term.open(hostRef.current);
       fit.fit();
 

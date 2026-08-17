@@ -11,8 +11,8 @@ use crate::cli::*;
 use crate::krun::Ctx;
 use crate::net::{Gvproxy, PortForward};
 use crate::{
-    agent, console, db, fetch, flavors, host, id, krun, linux, names, nanos, net, network, oci,
-    osv, tty, unikraft, watchdog,
+    agent, console, db, docker, fetch, flavors, host, id, krun, linux, names, nanos, net, network,
+    oci, osv, tty, unikraft, watchdog,
 };
 
 use super::flavor::{
@@ -23,8 +23,8 @@ use super::guest::{
     agent_error, agent_target, guest_os_kind, interactive_shell_argv, interactive_shell_env,
 };
 use super::{
-    basename, load_attached_disks, machine_dir_or_tmp, machine_rootfs_dir, save_attached_disks,
-    volume_dir,
+    basename, load_attached_disks, load_env, load_mounts, machine_dir_or_tmp, machine_rootfs_dir,
+    save_attached_disks, save_env, save_mounts, volume_dir,
 };
 
 /// Attach any `--attach-disk` images after the root disk. Block ids are
@@ -163,6 +163,12 @@ pub(crate) fn setup_networking_with_agent(
     let gvproxy = Gvproxy::spawn(&ports).context("starting gvproxy networking")?;
     ctx.add_net_gvproxy(&gvproxy.vfkit_socket, mac)
         .context("attaching virtio-net device")?;
+    // Write the control socket's path into the machine's state dir: adding a
+    // forward to a machine that is already running (what `docker` does for
+    // every published container port) has to find it from the outside.
+    if let Some(dir) = agent_dir {
+        net::record_control_socket(dir, &gvproxy.control_socket);
+    }
     if let Some(p) = agent_port {
         info!(agent_port = p, "exec agent reachable via forwarded port");
     }
@@ -1586,12 +1592,34 @@ pub(crate) fn boot_linux_from(
     // otherwise the workload runs once and the machine powers off when it ends.
     let persistent = args.detach && args.command.is_empty();
 
+    // `--attach-disk PATH:/guest/path` asks the guest to mount that disk; the
+    // init formats a blank one and grows a filesystem whose image has been
+    // enlarged (see `linux::DiskMount`).
+    let disk_mounts: Vec<linux::DiskMount> = args
+        .attach_disk
+        .iter()
+        .enumerate()
+        .filter_map(|(index, d)| {
+            d.mount.as_ref().map(|guest| linux::DiskMount {
+                index,
+                guest: guest.clone(),
+                ro: d.read_only,
+            })
+        })
+        .collect();
+
     // Prepare the rootfs before forking so failures surface synchronously.
     // A volume is a persistent, writable virtio-fs root (CoW-cloned on first use);
     // otherwise it's a per-machine virtio-fs clone, or an initramfs (--initramfs).
     let root_mode = match (&volume, args.virtiofs()) {
         (Some(voldir), _) => LinuxRoot::Virtiofs(linux::prepare_volume_root(
-            rootfs_src, &ep, net_up, persistent, voldir, &mounts,
+            rootfs_src,
+            &ep,
+            net_up,
+            persistent,
+            voldir,
+            &mounts,
+            &disk_mounts,
         )?),
         (None, true) => LinuxRoot::Virtiofs(linux::prepare_virtiofs_root(
             rootfs_src,
@@ -1600,11 +1628,17 @@ pub(crate) fn boot_linux_from(
             persistent,
             &machine_rootfs_dir(&machine_id, &vdir),
             &mounts,
+            &disk_mounts,
         )?),
         (None, false) => {
             linux::warn_initramfs_memory(rootfs_src, args.vm.mem);
             LinuxRoot::Initramfs(linux::build_initramfs(
-                rootfs_src, &ep, net_up, persistent, &mounts,
+                rootfs_src,
+                &ep,
+                net_up,
+                persistent,
+                &mounts,
+                &disk_mounts,
             )?)
         }
     };
@@ -1626,6 +1660,10 @@ pub(crate) fn boot_linux_from(
         db::record_volume(name, "linux", &args.image, &dir.to_string_lossy());
     }
     save_attached_disks(&vdir, &args.attach_disk);
+    // The guest's env and host shares are configuration a restart must not
+    // lose (see `save_env` / `save_mounts`).
+    save_env(&vdir, &args.env);
+    save_mounts(&vdir, &mounts);
     // Linux never uses the SMP-shutdown watchdog: it redirects fd 2, which
     // libkrun's implicit virtio-console (hvc0) claims for the guest.
     let result = run_machine(
@@ -2240,12 +2278,16 @@ pub(crate) fn cmd_start(id: &str) -> Result<()> {
             detach: true,
             initramfs: false,
             volume: volume.clone(),
-            mounts: vec![],
+            // Re-share the host directories recorded at the original boot; a
+            // dropped share comes back as an empty directory in the guest.
+            mounts: load_mounts(&legacy_machine_dir),
             // Re-attach the disks recorded at the original boot, so guest data
             // living on a block device survives stop/start.
             attach_disk: load_attached_disks(&legacy_machine_dir),
             entrypoint: None,
-            env: vec![],
+            // Re-apply the `-e` env recorded at the original boot: for many
+            // images it decides what the entrypoint does at all.
+            env: load_env(&legacy_machine_dir),
             console: "hvc0".to_string(),
             net,
             vm: vmcfg,
@@ -2529,6 +2571,182 @@ pub(crate) fn cmd_flavor_prebuild(name: &str, cpus: u8, mem: u32, force: bool) -
     info!(flavor = name, rootfs = %built.display(), "flavor built");
     println!("{name}");
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// the Docker engine VM
+// ---------------------------------------------------------------------------
+//
+// Here rather than beside the rest of `docker` for the usual reason: it ends
+// in a boot, and everything else about the Docker integration has to keep
+// working in a build that links no hypervisor.
+
+/// `bsdkrun docker start` — bring up (or resume) the Docker engine VM, serve
+/// its API on a host socket, and point the local `docker` CLI at it.
+pub(crate) fn cmd_docker_start(args: DockerStartArgs) -> Result<()> {
+    let bind = docker::PublishBind::parse(&args.publish_bind)?;
+    let db = db::Db::open()?;
+    let existing = db.find_machine(docker::MACHINE_NAME).ok();
+    let running = existing
+        .as_ref()
+        .map(|vm| vm.status == "running" && vm.pid.map(db::pid_alive).unwrap_or(false))
+        .unwrap_or(false);
+
+    match &existing {
+        Some(vm) if running => info!(id = %vm.id, "Docker VM already running"),
+        // Resume in place: the volume holds every pulled image, and `start`
+        // re-applies the recorded API port forward.
+        Some(vm) => {
+            info!(id = %vm.id, "resuming the Docker VM");
+            // Re-record the shares first, so `--mount` on a later start takes
+            // effect and a VM created before shares were persisted repairs
+            // itself instead of coming back with an empty $HOME.
+            let mounts = docker_mounts(&args)?;
+            let parsed: Vec<linux::BindMount> = mounts
+                .iter()
+                .map(|m| parse_mount(m))
+                .collect::<Result<_>>()?;
+            save_mounts(&machine_dir_or_tmp(&vm.id), &parsed);
+            cmd_start(&vm.id)?;
+        }
+        None => boot_docker_vm(&args)?,
+    }
+
+    // Re-read: a fresh boot minted the row, and a resume may have changed the pid.
+    let vm = db::Db::open()?.find_machine(docker::MACHINE_NAME)?;
+    let port = docker::api_port(&vm).ok_or_else(|| {
+        anyhow::anyhow!(
+            "the Docker VM has no API port forwarded — remove it with \
+             `bsdkrun docker rm -f` and start again"
+        )
+    })?;
+
+    info!("waiting for dockerd…");
+    docker::wait_for_api(port, std::time::Duration::from_secs(args.timeout as u64))?;
+
+    // A proxy from a previous run points at a port that no longer exists.
+    docker::stop_proxy()?;
+    docker::spawn_proxy(port, &vm.id, bind)?;
+
+    let socket = docker::socket_path()?;
+    if !args.no_context {
+        docker::setup_context(&socket, !args.no_activate)?;
+    }
+    if args.system_socket {
+        docker::claim_system_socket(&socket)?;
+    }
+
+    let status = docker::status()?;
+    if args.json {
+        println!("{}", serde_json::to_string(&status)?);
+        return Ok(());
+    }
+    let containers = docker::containers(false).unwrap_or_default();
+    super::docker::report_started(&status, &containers);
+    Ok(())
+}
+
+/// Boot the engine VM itself: dind, on a persistent volume, with the host
+/// directories a `docker run -v` is likely to name shared in at the same path.
+fn boot_docker_vm(args: &DockerStartArgs) -> Result<()> {
+    // Mint the id up front (as `start` does) so the VM always has the same
+    // name-and-id pair, however it was created.
+    let machine_id = id::short_id();
+    let mounts = docker_mounts(args)?;
+
+    // The API port is a normal recorded forward, so `bsdkrun start` re-applies
+    // it and `ps` shows it — nothing here is special-cased downstream.
+    // A dedicated image store, when asked for: an ext4 disk the guest mounts
+    // at /var/lib/docker (see `linux::DiskMount`), so the store has a real
+    // size that `docker disk --size` can raise.
+    let attach_disk = match &args.disk_size {
+        Some(size) => {
+            let path = docker::ensure_data_disk(size)?;
+            info!(disk = %path.display(), size = %size, "using a dedicated Docker image store");
+            vec![DiskSpec {
+                path,
+                read_only: false,
+                mount: Some(docker::DATA_MOUNT.to_string()),
+            }]
+        }
+        None => vec![],
+    };
+
+    let api_host_port =
+        net::free_local_port().context("reserving a host port for the Docker API")?;
+    let mut ports = vec![PortForward::loopback(api_host_port, docker::GUEST_API_PORT)];
+    ports.extend(args.ports.iter().copied());
+
+    id::set_override(&machine_id);
+    names::set_override(docker::MACHINE_NAME);
+
+    info!(
+        image = docker::IMAGE,
+        api_port = api_host_port,
+        "booting the Docker engine VM"
+    );
+    let largs = LinuxArgs {
+        image: docker::IMAGE.to_string(),
+        kernel: None,
+        kernel_version: linux::DEFAULT_KERNEL_VERSION.to_string(),
+        detach: true,
+        initramfs: false,
+        // The whole rootfs is the volume, which is what makes /var/lib/docker
+        // (images, containers, volumes) survive a stop.
+        volume: Some(docker::VOLUME.to_string()),
+        mounts,
+        attach_disk,
+        entrypoint: None,
+        // An empty TLS dir is what makes dind listen on plaintext 2375 instead
+        // of generating certs and listening on 2376 — the whole reason the
+        // forwarded port needs no client certificates.
+        env: vec!["DOCKER_TLS_CERTDIR=".to_string()],
+        console: "hvc0".to_string(),
+        net: NetConfig {
+            no_net: false,
+            ports,
+            mac: None,
+            network: None,
+            name: Some(docker::MACHINE_NAME.to_string()),
+        },
+        vm: VmConfig {
+            cpus: args.vm.cpus,
+            mem: args.vm.mem,
+        },
+        repo: None,
+        command: vec![],
+    };
+    boot_linux_from(largs, None, &[])
+}
+
+/// The host directories shared into the engine VM, each at its own path.
+///
+/// `docker run -v $PWD:/app` resolves `$PWD` *inside the guest*, so a path the
+/// VM cannot see silently becomes an empty directory in the container — the
+/// single most confusing failure of a VM-backed Docker. `$HOME` covers what
+/// Docker Desktop shares by default; `--mount` adds the rest.
+fn docker_mounts(args: &DockerStartArgs) -> Result<Vec<String>> {
+    let mut specs: Vec<String> = Vec::new();
+    if !args.no_home {
+        if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+            let home = home.to_string_lossy().into_owned();
+            specs.push(format!("{home}:{home}"));
+        }
+    }
+    for m in &args.mounts {
+        // `--mount /path` is shorthand for the same path in the guest, which is
+        // the only form that makes a copy-pasted `docker run -v` work.
+        specs.push(if m.contains(':') {
+            m.clone()
+        } else {
+            format!("{m}:{m}")
+        });
+    }
+    // Validated here so a typo fails before a VM boots, not after.
+    for spec in &specs {
+        parse_mount(spec)?;
+    }
+    Ok(specs)
 }
 
 // ---------------------------------------------------------------------------

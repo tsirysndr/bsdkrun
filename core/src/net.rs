@@ -163,7 +163,7 @@ pub struct Gvproxy {
     /// The `-listen-vfkit` unixgram socket libkrun connects to.
     pub vfkit_socket: PathBuf,
     /// The `-listen` HTTP control socket (used to configure port forwards).
-    control_socket: PathBuf,
+    pub control_socket: PathBuf,
     /// Host port gvproxy forwards to the guest's SSH (`:22`). Unique per VM.
     ssh_port: u16,
 }
@@ -315,6 +315,46 @@ pub fn expose_on_control(
         bail!("gvproxy rejected the port forward: {status}");
     }
     Ok(())
+}
+
+/// Drop a forward previously added by [`expose_on_control`].
+///
+/// gvproxy keys a forward by its *local* address alone, which is also why two
+/// forwards cannot share a host port. Unexposing something that was never
+/// exposed answers 500; that is not worth failing a reconcile over, so a
+/// caller syncing a set of forwards can ignore the error.
+pub fn unexpose_on_control(control_socket: &Path, bind: std::net::IpAddr, host: u16) -> Result<()> {
+    let body = format!(r#"{{"local":"{bind}:{host}","protocol":"tcp"}}"#);
+    let resp = control_post_to(control_socket, "/services/forwarder/unexpose", &body)?;
+    if !resp.starts_with("HTTP/1.1 200") && !resp.starts_with("HTTP/1.0 200") {
+        let status = resp.lines().next().unwrap_or("<no status line>");
+        bail!("gvproxy rejected the unexpose: {status}");
+    }
+    Ok(())
+}
+
+/// The file a machine's state dir carries naming its gvproxy control socket.
+///
+/// The socket itself lives in a temp dir keyed by the VM process's pid, which
+/// is knowable but not *discoverable* — so the boot path writes the path down
+/// and anything that wants to add a forward to a **running** machine (the
+/// Docker port publisher, say) reads it back instead of reconstructing it.
+pub const CONTROL_SOCKET_FILE: &str = "gvproxy-control";
+
+/// Record where a machine's gvproxy control socket is, in its state dir.
+pub fn record_control_socket(vdir: &Path, control_socket: &Path) {
+    let f = vdir.join(CONTROL_SOCKET_FILE);
+    if let Err(e) = std::fs::write(&f, control_socket.to_string_lossy().as_bytes()) {
+        warn!(file = %f.display(), "could not record the gvproxy control socket: {e}");
+    }
+}
+
+/// Read back [`record_control_socket`]. `None` when the machine predates it,
+/// was booted with `--no-net`, or the socket has since gone away with its VM.
+pub fn machine_control_socket(vdir: &Path) -> Option<PathBuf> {
+    let path = std::fs::read_to_string(vdir.join(CONTROL_SOCKET_FILE)).ok()?;
+    let path = PathBuf::from(path.trim());
+    path.exists().then_some(path)
 }
 
 /// gvproxy's multi-tenant switch endpoint. A `POST /connect` on the control

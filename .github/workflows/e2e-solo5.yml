@@ -20,20 +20,24 @@ name: e2e (Solo5 / MirageOS)
 #     never take. A unikernel that boots but leases no address still prints a
 #     banner and looks fine — only the curl below distinguishes them.
 
+# TEMPORARILY DISABLED: the automatic triggers below are commented out, so
+# this job only runs when someone asks for it from the Actions tab
+# (`workflow_dispatch`). Nothing else about the job changed — uncomment the
+# `push:` block to bring it back.
 on:
   workflow_dispatch: {}
-  push:
-    branches:
-      - "main"
-    paths:
-      - "examples/mirage-hello/**"
-      - "core/src/solo5.rs"
-      - "core/src/commands/solo5.rs"
-      - "core/src/net.rs"
-      - "core/build.rs"
-      - "library/solo5"
-      - "src/**"
-      - ".github/workflows/e2e-solo5.yml"
+  # push:
+  #   branches:
+  #     - "main"
+  #   paths:
+  #     - "examples/mirage-hello/**"
+  #     - "core/src/solo5.rs"
+  #     - "core/src/commands/solo5.rs"
+  #     - "core/src/net.rs"
+  #     - "core/build.rs"
+  #     - "library/solo5"
+  #     - "src/**"
+  #     - ".github/workflows/e2e-solo5.yml"
 
 permissions:
   contents: read

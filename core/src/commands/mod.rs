@@ -14,6 +14,7 @@
 pub mod boot;
 pub mod cache;
 pub mod cp;
+pub mod docker;
 pub mod doctor;
 pub mod domains;
 pub mod flavor;
@@ -104,6 +105,7 @@ pub(crate) fn save_attached_disks(vdir: &std::path::Path, disks: &[crate::cli::D
         .map(|d| crate::cli::DiskSpec {
             path: std::fs::canonicalize(&d.path).unwrap_or_else(|_| d.path.clone()),
             read_only: d.read_only,
+            mount: d.mount.clone(),
         })
         .collect();
     match serde_json::to_vec(&abs) {
@@ -137,6 +139,100 @@ pub(crate) fn load_attached_disks(vdir: &std::path::Path) -> Vec<crate::cli::Dis
             ok
         })
         .collect()
+}
+
+/// File in a machine's state dir recording its `-e` environment, so `start`
+/// re-applies it. The DB row doesn't carry it, and a Linux guest's entrypoint
+/// often *is* its configuration: `docker:dind` picks TLS-on-2376 versus
+/// plaintext-on-2375 purely from `DOCKER_TLS_CERTDIR`, so a restart that
+/// dropped the variable silently came back on a different port.
+const ENV_FILE: &str = "env.json";
+
+/// Record `-e K=V` pairs for restarts. An empty list clears the record.
+pub(crate) fn save_env(vdir: &std::path::Path, env: &[String]) {
+    let file = vdir.join(ENV_FILE);
+    if env.is_empty() {
+        let _ = std::fs::remove_file(&file);
+        return;
+    }
+    match serde_json::to_vec(env) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&file, json) {
+                tracing::warn!(file = %file.display(), "could not record the guest env: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("could not encode the guest env: {e}"),
+    }
+}
+
+/// Load what [`save_env`] wrote. Empty for a machine booted before this, or
+/// one that never had `-e`.
+pub(crate) fn load_env(vdir: &std::path::Path) -> Vec<String> {
+    std::fs::read(vdir.join(ENV_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// File in a machine's state dir recording its `--mount` shares, so `start`
+/// re-applies them. Losing a share on restart is worse than losing a flag: the
+/// guest path still exists (the init, or Docker, creates it), so the mount is
+/// silently *empty* rather than missing.
+const MOUNTS_FILE: &str = "mounts.json";
+
+/// Record `--mount HOST:GUEST[:ro]` specs for restarts, with the host side
+/// made absolute (a later `start` runs from a different cwd).
+pub(crate) fn save_mounts(vdir: &std::path::Path, mounts: &[crate::linux::BindMount]) {
+    let file = vdir.join(MOUNTS_FILE);
+    if mounts.is_empty() {
+        let _ = std::fs::remove_file(&file);
+        return;
+    }
+    let specs: Vec<String> = mounts
+        .iter()
+        .map(|m| {
+            let host = std::fs::canonicalize(&m.host).unwrap_or_else(|_| m.host.clone());
+            let ro = if m.ro { ":ro" } else { "" };
+            format!("{}:{}{ro}", host.display(), m.guest)
+        })
+        .collect();
+    match serde_json::to_vec(&specs) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&file, json) {
+                tracing::warn!(file = %file.display(), "could not record mounts: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("could not encode mounts: {e}"),
+    }
+}
+
+/// Load what [`save_mounts`] wrote, as `--mount` specs. A share whose host
+/// directory is gone is dropped with a warning rather than failing the restart.
+pub(crate) fn load_mounts(vdir: &std::path::Path) -> Vec<String> {
+    let specs: Vec<String> = std::fs::read(vdir.join(MOUNTS_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    specs
+        .into_iter()
+        .filter(|spec| {
+            let host = spec.rsplit_once(':').map(|(h, _)| h).unwrap_or(spec);
+            let ok = std::path::Path::new(host).exists();
+            if !ok {
+                tracing::warn!(
+                    spec,
+                    "a recorded --mount host directory is gone; skipping it"
+                );
+            }
+            ok
+        })
+        .collect()
+}
+
+/// The `--mount` specs recorded for a machine, for anything that wants to
+/// *show* what is shared (`docker status`) rather than re-apply it.
+pub fn machine_mounts(vdir: &std::path::Path) -> Vec<String> {
+    load_mounts(vdir)
 }
 
 /// Resolve a `--volume NAME` to its directory under `<state>/volumes`, rejecting

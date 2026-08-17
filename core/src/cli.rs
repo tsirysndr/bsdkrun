@@ -187,6 +187,10 @@ pub enum Command {
     /// Snapshot a machine's current state into a named flavor (like `docker commit`).
     Commit(CommitArgs),
 
+    /// Run a Docker engine in a microVM and serve its API on a host socket, so
+    /// the local `docker` CLI drives it — a Docker Desktop replacement.
+    Docker(DockerArgs),
+
     /// Save a machine's current disk state under a name (`snapshot <ID> [NAME]`),
     /// or manage saved ones (`snapshot ls` / `snapshot rm`).
     Snapshot(SnapshotArgs),
@@ -445,6 +449,165 @@ pub struct CommitArgs {
     /// Optional description.
     #[arg(short, long, default_value = "")]
     pub description: String,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct DockerArgs {
+    #[command(subcommand)]
+    pub cmd: DockerCmd,
+}
+
+#[derive(Subcommand, Serialize, Deserialize)]
+pub enum DockerCmd {
+    /// Start (or resume) the Docker engine VM and wire up the host socket.
+    Start(DockerStartArgs),
+    /// Stop the engine. Images and containers stay on its disk.
+    Stop,
+    /// Show whether the engine is running, and how to reach it.
+    Status(DockerStatusArgs),
+    /// Remove the engine VM, its image store, and the docker context.
+    Rm(DockerRmArgs),
+    /// List containers (like `docker ps`).
+    Ps(DockerPsArgs),
+    /// Act on a container: start / stop / restart / kill / pause / unpause / rm.
+    Container(DockerContainerArgs),
+    /// Print a container's logs.
+    Logs(DockerLogsArgs),
+    /// Show or grow the image store's disk.
+    Disk(DockerDiskArgs),
+    /// Print the `DOCKER_HOST` line for a shell that isn't using a context.
+    Env,
+    /// Open a shell **in the engine VM** (not in a container).
+    Shell,
+    /// (internal) The detached socket proxy + port publisher.
+    #[command(name = "__serve", hide = true)]
+    Serve(DockerServeArgs),
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct DockerStartArgs {
+    #[command(flatten)]
+    pub vm: VmConfig,
+
+    /// Share another host directory into the VM, so `-v` can reach it.
+    /// `PATH` mounts at the same path in the guest; `HOST:GUEST` picks one.
+    #[arg(long = "mount", value_name = "PATH|HOST:GUEST")]
+    pub mounts: Vec<String>,
+
+    /// Do not share `$HOME` (the default). Containers then only see what
+    /// `--mount` names.
+    #[arg(long)]
+    pub no_home: bool,
+
+    /// Where a published container port is bound on the host: `mirror` (what
+    /// the container asked for, Docker Desktop's behaviour) or a fixed address
+    /// such as `127.0.0.1`.
+    #[arg(long, value_name = "IP|mirror", default_value = "mirror")]
+    pub publish_bind: String,
+
+    /// Extra host↔guest forward for the VM itself (repeatable). Container
+    /// ports are published automatically and need none of these.
+    #[arg(long = "port", value_name = "[BIND:]HOST:GUEST")]
+    pub ports: Vec<PortForward>,
+
+    /// Give the image store a dedicated ext4 disk of this size (`60G`) instead
+    /// of the host-backed rootfs. Sparse, so it costs what it holds; grow it
+    /// later with `bsdkrun docker disk --size`. Only applies when the VM is
+    /// created — an existing one keeps whatever it was made with.
+    #[arg(long, value_name = "SIZE")]
+    pub disk_size: Option<String>,
+
+    /// Also point `/var/run/docker.sock` at this engine (asks for sudo), for
+    /// tools that hardcode it.
+    #[arg(long)]
+    pub system_socket: bool,
+
+    /// Do not create a `bsdkrun` docker context.
+    #[arg(long)]
+    pub no_context: bool,
+
+    /// Create the context but leave the active one alone.
+    #[arg(long)]
+    pub no_activate: bool,
+
+    /// How long to wait for dockerd to answer, in seconds.
+    #[arg(long, default_value_t = 120)]
+    pub timeout: u32,
+
+    /// Print the resulting status as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct DockerStatusArgs {
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct DockerRmArgs {
+    /// Remove it even if the engine is running (stops it first).
+    #[arg(short, long)]
+    pub force: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct DockerPsArgs {
+    /// Include stopped containers.
+    #[arg(short, long)]
+    pub all: bool,
+
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct DockerContainerArgs {
+    /// start | stop | restart | kill | pause | unpause | rm
+    #[arg(value_name = "ACTION")]
+    pub action: String,
+
+    /// Container id(s) or name(s).
+    #[arg(value_name = "CONTAINER", required = true)]
+    pub ids: Vec<String>,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct DockerLogsArgs {
+    /// Container id or name.
+    #[arg(value_name = "CONTAINER")]
+    pub id: String,
+
+    /// How many trailing lines to show.
+    #[arg(long, default_value_t = 200)]
+    pub tail: u32,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct DockerDiskArgs {
+    /// Grow the image store to this size (e.g. `100G`). Growing only ever
+    /// enlarges; the guest picks the new size up immediately when it is
+    /// running, and on its next boot otherwise.
+    #[arg(long, value_name = "SIZE")]
+    pub size: Option<String>,
+
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct DockerServeArgs {
+    /// Host port forwarded to the guest's dockerd.
+    #[arg(long)]
+    pub port: u16,
+
+    /// The engine VM's machine id (whose gvproxy publishes container ports).
+    #[arg(long)]
+    pub machine: String,
+
+    #[arg(long, default_value = "mirror")]
+    pub publish_bind: String,
 }
 
 /// `bsdkrun snapshot` — one verb with two shapes: a bare `snapshot <ID> [NAME]`
@@ -1591,6 +1754,11 @@ pub struct NetConfig {
 pub struct DiskSpec {
     pub path: PathBuf,
     pub read_only: bool,
+    /// Absolute guest path to mount it at, when the spec named one
+    /// (`PATH:/data`). The generated init formats a blank disk, mounts it
+    /// there, and grows the filesystem if the image has since been enlarged.
+    #[serde(default)]
+    pub mount: Option<String>,
 }
 
 impl FromStr for DiskSpec {
@@ -1598,22 +1766,25 @@ impl FromStr for DiskSpec {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // Only treat a trailing `:ro`/`:rw` as a mode (paths may contain `:`).
-        if let Some(base) = s.strip_suffix(":ro") {
-            Ok(DiskSpec {
-                path: PathBuf::from(base),
-                read_only: true,
-            })
-        } else if let Some(base) = s.strip_suffix(":rw") {
-            Ok(DiskSpec {
-                path: PathBuf::from(base),
-                read_only: false,
-            })
-        } else {
-            Ok(DiskSpec {
-                path: PathBuf::from(s),
-                read_only: false,
-            })
-        }
+        let (base, read_only) = match (s.strip_suffix(":ro"), s.strip_suffix(":rw")) {
+            (Some(b), _) => (b, true),
+            (_, Some(b)) => (b, false),
+            _ => (s, false),
+        };
+        // `PATH:/guest/path` asks the guest to mount it there. Only an
+        // *absolute* tail counts, so a host path that itself contains a colon
+        // is still just a path.
+        let (path, mount) = match base.rsplit_once(':') {
+            Some((p, m)) if m.starts_with('/') && !p.is_empty() => {
+                (p.to_string(), Some(m.to_string()))
+            }
+            _ => (base.to_string(), None),
+        };
+        Ok(DiskSpec {
+            path: PathBuf::from(path),
+            read_only,
+            mount,
+        })
     }
 }
 

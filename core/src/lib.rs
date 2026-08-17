@@ -26,6 +26,9 @@ pub mod cli;
 pub mod commands;
 pub mod console;
 pub mod db;
+/// Docker compatibility: a `docker:dind` microVM whose API is served on a host
+/// unix socket, so the host's own `docker` CLI drives it.
+pub mod docker;
 pub mod domains;
 pub mod elf;
 pub mod fetch;
@@ -174,6 +177,19 @@ pub fn dispatch(cmd: Command) -> Result<()> {
         Command::Commit(args) => {
             commands::machines::cmd_commit(&args.id, &args.name, &args.description)
         }
+        Command::Docker(args) => match args.cmd {
+            DockerCmd::Start(a) => commands::boot::cmd_docker_start(a),
+            DockerCmd::Stop => commands::docker::cmd_stop(),
+            DockerCmd::Status(a) => commands::docker::cmd_status(a.json),
+            DockerCmd::Rm(a) => commands::docker::cmd_rm(a.force),
+            DockerCmd::Ps(a) => commands::docker::cmd_ps(a.all, a.json),
+            DockerCmd::Container(a) => commands::docker::cmd_container(&a.action, &a.ids),
+            DockerCmd::Logs(a) => commands::docker::cmd_logs(&a.id, a.tail),
+            DockerCmd::Disk(a) => commands::docker::cmd_disk(a.size.as_deref(), a.json),
+            DockerCmd::Env => commands::docker::cmd_env(),
+            DockerCmd::Shell => commands::docker::cmd_shell(),
+            DockerCmd::Serve(a) => commands::docker::cmd_serve(a.port, &a.machine, &a.publish_bind),
+        },
         Command::Snapshot(args) => match args.cmd {
             Some(SnapshotCmd::Ls(a)) => commands::snapshot::cmd_ls(a.machine.as_deref(), a.json),
             Some(SnapshotCmd::Rm(a)) => commands::snapshot::cmd_rm(&a.names),

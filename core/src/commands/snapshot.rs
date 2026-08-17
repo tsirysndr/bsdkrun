@@ -147,16 +147,23 @@ fn payload_source(payload: &Payload) -> &Path {
 /// the difference between 50 ms and several minutes. On macOS that means the
 /// case-sensitive store for a Linux rootfs, and `<state>` for a BSD disk.
 fn snapshot_dir(src: &Path, id: &str) -> Result<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
+    // `<state>/snapshots` is both the last candidate and the fallback, so it
+    // is bound first and the platform-specific ones are prepended. (Building
+    // this the other way round — `Vec::new()` then `push` — reads as
+    // `vec_init_then_push` on Linux, where the macOS branch compiles away.)
+    let default = db::snapshots_dir()?;
     #[cfg(target_os = "macos")]
-    if let Some(d) = crate::store::snapshots_dir() {
-        candidates.push(d);
-    }
-    candidates.push(db::snapshots_dir()?);
+    let candidates: Vec<PathBuf> = crate::store::snapshots_dir()
+        .into_iter()
+        .chain(std::iter::once(default.clone()))
+        .collect();
+    #[cfg(not(target_os = "macos"))]
+    let candidates: Vec<PathBuf> = vec![default.clone()];
+
     let base = candidates
         .iter()
         .find(|c| host::same_device(src, c))
-        .unwrap_or(&candidates[candidates.len() - 1]);
+        .unwrap_or(&default);
     Ok(base.join(id))
 }
 

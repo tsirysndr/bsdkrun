@@ -171,6 +171,40 @@ impl From<ops::Flavor> for Flavor {
     }
 }
 
+impl From<ops::DockerStatus> for DockerStatus {
+    fn from(s: ops::DockerStatus) -> Self {
+        DockerStatus {
+            running: s.running,
+            machine_id: s.machine_id,
+            machine_running: s.machine_running,
+            socket: s.socket,
+            socket_ready: s.socket_ready,
+            api_port: s.api_port.map(u32::from),
+            version: s.version,
+            containers: s.containers,
+            images: s.images,
+            mounts: s.mounts,
+            disk: s.disk,
+            disk_size: s.disk_size,
+        }
+    }
+}
+
+impl From<ops::DockerContainer> for DockerContainer {
+    fn from(c: ops::DockerContainer) -> Self {
+        DockerContainer {
+            id: c.id,
+            name: c.name,
+            image: c.image,
+            command: c.command,
+            state: c.state,
+            status: c.status,
+            ports: c.ports,
+            created: c.created,
+        }
+    }
+}
+
 impl From<ops::Version> for Version {
     fn from(v: ops::Version) -> Self {
         Version {
@@ -542,6 +576,70 @@ impl Bsdkrun for BsdkrunService {
         Ok(Response::new(
             self.ops.sync_network(&req.into_inner().network).await?,
         ))
+    }
+
+    // -- docker ---------------------------------------------------------------
+
+    async fn get_docker_status(
+        &self,
+        _: Request<DockerStatusRequest>,
+    ) -> Result<Response<DockerStatus>, Status> {
+        Ok(Response::new(self.ops.docker_status().await?.into()))
+    }
+
+    async fn docker_start(
+        &self,
+        req: Request<DockerStartRequest>,
+    ) -> Result<Response<DockerStatus>, Status> {
+        let r = req.into_inner();
+        let opts = ops::DockerStartOpts {
+            cpus: r.cpus,
+            mem: r.mem,
+            mounts: r.mounts,
+            no_home: r.no_home,
+            publish_bind: r.publish_bind,
+            disk_size: r.disk_size,
+        };
+        Ok(Response::new(self.ops.docker_start(&opts).await?.into()))
+    }
+
+    async fn docker_stop(
+        &self,
+        _: Request<DockerStopRequest>,
+    ) -> Result<Response<CommandResult>, Status> {
+        Ok(Response::new(self.ops.docker_stop().await?))
+    }
+
+    async fn docker_containers(
+        &self,
+        req: Request<DockerContainersRequest>,
+    ) -> Result<Response<DockerContainersResponse>, Status> {
+        let containers = self.ops.docker_containers(req.into_inner().all).await?;
+        Ok(Response::new(DockerContainersResponse {
+            containers: containers.into_iter().map(Into::into).collect(),
+        }))
+    }
+
+    async fn docker_container(
+        &self,
+        req: Request<DockerContainerRequest>,
+    ) -> Result<Response<CommandResult>, Status> {
+        let r = req.into_inner();
+        Ok(Response::new(
+            self.ops.docker_container(&r.action, &r.ids).await?,
+        ))
+    }
+
+    async fn docker_container_logs(
+        &self,
+        req: Request<DockerLogsRequest>,
+    ) -> Result<Response<DockerLogsResponse>, Status> {
+        let r = req.into_inner();
+        // 0 means "the server default", so a client that leaves the field
+        // unset gets the same 200 lines the CLI shows.
+        let tail = if r.tail == 0 { 200 } else { r.tail };
+        let logs = self.ops.docker_container_logs(&r.id, tail).await?;
+        Ok(Response::new(DockerLogsResponse { logs }))
     }
 
     // -- flavors -------------------------------------------------------------

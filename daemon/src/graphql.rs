@@ -238,6 +238,81 @@ impl From<ops::Flavor> for Flavor {
     }
 }
 
+/// The Docker engine VM: whether it is up, and how to reach it.
+#[derive(SimpleObject)]
+pub struct DockerStatus {
+    /// The VM is up *and* its API answered.
+    pub running: bool,
+    pub machine_id: Option<String>,
+    pub machine_running: bool,
+    /// The host unix socket the `docker` CLI talks to. Local to the *daemon's*
+    /// host — a remote client uses its own engine, or this one over SSH.
+    pub socket: String,
+    pub socket_ready: bool,
+    pub api_port: Option<i32>,
+    pub version: Option<String>,
+    pub containers: Option<i32>,
+    pub images: Option<i32>,
+    /// Host directories shared into the VM, each `HOST:GUEST`.
+    pub mounts: Vec<String>,
+    /// The dedicated image-store disk, when the VM was started with one.
+    pub disk: Option<String>,
+    /// Its size in bytes. Sparse: the cap, not the usage.
+    pub disk_size: Option<f64>,
+}
+
+impl From<ops::DockerStatus> for DockerStatus {
+    fn from(s: ops::DockerStatus) -> Self {
+        DockerStatus {
+            running: s.running,
+            machine_id: s.machine_id,
+            machine_running: s.machine_running,
+            socket: s.socket,
+            socket_ready: s.socket_ready,
+            api_port: s.api_port.map(|p| p as i32),
+            version: s.version,
+            containers: s.containers.map(|c| c as i32),
+            images: s.images.map(|i| i as i32),
+            mounts: s.mounts,
+            disk: s.disk,
+            disk_size: s.disk_size.map(|b| b as f64),
+        }
+    }
+}
+
+/// A container in the Docker engine VM — a trimmed `docker ps` row.
+#[derive(SimpleObject)]
+pub struct DockerContainer {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub command: String,
+    /// "running" | "exited" | "created" | "paused" | …
+    pub state: String,
+    /// Docker's human status, e.g. "Up 3 minutes".
+    pub status: String,
+    /// Published forwards, each `HOST:GUEST/proto` — the ones mirrored onto
+    /// the host.
+    pub ports: Vec<String>,
+    /// Unix epoch seconds.
+    pub created: f64,
+}
+
+impl From<ops::DockerContainer> for DockerContainer {
+    fn from(c: ops::DockerContainer) -> Self {
+        DockerContainer {
+            id: c.id,
+            name: c.name,
+            image: c.image,
+            command: c.command,
+            state: c.state,
+            status: c.status,
+            ports: c.ports,
+            created: c.created as f64,
+        }
+    }
+}
+
 /// A machine snapshot: one machine's disk state, captured under a name.
 #[derive(SimpleObject)]
 pub struct Snapshot {
@@ -516,6 +591,26 @@ pub struct RunUnikraftInput {
     pub mounts: Vec<String>,
 }
 
+/// Starting the Docker engine VM. Every field is optional: the zero value is
+/// what `bsdkrun docker start` with no flags does.
+#[derive(InputObject, Default)]
+pub struct DockerStartInput {
+    pub cpus: Option<u32>,
+    pub mem: Option<u32>,
+    /// Host directories to share, each `PATH` (same path in the guest) or
+    /// `HOST:GUEST`. `$HOME` is shared unless `noHome`.
+    #[graphql(default)]
+    pub mounts: Vec<String>,
+    #[graphql(default)]
+    pub no_home: bool,
+    /// Where published container ports bind on the host: `mirror` (default —
+    /// what the container asked for) or a fixed address.
+    pub publish_bind: Option<String>,
+    /// Give the image store a dedicated disk of this size, e.g. `60G`. Only
+    /// applies when the VM is created.
+    pub disk_size: Option<String>,
+}
+
 /// Booting a new machine from a snapshot.
 #[derive(InputObject)]
 pub struct BranchInput {
@@ -731,6 +826,41 @@ impl Query {
             .collect())
     }
 
+    /// The Docker engine VM's status — is it up, and where is its socket?
+    async fn docker_status(&self, ctx: &Context<'_>) -> async_graphql::Result<DockerStatus> {
+        Ok(api(ctx)?.ops.docker_status().await.map_err(gql_err)?.into())
+    }
+
+    /// Containers in the Docker engine VM. `all` includes stopped ones.
+    async fn docker_containers(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default)] all: bool,
+    ) -> async_graphql::Result<Vec<DockerContainer>> {
+        Ok(api(ctx)?
+            .ops
+            .docker_containers(all)
+            .await
+            .map_err(gql_err)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    /// One container's logs (stdout+stderr, most recent `tail` lines).
+    async fn docker_container_logs(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+        #[graphql(default = 200)] tail: u32,
+    ) -> async_graphql::Result<String> {
+        api(ctx)?
+            .ops
+            .docker_container_logs(&id, tail)
+            .await
+            .map_err(gql_err)
+    }
+
     /// Saved snapshots, newest first. `machine` narrows to one machine's.
     async fn snapshots(
         &self,
@@ -867,6 +997,53 @@ impl Mutation {
         Ok(api(ctx)?
             .ops
             .update_machine(&id, cpus, mem)
+            .await
+            .map_err(gql_err)?
+            .into())
+    }
+
+    // -- docker ---------------------------------------------------------------
+
+    /// Start (or resume) the Docker engine VM, returning its status once the
+    /// daemon inside answers. Idempotent: the VM has a fixed name, so a second
+    /// call resumes the same one rather than creating another.
+    async fn docker_start(
+        &self,
+        ctx: &Context<'_>,
+        input: Option<DockerStartInput>,
+    ) -> async_graphql::Result<DockerStatus> {
+        let input = input.unwrap_or_default();
+        let opts = ops::DockerStartOpts {
+            cpus: input.cpus,
+            mem: input.mem,
+            mounts: input.mounts,
+            no_home: input.no_home,
+            publish_bind: input.publish_bind,
+            disk_size: input.disk_size,
+        };
+        Ok(api(ctx)?
+            .ops
+            .docker_start(&opts)
+            .await
+            .map_err(gql_err)?
+            .into())
+    }
+
+    /// Stop the engine. Images and containers stay on its disk.
+    async fn docker_stop(&self, ctx: &Context<'_>) -> async_graphql::Result<CommandResult> {
+        Ok(api(ctx)?.ops.docker_stop().await.map_err(gql_err)?.into())
+    }
+
+    /// Act on containers: start / stop / restart / kill / pause / unpause / rm.
+    async fn docker_container(
+        &self,
+        ctx: &Context<'_>,
+        action: String,
+        ids: Vec<String>,
+    ) -> async_graphql::Result<CommandResult> {
+        Ok(api(ctx)?
+            .ops
+            .docker_container(&action, &ids)
             .await
             .map_err(gql_err)?
             .into())

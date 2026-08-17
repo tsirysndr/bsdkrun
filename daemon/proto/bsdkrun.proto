@@ -424,6 +424,94 @@ message ListFlavorsResponse {
   repeated Flavor flavors = 1;
 }
 
+// ---------------------------------------------------------------------------
+// Docker compatibility
+//
+// One `docker:dind` microVM (always named `bsdkrun-docker`) whose API is
+// served on a host unix socket, so the host's own `docker` CLI drives it.
+// The socket is on the *daemon's* host; a remote client uses these RPCs, or
+// tunnels the socket itself.
+// ---------------------------------------------------------------------------
+
+message DockerStatus {
+  // The VM is up *and* its API answered.
+  bool running = 1;
+  optional string machine_id = 2;
+  bool machine_running = 3;
+  // The unix socket the daemon's host serves the Docker API on.
+  string socket = 4;
+  bool socket_ready = 5;
+  optional uint32 api_port = 6;
+  optional string version = 7;
+  optional int64 containers = 8;
+  optional int64 images = 9;
+  // Host directories shared into the VM, each "HOST:GUEST".
+  repeated string mounts = 10;
+  // The dedicated image-store disk, when the VM was started with one.
+  optional string disk = 11;
+  // Its size in bytes. Sparse: the cap, not the usage.
+  optional uint64 disk_size = 12;
+}
+
+message DockerContainer {
+  string id = 1;
+  string name = 2;
+  string image = 3;
+  string command = 4;
+  // "running" | "exited" | "created" | "paused" | ...
+  string state = 5;
+  // Docker's human status, e.g. "Up 3 minutes".
+  string status = 6;
+  // Published forwards, each "HOST:GUEST/proto".
+  repeated string ports = 7;
+  // Unix epoch seconds.
+  int64 created = 8;
+}
+
+message DockerStatusRequest {}
+
+message DockerStartRequest {
+  optional uint32 cpus = 1;
+  optional uint32 mem = 2;
+  // Host directories to share, each "PATH" or "HOST:GUEST".
+  repeated string mounts = 3;
+  // Do not share $HOME (shared by default).
+  bool no_home = 4;
+  // Where published container ports bind on the host: "mirror" (default) or
+  // a fixed address.
+  optional string publish_bind = 5;
+  // Give the image store a dedicated disk of this size, e.g. "60G". Only
+  // applies when the VM is created.
+  optional string disk_size = 6;
+}
+
+message DockerStopRequest {}
+
+message DockerContainersRequest {
+  // Include stopped containers.
+  bool all = 1;
+}
+
+message DockerContainersResponse {
+  repeated DockerContainer containers = 1;
+}
+
+message DockerContainerRequest {
+  // start | stop | restart | kill | pause | unpause | rm
+  string action = 1;
+  repeated string ids = 2;
+}
+
+message DockerLogsRequest {
+  string id = 1;
+  // Trailing lines to return; 0 means the server default.
+  uint32 tail = 2;
+}
+
+message DockerLogsResponse {
+  string logs = 1;
+}
+
 message RunFlavorRequest {
   string name = 1;
   VmConfig vm = 2;
@@ -604,6 +692,18 @@ service Bsdkrun {
   rpc AddFlavor(AddFlavorRequest) returns (CommandResult);
   rpc RemoveFlavors(RemoveFlavorsRequest) returns (CommandResult);
   rpc BuildFlavor(BuildFlavorRequest) returns (stream OutputChunk);
+
+  // -- docker ---------------------------------------------------------------
+  // `GetDockerStatus`, not `DockerStatus`: protobuf puts RPCs and messages in
+  // one namespace, and the reply message already owns that name.
+  rpc GetDockerStatus(DockerStatusRequest) returns (DockerStatus);
+  // Idempotent: the VM has a fixed name, so this resumes rather than
+  // creating a second one. Returns the status once dockerd answers.
+  rpc DockerStart(DockerStartRequest) returns (DockerStatus);
+  rpc DockerStop(DockerStopRequest) returns (CommandResult);
+  rpc DockerContainers(DockerContainersRequest) returns (DockerContainersResponse);
+  rpc DockerContainer(DockerContainerRequest) returns (CommandResult);
+  rpc DockerContainerLogs(DockerLogsRequest) returns (DockerLogsResponse);
 
   // -- guest interaction ----------------------------------------------------
   rpc Exec(stream ExecInput) returns (stream OutputChunk);

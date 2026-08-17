@@ -1856,6 +1856,24 @@ impl Default for LinuxArgs {
     }
 }
 
+impl Default for DockerStartArgs {
+    fn default() -> Self {
+        Self {
+            vm: VmConfig::default(),
+            mounts: vec![],
+            no_home: false,
+            publish_bind: "mirror".to_string(),
+            ports: vec![],
+            disk_size: None,
+            system_socket: false,
+            no_context: false,
+            no_activate: false,
+            timeout: 120,
+            json: false,
+        }
+    }
+}
+
 impl Default for UnikraftArgs {
     fn default() -> Self {
         Self {
@@ -1956,6 +1974,20 @@ mod tests {
             panic!("not a unikraft command");
         };
         assert_eq!(json(&parsed), json(&UnikraftArgs::default()));
+    }
+
+    /// The daemon builds `DockerStartArgs` directly, so its `Default` has to
+    /// agree with clap's — otherwise a daemon-started engine would wait a
+    /// different timeout, or bind published ports somewhere else.
+    #[test]
+    fn docker_start_defaults_match_clap() {
+        let Command::Docker(parsed) = parse(&["bsdkrun", "docker", "start"]) else {
+            panic!("not a docker command");
+        };
+        let DockerCmd::Start(parsed) = parsed.cmd else {
+            panic!("not a docker start");
+        };
+        assert_eq!(json(&parsed), json(&DockerStartArgs::default()));
     }
 
     #[test]

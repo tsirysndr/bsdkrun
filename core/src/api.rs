@@ -31,6 +31,13 @@ pub use crate::commands::snapshot::{
     rollback as rollback_snapshot, Restored,
 };
 pub use crate::commands::volumes::remove_volume;
+/// Docker compatibility. The engine's types are already the wire shapes (they
+/// are what `--json` prints), so nothing is re-declared here.
+pub use crate::docker::{
+    container_action as docker_container_action, container_logs as docker_container_logs,
+    containers as docker_containers, status as docker_status, Container as DockerContainer,
+    Status as DockerStatus,
+};
 pub use crate::network::{
     connect as connect_network, create as create_network, disconnect as disconnect_network,
     remove as remove_network, sync as sync_network,

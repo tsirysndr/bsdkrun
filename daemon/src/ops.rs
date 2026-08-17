@@ -15,10 +15,10 @@
 
 use bsdkrun_core::api;
 use bsdkrun_core::cli::{
-    BranchArgs, BsdArgs, Command as CoreCommand, ExecArgs, FetchArgs, FlavorAddArgs, FlavorArgs,
-    FlavorCmd, FlavorPrebuildArgs, FlavorRunArgs, IdArgs, LinuxArgs, LogsArgs, NanosArgs,
-    NetConfig, OsvArgs, RunConfig, Solo5Args, SshArgs, SystemdArgs, TailscaleArgs, UnikraftArgs,
-    VmConfig,
+    BranchArgs, BsdArgs, Command as CoreCommand, DockerArgs, DockerCmd, DockerStartArgs, ExecArgs,
+    FetchArgs, FlavorAddArgs, FlavorArgs, FlavorCmd, FlavorPrebuildArgs, FlavorRunArgs, IdArgs,
+    LinuxArgs, LogsArgs, NanosArgs, NetConfig, OsvArgs, RunConfig, Solo5Args, SshArgs, SystemdArgs,
+    TailscaleArgs, UnikraftArgs, VmConfig,
 };
 use bsdkrun_core::net::PortForward;
 
@@ -27,7 +27,9 @@ use crate::supervisor::Supervisor;
 
 /// The domain types are the engine's own — the shapes it already used for
 /// `--json` — so nothing is re-declared or re-parsed here.
-pub use bsdkrun_core::api::{Flavor, Image, Machine, Network, Snapshot, Version, Volume};
+pub use bsdkrun_core::api::{
+    DockerContainer, DockerStatus, Flavor, Image, Machine, Network, Snapshot, Version, Volume,
+};
 
 // ---------------------------------------------------------------------------
 // option structs
@@ -216,6 +218,44 @@ impl BranchOpts {
             mem: self.mem,
             ports: self.ports.iter().filter_map(|p| p.parse().ok()).collect(),
             no_ports: self.no_ports,
+        })
+    }
+}
+
+/// Starting the Docker engine VM. Detached like every other boot here.
+#[derive(Debug, Default, Clone)]
+pub struct DockerStartOpts {
+    pub cpus: Option<u32>,
+    pub mem: Option<u32>,
+    /// Host directories to share, each `PATH` or `HOST:GUEST`.
+    pub mounts: Vec<String>,
+    pub no_home: bool,
+    /// `mirror` (default) or a fixed bind address for published ports.
+    pub publish_bind: Option<String>,
+    /// A dedicated image-store disk of this size, e.g. `60G`.
+    pub disk_size: Option<String>,
+}
+
+impl DockerStartOpts {
+    pub fn to_command(&self) -> CoreCommand {
+        let d = DockerStartArgs::default();
+        CoreCommand::Docker(DockerArgs {
+            cmd: DockerCmd::Start(DockerStartArgs {
+                vm: vm_config(self.cpus, self.mem),
+                mounts: self.mounts.clone(),
+                no_home: self.no_home,
+                publish_bind: self.publish_bind.clone().unwrap_or(d.publish_bind),
+                ports: vec![],
+                disk_size: self.disk_size.clone(),
+                // A daemon must never prompt for sudo, and the docker context
+                // it would create belongs to whoever runs the *client*, not to
+                // the machine hosting the VM.
+                system_socket: false,
+                no_context: true,
+                no_activate: true,
+                timeout: d.timeout,
+                json: false,
+            }),
         })
     }
 }
@@ -694,6 +734,65 @@ impl Ops {
         let id = id.to_string();
         let cpus = cpus.map(|c| c.min(255) as u8);
         as_result(blocking("updating a machine", move || api::update(&id, cpus, mem)).await)
+    }
+
+    // -- docker ---------------------------------------------------------------
+    //
+    // Reads and container actions are plain engine calls; `start` boots a VM,
+    // so it goes through a supervisor like every other boot here.
+
+    pub async fn docker_status(&self) -> OpResult<DockerStatus> {
+        blocking("reading the Docker status", api::docker_status).await
+    }
+
+    pub async fn docker_containers(&self, all: bool) -> OpResult<Vec<DockerContainer>> {
+        blocking("listing containers", move || api::docker_containers(all)).await
+    }
+
+    /// Start (or resume) the Docker engine VM. Returns its status once the
+    /// daemon inside answers, so a caller knows the socket is live.
+    pub async fn docker_start(&self, opts: &DockerStartOpts) -> OpResult<DockerStatus> {
+        self.supervisor.detached(&opts.to_command()).await?;
+        self.docker_status().await
+    }
+
+    pub async fn docker_stop(&self) -> OpResult<CommandResult> {
+        as_result(
+            blocking("stopping the Docker engine", || {
+                bsdkrun_core::docker::stop_proxy()?;
+                let socket = bsdkrun_core::docker::socket_path()?;
+                bsdkrun_core::docker::release_system_socket(&socket);
+                match bsdkrun_core::docker::machine()? {
+                    Some(vm) => api::stop(&vm.id),
+                    None => Ok("no Docker VM to stop".to_string()),
+                }
+            })
+            .await,
+        )
+    }
+
+    /// Act on one container: start / stop / restart / kill / pause / unpause / rm.
+    pub async fn docker_container(&self, action: &str, ids: &[String]) -> OpResult<CommandResult> {
+        require_non_empty("containers", ids)?;
+        let (action, ids) = (action.to_string(), ids.to_vec());
+        as_result(
+            blocking("acting on a container", move || {
+                let mut done = Vec::new();
+                for id in &ids {
+                    done.push(api::docker_container_action(id, &action)?);
+                }
+                Ok(done.join("\n"))
+            })
+            .await,
+        )
+    }
+
+    pub async fn docker_container_logs(&self, id: &str, tail: u32) -> OpResult<String> {
+        let id = id.to_string();
+        blocking("reading container logs", move || {
+            api::docker_container_logs(&id, tail)
+        })
+        .await
     }
 
     // -- snapshots -----------------------------------------------------------

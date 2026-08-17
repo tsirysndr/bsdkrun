@@ -16,7 +16,9 @@ import { useToast } from "../state/toast";
 
 const THEME = {
   background: "#0a0d13",
-  foreground: "#c6ccd8",
+  // Near-white rather than the muted grey the rest of the chrome uses: this is
+  // the content, not a label, and #c6ccd8 on #0a0d13 reads as dim next to it.
+  foreground: "#e8ecf5",
   cursor: "#0a0d13",
   selectionBackground: "rgba(124,139,255,0.35)",
 };
@@ -70,7 +72,7 @@ export default function LogsPane({ machineId }: { machineId: string }) {
       term = new Terminal({
         fontFamily: '"Agave", ui-monospace, Menlo, monospace',
         fontSize: 14,
-        lineHeight: 1.25,
+        lineHeight: 1.5,
         disableStdin: true,
         cursorInactiveStyle: "none",
         convertEol: true,

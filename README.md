@@ -57,6 +57,7 @@ one CLI, no daemon required.
   - [`nanos`](#nanos--boot-a-nanos-nanovms-unikernel)
   - [`solo5` / `mirage`](#solo5--mirage--run-a-mirageos-solo5-unikernel)
 - [Managing machines](#managing-machines)
+- [Docker — replace Docker Desktop](#docker--replace-docker-desktop)
 - [Snapshots, branches & restore](#snapshots-branches--restore)
 - [Flavors — preconfigured environments & snapshots](#flavors--preconfigured-environments--snapshots)
 - [Networking](#networking)
@@ -106,6 +107,11 @@ one CLI, no daemon required.
   microVMs from one base image instantly; named persistent volumes (`-v`), host bind mounts
   (`--mount`), [extra disks](#disks) (`--attach-disk`), and [`grow`](#resizing-the-disk) to enlarge
   images.
+- **Docker Desktop, replaced** — [`bsdkrun docker start`](#docker--replace-docker-desktop)
+  runs a Docker engine in a microVM and serves its API on a host socket, so your own
+  `docker`, `compose` and `buildx` drive it unchanged: published container ports are
+  mirrored onto the host automatically, and `$HOME` is shared at the same path so
+  `-v $PWD:/app` resolves.
 - **Snapshot, branch, restore** — [`snapshot`](#snapshots-branches--restore) captures a machine's
   disk state as a CoW clone (instant, free until it diverges); `branch` boots a disposable copy of a
   snapshot *or of a running machine*; `restore`/`rollback` put one back — with the replaced state
@@ -1113,6 +1119,70 @@ If `exec` times out, check inside the guest that networking is up (`ifconfig` sh
 
 > The FreeBSD binary is dynamically linked for FreeBSD 14+; the NetBSD binary is built natively on
 > NetBSD 10.
+
+---
+
+## Docker — replace Docker Desktop
+
+`bsdkrun docker` runs a Docker engine in a microVM and serves its API on a host
+unix socket, so **your own `docker` CLI drives it**. Not a wrapper and not a
+different CLI: `docker`, `docker compose` and `docker buildx` work exactly as
+they did, pointed at a bsdkrun VM instead of Docker Desktop.
+
+```sh
+bsdkrun docker start          # boots the engine, wires the socket + a docker context
+docker run -d -p 8080:80 nginx
+curl localhost:8080           # the container's port, published on the host
+docker compose up -d          # compose and buildx come along for free
+
+bsdkrun docker ps             # containers, without leaving bsdkrun
+bsdkrun docker status         # engine version, socket, image store, shares
+bsdkrun docker stop           # images and containers stay on its disk
+```
+
+There is exactly **one** engine VM, always named `bsdkrun-docker`: `start` on an
+existing one resumes it rather than building a second. Its images and containers
+live on a persistent volume, so a `stop`/`start` cycle keeps everything.
+
+Three things have to be true for a VM-backed Docker to actually feel like
+Docker Desktop, and each is handled rather than documented away:
+
+| What breaks in a naive VM setup | What bsdkrun does |
+| ------------------------------- | ----------------- |
+| `docker` can't find a daemon    | dockerd's API is served on `<state>/docker/docker.sock`, and a `bsdkrun` **docker context** points at it — no `DOCKER_HOST` needed |
+| `-p 8080:80` publishes *inside* the VM | a watcher follows Docker's event stream and mirrors every published port onto the host, withdrawing it when the container stops |
+| `-v $PWD:/app` mounts an **empty** dir | `$HOME` is shared into the VM **at the same path** (`--mount` adds more, `--no-home` opts out) |
+
+**Coming from Docker Desktop.** Quit Desktop, run `bsdkrun docker start`, and
+carry on — the context switch is the whole migration. If a tool hardcodes
+`/var/run/docker.sock` (testcontainers, some CI scripts), add `--system-socket`
+to point that path here too; it asks for sudo once.
+
+**The image store.** By default `/var/lib/docker` lives on the VM's host-backed
+rootfs, which has no fixed size. `--disk-size` gives it a dedicated sparse ext4
+disk instead, and `docker disk` grows it:
+
+```sh
+bsdkrun docker start --disk-size 60G   # only applies when the VM is created
+bsdkrun docker disk --size 100G        # grow it later
+bsdkrun docker disk                    # what it is now
+```
+
+A grown disk reaches a *running* guest only after a restart — virtio-blk fixes
+a device's size when the VM attaches it — so `disk --size` says so rather than
+pretending otherwise.
+
+The engine is a bsdkrun machine like any other: `bsdkrun logs bsdkrun-docker`
+follows its console, `bsdkrun docker shell` opens a shell *in the VM* (not in a
+container), and it appears in `ps`, in the TUI, and in the desktop and web UIs —
+which also grow a **Containers** view with start/stop/restart/remove and logs.
+Every SDK exposes the same surface (`docker_status`, `docker_containers`,
+`docker_start`, …), as do the daemon's GraphQL and gRPC APIs.
+
+> **Security.** The API port is loopback-only, but it carries no TLS and Docker
+> API access is root-equivalent *inside the guest* — any local process can use
+> it, exactly as with colima and friends. The unix socket itself is `0600`. The
+> blast radius is the VM, not your host, but it is not a multi-user boundary.
 
 ---
 

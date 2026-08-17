@@ -77,7 +77,7 @@ export default function ContainerLogsModal({
         <ModalHeader className="flex items-center gap-2 text-base">
           <IconFileText size={18} className="text-foreground-400" />
           <span className="truncate">{container?.name || container?.id}</span>
-          <span className="font-mono text-[11px] font-normal text-foreground-500">
+          <span className="font-mono text-xs font-normal text-foreground-400">
             {container?.image}
           </span>
           <div className="flex-1" />
@@ -98,7 +98,9 @@ export default function ContainerLogsModal({
                 stick.current =
                   el.scrollHeight - el.scrollTop - el.clientHeight < 40;
               }}
-              className="h-[60vh] overflow-auto whitespace-pre-wrap break-all rounded-lg bg-[#0a0d13] p-3 font-mono text-[11px] leading-relaxed text-foreground-300"
+              // 13px/1.6 on a near-black panel: the xterm log view already
+              // runs at 14px, and 11px grey was unreadable next to it.
+              className="h-[60vh] select-text overflow-auto whitespace-pre-wrap break-all rounded-lg bg-[#0a0d13] p-4 font-mono text-[13px] leading-[1.6] text-foreground-100"
             >
               {text || (loading ? "Loading…" : "(no output yet)")}
             </pre>

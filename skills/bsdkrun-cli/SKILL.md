@@ -1,6 +1,6 @@
 ---
 name: bsdkrun-cli
-description: Reference for the bsdkrun CLI — a Firecracker-style microVM launcher for FreeBSD, NetBSD, and Linux (OCI) guests on macOS/Linux, built on libkrun. Use when running, managing, networking, snapshotting, or troubleshooting bsdkrun machines, or when writing commands/scripts against the CLI. Covers every subcommand and its flags.
+description: Reference for the bsdkrun CLI — a Firecracker-style microVM launcher for FreeBSD, NetBSD, and Linux (OCI) guests on macOS/Linux, built on libkrun. Also replaces Docker Desktop: `bsdkrun docker` runs a Docker engine in a microVM and serves its API on a host socket, so the normal `docker`/`compose`/`buildx` CLIs drive it. Use when running, managing, networking, snapshotting, or troubleshooting bsdkrun machines or its Docker engine, or when writing commands/scripts against the CLI. Covers every subcommand and its flags.
 license: MIT
 metadata:
   author: tsirysndr
@@ -46,6 +46,19 @@ Interact:
 - `bsdkrun doctor [--json]` — check the host can run machines; exits 1 on any failure.
 - `bsdkrun shell <id>` — attach an interactive console to a detached machine.
 - `bsdkrun logs [-f] [--boot] <id>` — show the console log (`--boot` = bsdkrun's own boot log).
+
+Docker (a Docker engine in a microVM, driven by the host's own `docker` CLI):
+- `bsdkrun docker start [--cpus N] [--mem M] [--disk-size 60G] [--mount PATH]` — boot (or
+  resume) the engine, serve its API on a host unix socket, and point `docker` at it via a
+  `bsdkrun` context. One VM, always named `bsdkrun-docker`; a second `start` resumes it.
+- `bsdkrun docker status [--json]` / `bsdkrun docker stop` / `bsdkrun docker rm [-f]`.
+- `bsdkrun docker ps [-a] [--json]` — containers. `bsdkrun docker logs <c> [--tail N]`.
+- `bsdkrun docker container <start|stop|restart|kill|pause|unpause|rm> <c>...`.
+- `bsdkrun docker disk [--size 100G]` — show or grow the image store.
+- `bsdkrun docker env` — the `DOCKER_HOST` line, for a shell not using the context.
+- `bsdkrun docker shell` — a shell in the engine **VM** (not in a container).
+- Published container ports are mirrored onto the host automatically; `$HOME` is shared
+  into the VM at the same path so `-v $PWD:/app` resolves.
 
 Snapshots (a machine's disk state, copy-on-write):
 - `bsdkrun snapshot <id> [name] [-d DESC]` — capture a machine's disk state (BSD guests are powered

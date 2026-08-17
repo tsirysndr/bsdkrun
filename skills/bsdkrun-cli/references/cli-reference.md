@@ -146,6 +146,64 @@ Show the guest console log. `-f/--follow` streams live; `--boot` shows bsdkrun's
 
 ---
 
+## Docker (`bsdkrun docker`)
+
+A Docker engine in a microVM, with its API served on a host unix socket so the *host's*
+`docker` CLI drives it — a Docker Desktop replacement, not a wrapper CLI. There is
+exactly one engine VM, always named `bsdkrun-docker`.
+
+Three things it handles that a naive VM-backed Docker does not: the socket (plus a
+`bsdkrun` docker context, so no `DOCKER_HOST` is needed), automatic publishing of
+container ports onto the host, and sharing `$HOME` into the VM **at the same path** so
+`-v $PWD:/app` resolves instead of mounting an empty directory.
+
+### `docker start [OPTIONS]`
+Boot or resume the engine. Idempotent — a second `start` resumes the same VM.
+- `--cpus N` / `--mem M` — VM sizing.
+- `--mount PATH|HOST:GUEST` — share another host directory (repeatable). A bare `PATH`
+  mounts at the same path in the guest.
+- `--no-home` — do not share `$HOME` (shared by default).
+- `--disk-size SIZE` — give the image store a dedicated sparse ext4 disk (e.g. `60G`)
+  instead of the host-backed rootfs. Only applies when the VM is created.
+- `--publish-bind IP|mirror` — where published container ports bind on the host.
+  `mirror` (default) reproduces what the container asked for, as Docker Desktop does.
+- `--system-socket` — also point `/var/run/docker.sock` here (asks for sudo once), for
+  tools that hardcode it.
+- `--no-context` / `--no-activate` — skip creating / selecting the `bsdkrun` context.
+- `--timeout SECS` (default 120), `--json`.
+
+### `docker status [--json]`
+Engine version, socket, API port, shared directories, image store, context state.
+
+### `docker stop` / `docker rm [-f]`
+`stop` powers the VM off; images and containers stay on its disk. `rm` removes the VM,
+its image store **and** the docker context.
+
+### `docker ps [-a] [--json]`
+Containers, as the engine reports them. `-a` includes stopped ones.
+
+### `docker container <ACTION> <CONTAINER>...`
+`start` | `stop` | `restart` | `kill` | `pause` | `unpause` | `rm`.
+
+### `docker logs <CONTAINER> [--tail N]`
+One container's logs (stdout+stderr, default 200 lines).
+
+### `docker disk [--size SIZE] [--json]`
+Show the image store, or grow it. Growing only enlarges. A *running* engine keeps seeing
+the old size until it restarts — virtio-blk pins a device's size at attach time.
+
+### `docker env`
+Prints `export DOCKER_HOST=unix://…` for a shell that is not using the docker context
+(`eval "$(bsdkrun docker env)"`).
+
+### `docker shell`
+A shell in the engine **VM** — not in a container. (`docker exec` is for containers.)
+
+> The forwarded API port is loopback-only and carries no TLS; Docker API access is
+> root-equivalent inside the guest, the same trade colima makes. The socket is `0600`.
+
+---
+
 ## Machine snapshots (`snapshot` / `branch` / `restore` / `rollback`)
 
 A snapshot is a **copy-on-write clone of a machine's disk state** — instant to take, free until the

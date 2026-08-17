@@ -73,7 +73,7 @@ export default function CliModal() {
                     symbol="$"
                     classNames={{
                       base: "border-white/10 bg-content2/50 w-full",
-                      pre: "font-mono text-xs whitespace-pre-wrap",
+                      pre: "font-mono text-[13px] leading-[1.6] whitespace-pre-wrap select-text",
                     }}
                   >
                     {c}

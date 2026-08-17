@@ -124,7 +124,7 @@ export default function LaunchProgressModal() {
         <ModalBody className="pb-2">
           <div
             ref={logRef}
-            className="h-72 overflow-auto rounded-lg border border-white/10 bg-black/40 p-3 font-mono text-[12px] leading-relaxed text-foreground-300"
+            className="h-72 select-text overflow-auto rounded-lg border border-white/10 bg-black/40 p-4 font-mono text-[13px] leading-[1.6] text-foreground-100"
           >
             {launch.lines.length === 0 ? (
               <div className="flex items-center gap-2 text-foreground-500">

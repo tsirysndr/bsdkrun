@@ -349,17 +349,25 @@ export function useStartAgent() {
       const info = agents.find((a) => a.id === agent);
       const label = info?.label ?? agent;
 
-      const machineId = info?.installed
-        ? await api.aiStart(agent, workspace, newSession, name, repo)
-        : await streamInstall(
-            setLaunch,
-            label,
-            agent,
-            workspace,
-            newSession,
-            name,
-            repo,
-          );
+      // Stream whenever there is something worth watching. A first install
+      // builds the flavor; a `--repo` clones inside the sandbox — both take
+      // long enough that a modal closing on submit reads as "nothing
+      // happened", and a clone that fails (bad URL, private repo, no key) has
+      // its only explanation in that output.
+      const cloning = !!repo?.trim();
+      const installing = !info?.installed;
+      const machineId =
+        installing || cloning
+          ? await streamInstall(
+              setLaunch,
+              progressTitle(label, installing, repo),
+              agent,
+              workspace,
+              newSession,
+              name,
+              repo,
+            )
+          : await api.aiStart(agent, workspace, newSession, name, repo);
 
       const command = await api.aiShellCommand(agent, machineId);
       setSession({
@@ -378,12 +386,30 @@ export function useStartAgent() {
 }
 
 /**
- * First run of an agent: stream the flavor build into the progress modal, and
- * resolve with the machine id it reports.
+ * What the progress modal is called while it runs — the two slow things that
+ * can happen on the way to a prompt, named so the wait is legible.
+ */
+function progressTitle(label: string, installing: boolean, repo?: string): string {
+  const name = repo?.trim() ? shortRepo(repo) : null;
+  if (name && installing) return `${label} — installing, then cloning ${name}`;
+  if (name) return `Cloning ${name}`;
+  return `${label} (installing)`;
+}
+
+/** `https://github.com/owner/repo.git` -> `owner/repo`. */
+function shortRepo(url: string): string {
+  const trimmed = url.trim().replace(/\.git$/, "").replace(/\/+$/, "");
+  const parts = trimmed.split(/[/:]/).filter(Boolean);
+  return parts.slice(-2).join("/") || trimmed;
+}
+
+/**
+ * A first run, or a clone: stream it into the progress modal, and resolve with
+ * the machine id it reports.
  */
 function streamInstall(
   setLaunch: (s: any) => void,
-  label: string,
+  title: string,
   agent: string,
   workspace: string | null,
   newSession: boolean,
@@ -393,7 +419,7 @@ function streamInstall(
   const launchId = `agent-${agent}-${Date.now()}`;
   setLaunch({
     launchId,
-    name: `${label} (installing)`,
+    name: title,
     mode: "launch",
     lines: [],
     status: "running",

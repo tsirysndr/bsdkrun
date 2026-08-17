@@ -14,6 +14,7 @@ import {
   IconKeyboard,
   IconPlayerStopFilled,
   IconPlayerPlayFilled,
+  IconBrandDocker,
   IconCamera,
   IconCpu,
   IconGitBranch,
@@ -142,6 +143,14 @@ export default function CommandPalette() {
         section: "Navigate",
         icon: IconDatabase,
         run: nav("volumes"),
+      },
+      {
+        id: "nav-containers",
+        title: "Go to Containers",
+        section: "Navigate",
+        icon: IconBrandDocker,
+        keywords: "docker container compose engine dind image run",
+        run: nav("containers"),
       },
       {
         id: "nav-snapshots",

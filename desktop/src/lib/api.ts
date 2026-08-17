@@ -8,6 +8,8 @@ import type {
   NewFlavor,
   ProbeResult,
   RunSpec,
+  DockerContainer,
+  DockerStatus,
   Settings,
   Snapshot,
   SystemStats,
@@ -51,6 +53,24 @@ export const api = {
   createFlavor: (spec: NewFlavor) => invoke<void>("create_flavor", { ...spec }),
   commitMachine: (id: string, name: string, description: string) =>
     invoke<string>("commit_machine", { id, name, description }),
+
+  // Docker: one dind microVM the host's own `docker` CLI drives.
+  dockerStatus: () => invoke<DockerStatus>("docker_status"),
+  dockerContainers: (all: boolean) =>
+    invoke<DockerContainer[]>("docker_containers", { all }),
+  /** Starts or resumes the engine — waits until dockerd answers. */
+  dockerStart: (cpus?: number, mem?: number, diskSize?: string) =>
+    invoke<DockerStatus>("docker_start", {
+      cpus: cpus ?? null,
+      mem: mem ?? null,
+      diskSize: diskSize ?? null,
+    }),
+  dockerStop: () => invoke<void>("docker_stop"),
+  /** start | stop | restart | kill | pause | unpause | rm */
+  dockerContainer: (action: string, id: string) =>
+    invoke<string>("docker_container", { action, id }),
+  dockerLogs: (id: string, tail: number) =>
+    invoke<string>("docker_logs", { id, tail }),
 
   // Snapshots: copy-on-write captures of a machine's disk state. `machine`
   // narrows the list to one machine's; omit it for every snapshot on the host.

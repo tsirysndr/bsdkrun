@@ -13,6 +13,8 @@ export const qk = {
   volumes: ["volumes"] as const,
   // Every machine's list lives under the same "snapshots" prefix, so one
   // invalidate after a mutation refreshes the global view and each machine's.
+  dockerStatus: ["docker", "status"] as const,
+  dockerContainers: (all: boolean) => ["docker", "containers", all] as const,
   snapshots: (machine?: string | null) =>
     machine ? (["snapshots", machine] as const) : (["snapshots"] as const),
   flavors: ["flavors"] as const,
@@ -269,6 +271,78 @@ export function useCommitMachine() {
       // A BSD machine is powered off to take a consistent snapshot.
       qc.invalidateQueries({ queryKey: qk.machines });
     },
+  });
+}
+
+// ---- docker -----------------------------------------------------------------
+
+/**
+ * The Docker engine's status. Polled briskly while it is starting (the boot
+ * takes seconds and the UI is showing a spinner), gently once it is up.
+ */
+export function useDockerStatus() {
+  return useQuery({
+    queryKey: qk.dockerStatus,
+    queryFn: () => api.dockerStatus(),
+    refetchInterval: (q) => (q.state.data?.running ? 10000 : 3000),
+    refetchIntervalInBackground: true,
+    placeholderData: (prev) => prev,
+  });
+}
+
+/** Containers, `docker ps`-style. Only polled while the engine is up. */
+export function useDockerContainers(all = true, enabled = true) {
+  return useQuery({
+    queryKey: qk.dockerContainers(all),
+    queryFn: () => api.dockerContainers(all),
+    enabled,
+    refetchInterval: 4000,
+    refetchIntervalInBackground: true,
+    placeholderData: (prev) => prev,
+  });
+}
+
+function invalidateDocker(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ["docker"] });
+}
+
+export function useDockerStart() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      cpus,
+      mem,
+      diskSize,
+    }: {
+      cpus?: number;
+      mem?: number;
+      diskSize?: string;
+    } = {}) => api.dockerStart(cpus, mem, diskSize),
+    onSuccess: () => {
+      invalidateDocker(qc);
+      // The engine is a machine like any other, so it shows up in Machines too.
+      qc.invalidateQueries({ queryKey: qk.machines });
+    },
+  });
+}
+
+export function useDockerStop() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.dockerStop(),
+    onSuccess: () => {
+      invalidateDocker(qc);
+      qc.invalidateQueries({ queryKey: qk.machines });
+    },
+  });
+}
+
+export function useDockerContainerAction() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ action, id }: { action: string; id: string }) =>
+      api.dockerContainer(action, id),
+    onSuccess: () => invalidateDocker(qc),
   });
 }
 

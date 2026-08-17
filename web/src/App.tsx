@@ -11,6 +11,7 @@ import MachinesView from "./components/MachinesView";
 import ImagesView from "./components/ImagesView";
 import VolumesView from "./components/VolumesView";
 import SnapshotsView from "./components/SnapshotsView";
+import ContainersView from "./components/ContainersView";
 import FlavorsView from "./components/FlavorsView";
 import NetworksView from "./components/NetworksView";
 import RunDialog from "./components/RunDialog";
@@ -52,6 +53,7 @@ function Workspace() {
             {view === "machines" && <MachinesView />}
             {view === "images" && <ImagesView />}
             {view === "volumes" && <VolumesView />}
+            {view === "containers" && <ContainersView />}
             {view === "snapshots" && <SnapshotsView />}
             {view === "flavors" && <FlavorsView />}
             {view === "networks" && <NetworksView />}

@@ -6,6 +6,7 @@ import {
   IconApps,
   IconNetwork,
   IconCamera,
+  IconBrandDocker,
   IconSettings,
   IconKeyboard,
   IconCloud,
@@ -23,6 +24,8 @@ import {
   useMachines,
   useNetworks,
   useProbe,
+  useDockerContainers,
+  useDockerStatus,
   useSnapshots,
   useVolumes,
 } from "../lib/queries";
@@ -38,9 +41,10 @@ const ITEMS: {
   { key: "machines", label: "Machines", icon: IconServer2, hint: "⌘1" },
   { key: "images", label: "Images", icon: IconStack2, hint: "⌘2" },
   { key: "volumes", label: "Volumes", icon: IconDatabase, hint: "⌘3" },
-  { key: "snapshots", label: "Snapshots", icon: IconCamera, hint: "⌘4" },
-  { key: "flavors", label: "Flavors", icon: IconApps, hint: "⌘5" },
-  { key: "networks", label: "Networks", icon: IconNetwork, hint: "⌘6" },
+  { key: "containers", label: "Containers", icon: IconBrandDocker, hint: "⌘4" },
+  { key: "snapshots", label: "Snapshots", icon: IconCamera, hint: "⌘5" },
+  { key: "flavors", label: "Flavors", icon: IconApps, hint: "⌘6" },
+  { key: "networks", label: "Networks", icon: IconNetwork, hint: "⌘7" },
 ];
 
 export default function Sidebar() {
@@ -51,6 +55,13 @@ export default function Sidebar() {
   const { data: flavors = [] } = useFlavors();
   const { data: networks = [] } = useNetworks();
   const { data: snapshots = [] } = useSnapshots();
+  const { data: dockerStatus } = useDockerStatus();
+  // Only ask for containers when the engine is up — otherwise every poll is a
+  // CLI call that fails.
+  const { data: containers = [] } = useDockerContainers(
+    true,
+    !!dockerStatus?.running,
+  );
   const [, setSettingsOpen] = useAtom(settingsOpenAtom);
   const [, setShortcutsOpen] = useAtom(shortcutsOpenAtom);
 
@@ -58,6 +69,8 @@ export default function Sidebar() {
     machines: machines.filter((m) => m.running).length,
     images: images.length,
     volumes: volumes.length,
+    // Running containers, like the machines badge counts running machines.
+    containers: containers.filter((c) => c.state === "running").length,
     snapshots: snapshots.length,
     // Only badge user-created flavors (snapshots + flavors.toml), not the
     // static catalog — otherwise it'd always show a large constant.

@@ -422,6 +422,70 @@ pub async fn list_snapshots(bin: &Target, machine: Option<&str>) -> Result<Vec<S
     serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
 }
 
+/// The Docker engine VM's status (mirrors `bsdkrun docker status --json`).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DockerStatus {
+    pub running: bool,
+    #[serde(default)]
+    pub machine_id: Option<String>,
+    #[serde(default)]
+    pub machine_running: bool,
+    pub socket: String,
+    #[serde(default)]
+    pub socket_ready: bool,
+    #[serde(default)]
+    pub api_port: Option<u16>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub containers: Option<i64>,
+    #[serde(default)]
+    pub images: Option<i64>,
+    #[serde(default)]
+    pub mounts: Vec<String>,
+    #[serde(default)]
+    pub context: bool,
+    #[serde(default)]
+    pub context_active: bool,
+    #[serde(default)]
+    pub system_socket: bool,
+    #[serde(default)]
+    pub disk: Option<String>,
+    #[serde(default)]
+    pub disk_size: Option<u64>,
+}
+
+/// A container in the Docker engine VM (mirrors `bsdkrun docker ps --json`).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DockerContainer {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    #[serde(default)]
+    pub command: String,
+    pub state: String,
+    pub status: String,
+    #[serde(default)]
+    pub ports: Vec<String>,
+    #[serde(default)]
+    pub created: i64,
+}
+
+pub async fn docker_status(bin: &Target) -> Result<DockerStatus, BkError> {
+    let out = run(bin, &["docker", "status", "--json"]).await?;
+    serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
+}
+
+pub async fn docker_containers(bin: &Target, all: bool) -> Result<Vec<DockerContainer>, BkError> {
+    let mut args = vec!["docker", "ps"];
+    if all {
+        args.push("--all");
+    }
+    args.push("--json");
+    let out = run(bin, &args).await?;
+    serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
+}
+
 /// A global network (mirrors `bsdkrun network ls --json`).
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Network {

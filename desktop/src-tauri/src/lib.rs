@@ -19,7 +19,10 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use bsdkrun::{BkError, Flavor, Image, Machine, Network, Snapshot, VersionEntry, Volume};
+use bsdkrun::{
+    BkError, DockerContainer, DockerStatus, Flavor, Image, Machine, Network, Snapshot,
+    VersionEntry, Volume,
+};
 use target::Target;
 use term::{LogStreams, Terminals};
 
@@ -224,6 +227,94 @@ async fn list_versions(
 async fn list_flavors(state: State<'_, AppState>) -> Result<Vec<Flavor>, BkError> {
     let bin = state.binary()?;
     bsdkrun::list_flavors(&bin).await
+}
+
+// ---- docker ----------------------------------------------------------------
+//
+// One `docker:dind` microVM, driven by the host's own `docker` CLI. The UI
+// gets the engine's status and its containers; anything more specific is what
+// the CLI is for.
+
+#[tauri::command]
+async fn docker_status(state: State<'_, AppState>) -> Result<DockerStatus, BkError> {
+    let bin = state.binary()?;
+    bsdkrun::docker_status(&bin).await
+}
+
+#[tauri::command]
+async fn docker_containers(
+    state: State<'_, AppState>,
+    all: bool,
+) -> Result<Vec<DockerContainer>, BkError> {
+    let bin = state.binary()?;
+    bsdkrun::docker_containers(&bin, all).await
+}
+
+/// Start (or resume) the engine — `bsdkrun docker start`. Idempotent: the VM
+/// has a fixed name, so this never creates a second one.
+///
+/// Not `run_detached`: this one *waits*, because "the engine is ready" is
+/// precisely the thing the UI is about to render.
+#[tauri::command]
+async fn docker_start(
+    state: State<'_, AppState>,
+    cpus: Option<u32>,
+    mem: Option<u32>,
+    disk_size: Option<String>,
+) -> Result<DockerStatus, BkError> {
+    let bin = state.binary()?;
+    let mut args: Vec<String> = vec!["docker".into(), "start".into(), "--json".into()];
+    if let Some(c) = cpus {
+        args.push("--cpus".into());
+        args.push(c.to_string());
+    }
+    if let Some(m) = mem {
+        args.push("--mem".into());
+        args.push(m.to_string());
+    }
+    if let Some(d) = disk_size.filter(|d| !d.is_empty()) {
+        args.push("--disk-size".into());
+        args.push(d);
+    }
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let out = bsdkrun::run(&bin, &refs).await?;
+    // `--json` prints the status as its last line; anything before it is log
+    // output from the boot.
+    let line = out.lines().rev().find(|l| l.trim_start().starts_with('{'));
+    match line {
+        Some(l) => serde_json::from_str(l).map_err(|e| BkError::Parse(e.to_string())),
+        None => bsdkrun::docker_status(&bin).await,
+    }
+}
+
+#[tauri::command]
+async fn docker_stop(state: State<'_, AppState>) -> Result<(), BkError> {
+    let bin = state.binary()?;
+    bsdkrun::run(&bin, &["docker", "stop"]).await?;
+    Ok(())
+}
+
+/// start | stop | restart | kill | pause | unpause | rm, on one container.
+#[tauri::command]
+async fn docker_container(
+    state: State<'_, AppState>,
+    action: String,
+    id: String,
+) -> Result<String, BkError> {
+    let bin = state.binary()?;
+    let out = bsdkrun::run(&bin, &["docker", "container", &action, &id]).await?;
+    Ok(out.trim().to_string())
+}
+
+#[tauri::command]
+async fn docker_logs(
+    state: State<'_, AppState>,
+    id: String,
+    tail: u32,
+) -> Result<String, BkError> {
+    let bin = state.binary()?;
+    let tail = tail.to_string();
+    bsdkrun::run(&bin, &["docker", "logs", &id, "--tail", &tail]).await
 }
 
 // ---- snapshots -------------------------------------------------------------
@@ -1277,6 +1368,12 @@ pub fn run() {
             list_volumes,
             list_versions,
             list_flavors,
+            docker_status,
+            docker_containers,
+            docker_start,
+            docker_stop,
+            docker_container,
+            docker_logs,
             list_snapshots,
             snapshot_machine,
             remove_snapshot,

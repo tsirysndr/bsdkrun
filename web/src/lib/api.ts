@@ -19,6 +19,8 @@ import type {
   NewFlavor,
   ProbeResult,
   RunSpec,
+  DockerContainer,
+  DockerStatus,
   Settings,
   Snapshot,
   SystemStats,
@@ -52,6 +54,15 @@ const MACHINE_FIELDS = `
   id name image kind command status running exitCode pid detached
   cpus mem volume stateDir createdAt finishedAt network netIp origin
   ports { bind host guest }
+`;
+
+const DOCKER_STATUS_FIELDS = `
+  running machineId machineRunning socket socketReady apiPort version
+  containers images mounts disk diskSize
+`;
+
+const DOCKER_CONTAINER_FIELDS = `
+  id name image command state status ports created
 `;
 
 const SNAPSHOT_FIELDS = `
@@ -131,6 +142,40 @@ const toSnapshot = (s: any): Snapshot => ({
   })),
   size: s.size ?? null,
   created_at: s.createdAt,
+});
+
+/**
+ * The daemon never creates a `docker context` (that belongs to whoever runs
+ * the client, not to the host with the VM), so those two flags are false here
+ * rather than absent — the UI reads them to decide what to tell the user.
+ */
+const toDockerStatus = (s: any): DockerStatus => ({
+  running: s.running,
+  machine_id: s.machineId ?? null,
+  machine_running: s.machineRunning,
+  socket: s.socket,
+  socket_ready: s.socketReady,
+  api_port: s.apiPort ?? null,
+  version: s.version ?? null,
+  containers: s.containers ?? null,
+  images: s.images ?? null,
+  mounts: s.mounts ?? [],
+  context: false,
+  context_active: false,
+  system_socket: false,
+  disk: s.disk ?? null,
+  disk_size: s.diskSize ?? null,
+});
+
+const toDockerContainer = (c: any): DockerContainer => ({
+  id: c.id,
+  name: c.name,
+  image: c.image,
+  command: c.command ?? "",
+  state: c.state,
+  status: c.status,
+  ports: c.ports ?? [],
+  created: c.created ?? 0,
 });
 
 const toFlavor = (f: any): Flavor => ({ ...f, created_at: f.createdAt ?? null });
@@ -461,6 +506,62 @@ export const api = {
     );
     if (d.commitMachine.exitCode !== 0) throw new Error(d.commitMachine.stderr.trim());
     return name;
+  },
+
+  // ---- docker ---------------------------------------------------------------
+
+  dockerStatus: async (): Promise<DockerStatus> => {
+    const d = await gql<{ dockerStatus: any }>(
+      `{ dockerStatus { ${DOCKER_STATUS_FIELDS} } }`,
+    );
+    return toDockerStatus(d.dockerStatus);
+  },
+
+  dockerContainers: async (all: boolean): Promise<DockerContainer[]> => {
+    const d = await gql<{ dockerContainers: any[] }>(
+      `query($all:Boolean!){ dockerContainers(all:$all){ ${DOCKER_CONTAINER_FIELDS} } }`,
+      { all },
+    );
+    return d.dockerContainers.map(toDockerContainer);
+  },
+
+  dockerStart: async (
+    cpus?: number,
+    mem?: number,
+    diskSize?: string,
+  ): Promise<DockerStatus> => {
+    const d = await gql<{ dockerStart: any }>(
+      `mutation($i:DockerStartInput!){ dockerStart(input:$i){ ${DOCKER_STATUS_FIELDS} } }`,
+      { i: { cpus: cpus ?? null, mem: mem ?? null, diskSize: orNull(diskSize) } },
+    );
+    return toDockerStatus(d.dockerStart);
+  },
+
+  dockerStop: async () => {
+    const d = await gql<{ dockerStop: { exitCode: number; stderr: string } }>(
+      `mutation{ dockerStop{ exitCode stderr } }`,
+    );
+    if (d.dockerStop.exitCode !== 0) throw new Error(d.dockerStop.stderr.trim());
+  },
+
+  dockerContainer: async (action: string, id: string): Promise<string> => {
+    const d = await gql<{
+      dockerContainer: { exitCode: number; stdout: string; stderr: string };
+    }>(
+      `mutation($a:String!,$i:[String!]!){ dockerContainer(action:$a, ids:$i){ exitCode stdout stderr } }`,
+      { a: action, i: [id] },
+    );
+    if (d.dockerContainer.exitCode !== 0)
+      throw new Error(d.dockerContainer.stderr.trim());
+    return d.dockerContainer.stdout.trim();
+  },
+
+  dockerLogs: async (id: string, tail: number): Promise<string> => {
+    const d = await gql<{ dockerContainerLogs: string }>(
+      `query($i:String!,$t:Int!){ dockerContainerLogs(id:$i, tail:$t) }`,
+      { i: id, t: tail },
+    );
+    return d.dockerContainerLogs;
   },
 
   // ---- snapshots -----------------------------------------------------------

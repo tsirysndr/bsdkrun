@@ -80,6 +80,52 @@ export interface Volume {
   tracked: boolean;
 }
 
+/**
+ * The Docker engine VM's status (`bsdkrun docker status`).
+ *
+ * One `docker:dind` microVM whose API is served on a host unix socket, so the
+ * host's own `docker` CLI drives it.
+ */
+export interface DockerStatus {
+  running: boolean;
+  machine_id?: string | null;
+  machine_running: boolean;
+  /** The unix socket the `docker` CLI talks to. */
+  socket: string;
+  socket_ready: boolean;
+  api_port?: number | null;
+  version?: string | null;
+  containers?: number | null;
+  images?: number | null;
+  /** Host directories shared into the VM, each `HOST:GUEST`. */
+  mounts: string[];
+  /** A `bsdkrun` docker context exists / is the active one. */
+  context: boolean;
+  context_active: boolean;
+  /** `/var/run/docker.sock` points at this engine. */
+  system_socket: boolean;
+  /** The dedicated image-store disk, when the VM has one. */
+  disk?: string | null;
+  /** Its size in bytes — sparse, so the cap rather than the usage. */
+  disk_size?: number | null;
+}
+
+/** A container in the Docker engine VM (`bsdkrun docker ps`). */
+export interface DockerContainer {
+  id: string;
+  name: string;
+  image: string;
+  command: string;
+  /** "running" | "exited" | "created" | "paused" | … */
+  state: string;
+  /** Docker's human status, e.g. "Up 3 minutes". */
+  status: string;
+  /** Published forwards, each `HOST:GUEST/proto`. */
+  ports: string[];
+  /** Unix epoch seconds. */
+  created: number;
+}
+
 export interface VersionEntry {
   version: string;
   latest: boolean;
@@ -190,6 +236,7 @@ export type ViewKey =
   | "machines"
   | "images"
   | "volumes"
+  | "containers"
   | "snapshots"
   | "flavors"
   | "networks";

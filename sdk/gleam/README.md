@@ -349,6 +349,22 @@ let assert Ok(branch_id) =
 let assert Ok(_) = client.restore(c, id: id, snapshot: snap.name, force: True, backup: True)
 ```
 
+### Docker
+
+bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+socket, so the host's own `docker` CLI drives the same engine these calls do.
+Starting is idempotent — the VM has a fixed name, so it resumes rather than
+creating a second.
+
+```gleam
+let assert Ok(status) =
+  client.docker_start(c, cpus: Some(4), mem: Some(4096), mounts: [],
+                      no_home: False, publish_bind: None, disk_size: None)
+let assert Ok(containers) = client.docker_containers(c, all: True)
+let assert Ok(_) = client.docker_container(c, action: "restart", ids: ["web"])
+let assert Ok(logs) = client.docker_logs(c, id: "web", tail: 50)
+```
+
 For a live terminal instead of a one-shot `exec`, use `shell`:
 
 ```gleam

@@ -40,6 +40,48 @@ object Types:
     /** `"running"` or `"exited"`, the way the CLI's table renders it. */
     def status: String = if running then "running" else "exited"
 
+  /** The Docker engine VM: whether it is up, and how to reach it.
+    *
+    * bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+    * socket, so the host's own `docker` CLI drives the same engine.
+    */
+  final case class DockerStatus(
+      running: Boolean,
+      machineId: Option[String],
+      machineRunning: Boolean,
+      /** The unix socket the `docker` CLI talks to. */
+      socket: String,
+      socketReady: Boolean,
+      apiPort: Option[Int],
+      version: Option[String],
+      containers: Option[Long],
+      images: Option[Long],
+      /** Host directories shared into the VM, each `HOST:GUEST`. */
+      mounts: Seq[String],
+      /** The dedicated image-store disk, when the VM has one. */
+      disk: Option[String],
+      /** Its size in bytes — sparse, so the cap rather than the usage. */
+      diskSize: Option[Long]
+  )
+
+  /** A container in the Docker engine VM — a trimmed `docker ps` row. */
+  final case class DockerContainer(
+      id: String,
+      name: String,
+      image: String,
+      command: String,
+      /** `"running"`, `"exited"`, `"created"`, `"paused"`, ... */
+      state: String,
+      /** Docker's human status, e.g. `"Up 3 minutes"`. */
+      status: String,
+      /** Published forwards, each `HOST:GUEST/proto`. */
+      ports: Seq[String],
+      /** Unix epoch seconds. */
+      created: Option[Long]
+  ):
+    /** Whether the container is up. */
+    def isRunning: Boolean = state == "running"
+
   /** A machine snapshot: one machine's disk state, captured under a name.
     *
     * A copy-on-write clone rather than a memory image — the files the guest
@@ -158,6 +200,46 @@ object Types:
       finishedAt = optLong(v, "finished_at").orElse(optLong(v, "finishedAt")),
       origin = optStr(v, "origin")
     )
+
+  /** A GraphQL `DockerStatus`, or a `docker status --json` row — both spellings
+    * are accepted, as everywhere else here.
+    */
+  def dockerStatus(v: Value): DockerStatus =
+    DockerStatus(
+      running = bool(v, "running"),
+      machineId = optStr(v, "machine_id").orElse(optStr(v, "machineId")),
+      machineRunning = bool(v, "machine_running") || bool(v, "machineRunning"),
+      socket = str(v, "socket"),
+      socketReady = bool(v, "socket_ready") || bool(v, "socketReady"),
+      apiPort = optInt(v, "api_port").orElse(optInt(v, "apiPort")),
+      version = optStr(v, "version"),
+      containers = optLong(v, "containers"),
+      images = optLong(v, "images"),
+      mounts = strings(v, "mounts"),
+      disk = optStr(v, "disk"),
+      diskSize = optLong(v, "disk_size").orElse(optLong(v, "diskSize"))
+    )
+
+  /** A GraphQL `DockerContainer`, or a `docker ps --json` row. */
+  def dockerContainer(v: Value): DockerContainer =
+    DockerContainer(
+      id = str(v, "id"),
+      name = str(v, "name"),
+      image = str(v, "image"),
+      command = str(v, "command"),
+      state = str(v, "state"),
+      status = str(v, "status"),
+      ports = strings(v, "ports"),
+      created = optLong(v, "created")
+    )
+
+  /** A string array field, empty when absent. */
+  private def strings(v: Value, key: String): Seq[String] =
+    v.objOpt
+      .flatMap(_.get(key))
+      .flatMap(_.arrOpt)
+      .map(_.flatMap(_.strOpt).toSeq)
+      .getOrElse(Seq.empty)
 
   /** A GraphQL `Snapshot` (camelCase) or a `snapshots --json` row (snake_case)
     * — both are accepted, as everywhere else here.

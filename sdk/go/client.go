@@ -51,6 +51,21 @@ var (
 	commitMutation = "mutation($id: String!, $name: String!, $description: String!) { " +
 		"commitMachine(id: $id, name: $name, description: $description) { " + cmdResultFields + " } }"
 
+	dockerStatusFields = "running machineId machineRunning socket socketReady apiPort " +
+		"version containers images mounts disk diskSize"
+	dockerContainerFields = "id name image command state status ports created"
+
+	dockerStatusQuery     = "{ dockerStatus { " + dockerStatusFields + " } }"
+	dockerContainersQuery = "query($all: Boolean!) { dockerContainers(all: $all) { " +
+		dockerContainerFields + " } }"
+	dockerLogsQuery = "query($id: String!, $tail: Int!) { " +
+		"dockerContainerLogs(id: $id, tail: $tail) }"
+	dockerStartMutation = "mutation($input: DockerStartInput!) { dockerStart(input: $input) { " +
+		dockerStatusFields + " } }"
+	dockerStopMutation      = "mutation { dockerStop { " + cmdResultFields + " } }"
+	dockerContainerMutation = "mutation($action: String!, $ids: [String!]!) { " +
+		"dockerContainer(action: $action, ids: $ids) { " + cmdResultFields + " } }"
+
 	snapshotsQuery = "query($machine: String) { snapshots(machine: $machine) { " +
 		snapshotFields + " } }"
 	snapshotMutation = "mutation($id: String!, $name: String, $description: String!) { " +
@@ -244,6 +259,117 @@ func (c *Client) Update(id string, cpus, mem int) (*CommandResult, error) {
 func (c *Client) Commit(id, name, description string) (*CommandResult, error) {
 	variables := map[string]any{"id": id, "name": name, "description": description}
 	return c.commandResult(commitMutation, variables, "commitMachine")
+}
+
+// -- docker -------------------------------------------------------------------
+//
+// bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+// socket, so these drive the same engine the host's `docker` CLI does.
+
+// DockerStatus reports whether the Docker engine is up, and where its socket
+// is.
+func (c *Client) DockerStatus() (*DockerStatus, error) {
+	data, err := c.Request(dockerStatusQuery, nil)
+	if err != nil {
+		return nil, err
+	}
+	s := dockerStatusFromGraphQL(asMap(data["dockerStatus"]))
+	return &s, nil
+}
+
+// DockerContainers lists containers. all=false lists only running ones.
+func (c *Client) DockerContainers(all bool) ([]DockerContainer, error) {
+	data, err := c.Request(dockerContainersQuery, map[string]any{"all": all})
+	if err != nil {
+		return nil, err
+	}
+	rows, _ := data["dockerContainers"].([]any)
+	out := make([]DockerContainer, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, dockerContainerFromGraphQL(asMap(row)))
+	}
+	return out, nil
+}
+
+// DockerStartOpts tunes DockerStart. The zero value is what
+// `bsdkrun docker start` with no flags does.
+type DockerStartOpts struct {
+	Cpus int
+	Mem  int
+	// Mounts are host directories to share, each "PATH" or "HOST:GUEST".
+	Mounts []string
+	// NoHome opts out of sharing $HOME (shared by default).
+	NoHome bool
+	// PublishBind is where published ports bind on the host: "mirror"
+	// (default) or a fixed address.
+	PublishBind string
+	// DiskSize gives the image store a dedicated disk, e.g. "60G".
+	DiskSize string
+}
+
+// DockerStart starts (or resumes) the engine, returning its status once the
+// daemon inside answers.
+//
+// Idempotent: the VM has a fixed name, so this resumes the existing one rather
+// than creating a second.
+func (c *Client) DockerStart(opts *DockerStartOpts) (*DockerStatus, error) {
+	if opts == nil {
+		opts = &DockerStartOpts{}
+	}
+	input := map[string]any{
+		"cpus":        nil,
+		"mem":         nil,
+		"mounts":      opts.Mounts,
+		"noHome":      opts.NoHome,
+		"publishBind": nil,
+		"diskSize":    nil,
+	}
+	if opts.Cpus != 0 {
+		input["cpus"] = opts.Cpus
+	}
+	if opts.Mem != 0 {
+		input["mem"] = opts.Mem
+	}
+	if opts.PublishBind != "" {
+		input["publishBind"] = opts.PublishBind
+	}
+	if opts.DiskSize != "" {
+		input["diskSize"] = opts.DiskSize
+	}
+	if opts.Mounts == nil {
+		input["mounts"] = []string{}
+	}
+	data, err := c.Request(dockerStartMutation, map[string]any{"input": input})
+	if err != nil {
+		return nil, err
+	}
+	s := dockerStatusFromGraphQL(asMap(data["dockerStart"]))
+	return &s, nil
+}
+
+// DockerStop stops the engine. Images and containers stay on its disk.
+func (c *Client) DockerStop() (*CommandResult, error) {
+	return c.commandResult(dockerStopMutation, nil, "dockerStop")
+}
+
+// DockerContainer acts on containers: start / stop / restart / kill / pause /
+// unpause / rm.
+func (c *Client) DockerContainer(action string, ids []string) (*CommandResult, error) {
+	variables := map[string]any{"action": action, "ids": ids}
+	return c.commandResult(dockerContainerMutation, variables, "dockerContainer")
+}
+
+// DockerLogs returns one container's logs (stdout+stderr, most recent tail
+// lines).
+func (c *Client) DockerLogs(id string, tail int) (string, error) {
+	if tail <= 0 {
+		tail = 200
+	}
+	data, err := c.Request(dockerLogsQuery, map[string]any{"id": id, "tail": tail})
+	if err != nil {
+		return "", err
+	}
+	return asString(data["dockerContainerLogs"]), nil
 }
 
 // -- snapshots --------------------------------------------------------------

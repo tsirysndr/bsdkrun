@@ -133,6 +133,37 @@
      :origin (get m "origin")
      :ports (mapv port-forward-from-row (or (get m "ports") []))}))
 
+(defn docker-status-from-graphql
+  "The Docker engine VM's status, as the daemon's GraphQL API reports it.
+
+  bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+  socket, so the host's own `docker` CLI drives the same engine."
+  [s]
+  {:running (boolean (get s "running"))
+   :machine-id (get s "machineId")
+   :machine-running (boolean (get s "machineRunning"))
+   :socket (str (or (get s "socket") ""))
+   :socket-ready (boolean (get s "socketReady"))
+   :api-port (to-int-or-nil (get s "apiPort"))
+   :version (get s "version")
+   :containers (to-int-or-nil (get s "containers"))
+   :images (to-int-or-nil (get s "images"))
+   :mounts (vec (or (get s "mounts") []))
+   :disk (get s "disk")
+   :disk-size (to-int-or-nil (get s "diskSize"))})
+
+(defn docker-container-from-graphql
+  "A container in the Docker engine VM — a trimmed `docker ps` row."
+  [c]
+  {:id (str (get c "id"))
+   :name (str (or (get c "name") ""))
+   :image (str (or (get c "image") ""))
+   :command (str (or (get c "command") ""))
+   :state (str (or (get c "state") ""))
+   :status (str (or (get c "status") ""))
+   :ports (vec (or (get c "ports") []))
+   :created (to-int (get c "created"))})
+
 (defn snapshot-info-from-graphql
   "A machine snapshot as reported by the daemon's GraphQL API.
 

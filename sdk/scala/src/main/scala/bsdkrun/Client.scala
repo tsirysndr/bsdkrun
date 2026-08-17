@@ -10,7 +10,7 @@ import scala.collection.mutable
 import scala.concurrent.duration.Duration
 import ujson.Value
 
-import bsdkrun.Types.{SandboxInfo, SnapshotInfo}
+import bsdkrun.Types.{DockerContainer, DockerStatus, SandboxInfo, SnapshotInfo}
 
 /** A client for a remote `bsdkrund` over its GraphQL API.
   *
@@ -328,6 +328,78 @@ final class Client private (val url: String, token: String):
       )
     ).map(commandResult(_, "updateMachine", "updateMachine"))
 
+  // -- docker -------------------------------------------------------------------
+  //
+  // bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+  // socket, so these drive the same engine the host's `docker` CLI does.
+
+  /** Is the Docker engine up, and where is its socket? */
+  def dockerStatus(): Either[BsdkrunError, DockerStatus] =
+    request(s"{ dockerStatus { ${Client.DockerStatusFields} } }")
+      .map: data =>
+        Types.dockerStatus(data.objOpt.flatMap(_.get("dockerStatus")).getOrElse(ujson.Obj()))
+
+  /** Containers in the engine. `all = false` lists only running ones. */
+  def dockerContainers(all: Boolean = true): Either[BsdkrunError, Seq[DockerContainer]] =
+    request(
+      s"query($$all:Boolean!){ dockerContainers(all:$$all){ ${Client.DockerContainerFields} } }",
+      ujson.Obj("all" -> all)
+    ).map: data =>
+      data.objOpt
+        .flatMap(_.get("dockerContainers"))
+        .flatMap(_.arrOpt)
+        .map(_.map(Types.dockerContainer).toSeq)
+        .getOrElse(Seq.empty)
+
+  /** Start (or resume) the engine, returning its status once it answers.
+    *
+    * Idempotent: the VM has a fixed name, so this resumes the existing one
+    * rather than creating a second.
+    */
+  def dockerStart(
+      cpus: Option[Int] = None,
+      mem: Option[Int] = None,
+      mounts: Seq[String] = Seq.empty,
+      noHome: Boolean = false,
+      publishBind: Option[String] = None,
+      diskSize: Option[String] = None
+  ): Either[BsdkrunError, DockerStatus] =
+    request(
+      s"mutation($$input:DockerStartInput!){ dockerStart(input:$$input){ " +
+        s"${Client.DockerStatusFields} } }",
+      ujson.Obj(
+        "input" -> ujson.Obj(
+          "cpus" -> cpus.map(ujson.Num(_)).getOrElse(ujson.Null),
+          "mem" -> mem.map(ujson.Num(_)).getOrElse(ujson.Null),
+          "mounts" -> mounts,
+          "noHome" -> noHome,
+          "publishBind" -> publishBind.map(ujson.Str(_)).getOrElse(ujson.Null),
+          "diskSize" -> diskSize.map(ujson.Str(_)).getOrElse(ujson.Null)
+        )
+      )
+    ).map: data =>
+      Types.dockerStatus(data.objOpt.flatMap(_.get("dockerStart")).getOrElse(ujson.Obj()))
+
+  /** Stop the engine. Images and containers stay on its disk. */
+  def dockerStop(): Either[BsdkrunError, CommandResult] =
+    request("mutation{ dockerStop{ exitCode stdout stderr } }")
+      .map(commandResult(_, "dockerStop", "dockerStop"))
+
+  /** Act on containers: start / stop / restart / kill / pause / unpause / rm. */
+  def dockerContainer(action: String, ids: Seq[String]): Either[BsdkrunError, CommandResult] =
+    request(
+      "mutation($action:String!,$ids:[String!]!){ " +
+        "dockerContainer(action:$action, ids:$ids){ exitCode stdout stderr } }",
+      ujson.Obj("action" -> action, "ids" -> ids)
+    ).map(commandResult(_, "dockerContainer", "dockerContainer"))
+
+  /** One container's logs (stdout+stderr, most recent `tail` lines). */
+  def dockerLogs(id: String, tail: Int = 200): Either[BsdkrunError, String] =
+    request(
+      "query($id:String!,$tail:Int!){ dockerContainerLogs(id:$id, tail:$tail) }",
+      ujson.Obj("id" -> id, "tail" -> tail)
+    ).map(data => Types.str(data, "dockerContainerLogs"))
+
   // -- snapshots --------------------------------------------------------------
   //
   // A snapshot is a copy-on-write clone of a machine's disk state: instant to
@@ -626,6 +698,13 @@ object Client:
     "id name image kind command status running exitCode pid detached " +
       "cpus mem volume stateDir createdAt finishedAt network netIp origin " +
       "ports { bind host guest }"
+
+  private[bsdkrun] val DockerStatusFields =
+    "running machineId machineRunning socket socketReady apiPort version " +
+      "containers images mounts disk diskSize"
+
+  private[bsdkrun] val DockerContainerFields =
+    "id name image command state status ports created"
 
   private[bsdkrun] val SnapshotFields =
     "id name machineId machineName kind image path parent description " +

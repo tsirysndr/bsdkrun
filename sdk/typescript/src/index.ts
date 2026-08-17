@@ -110,6 +110,8 @@ export type {
   GuestKind,
   SandboxInfo,
   SnapshotInfo,
+  DockerStatus,
+  DockerContainer,
   ImageInfo,
   VolumeInfo,
   NetworkInfo,
@@ -139,6 +141,7 @@ export type {
   RunOsvOptions,
   RunFlavorOptions,
   BranchOptions,
+  DockerStartOptions,
 } from "./client.js";
 
 export { fromGraphQLMachine } from "./sandbox.js";

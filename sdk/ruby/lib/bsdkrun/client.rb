@@ -248,6 +248,94 @@ module Bsdkrun
       )
     end
 
+    # ---- docker --------------------------------------------------------------
+    #
+    # bsdkrun runs one +docker:dind+ microVM and serves its API on a host unix
+    # socket, so these drive the same engine the host's +docker+ CLI does.
+
+    DOCKER_STATUS_FIELDS = <<~GQL.freeze
+      running machineId machineRunning socket socketReady apiPort version
+      containers images mounts disk diskSize
+    GQL
+
+    DOCKER_CONTAINER_FIELDS = "id name image command state status ports created"
+
+    # Is the Docker engine up, and where is its socket?
+    # @return [DockerStatus]
+    def docker_status
+      data = request("{ dockerStatus { #{DOCKER_STATUS_FIELDS} } }")
+      DockerStatus.from_graphql(data["dockerStatus"])
+    end
+
+    # Containers in the engine.
+    # @param all [Boolean] include stopped ones (default true).
+    # @return [Array<DockerContainer>]
+    def docker_containers(all: true)
+      data = request(
+        "query($all:Boolean!){ dockerContainers(all:$all){ #{DOCKER_CONTAINER_FIELDS} } }",
+        { all: all }
+      )
+      (data["dockerContainers"] || []).map { |c| DockerContainer.from_graphql(c) }
+    end
+
+    # Start (or resume) the engine, returning its status once it answers.
+    #
+    # Idempotent: the VM has a fixed name, so this resumes the existing one
+    # rather than creating a second.
+    #
+    # @param cpus [Integer, nil]
+    # @param mem [Integer, nil]
+    # @param mounts [Array<String>] host dirs to share, +PATH+ or +HOST:GUEST+.
+    # @param no_home [Boolean] do not share +$HOME+ (shared by default).
+    # @param publish_bind [String, nil] +mirror+ (default) or a fixed address.
+    # @param disk_size [String, nil] a dedicated image store, e.g. +60G+.
+    # @return [DockerStatus]
+    def docker_start(cpus: nil, mem: nil, mounts: [], no_home: false,
+                     publish_bind: nil, disk_size: nil)
+      data = request(
+        "mutation($input:DockerStartInput!){ dockerStart(input:$input){ " \
+        "#{DOCKER_STATUS_FIELDS} } }",
+        { input: { cpus: cpus, mem: mem, mounts: Array(mounts), noHome: no_home,
+                   publishBind: publish_bind, diskSize: disk_size } }
+      )
+      DockerStatus.from_graphql(data["dockerStart"])
+    end
+
+    # Stop the engine. Images and containers stay on its disk.
+    # @return [CommandResult]
+    def docker_stop
+      run_command_mutation(
+        "dockerStop",
+        "mutation{ dockerStop{ exitCode stdout stderr } }",
+        {}
+      )
+    end
+
+    # start | stop | restart | kill | pause | unpause | rm.
+    # @param action [String]
+    # @param ids [String, Array<String>]
+    # @return [CommandResult]
+    def docker_container(action, ids)
+      run_command_mutation(
+        "dockerContainer",
+        "mutation($action:String!,$ids:[String!]!){ " \
+        "dockerContainer(action:$action, ids:$ids){ exitCode stdout stderr } }",
+        { action: action, ids: Array(ids) }
+      )
+    end
+
+    # One container's logs (stdout+stderr, most recent +tail+ lines).
+    # @param id [String]
+    # @param tail [Integer]
+    # @return [String]
+    def docker_logs(id, tail: 200)
+      data = request(
+        "query($id:String!,$tail:Int!){ dockerContainerLogs(id:$id, tail:$tail) }",
+        { id: id, tail: tail }
+      )
+      data["dockerContainerLogs"].to_s
+    end
+
     # ---- snapshots ---------------------------------------------------------
     #
     # A snapshot is a copy-on-write clone of a machine's disk state: instant to

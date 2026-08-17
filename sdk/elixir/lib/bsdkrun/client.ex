@@ -47,7 +47,7 @@ defmodule Bsdkrun.Client do
   """
 
   alias Bsdkrun.{Error, GraphQL, GraphQLSocket, Types}
-  alias Bsdkrun.Types.{CommandResult, SandboxInfo, SnapshotInfo}
+  alias Bsdkrun.Types.{CommandResult, DockerContainer, DockerStatus, SandboxInfo, SnapshotInfo}
 
   @type t :: %__MODULE__{url: String.t(), token: String.t()}
   defstruct [:url, :token]
@@ -293,6 +293,100 @@ defmodule Bsdkrun.Client do
 
     with {:ok, data} <- gql(client, mutation, %{id: id, name: name, description: description}) do
       {:ok, Types.command_result_from_graphql(data["commitMachine"])}
+    end
+  end
+
+  # --- docker ------------------------------------------------------------------
+  #
+  # bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+  # socket, so these drive the same engine the host's `docker` CLI does.
+
+  @docker_status_fields "running machineId machineRunning socket socketReady apiPort " <>
+                           "version containers images mounts disk diskSize"
+
+  @docker_container_fields "id name image command state status ports created"
+
+  @doc "Is the Docker engine up, and where is its socket?"
+  @spec docker_status(t()) :: {:ok, DockerStatus.t()} | {:error, Error.t()}
+  def docker_status(client) do
+    query = "{ dockerStatus { #{@docker_status_fields} } }"
+
+    with {:ok, data} <- gql(client, query, %{}) do
+      {:ok, Types.docker_status_from_graphql(data["dockerStatus"])}
+    end
+  end
+
+  @doc "Containers in the engine. `all: false` lists only running ones."
+  @spec docker_containers(t(), boolean()) ::
+          {:ok, [DockerContainer.t()]} | {:error, Error.t()}
+  def docker_containers(client, all \\ true) do
+    query =
+      "query($all: Boolean!) { dockerContainers(all: $all) { #{@docker_container_fields} } }"
+
+    with {:ok, data} <- gql(client, query, %{all: all}) do
+      {:ok, Enum.map(data["dockerContainers"] || [], &Types.docker_container_from_graphql/1)}
+    end
+  end
+
+  @doc """
+  Start (or resume) the engine, returning its status once it answers.
+
+  Idempotent: the VM has a fixed name, so this resumes the existing one rather
+  than creating a second. Options: `:cpus`, `:mem`, `:mounts`, `:no_home`,
+  `:publish_bind`, `:disk_size`.
+  """
+  @spec docker_start(t(), keyword()) :: {:ok, DockerStatus.t()} | {:error, Error.t()}
+  def docker_start(client, opts \\ []) do
+    o = to_map(opts)
+
+    mutation =
+      "mutation($input: DockerStartInput!) { dockerStart(input: $input) " <>
+        "{ #{@docker_status_fields} } }"
+
+    input = %{
+      cpus: Map.get(o, :cpus),
+      mem: Map.get(o, :mem),
+      mounts: Map.get(o, :mounts, []),
+      noHome: Map.get(o, :no_home, false),
+      publishBind: Map.get(o, :publish_bind),
+      diskSize: Map.get(o, :disk_size)
+    }
+
+    with {:ok, data} <- gql(client, mutation, %{input: input}) do
+      {:ok, Types.docker_status_from_graphql(data["dockerStart"])}
+    end
+  end
+
+  @doc "Stop the engine. Images and containers stay on its disk."
+  @spec docker_stop(t()) :: {:ok, CommandResult.t()} | {:error, Error.t()}
+  def docker_stop(client) do
+    mutation = "mutation { dockerStop { exitCode stdout stderr } }"
+
+    with {:ok, data} <- gql(client, mutation, %{}) do
+      {:ok, Types.command_result_from_graphql(data["dockerStop"])}
+    end
+  end
+
+  @doc "Act on containers: start / stop / restart / kill / pause / unpause / rm."
+  @spec docker_container(t(), String.t(), String.t() | [String.t()]) ::
+          {:ok, CommandResult.t()} | {:error, Error.t()}
+  def docker_container(client, action, ids) do
+    mutation =
+      "mutation($action: String!, $ids: [String!]!) { " <>
+        "dockerContainer(action: $action, ids: $ids) { exitCode stdout stderr } }"
+
+    with {:ok, data} <- gql(client, mutation, %{action: action, ids: List.wrap(ids)}) do
+      {:ok, Types.command_result_from_graphql(data["dockerContainer"])}
+    end
+  end
+
+  @doc "One container's logs (stdout+stderr, most recent `tail` lines)."
+  @spec docker_logs(t(), String.t(), pos_integer()) :: {:ok, String.t()} | {:error, Error.t()}
+  def docker_logs(client, id, tail \\ 200) do
+    query = "query($id: String!, $tail: Int!) { dockerContainerLogs(id: $id, tail: $tail) }"
+
+    with {:ok, data} <- gql(client, query, %{id: id, tail: tail}) do
+      {:ok, to_string(data["dockerContainerLogs"] || "")}
     end
   end
 

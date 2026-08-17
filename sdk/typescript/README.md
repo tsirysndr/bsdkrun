@@ -402,6 +402,21 @@ await client.restore(machineId, snap.name); // or client.rollback(machineId)
 await client.removeSnapshots([snap.name]);
 ```
 
+### Docker
+
+bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+socket, so the host's own `docker` CLI drives the same engine these calls do.
+Starting is idempotent — the VM has a fixed name, so it resumes rather than
+creating a second.
+
+```ts
+const status = await client.dockerStart({ cpus: 4, mem: 4096 });
+console.log(status.socket);
+for (const c of await client.dockerContainers()) console.log(c.name, c.state, c.ports);
+await client.dockerContainer("restart", "web");
+console.log(await client.dockerLogs("web", 50));
+```
+
 For a live terminal instead of a one-shot `exec`, use `shell()`:
 
 ```ts

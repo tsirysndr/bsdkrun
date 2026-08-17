@@ -309,6 +309,21 @@ client.Restore(id, snap.Name, true, true) // or client.Rollback(id, true, true)
 client.RemoveSnapshots([]string{snap.Name})
 ```
 
+### Docker
+
+bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+socket, so the host's own `docker` CLI drives the same engine these calls do.
+Starting is idempotent — the VM has a fixed name, so it resumes rather than
+creating a second.
+
+```go
+status, _ := client.DockerStart(&bsdkrun.DockerStartOpts{Cpus: 4, Mem: 4096})
+fmt.Println(status.Socket)
+containers, _ := client.DockerContainers(true)
+client.DockerContainer("restart", []string{"web"})
+logs, _ := client.DockerLogs("web", 50)
+```
+
 For a live terminal instead of a one-shot `Exec`, use `Shell`:
 
 ```go

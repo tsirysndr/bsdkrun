@@ -21,7 +21,10 @@ use serde_json::{json, Value};
 use crate::args::{strvec, NetOpts};
 use crate::error::{Error, Result};
 use crate::transport::{http_request, normalize_url, ws_url, WsTransport, TOKEN_ENV, URL_ENV};
-use crate::types::{CommandResult, RemoteExecResult, SandboxInfo, ShellSessionInfo, SnapshotInfo};
+use crate::types::{
+    CommandResult, DockerContainer, DockerStatus, RemoteExecResult, SandboxInfo, ShellSessionInfo,
+    SnapshotInfo,
+};
 
 // ---------------------------------------------------------------------------
 // GraphQL documents
@@ -66,6 +69,38 @@ fn commit_mutation() -> String {
     format!(
         "mutation($id: String!, $name: String!, $description: String!) {{ \
          commitMachine(id: $id, name: $name, description: $description) {{ {CMD_RESULT_FIELDS} }} }}"
+    )
+}
+
+const DOCKER_STATUS_FIELDS: &str =
+    "running machineId machineRunning socket socketReady apiPort version \
+     containers images mounts disk diskSize";
+const DOCKER_CONTAINER_FIELDS: &str = "id name image command state status ports created";
+
+fn docker_status_query() -> String {
+    format!("{{ dockerStatus {{ {DOCKER_STATUS_FIELDS} }} }}")
+}
+fn docker_containers_query() -> String {
+    format!(
+        "query($all: Boolean!) {{ dockerContainers(all: $all) \
+         {{ {DOCKER_CONTAINER_FIELDS} }} }}"
+    )
+}
+const DOCKER_LOGS_QUERY: &str =
+    "query($id: String!, $tail: Int!) { dockerContainerLogs(id: $id, tail: $tail) }";
+fn docker_start_mutation() -> String {
+    format!(
+        "mutation($input: DockerStartInput!) {{ dockerStart(input: $input) \
+         {{ {DOCKER_STATUS_FIELDS} }} }}"
+    )
+}
+fn docker_stop_mutation() -> String {
+    format!("mutation {{ dockerStop {{ {CMD_RESULT_FIELDS} }} }}")
+}
+fn docker_container_mutation() -> String {
+    format!(
+        "mutation($action: String!, $ids: [String!]!) {{ \
+         dockerContainer(action: $action, ids: $ids) {{ {CMD_RESULT_FIELDS} }} }}"
     )
 }
 
@@ -323,6 +358,73 @@ impl Client {
             json!({"id": id, "name": name, "description": description}),
         )?;
         Ok(CommandResult::from_graphql(&data["commitMachine"]))
+    }
+
+    // -- docker -------------------------------------------------------------
+    //
+    // bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+    // socket, so these drive the same engine the host's `docker` CLI does.
+
+    /// Is the Docker engine up, and where is its socket?
+    pub fn docker_status(&self) -> Result<DockerStatus> {
+        let data = self.request(&docker_status_query(), json!({}))?;
+        Ok(DockerStatus::from_graphql(&data["dockerStatus"]))
+    }
+
+    /// Containers in the engine. `all = false` lists only running ones.
+    pub fn docker_containers(&self, all: bool) -> Result<Vec<DockerContainer>> {
+        let data = self.request(&docker_containers_query(), json!({ "all": all }))?;
+        Ok(data
+            .get("dockerContainers")
+            .and_then(Value::as_array)
+            .map(|rows| rows.iter().map(DockerContainer::from_graphql).collect())
+            .unwrap_or_default())
+    }
+
+    /// Start (or resume) the engine — see [`DockerStartBuilder`].
+    ///
+    /// Idempotent: the VM has a fixed name, so this resumes the existing one
+    /// rather than creating a second.
+    pub fn docker_start(&self) -> DockerStartBuilder {
+        DockerStartBuilder {
+            client: self.clone(),
+            cpus: None,
+            mem: None,
+            mounts: Vec::new(),
+            no_home: false,
+            publish_bind: None,
+            disk_size: None,
+        }
+    }
+
+    /// Stop the engine. Images and containers stay on its disk.
+    pub fn docker_stop(&self) -> Result<CommandResult> {
+        let data = self.request(&docker_stop_mutation(), json!({}))?;
+        Ok(CommandResult::from_graphql(&data["dockerStop"]))
+    }
+
+    /// Act on containers: start / stop / restart / kill / pause / unpause / rm.
+    pub fn docker_container<S: AsRef<str>>(
+        &self,
+        action: &str,
+        ids: &[S],
+    ) -> Result<CommandResult> {
+        let ids: Vec<&str> = ids.iter().map(AsRef::as_ref).collect();
+        let data = self.request(
+            &docker_container_mutation(),
+            json!({"action": action, "ids": ids}),
+        )?;
+        Ok(CommandResult::from_graphql(&data["dockerContainer"]))
+    }
+
+    /// One container's logs (stdout+stderr, most recent `tail` lines).
+    pub fn docker_logs(&self, id: &str, tail: u32) -> Result<String> {
+        let data = self.request(DOCKER_LOGS_QUERY, json!({"id": id, "tail": tail}))?;
+        Ok(data
+            .get("dockerContainerLogs")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string())
     }
 
     // -- snapshots ---------------------------------------------------------
@@ -889,6 +991,74 @@ macro_rules! remote_net_vm_setters {
             self
         }
     };
+}
+
+/// A `dockerStart` mutation being assembled — see [`Client::docker_start`].
+pub struct DockerStartBuilder {
+    client: Client,
+    cpus: Option<u32>,
+    mem: Option<u32>,
+    mounts: Vec<String>,
+    no_home: bool,
+    publish_bind: Option<String>,
+    disk_size: Option<String>,
+}
+
+impl DockerStartBuilder {
+    /// vCPUs for the engine VM.
+    pub fn cpus(mut self, cpus: u32) -> Self {
+        self.cpus = Some(cpus);
+        self
+    }
+
+    /// Guest RAM in MiB.
+    pub fn mem(mut self, mib: u32) -> Self {
+        self.mem = Some(mib);
+        self
+    }
+
+    /// Share a host directory into the VM, so `-v` can reach it: `PATH` (same
+    /// path in the guest) or `HOST:GUEST`. Repeatable.
+    pub fn mount(mut self, spec: impl Into<String>) -> Self {
+        self.mounts.push(spec.into());
+        self
+    }
+
+    /// Do not share `$HOME` (shared by default).
+    pub fn no_home(mut self) -> Self {
+        self.no_home = true;
+        self
+    }
+
+    /// Where published container ports bind on the host: `mirror` (default —
+    /// what the container asked for) or a fixed address.
+    pub fn publish_bind(mut self, bind: impl Into<String>) -> Self {
+        self.publish_bind = Some(bind.into());
+        self
+    }
+
+    /// Give the image store a dedicated disk of this size, e.g. `60G`. Only
+    /// applies when the VM is created.
+    pub fn disk_size(mut self, size: impl Into<String>) -> Self {
+        self.disk_size = Some(size.into());
+        self
+    }
+
+    /// Start the engine and return its status once dockerd answers.
+    pub fn launch(self) -> Result<DockerStatus> {
+        let data = self.client.request(
+            &docker_start_mutation(),
+            json!({"input": {
+                "cpus": self.cpus,
+                "mem": self.mem,
+                "mounts": self.mounts,
+                "noHome": self.no_home,
+                "publishBind": self.publish_bind,
+                "diskSize": self.disk_size,
+            }}),
+        )?;
+        Ok(DockerStatus::from_graphql(&data["dockerStart"]))
+    }
 }
 
 /// A `branchSnapshot` mutation being assembled — see [`Client::branch`].

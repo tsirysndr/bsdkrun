@@ -51,6 +51,54 @@ pub type SandboxInfo {
   )
 }
 
+/// The Docker engine VM: whether it is up, and how to reach it.
+///
+/// bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+/// socket, so the host's own `docker` CLI drives the same engine.
+pub type DockerStatus {
+  DockerStatus(
+    running: Bool,
+    machine_id: Option(String),
+    machine_running: Bool,
+    /// The unix socket the `docker` CLI talks to.
+    socket: String,
+    socket_ready: Bool,
+    api_port: Option(Int),
+    version: Option(String),
+    containers: Option(Int),
+    images: Option(Int),
+    /// Host directories shared into the VM, each `HOST:GUEST`.
+    mounts: List(String),
+    /// The dedicated image-store disk, when the VM has one.
+    disk: Option(String),
+    /// Its size in bytes — sparse, so the cap rather than the usage.
+    disk_size: Option(Int),
+  )
+}
+
+/// A container in the Docker engine VM — a trimmed `docker ps` row.
+pub type DockerContainer {
+  DockerContainer(
+    id: String,
+    name: String,
+    image: String,
+    command: String,
+    /// `"running"`, `"exited"`, `"created"`, `"paused"`, …
+    state: String,
+    /// Docker's human status, e.g. `"Up 3 minutes"`.
+    status: String,
+    /// Published forwards, each `HOST:GUEST/proto`.
+    ports: List(String),
+    /// Unix epoch seconds.
+    created: Int,
+  )
+}
+
+/// Whether a container is up.
+pub fn container_running(c: DockerContainer) -> Bool {
+  c.state == "running"
+}
+
 /// A machine snapshot: one machine's disk state, captured under a name.
 ///
 /// A copy-on-write clone rather than a memory image — the files the guest
@@ -480,6 +528,70 @@ fn sandbox_info_from_graphql_decoder() -> Decoder(SandboxInfo) {
     ports:,
     origin:,
   ))
+}
+
+fn docker_status_decoder() -> Decoder(DockerStatus) {
+  use running <- field_or("running", False, decode.bool)
+  use machine_id <- optional_field("machineId", decode.string)
+  use machine_running <- field_or("machineRunning", False, decode.bool)
+  use socket <- field_or("socket", "", decode.string)
+  use socket_ready <- field_or("socketReady", False, decode.bool)
+  use api_port <- optional_field("apiPort", lenient_int())
+  use version <- optional_field("version", decode.string)
+  use containers <- optional_field("containers", lenient_int())
+  use images <- optional_field("images", lenient_int())
+  use mounts <- field_or("mounts", [], decode.list(decode.string))
+  use disk <- optional_field("disk", decode.string)
+  use disk_size <- optional_field("diskSize", lenient_int())
+
+  decode.success(DockerStatus(
+    running:,
+    machine_id:,
+    machine_running:,
+    socket:,
+    socket_ready:,
+    api_port:,
+    version:,
+    containers:,
+    images:,
+    mounts:,
+    disk:,
+    disk_size:,
+  ))
+}
+
+/// Decode a GraphQL `DockerStatus` object.
+pub fn docker_status_from_graphql(dyn: Dynamic) -> Result(DockerStatus, Error) {
+  decode_or(dyn, docker_status_decoder(), "dockerStatus")
+}
+
+fn docker_container_decoder() -> Decoder(DockerContainer) {
+  use id <- field_or("id", "", decode.string)
+  use name <- field_or("name", "", decode.string)
+  use image <- field_or("image", "", decode.string)
+  use command <- field_or("command", "", decode.string)
+  use state <- field_or("state", "", decode.string)
+  use status <- field_or("status", "", decode.string)
+  use ports <- field_or("ports", [], decode.list(decode.string))
+  use created <- optional_field("created", lenient_int())
+
+  decode.success(DockerContainer(
+    id:,
+    name:,
+    image:,
+    command:,
+    state:,
+    status:,
+    ports:,
+    created: option.unwrap(created, 0),
+  ))
+}
+
+/// Decode a GraphQL `DockerContainer` object.
+pub fn docker_container_from_graphql(
+  dyn: Dynamic,
+) -> Result(DockerContainer, Error) {
+  decode_or(dyn, docker_container_decoder(), "dockerContainer")
 }
 
 /// Decoder for one GraphQL `Snapshot` object (the `SNAPSHOT_FIELDS`

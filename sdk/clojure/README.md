@@ -410,6 +410,21 @@ a mounted UFS cannot be cloned consistently.
 (client/remove-snapshots! c (:name snap))
 ```
 
+### Docker
+
+bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+socket, so the host's own `docker` CLI drives the same engine these calls do.
+Starting is idempotent — the VM has a fixed name, so it resumes rather than
+creating a second.
+
+```clojure
+(def status (client/docker-start! c {:cpus 4 :mem 4096}))
+(println (:socket status))
+(doseq [x (client/docker-containers c)] (println (:name x) (:state x) (:ports x)))
+(client/docker-container! c "restart" "web")
+(println (client/docker-logs c "web" {:tail 50}))
+```
+
 For a live terminal instead of a one-shot `exec!`, use `shell!`:
 
 ```clojure

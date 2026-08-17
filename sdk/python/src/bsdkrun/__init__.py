@@ -34,6 +34,8 @@ from .process import BinaryResult, RawResult, run, run_binary, run_checked, spaw
 from .sandbox import Sandbox
 from .types import (
     CommandResult,
+    DockerContainer,
+    DockerStatus,
     ExecResult,
     ImageInfo,
     NetworkInfo,
@@ -89,6 +91,8 @@ __all__ = [
     "ShellSessionInfo",
     "ExecResult",
     "SnapshotInfo",
+    "DockerStatus",
+    "DockerContainer",
     # errors
     "BsdkrunError",
     "BinaryNotFound",

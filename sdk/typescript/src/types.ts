@@ -337,6 +337,47 @@ export interface SnapshotInfo {
   createdAt: number;
 }
 
+/**
+ * The Docker engine VM: whether it is up, and how to reach it.
+ *
+ * bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+ * socket, so the host's own `docker` CLI drives the same engine.
+ */
+export interface DockerStatus {
+  running: boolean;
+  machineId: string | null;
+  machineRunning: boolean;
+  /** The unix socket the `docker` CLI talks to. */
+  socket: string;
+  socketReady: boolean;
+  apiPort: number | null;
+  version: string | null;
+  containers: number | null;
+  images: number | null;
+  /** Host directories shared into the VM, each `HOST:GUEST`. */
+  mounts: string[];
+  /** The dedicated image-store disk, when the VM has one. */
+  disk: string | null;
+  /** Its size in bytes — sparse, so the cap rather than the usage. */
+  diskSize: number | null;
+}
+
+/** A container in the Docker engine VM — a trimmed `docker ps` row. */
+export interface DockerContainer {
+  id: string;
+  name: string;
+  image: string;
+  command: string;
+  /** `"running"` | `"exited"` | `"created"` | `"paused"` | … */
+  state: string;
+  /** Docker's human status, e.g. `"Up 3 minutes"`. */
+  status: string;
+  /** Published forwards, each `HOST:GUEST/proto`. */
+  ports: string[];
+  /** Unix epoch seconds. */
+  created: number;
+}
+
 /** An image as reported by `bsdkrun images --json`. */
 export interface ImageInfo {
   id: string;

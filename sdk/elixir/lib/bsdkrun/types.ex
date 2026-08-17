@@ -110,6 +110,66 @@ defmodule Bsdkrun.Types do
     ]
   end
 
+  defmodule DockerStatus do
+    @moduledoc """
+    The Docker engine VM: whether it is up, and how to reach it.
+
+    bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+    socket, so the host's own `docker` CLI drives the same engine.
+    """
+
+    @type t :: %__MODULE__{
+            running: boolean(),
+            machine_id: String.t() | nil,
+            machine_running: boolean(),
+            socket: String.t(),
+            socket_ready: boolean(),
+            api_port: integer() | nil,
+            version: String.t() | nil,
+            containers: integer() | nil,
+            images: integer() | nil,
+            mounts: [String.t()],
+            disk: String.t() | nil,
+            disk_size: integer() | nil
+          }
+
+    defstruct [
+      :running,
+      :machine_id,
+      :machine_running,
+      :socket,
+      :socket_ready,
+      :api_port,
+      :version,
+      :containers,
+      :images,
+      :mounts,
+      :disk,
+      :disk_size
+    ]
+  end
+
+  defmodule DockerContainer do
+    @moduledoc "A container in the Docker engine VM — a trimmed `docker ps` row."
+
+    @type t :: %__MODULE__{
+            id: String.t(),
+            name: String.t(),
+            image: String.t(),
+            command: String.t(),
+            state: String.t(),
+            status: String.t(),
+            ports: [String.t()],
+            created: integer()
+          }
+
+    defstruct [:id, :name, :image, :command, :state, :status, :ports, :created]
+
+    @doc "Whether the container is up."
+    @spec running?(t()) :: boolean()
+    def running?(%__MODULE__{state: state}), do: state == "running"
+  end
+
   defmodule ImageInfo do
     @moduledoc "An image as reported by `bsdkrun images --json`."
 
@@ -310,6 +370,40 @@ defmodule Bsdkrun.Types do
       ports: (row["ports"] || []) |> Enum.map(&port_forward/1),
       size: row["size"],
       created_at: num(row["createdAt"])
+    }
+  end
+
+  @doc "Map a GraphQL `DockerStatus` row to a `DockerStatus` struct."
+  @spec docker_status_from_graphql(map()) :: DockerStatus.t()
+  def docker_status_from_graphql(row) do
+    %DockerStatus{
+      running: truthy(row["running"]),
+      machine_id: row["machineId"],
+      machine_running: truthy(row["machineRunning"]),
+      socket: to_string(row["socket"] || ""),
+      socket_ready: truthy(row["socketReady"]),
+      api_port: num(row["apiPort"]),
+      version: row["version"],
+      containers: num(row["containers"]),
+      images: num(row["images"]),
+      mounts: row["mounts"] || [],
+      disk: row["disk"],
+      disk_size: num(row["diskSize"])
+    }
+  end
+
+  @doc "Map a GraphQL `DockerContainer` row to a `DockerContainer` struct."
+  @spec docker_container_from_graphql(map()) :: DockerContainer.t()
+  def docker_container_from_graphql(row) do
+    %DockerContainer{
+      id: to_string(row["id"] || ""),
+      name: to_string(row["name"] || ""),
+      image: to_string(row["image"] || ""),
+      command: to_string(row["command"] || ""),
+      state: to_string(row["state"] || ""),
+      status: to_string(row["status"] || ""),
+      ports: row["ports"] || [],
+      created: num(row["created"])
     }
   end
 

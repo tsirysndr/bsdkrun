@@ -377,6 +377,21 @@ a mounted UFS cannot be cloned consistently.
 {:ok, _} = Client.remove_snapshots(client, snap.name)
 ```
 
+### Docker
+
+bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+socket, so the host's own `docker` CLI drives the same engine these calls do.
+Starting is idempotent — the VM has a fixed name, so it resumes rather than
+creating a second.
+
+```elixir
+{:ok, status} = Client.docker_start(client, cpus: 4, mem: 4096)
+IO.puts(status.socket)
+{:ok, containers} = Client.docker_containers(client)
+{:ok, _} = Client.docker_container(client, "restart", "web")
+{:ok, logs} = Client.docker_logs(client, "web", 50)
+```
+
 For a live terminal instead of a one-shot `exec`, use `shell`:
 
 ```elixir

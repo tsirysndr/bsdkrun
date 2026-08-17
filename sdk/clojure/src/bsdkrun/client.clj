@@ -412,6 +412,80 @@
 
 
 ;; ---------------------------------------------------------------------------
+;; docker
+;;
+;; bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+;; socket, so these drive the same engine the host's `docker` CLI does.
+;; ---------------------------------------------------------------------------
+
+(def ^:private docker-status-fields
+  "running machineId machineRunning socket socketReady apiPort version
+   containers images mounts disk diskSize")
+
+(def ^:private docker-container-fields
+  "id name image command state status ports created")
+
+(defn docker-status
+  "Is the Docker engine up, and where is its socket?"
+  [client]
+  (let [data (request client (str "{ dockerStatus { " docker-status-fields " } }"))]
+    (types/docker-status-from-graphql (get data "dockerStatus"))))
+
+(defn docker-containers
+  "Containers in the engine. `{:all false}` lists only running ones."
+  ([client] (docker-containers client {}))
+  ([client {:keys [all] :or {all true}}]
+   (let [data (request client
+                        (str "query($all:Boolean!){ dockerContainers(all:$all){ "
+                             docker-container-fields " } }")
+                        {:all (boolean all)})]
+     (mapv types/docker-container-from-graphql (get data "dockerContainers")))))
+
+(defn docker-start!
+  "Start (or resume) the engine; returns its status once it answers.
+
+  Idempotent: the VM has a fixed name, so this resumes the existing one rather
+  than creating a second."
+  ([client] (docker-start! client {}))
+  ([client {:keys [cpus mem mounts no-home publish-bind disk-size]}]
+   (let [data (request client
+                        (str "mutation($input:DockerStartInput!){ dockerStart(input:$input){ "
+                             docker-status-fields " } }")
+                        {:input {:cpus cpus
+                                 :mem mem
+                                 :mounts (vec (or mounts []))
+                                 :noHome (boolean no-home)
+                                 :publishBind publish-bind
+                                 :diskSize disk-size}})]
+     (types/docker-status-from-graphql (get data "dockerStart")))))
+
+(defn docker-stop!
+  "Stop the engine. Images and containers stay on its disk."
+  [client]
+  (command-result-mutation!
+   client "dockerStop"
+   "mutation{ dockerStop{ exitCode stdout stderr } }"
+   {}))
+
+(defn docker-container!
+  "start | stop | restart | kill | pause | unpause | rm, on one or more ids."
+  [client action ids]
+  (command-result-mutation!
+   client "dockerContainer"
+   (str "mutation($action:String!,$ids:[String!]!){ "
+        "dockerContainer(action:$action, ids:$ids){ exitCode stdout stderr } }")
+   {:action action :ids (vec (util/as-seq ids))}))
+
+(defn docker-logs
+  "One container's logs (stdout+stderr, most recent `tail` lines)."
+  ([client id] (docker-logs client id {}))
+  ([client id {:keys [tail] :or {tail 200}}]
+   (let [data (request client
+                        "query($id:String!,$tail:Int!){ dockerContainerLogs(id:$id, tail:$tail) }"
+                        {:id id :tail tail})]
+     (str (get data "dockerContainerLogs")))))
+
+;; ---------------------------------------------------------------------------
 ;; snapshots
 ;;
 ;; A snapshot is a copy-on-write clone of a machine's disk state: instant to

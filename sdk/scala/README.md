@@ -210,6 +210,22 @@ for
 yield bid
 ```
 
+### Docker
+
+bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+socket, so the host's own `docker` CLI drives the same engine these calls do.
+Starting is idempotent — the VM has a fixed name, so it resumes rather than
+creating a second.
+
+```scala
+for
+  status <- client.dockerStart(cpus = Some(4), mem = Some(4096))
+  rows   <- client.dockerContainers()
+  _      <- client.dockerContainer("restart", Seq("web"))
+  logs   <- client.dockerLogs("web", tail = 50)
+yield (status.socket, rows.map(_.name), logs)
+```
+
 A URL set without a token is an error rather than a silent unauthenticated
 fallback, and an `UNAUTHENTICATED` response becomes `BsdkrunError.Auth`
 specifically, so a caller does not retry a bad token forever.

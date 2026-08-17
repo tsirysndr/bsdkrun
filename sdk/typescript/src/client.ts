@@ -23,6 +23,8 @@ import { SubscriptionManager } from "./graphql-protocol.js";
 import { fromGraphQLMachine } from "./sandbox.js";
 import type {
   CommandResult,
+  DockerContainer,
+  DockerStatus,
   SandboxInfo,
   ShellOutput,
   ShellSessionInfo,
@@ -207,11 +209,32 @@ const MACHINE_FIELDS = `
   cpus mem volume stateDir createdAt finishedAt network netIp origin
   ports { bind host guest }
 `;
+const DOCKER_STATUS_FIELDS = `
+  running machineId machineRunning socket socketReady apiPort version
+  containers images mounts disk diskSize
+`;
+const DOCKER_CONTAINER_FIELDS = `id name image command state status ports created`;
+
 const SNAPSHOT_FIELDS = `
   id name machineId machineName kind image path parent description
   cpus mem size createdAt ports { bind host guest }
 `;
 const COMMAND_RESULT_FIELDS = `exitCode stdout stderr`;
+
+/** Options for {@link Client.dockerStart}. All optional — the empty object is
+ * what `bsdkrun docker start` with no flags does. */
+export interface DockerStartOptions {
+  cpus?: number;
+  mem?: number;
+  /** Host directories to share, each `PATH` or `HOST:GUEST`. */
+  mounts?: string[];
+  /** Do not share `$HOME` (shared by default). */
+  noHome?: boolean;
+  /** Where published ports bind on the host: `mirror` (default) or an IP. */
+  publishBind?: string;
+  /** Give the image store a dedicated disk of this size, e.g. `60G`. */
+  diskSize?: string;
+}
 
 /** Options for {@link Client.branch}. */
 export interface BranchOptions {
@@ -535,6 +558,80 @@ export class Client {
       { id, name, description },
     );
     return d.commitMachine;
+  }
+
+  // ---- docker -----------------------------------------------------------------
+  //
+  // bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+  // socket. These drive the same engine the host's `docker` CLI does.
+
+  /** Is the Docker engine up, and where is its socket? */
+  async dockerStatus(): Promise<DockerStatus> {
+    const d = await this.request<{ dockerStatus: DockerStatus }>(
+      `{ dockerStatus { ${DOCKER_STATUS_FIELDS} } }`,
+    );
+    return d.dockerStatus;
+  }
+
+  /** Containers in the engine. `all: false` lists only running ones. */
+  async dockerContainers(all = true): Promise<DockerContainer[]> {
+    const d = await this.request<{ dockerContainers: DockerContainer[] }>(
+      `query($all:Boolean!){ dockerContainers(all:$all){ ${DOCKER_CONTAINER_FIELDS} } }`,
+      { all },
+    );
+    return d.dockerContainers;
+  }
+
+  /**
+   * Start (or resume) the engine, returning its status once it answers.
+   *
+   * Idempotent: the VM has a fixed name, so this resumes the existing one
+   * rather than creating a second.
+   */
+  async dockerStart(opts: DockerStartOptions = {}): Promise<DockerStatus> {
+    const d = await this.request<{ dockerStart: DockerStatus }>(
+      `mutation($i:DockerStartInput!){ dockerStart(input:$i){ ${DOCKER_STATUS_FIELDS} } }`,
+      {
+        i: {
+          cpus: opts.cpus ?? null,
+          mem: opts.mem ?? null,
+          mounts: opts.mounts ?? [],
+          noHome: opts.noHome ?? false,
+          publishBind: opts.publishBind ?? null,
+          diskSize: opts.diskSize ?? null,
+        },
+      },
+    );
+    return d.dockerStart;
+  }
+
+  /** Stop the engine. Images and containers stay on its disk. */
+  async dockerStop(): Promise<CommandResult> {
+    const d = await this.request<{ dockerStop: CommandResult }>(
+      `mutation{ dockerStop{ ${COMMAND_RESULT_FIELDS} } }`,
+    );
+    return d.dockerStop;
+  }
+
+  /** start | stop | restart | kill | pause | unpause | rm. */
+  async dockerContainer(
+    action: string,
+    ids: string | string[],
+  ): Promise<CommandResult> {
+    const d = await this.request<{ dockerContainer: CommandResult }>(
+      `mutation($a:String!,$i:[String!]!){ dockerContainer(action:$a, ids:$i){ ${COMMAND_RESULT_FIELDS} } }`,
+      { a: action, i: Array.isArray(ids) ? ids : [ids] },
+    );
+    return d.dockerContainer;
+  }
+
+  /** One container's logs (stdout+stderr, most recent `tail` lines). */
+  async dockerLogs(id: string, tail = 200): Promise<string> {
+    const d = await this.request<{ dockerContainerLogs: string }>(
+      `query($i:String!,$t:Int!){ dockerContainerLogs(id:$i, tail:$t) }`,
+      { i: id, t: tail },
+    );
+    return d.dockerContainerLogs;
   }
 
   // ---- snapshots ------------------------------------------------------------

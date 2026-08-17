@@ -310,6 +310,22 @@ client.restore(machine_id, snap.name)  # or client.rollback(machine_id)
 client.remove_snapshots([snap.name])
 ```
 
+### Docker
+
+bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+socket, so the host's own `docker` CLI drives the same engine these calls do.
+Starting is idempotent — the VM has a fixed name, so it resumes rather than
+creating a second.
+
+```python
+status = client.docker_start(cpus=4, mem=4096)  # or just docker_status()
+print(status.socket)  # export DOCKER_HOST=unix://...
+for c in client.docker_containers():
+    print(c.name, c.state, c.ports)
+client.docker_container("restart", "web")
+print(client.docker_logs("web", tail=50))
+```
+
 For a live terminal instead of a one-shot `exec`, use `shell()`:
 
 ```python

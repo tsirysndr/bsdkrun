@@ -157,6 +157,83 @@ module Bsdkrun
     end
   end
 
+  # The Docker engine VM: whether it is up, and how to reach it.
+  #
+  # bsdkrun runs one +docker:dind+ microVM and serves its API on a host unix
+  # socket, so the host's own +docker+ CLI drives the same engine.
+  DockerStatus = Data.define(
+    :running, :machine_id, :machine_running, :socket, :socket_ready, :api_port,
+    :version, :containers, :images, :mounts, :disk, :disk_size
+  ) do
+    # @param s [Hash] a GraphQL +DockerStatus+ (camelCase).
+    # @return [DockerStatus]
+    def self.from_graphql(s)
+      new(
+        running: !!s["running"],
+        machine_id: s["machineId"],
+        machine_running: !!s["machineRunning"],
+        socket: s["socket"].to_s,
+        socket_ready: !!s["socketReady"],
+        api_port: to_i_or_nil(s["apiPort"]),
+        version: s["version"],
+        containers: to_i_or_nil(s["containers"]),
+        images: to_i_or_nil(s["images"]),
+        mounts: Array(s["mounts"]),
+        disk: s["disk"],
+        disk_size: to_i_or_nil(s["diskSize"])
+      )
+    end
+
+    # @param row [Hash] a +bsdkrun docker status --json+ row (snake_case).
+    # @return [DockerStatus]
+    def self.from_row(row)
+      new(
+        running: !!row["running"],
+        machine_id: row["machine_id"],
+        machine_running: !!row["machine_running"],
+        socket: row["socket"].to_s,
+        socket_ready: !!row["socket_ready"],
+        api_port: to_i_or_nil(row["api_port"]),
+        version: row["version"],
+        containers: to_i_or_nil(row["containers"]),
+        images: to_i_or_nil(row["images"]),
+        mounts: Array(row["mounts"]),
+        disk: row["disk"],
+        disk_size: to_i_or_nil(row["disk_size"])
+      )
+    end
+  end
+
+  # A container in the Docker engine VM — a trimmed +docker ps+ row.
+  DockerContainer = Data.define(
+    :id, :name, :image, :command, :state, :status, :ports, :created
+  ) do
+    # @return [Boolean] whether the container is up.
+    def running?
+      state == "running"
+    end
+
+    # Both the GraphQL object and +docker ps --json+ use these field names.
+    # @param c [Hash]
+    # @return [DockerContainer]
+    def self.from_graphql(c)
+      new(
+        id: c["id"].to_s,
+        name: c["name"].to_s,
+        image: c["image"].to_s,
+        command: (c["command"] || "").to_s,
+        state: c["state"].to_s,
+        status: c["status"].to_s,
+        ports: Array(c["ports"]),
+        created: c["created"].to_i
+      )
+    end
+
+    class << self
+      alias from_row from_graphql
+    end
+  end
+
   # An image as reported by +bsdkrun images --json+.
   ImageInfo = Data.define(:id, :reference, :digest, :size, :rootfs, :created_at) do
     # @param row [Hash]

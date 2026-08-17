@@ -95,6 +95,97 @@ pub struct SandboxInfo {
     pub origin: Option<String>,
 }
 
+/// The Docker engine VM: whether it is up, and how to reach it.
+///
+/// bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+/// socket, so the host's own `docker` CLI drives the same engine.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DockerStatus {
+    pub running: bool,
+    pub machine_id: Option<String>,
+    pub machine_running: bool,
+    /// The unix socket the `docker` CLI talks to.
+    pub socket: String,
+    pub socket_ready: bool,
+    pub api_port: Option<u16>,
+    pub version: Option<String>,
+    pub containers: Option<i64>,
+    pub images: Option<i64>,
+    /// Host directories shared into the VM, each `HOST:GUEST`.
+    pub mounts: Vec<String>,
+    /// The dedicated image-store disk, when the VM has one.
+    pub disk: Option<String>,
+    /// Its size in bytes — sparse, so the cap rather than the usage.
+    pub disk_size: Option<u64>,
+}
+
+impl DockerStatus {
+    pub fn from_graphql(s: &Value) -> DockerStatus {
+        DockerStatus {
+            running: get_bool(s, "running"),
+            machine_id: get_opt_str(s, "machineId"),
+            machine_running: get_bool(s, "machineRunning"),
+            socket: get_str(s, "socket"),
+            socket_ready: get_bool(s, "socketReady"),
+            api_port: get_num(s, "apiPort").map(|v| v as u16),
+            version: get_opt_str(s, "version"),
+            containers: get_num(s, "containers"),
+            images: get_num(s, "images"),
+            mounts: strings_from(s.get("mounts")),
+            disk: get_opt_str(s, "disk"),
+            disk_size: get_num(s, "diskSize").map(|v| v as u64),
+        }
+    }
+}
+
+/// A container in the Docker engine VM — a trimmed `docker ps` row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DockerContainer {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub command: String,
+    /// `running` / `exited` / `created` / `paused` / …
+    pub state: String,
+    /// Docker's human status, e.g. "Up 3 minutes".
+    pub status: String,
+    /// Published forwards, each `HOST:GUEST/proto`.
+    pub ports: Vec<String>,
+    /// Unix epoch seconds.
+    pub created: i64,
+}
+
+impl DockerContainer {
+    pub fn from_graphql(c: &Value) -> DockerContainer {
+        DockerContainer {
+            id: get_str(c, "id"),
+            name: get_str(c, "name"),
+            image: get_str(c, "image"),
+            command: get_str(c, "command"),
+            state: get_str(c, "state"),
+            status: get_str(c, "status"),
+            ports: strings_from(c.get("ports")),
+            created: get_num(c, "created").unwrap_or(0),
+        }
+    }
+
+    /// Whether the container is up.
+    pub fn is_running(&self) -> bool {
+        self.state == "running"
+    }
+}
+
+fn strings_from(v: Option<&Value>) -> Vec<String> {
+    v.and_then(Value::as_array)
+        .map(|xs| {
+            xs.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// A machine snapshot: one machine's disk state, captured under a name.
 ///
 /// A copy-on-write clone rather than a memory image — the files the guest

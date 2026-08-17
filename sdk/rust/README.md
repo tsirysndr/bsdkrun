@@ -347,6 +347,23 @@ client.restore(&id, &snap.name, true, true)?; // or client.rollback(&id, true, t
 client.remove_snapshots(&[snap.name])?;
 ```
 
+### Docker
+
+bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+socket, so the host's own `docker` CLI drives the same engine these calls do.
+Starting is idempotent — the VM has a fixed name, so it resumes rather than
+creating a second.
+
+```rust
+let status = client.docker_start().cpus(4).mem(4096).launch()?;
+println!("{}", status.socket);
+for c in client.docker_containers(true)? {
+    println!("{} {} {:?}", c.name, c.state, c.ports);
+}
+client.docker_container("restart", &["web"])?;
+println!("{}", client.docker_logs("web", 50)?);
+```
+
 For a live terminal instead of a one-shot `exec`, use `shell()`:
 
 ```rust

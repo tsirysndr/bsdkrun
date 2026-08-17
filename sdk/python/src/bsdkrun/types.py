@@ -25,6 +25,8 @@ __all__ = [
     "ShellSessionInfo",
     "ExecResult",
     "SnapshotInfo",
+    "DockerStatus",
+    "DockerContainer",
 ]
 
 
@@ -119,6 +121,104 @@ class SnapshotInfo:
             size=row.get("size"),
             created_at=int(row.get("created_at") or 0),
         )
+
+
+@dataclass(frozen=True)
+class DockerStatus:
+    """The Docker engine VM: whether it is up, and how to reach it.
+
+    bsdkrun runs one ``docker:dind`` microVM and serves its API on a host unix
+    socket, so the host's own ``docker`` CLI drives it.
+    """
+
+    running: bool
+    machine_id: str | None
+    machine_running: bool
+    #: The unix socket the ``docker`` CLI talks to.
+    socket: str
+    socket_ready: bool
+    api_port: int | None
+    version: str | None
+    containers: int | None
+    images: int | None
+    #: Host directories shared into the VM, each ``HOST:GUEST``.
+    mounts: list[str]
+    #: The dedicated image-store disk, when the VM has one, and its size in
+    #: bytes — sparse, so the cap rather than the usage.
+    disk: str | None
+    disk_size: int | None
+
+    @classmethod
+    def from_graphql(cls, s: Mapping[str, Any]) -> DockerStatus:
+        return cls(
+            running=bool(s.get("running")),
+            machine_id=s.get("machineId"),
+            machine_running=bool(s.get("machineRunning")),
+            socket=str(s.get("socket") or ""),
+            socket_ready=bool(s.get("socketReady")),
+            api_port=_num(s.get("apiPort")),
+            version=s.get("version"),
+            containers=_num(s.get("containers")),
+            images=_num(s.get("images")),
+            mounts=list(s.get("mounts") or []),
+            disk=s.get("disk"),
+            disk_size=_num(s.get("diskSize")),
+        )
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any]) -> DockerStatus:
+        """Build from ``bsdkrun docker status --json`` (snake_case)."""
+        return cls(
+            running=bool(row.get("running")),
+            machine_id=row.get("machine_id"),
+            machine_running=bool(row.get("machine_running")),
+            socket=str(row.get("socket") or ""),
+            socket_ready=bool(row.get("socket_ready")),
+            api_port=_num(row.get("api_port")),
+            version=row.get("version"),
+            containers=_num(row.get("containers")),
+            images=_num(row.get("images")),
+            mounts=list(row.get("mounts") or []),
+            disk=row.get("disk"),
+            disk_size=_num(row.get("disk_size")),
+        )
+
+
+@dataclass(frozen=True)
+class DockerContainer:
+    """A container in the Docker engine VM — a trimmed ``docker ps`` row."""
+
+    id: str
+    name: str
+    image: str
+    command: str
+    #: "running" | "exited" | "created" | "paused" | ...
+    state: str
+    #: Docker's human status, e.g. "Up 3 minutes".
+    status: str
+    #: Published forwards, each ``HOST:GUEST/proto`` — mirrored onto the host.
+    ports: list[str]
+    created: int
+
+    @property
+    def running(self) -> bool:
+        return self.state == "running"
+
+    @classmethod
+    def from_graphql(cls, c: Mapping[str, Any]) -> DockerContainer:
+        return cls(
+            id=str(c.get("id") or ""),
+            name=str(c.get("name") or ""),
+            image=str(c.get("image") or ""),
+            command=str(c.get("command") or ""),
+            state=str(c.get("state") or ""),
+            status=str(c.get("status") or ""),
+            ports=list(c.get("ports") or []),
+            created=int(c.get("created") or 0),
+        )
+
+    #: ``bsdkrun docker ps --json`` uses the same field names.
+    from_row = from_graphql
 
 
 @dataclass(frozen=True)

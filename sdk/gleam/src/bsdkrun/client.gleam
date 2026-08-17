@@ -50,9 +50,10 @@ import bsdkrun/error.{type Error, AuthError, DecodeFailed, GraphqlError}
 import bsdkrun/graphql_transport
 import bsdkrun/subject.{type Subject}
 import bsdkrun/types.{
-  type CommandResult, type ExecResult, type SandboxInfo, type ShellEvent,
-  type ShellSessionInfo, type SnapshotInfo, type SubscriptionEvent, ExecResult,
-  ShellClosed, ShellData, ShellError, ShellExit, SubComplete, SubError, SubNext,
+  type CommandResult, type DockerContainer, type DockerStatus, type ExecResult,
+  type SandboxInfo, type ShellEvent, type ShellSessionInfo, type SnapshotInfo,
+  type SubscriptionEvent, ExecResult, ShellClosed, ShellData, ShellError,
+  ShellExit, SubComplete, SubError, SubNext,
 }
 import bsdkrun/ws
 import gleam/bit_array
@@ -193,6 +194,10 @@ fn run_mutation(
 /// verbatim so `sandbox_info_from_graphql` always has what it expects.
 const machine_fields = "id name image kind command status running exitCode pid detached cpus mem volume stateDir createdAt finishedAt network netIp origin ports { bind host guest }"
 
+const docker_status_fields = "running machineId machineRunning socket socketReady apiPort version containers images mounts disk diskSize"
+
+const docker_container_fields = "id name image command state status ports created"
+
 const snapshot_fields = "id name machineId machineName kind image path parent description cpus mem size createdAt ports { bind host guest }"
 
 /// Machines. `all: True` includes stopped ones, like `bsdkrun ps -a`.
@@ -312,6 +317,130 @@ pub fn commit(
     "commitMachine",
     "commitMachine",
   )
+}
+
+// ---------------------------------------------------------------------------
+// docker
+//
+// bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+// socket, so these drive the same engine the host's `docker` CLI does.
+// ---------------------------------------------------------------------------
+
+/// Is the Docker engine up, and where is its socket?
+pub fn docker_status(client: Client) -> Result(DockerStatus, Error) {
+  let doc = "{ dockerStatus { " <> docker_status_fields <> " } }"
+  use data <- result.try(query(client, doc, json.object([])))
+  case field_dynamic(data, "dockerStatus") {
+    Ok(row) -> types.docker_status_from_graphql(row)
+    Error(Nil) -> Error(DecodeFailed("dockerStatus", string.inspect(data)))
+  }
+}
+
+/// Containers in the engine. `all: False` lists only running ones.
+pub fn docker_containers(
+  client: Client,
+  all all: Bool,
+) -> Result(List(DockerContainer), Error) {
+  let doc =
+    "query($all: Boolean!) { dockerContainers(all: $all) { "
+    <> docker_container_fields
+    <> " } }"
+  use data <- result.try(query(
+    client,
+    doc,
+    json.object([#("all", json.bool(all))]),
+  ))
+  field_dynamic_list(data, "dockerContainers")
+  |> list.try_map(types.docker_container_from_graphql)
+}
+
+/// Start (or resume) the engine, returning its status once it answers.
+///
+/// Idempotent: the VM has a fixed name, so this resumes the existing one
+/// rather than creating a second.
+pub fn docker_start(
+  client: Client,
+  cpus cpus: Option(Int),
+  mem mem: Option(Int),
+  mounts mounts: List(String),
+  no_home no_home: Bool,
+  publish_bind publish_bind: Option(String),
+  disk_size disk_size: Option(String),
+) -> Result(DockerStatus, Error) {
+  let doc =
+    "mutation($input: DockerStartInput!) { dockerStart(input: $input) { "
+    <> docker_status_fields
+    <> " } }"
+  use data <- result.try(query(
+    client,
+    doc,
+    json.object([
+      #(
+        "input",
+        json.object([
+          #("cpus", json.nullable(cpus, json.int)),
+          #("mem", json.nullable(mem, json.int)),
+          #("mounts", json.array(mounts, json.string)),
+          #("noHome", json.bool(no_home)),
+          #("publishBind", json.nullable(publish_bind, json.string)),
+          #("diskSize", json.nullable(disk_size, json.string)),
+        ]),
+      ),
+    ]),
+  ))
+  case field_dynamic(data, "dockerStart") {
+    Ok(row) -> types.docker_status_from_graphql(row)
+    Error(Nil) -> Error(DecodeFailed("dockerStart", string.inspect(data)))
+  }
+}
+
+/// Stop the engine. Images and containers stay on its disk.
+pub fn docker_stop(client: Client) -> Result(CommandResult, Error) {
+  command_mutation(
+    client,
+    "mutation { dockerStop { exitCode stdout stderr } }",
+    json.object([]),
+    "dockerStop",
+    "dockerStop",
+  )
+}
+
+/// Act on containers: start / stop / restart / kill / pause / unpause / rm.
+pub fn docker_container(
+  client: Client,
+  action action: String,
+  ids ids: List(String),
+) -> Result(CommandResult, Error) {
+  command_mutation(
+    client,
+    "mutation($action: String!, $ids: [String!]!) { dockerContainer(action: $action, ids: $ids) { exitCode stdout stderr } }",
+    json.object([
+      #("action", json.string(action)),
+      #("ids", json.array(ids, json.string)),
+    ]),
+    "dockerContainer",
+    "dockerContainer",
+  )
+}
+
+/// One container's logs (stdout+stderr, most recent `tail` lines).
+pub fn docker_logs(
+  client: Client,
+  id id: String,
+  tail tail: Int,
+) -> Result(String, Error) {
+  let doc =
+    "query($id: String!, $tail: Int!) { dockerContainerLogs(id: $id, tail: $tail) }"
+  use data <- result.try(query(
+    client,
+    doc,
+    json.object([#("id", json.string(id)), #("tail", json.int(tail))]),
+  ))
+  case field_string(data, "dockerContainerLogs") {
+    Ok(text) -> Ok(text)
+    Error(Nil) ->
+      Error(DecodeFailed("dockerContainerLogs", string.inspect(data)))
+  }
 }
 
 // ---------------------------------------------------------------------------

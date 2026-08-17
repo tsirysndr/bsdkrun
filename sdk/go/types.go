@@ -141,6 +141,99 @@ func (s *SandboxInfo) normalize() {
 	}
 }
 
+// DockerStatus is the Docker engine VM: whether it is up, and how to reach
+// it.
+//
+// bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+// socket, so the host's own `docker` CLI drives the same engine.
+type DockerStatus struct {
+	Running        bool   `json:"running"`
+	MachineID      string `json:"machine_id"`
+	MachineRunning bool   `json:"machine_running"`
+	// Socket is the unix socket the `docker` CLI talks to.
+	Socket      string `json:"socket"`
+	SocketReady bool   `json:"socket_ready"`
+	APIPort     int    `json:"api_port"`
+	Version     string `json:"version"`
+	Containers  int64  `json:"containers"`
+	Images      int64  `json:"images"`
+	// Mounts are host directories shared into the VM, each "HOST:GUEST".
+	Mounts []string `json:"mounts"`
+	// Disk is the dedicated image store, when the VM has one; DiskSize is its
+	// size in bytes — sparse, so the cap rather than the usage.
+	Disk     string `json:"disk"`
+	DiskSize int64  `json:"disk_size"`
+}
+
+// DockerContainer is a container in the engine — a trimmed `docker ps` row.
+type DockerContainer struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Image   string `json:"image"`
+	Command string `json:"command"`
+	// State is "running" | "exited" | "created" | "paused" | ...
+	State string `json:"state"`
+	// Status is Docker's human status, e.g. "Up 3 minutes".
+	Status string `json:"status"`
+	// Ports are published forwards, each "HOST:GUEST/proto".
+	Ports []string `json:"ports"`
+	// Created is unix epoch seconds.
+	Created int64 `json:"created"`
+}
+
+// IsRunning reports whether the container is up.
+func (c DockerContainer) IsRunning() bool { return c.State == "running" }
+
+func dockerStatusFromGraphQL(m map[string]any) DockerStatus {
+	s := DockerStatus{
+		Running:        asBool(m["running"]),
+		MachineID:      asString(m["machineId"]),
+		MachineRunning: asBool(m["machineRunning"]),
+		Socket:         asString(m["socket"]),
+		SocketReady:    asBool(m["socketReady"]),
+		Version:        asString(m["version"]),
+		Disk:           asString(m["disk"]),
+	}
+	if n, ok := asInt(m["apiPort"]); ok {
+		s.APIPort = int(n)
+	}
+	if n, ok := asInt(m["containers"]); ok {
+		s.Containers = n
+	}
+	if n, ok := asInt(m["images"]); ok {
+		s.Images = n
+	}
+	if n, ok := asInt(m["diskSize"]); ok {
+		s.DiskSize = n
+	}
+	if mounts, ok := m["mounts"].([]any); ok {
+		for _, v := range mounts {
+			s.Mounts = append(s.Mounts, asString(v))
+		}
+	}
+	return s
+}
+
+func dockerContainerFromGraphQL(m map[string]any) DockerContainer {
+	c := DockerContainer{
+		ID:      asString(m["id"]),
+		Name:    asString(m["name"]),
+		Image:   asString(m["image"]),
+		Command: asString(m["command"]),
+		State:   asString(m["state"]),
+		Status:  asString(m["status"]),
+	}
+	if n, ok := asInt(m["created"]); ok {
+		c.Created = n
+	}
+	if ports, ok := m["ports"].([]any); ok {
+		for _, v := range ports {
+			c.Ports = append(c.Ports, asString(v))
+		}
+	}
+	return c
+}
+
 // ImageInfo is an image as reported by `bsdkrun images --json`.
 type ImageInfo struct {
 	ID        string `json:"id"`

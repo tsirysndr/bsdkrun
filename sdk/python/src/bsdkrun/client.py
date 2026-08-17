@@ -27,6 +27,8 @@ from .errors import GraphQLError
 from .transport import TOKEN_ENV, URL_ENV, WSTransport, http_request, normalize_url, ws_url
 from .types import (
     CommandResult,
+    DockerContainer,
+    DockerStatus,
     ExecResult,
     PortForward,
     SandboxInfo,
@@ -69,6 +71,29 @@ _UPDATE_MUTATION = (
 _COMMIT_MUTATION = (
     f"mutation($id: String!, $name: String!, $description: String!) {{ "
     f"commitMachine(id: $id, name: $name, description: $description) {{ {_CMD_RESULT_FIELDS} }} }}"
+)
+
+_DOCKER_STATUS_FIELDS = (
+    "running machineId machineRunning socket socketReady apiPort version "
+    "containers images mounts disk diskSize"
+)
+_DOCKER_CONTAINER_FIELDS = "id name image command state status ports created"
+
+_DOCKER_STATUS_QUERY = f"{{ dockerStatus {{ {_DOCKER_STATUS_FIELDS} }} }}"
+_DOCKER_CONTAINERS_QUERY = (
+    f"query($all: Boolean!) {{ dockerContainers(all: $all) {{ {_DOCKER_CONTAINER_FIELDS} }} }}"
+)
+_DOCKER_LOGS_QUERY = (
+    "query($id: String!, $tail: Int!) { dockerContainerLogs(id: $id, tail: $tail) }"
+)
+_DOCKER_START_MUTATION = (
+    f"mutation($input: DockerStartInput!) {{ dockerStart(input: $input) "
+    f"{{ {_DOCKER_STATUS_FIELDS} }} }}"
+)
+_DOCKER_STOP_MUTATION = f"mutation {{ dockerStop {{ {_CMD_RESULT_FIELDS} }} }}"
+_DOCKER_CONTAINER_MUTATION = (
+    f"mutation($action: String!, $ids: [String!]!) {{ "
+    f"dockerContainer(action: $action, ids: $ids) {{ {_CMD_RESULT_FIELDS} }} }}"
 )
 
 _SNAPSHOTS_QUERY = (
@@ -403,6 +428,68 @@ class Client:
     def commit(self, id: str, name: str, description: str = "") -> CommandResult:
         data = self.request(_COMMIT_MUTATION, {"id": id, "name": name, "description": description})
         return CommandResult.from_graphql(data["commitMachine"])
+
+    # -- docker -----------------------------------------------------------------
+    #
+    # bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
+    # socket, so the host's own `docker` CLI drives the same engine these
+    # methods do. The socket is on the *daemon's* host.
+
+    def docker_status(self) -> DockerStatus:
+        """Is the Docker engine up, and where is its socket?"""
+        data = self.request(_DOCKER_STATUS_QUERY)
+        return DockerStatus.from_graphql(data["dockerStatus"])
+
+    def docker_containers(self, all: bool = True) -> builtins.list[DockerContainer]:
+        """Containers in the engine. ``all=False`` lists only running ones."""
+        data = self.request(_DOCKER_CONTAINERS_QUERY, {"all": all})
+        return [DockerContainer.from_graphql(c) for c in data.get("dockerContainers") or []]
+
+    def docker_start(
+        self,
+        *,
+        cpus: int | None = None,
+        mem: int | None = None,
+        mounts: builtins.list[str] | None = None,
+        no_home: bool = False,
+        publish_bind: str | None = None,
+        disk_size: str | None = None,
+    ) -> DockerStatus:
+        """Start (or resume) the engine, returning its status once it answers.
+
+        Idempotent: the VM has a fixed name, so this resumes the existing one
+        rather than creating a second.
+        """
+        data = self.request(
+            _DOCKER_START_MUTATION,
+            {
+                "input": {
+                    "cpus": cpus,
+                    "mem": mem,
+                    "mounts": mounts or [],
+                    "noHome": no_home,
+                    "publishBind": publish_bind,
+                    "diskSize": disk_size,
+                }
+            },
+        )
+        return DockerStatus.from_graphql(data["dockerStart"])
+
+    def docker_stop(self) -> CommandResult:
+        """Stop the engine. Images and containers stay on its disk."""
+        data = self.request(_DOCKER_STOP_MUTATION)
+        return CommandResult.from_graphql(data["dockerStop"])
+
+    def docker_container(self, action: str, ids: builtins.list[str] | str) -> CommandResult:
+        """start | stop | restart | kill | pause | unpause | rm."""
+        ids = [ids] if isinstance(ids, str) else ids
+        data = self.request(_DOCKER_CONTAINER_MUTATION, {"action": action, "ids": ids})
+        return CommandResult.from_graphql(data["dockerContainer"])
+
+    def docker_logs(self, id: str, tail: int = 200) -> str:
+        """One container's logs (stdout+stderr, most recent ``tail`` lines)."""
+        data = self.request(_DOCKER_LOGS_QUERY, {"id": id, "tail": tail})
+        return str(data.get("dockerContainerLogs") or "")
 
     # -- snapshots ------------------------------------------------------------
     #

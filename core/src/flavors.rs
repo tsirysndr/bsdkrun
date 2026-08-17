@@ -55,6 +55,24 @@ macro_rules! npm {
     };
 }
 
+/// Docker inside a guest: the daemon, the CLI, buildx and compose.
+///
+/// Installed *in* the sandbox rather than by sharing the host's docker socket,
+/// which would hand an AI agent full control of the host's Docker — and
+/// through it, the host. Containers an agent starts live and die with its
+/// sandbox.
+///
+/// The official convenience script, because Debian's own `docker.io` lags and
+/// the apt-repo dance is four steps that each fail differently. `|| true`
+/// keeps the sandbox usable on a release the script does not cover — the
+/// agent itself is still installed, just without Docker.
+macro_rules! docker_engine {
+    () => {
+        "command -v dockerd >/dev/null 2>&1 || \
+         (curl -fsSL https://get.docker.com | sh) || true"
+    };
+}
+
 /// `pip!["uv"]` → cache-less pip install.
 macro_rules! pip {
     ($($pkg:literal),+ $(,)?) => {
@@ -275,7 +293,11 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             ports: NONE,
             env: NONE,
             nix: NONE,
-            provision: provision![apt!["git", "ripgrep"], npm!["@anthropic-ai/claude-code"],],
+            provision: provision![
+                apt!["git", "ripgrep"],
+                npm!["@anthropic-ai/claude-code"],
+                docker_engine!(),
+            ],
         },
         CatalogFlavor {
             name: "codex",
@@ -285,7 +307,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             ports: NONE,
             env: NONE,
             nix: NONE,
-            provision: provision![apt!["git"], npm!["@openai/codex"],],
+            provision: provision![apt!["git"], npm!["@openai/codex"], docker_engine!(),],
         },
         CatalogFlavor {
             name: "gemini",
@@ -295,7 +317,11 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             ports: NONE,
             env: NONE,
             nix: NONE,
-            provision: provision![apt!["git", "ripgrep"], npm!["@google/gemini-cli"],],
+            provision: provision![
+                apt!["git", "ripgrep"],
+                npm!["@google/gemini-cli"],
+                docker_engine!(),
+            ],
         },
         CatalogFlavor {
             name: "kilo",
@@ -305,7 +331,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             ports: NONE,
             env: NONE,
             nix: NONE,
-            provision: provision![apt!["git"], npm!["@kilocode/cli"],],
+            provision: provision![apt!["git"], npm!["@kilocode/cli"], docker_engine!(),],
         },
         CatalogFlavor {
             name: "qwen",
@@ -315,7 +341,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             ports: NONE,
             env: NONE,
             nix: NONE,
-            provision: provision![apt!["git"], npm!["@qwen-code/qwen-code"],],
+            provision: provision![apt!["git"], npm!["@qwen-code/qwen-code"], docker_engine!(),],
         },
         CatalogFlavor {
             name: "opencode",
@@ -331,6 +357,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
                     npm!["opencode-ai"],
                     " || curl -fsSL https://opencode.ai/install | bash"
                 ),
+                docker_engine!(),
             ],
         },
         CatalogFlavor {
@@ -341,7 +368,11 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             ports: NONE,
             env: NONE,
             nix: NONE,
-            provision: provision![apt!["git", "curl"], npm!["@charmland/crush"],],
+            provision: provision![
+                apt!["git", "curl"],
+                npm!["@charmland/crush"],
+                docker_engine!(),
+            ],
         },
         CatalogFlavor {
             name: "copilot",
@@ -351,7 +382,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             ports: NONE,
             env: NONE,
             nix: NONE,
-            provision: provision![apt!["git"], npm!["@github/copilot"],],
+            provision: provision![apt!["git"], npm!["@github/copilot"], docker_engine!(),],
         },
         // These two are *assistants*, not TUI coding agents: they run as
         // services and talk over messaging channels, so they are flavors to

@@ -22,8 +22,8 @@ use crate::args::{strvec, NetOpts};
 use crate::error::{Error, Result};
 use crate::transport::{http_request, normalize_url, ws_url, WsTransport, TOKEN_ENV, URL_ENV};
 use crate::types::{
-    CommandResult, DockerContainer, DockerStatus, RemoteExecResult, SandboxInfo, ShellSessionInfo,
-    SnapshotInfo,
+    AiAgent, AiSession, CommandResult, DockerContainer, DockerStatus, RemoteExecResult,
+    SandboxInfo, ShellSessionInfo, SnapshotInfo,
 };
 
 // ---------------------------------------------------------------------------
@@ -69,6 +69,28 @@ fn commit_mutation() -> String {
     format!(
         "mutation($id: String!, $name: String!, $description: String!) {{ \
          commitMachine(id: $id, name: $name, description: $description) {{ {CMD_RESULT_FIELDS} }} }}"
+    )
+}
+
+const AI_AGENT_FIELDS: &str = "id label flavor description installed running";
+const AI_SESSION_FIELDS: &str = "id name agent running workspace createdAt";
+
+fn ai_agents_query() -> String {
+    format!("{{ aiAgents {{ {AI_AGENT_FIELDS} }} }}")
+}
+fn ai_sessions_query() -> String {
+    format!("{{ aiSessions {{ {AI_SESSION_FIELDS} }} }}")
+}
+const AI_SHELL_COMMAND_QUERY: &str = "query($agent: String!, $machineId: String!) \
+     { aiShellCommand(agent: $agent, machineId: $machineId) }";
+const AI_START_MUTATION: &str = "mutation($input: AiStartInput!) { aiStart(input: $input) }";
+fn ai_stop_mutation() -> String {
+    format!("mutation($agent: String!) {{ aiStop(agent: $agent) {{ {CMD_RESULT_FIELDS} }} }}")
+}
+fn ai_remove_mutation() -> String {
+    format!(
+        "mutation($agent: String!, $keepHome: Boolean!) {{ \
+         aiRemove(agent: $agent, keepHome: $keepHome) {{ {CMD_RESULT_FIELDS} }} }}"
     )
 }
 
@@ -358,6 +380,76 @@ impl Client {
             json!({"id": id, "name": name, "description": description}),
         )?;
         Ok(CommandResult::from_graphql(&data["commitMachine"]))
+    }
+
+    // -- ai agents ----------------------------------------------------------
+    //
+    // A sandbox is a machine, so its terminal is the ordinary [`Client::shell`]
+    // with the argv [`Client::ai_shell_command`] returns.
+
+    /// The coding agents, and whether each one's sandbox image is built.
+    pub fn ai_agents(&self) -> Result<Vec<AiAgent>> {
+        let data = self.request(&ai_agents_query(), json!({}))?;
+        Ok(data
+            .get("aiAgents")
+            .and_then(Value::as_array)
+            .map(|rows| rows.iter().map(AiAgent::from_graphql).collect())
+            .unwrap_or_default())
+    }
+
+    /// Agent sandboxes, newest first.
+    pub fn ai_sessions(&self) -> Result<Vec<AiSession>> {
+        let data = self.request(&ai_sessions_query(), json!({}))?;
+        Ok(data
+            .get("aiSessions")
+            .and_then(Value::as_array)
+            .map(|rows| rows.iter().map(AiSession::from_graphql).collect())
+            .unwrap_or_default())
+    }
+
+    /// Start (or reuse) a sandbox — see [`AiStartBuilder`].
+    pub fn ai_start(&self, agent: impl Into<String>) -> AiStartBuilder {
+        AiStartBuilder {
+            client: self.clone(),
+            agent: agent.into(),
+            cpus: None,
+            mem: None,
+            workspace: None,
+            new: false,
+        }
+    }
+
+    /// The argv that starts the agent's TUI — pass it to [`Client::shell`].
+    pub fn ai_shell_command(&self, agent: &str, machine_id: &str) -> Result<Vec<String>> {
+        let data = self.request(
+            AI_SHELL_COMMAND_QUERY,
+            json!({"agent": agent, "machineId": machine_id}),
+        )?;
+        Ok(data
+            .get("aiShellCommand")
+            .and_then(Value::as_array)
+            .map(|xs| {
+                xs.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Stop an agent's sandboxes. Its saved login survives.
+    pub fn ai_stop(&self, agent: &str) -> Result<CommandResult> {
+        let data = self.request(&ai_stop_mutation(), json!({ "agent": agent }))?;
+        Ok(CommandResult::from_graphql(&data["aiStop"]))
+    }
+
+    /// Remove an agent's sandboxes, and unless `keep_home` its saved login too.
+    pub fn ai_remove(&self, agent: &str, keep_home: bool) -> Result<CommandResult> {
+        let data = self.request(
+            &ai_remove_mutation(),
+            json!({"agent": agent, "keepHome": keep_home}),
+        )?;
+        Ok(CommandResult::from_graphql(&data["aiRemove"]))
     }
 
     // -- docker -------------------------------------------------------------
@@ -991,6 +1083,65 @@ macro_rules! remote_net_vm_setters {
             self
         }
     };
+}
+
+/// An `aiStart` mutation being assembled — see [`Client::ai_start`].
+pub struct AiStartBuilder {
+    client: Client,
+    agent: String,
+    cpus: Option<u32>,
+    mem: Option<u32>,
+    workspace: Option<String>,
+    new: bool,
+}
+
+impl AiStartBuilder {
+    /// vCPUs for the sandbox.
+    pub fn cpus(mut self, cpus: u32) -> Self {
+        self.cpus = Some(cpus);
+        self
+    }
+
+    /// Guest RAM in MiB.
+    pub fn mem(mut self, mib: u32) -> Self {
+        self.mem = Some(mib);
+        self
+    }
+
+    /// Share a directory with the agent, at the same path.
+    ///
+    /// The path is on the **engine's** host: a remote daemon cannot see your
+    /// own filesystem.
+    pub fn workspace(mut self, path: impl Into<String>) -> Self {
+        self.workspace = Some(path.into());
+        self
+    }
+
+    /// Boot a second sandbox rather than reusing the running one. The agent's
+    /// saved login is shared between them.
+    pub fn new_session(mut self) -> Self {
+        self.new = true;
+        self
+    }
+
+    /// Start it, returning the sandbox's machine id.
+    pub fn launch(self) -> Result<String> {
+        let data = self.client.request(
+            AI_START_MUTATION,
+            json!({"input": {
+                "agent": self.agent,
+                "cpus": self.cpus,
+                "mem": self.mem,
+                "workspace": self.workspace,
+                "new": self.new,
+            }}),
+        )?;
+        Ok(data
+            .get("aiStart")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string())
+    }
 }
 
 /// A `dockerStart` mutation being assembled — see [`Client::docker_start`].

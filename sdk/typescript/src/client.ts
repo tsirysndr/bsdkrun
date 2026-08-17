@@ -22,6 +22,8 @@ import { AuthError, BsdkrunError, GraphQLError } from "./errors.js";
 import { SubscriptionManager } from "./graphql-protocol.js";
 import { fromGraphQLMachine } from "./sandbox.js";
 import type {
+  AiAgent,
+  AiSession,
   CommandResult,
   DockerContainer,
   DockerStatus,
@@ -209,6 +211,9 @@ const MACHINE_FIELDS = `
   cpus mem volume stateDir createdAt finishedAt network netIp origin
   ports { bind host guest }
 `;
+const AI_AGENT_FIELDS = `id label flavor description installed running`;
+const AI_SESSION_FIELDS = `id name agent running workspace createdAt`;
+
 const DOCKER_STATUS_FIELDS = `
   running machineId machineRunning socket socketReady apiPort version
   containers images mounts disk diskSize
@@ -220,6 +225,16 @@ const SNAPSHOT_FIELDS = `
   cpus mem size createdAt ports { bind host guest }
 `;
 const COMMAND_RESULT_FIELDS = `exitCode stdout stderr`;
+
+/** Options for {@link Client.aiStart}. */
+export interface AiStartOptions {
+  cpus?: number;
+  mem?: number;
+  /** A directory **on the engine's host** to share, at the same path. */
+  workspace?: string;
+  /** Boot a second sandbox rather than reusing the running one. */
+  new?: boolean;
+}
 
 /** Options for {@link Client.dockerStart}. All optional — the empty object is
  * what `bsdkrun docker start` with no flags does. */
@@ -558,6 +573,77 @@ export class Client {
       { id, name, description },
     );
     return d.commitMachine;
+  }
+
+  // ---- ai agents ----------------------------------------------------------------
+  //
+  // A sandbox is a machine, so its terminal is the ordinary `shell(machineId,
+  // { command })` — `aiShellCommand` supplies the argv.
+
+  /** The coding agents, and whether each one's sandbox image is built. */
+  async aiAgents(): Promise<AiAgent[]> {
+    const d = await this.request<{ aiAgents: AiAgent[] }>(
+      `{ aiAgents { ${AI_AGENT_FIELDS} } }`,
+    );
+    return d.aiAgents;
+  }
+
+  /** Agent sandboxes, newest first. */
+  async aiSessions(): Promise<AiSession[]> {
+    const d = await this.request<{ aiSessions: AiSession[] }>(
+      `{ aiSessions { ${AI_SESSION_FIELDS} } }`,
+    );
+    return d.aiSessions;
+  }
+
+  /**
+   * Start (or reuse) a sandbox; returns its machine id.
+   *
+   * `workspace` is a path **on the engine's host** — a remote daemon cannot
+   * see your own filesystem. `new` boots a second sandbox against the same
+   * saved login instead of reusing the running one.
+   */
+  async aiStart(agent: string, opts: AiStartOptions = {}): Promise<string> {
+    const d = await this.request<{ aiStart: string }>(
+      `mutation($i:AiStartInput!){ aiStart(input:$i) }`,
+      {
+        i: {
+          agent,
+          cpus: opts.cpus ?? null,
+          mem: opts.mem ?? null,
+          workspace: opts.workspace ?? null,
+          new: opts.new ?? false,
+        },
+      },
+    );
+    return d.aiStart;
+  }
+
+  /** The argv that starts the agent's TUI — pass it to {@link Client.shell}. */
+  async aiShellCommand(agent: string, machineId: string): Promise<string[]> {
+    const d = await this.request<{ aiShellCommand: string[] }>(
+      `query($a:String!,$m:String!){ aiShellCommand(agent:$a, machineId:$m) }`,
+      { a: agent, m: machineId },
+    );
+    return d.aiShellCommand;
+  }
+
+  /** Stop an agent's sandboxes. Its saved login survives. */
+  async aiStop(agent: string): Promise<CommandResult> {
+    const d = await this.request<{ aiStop: CommandResult }>(
+      `mutation($a:String!){ aiStop(agent:$a){ ${COMMAND_RESULT_FIELDS} } }`,
+      { a: agent },
+    );
+    return d.aiStop;
+  }
+
+  /** Remove an agent's sandboxes, and unless `keepHome` its saved login too. */
+  async aiRemove(agent: string, keepHome = false): Promise<CommandResult> {
+    const d = await this.request<{ aiRemove: CommandResult }>(
+      `mutation($a:String!,$k:Boolean!){ aiRemove(agent:$a, keepHome:$k){ ${COMMAND_RESULT_FIELDS} } }`,
+      { a: agent, k: keepHome },
+    );
+    return d.aiRemove;
   }
 
   // ---- docker -----------------------------------------------------------------

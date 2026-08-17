@@ -133,6 +133,29 @@
      :origin (get m "origin")
      :ports (mapv port-forward-from-row (or (get m "ports") []))}))
 
+(defn ai-agent-from-graphql
+  "A coding agent bsdkrun can sandbox.
+
+  Each runs in a disposable microVM with a persistent login, a shared skills
+  store, and only the folder you choose to share."
+  [a]
+  {:id (str (get a "id"))
+   :label (str (or (get a "label") ""))
+   :flavor (str (or (get a "flavor") ""))
+   :description (str (or (get a "description") ""))
+   :installed (boolean (get a "installed"))
+   :running (to-int (get a "running"))})
+
+(defn ai-session-from-graphql
+  "One agent sandbox. It is a machine, so `logs`/`stop` work on `:id`."
+  [s]
+  {:id (str (get s "id"))
+   :name (str (or (get s "name") ""))
+   :agent (str (or (get s "agent") ""))
+   :running (boolean (get s "running"))
+   :workspace (get s "workspace")
+   :created-at (to-int (or (get s "createdAt") (get s "created_at")))})
+
 (defn docker-status-from-graphql
   "The Docker engine VM's status, as the daemon's GraphQL API reports it.
 

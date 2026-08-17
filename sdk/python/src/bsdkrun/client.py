@@ -26,6 +26,8 @@ from typing import Any
 from .errors import GraphQLError
 from .transport import TOKEN_ENV, URL_ENV, WSTransport, http_request, normalize_url, ws_url
 from .types import (
+    AiAgent,
+    AiSession,
     CommandResult,
     DockerContainer,
     DockerStatus,
@@ -71,6 +73,24 @@ _UPDATE_MUTATION = (
 _COMMIT_MUTATION = (
     f"mutation($id: String!, $name: String!, $description: String!) {{ "
     f"commitMachine(id: $id, name: $name, description: $description) {{ {_CMD_RESULT_FIELDS} }} }}"
+)
+
+_AI_AGENT_FIELDS = "id label flavor description installed running"
+_AI_SESSION_FIELDS = "id name agent running workspace createdAt"
+
+_AI_AGENTS_QUERY = f"{{ aiAgents {{ {_AI_AGENT_FIELDS} }} }}"
+_AI_SESSIONS_QUERY = f"{{ aiSessions {{ {_AI_SESSION_FIELDS} }} }}"
+_AI_SHELL_COMMAND_QUERY = (
+    "query($agent: String!, $machineId: String!) "
+    "{ aiShellCommand(agent: $agent, machineId: $machineId) }"
+)
+_AI_START_MUTATION = "mutation($input: AiStartInput!) { aiStart(input: $input) }"
+_AI_STOP_MUTATION = (
+    f"mutation($agent: String!) {{ aiStop(agent: $agent) {{ {_CMD_RESULT_FIELDS} }} }}"
+)
+_AI_REMOVE_MUTATION = (
+    f"mutation($agent: String!, $keepHome: Boolean!) {{ "
+    f"aiRemove(agent: $agent, keepHome: $keepHome) {{ {_CMD_RESULT_FIELDS} }} }}"
 )
 
 _DOCKER_STATUS_FIELDS = (
@@ -428,6 +448,65 @@ class Client:
     def commit(self, id: str, name: str, description: str = "") -> CommandResult:
         data = self.request(_COMMIT_MUTATION, {"id": id, "name": name, "description": description})
         return CommandResult.from_graphql(data["commitMachine"])
+
+    # -- ai agents ----------------------------------------------------------------
+    #
+    # A sandbox is a machine, so the terminal into it is the ordinary
+    # `shell(machine_id, command=...)` — `ai_shell_command` supplies the argv.
+
+    def ai_agents(self) -> builtins.list[AiAgent]:
+        """The coding agents, and whether each one's sandbox image is built."""
+        data = self.request(_AI_AGENTS_QUERY)
+        return [AiAgent.from_graphql(a) for a in data.get("aiAgents") or []]
+
+    def ai_sessions(self) -> builtins.list[AiSession]:
+        """Agent sandboxes, newest first."""
+        data = self.request(_AI_SESSIONS_QUERY)
+        return [AiSession.from_graphql(s) for s in data.get("aiSessions") or []]
+
+    def ai_start(
+        self,
+        agent: str,
+        *,
+        cpus: int | None = None,
+        mem: int | None = None,
+        workspace: str | None = None,
+        new: bool = False,
+    ) -> str:
+        """Start (or reuse) a sandbox; returns its machine id.
+
+        ``workspace`` is a path **on the engine's host** — a remote daemon
+        cannot see your own filesystem. ``new`` boots a second sandbox against
+        the same saved login instead of reusing the running one.
+        """
+        data = self.request(
+            _AI_START_MUTATION,
+            {
+                "input": {
+                    "agent": agent,
+                    "cpus": cpus,
+                    "mem": mem,
+                    "workspace": workspace,
+                    "new": new,
+                }
+            },
+        )
+        return str(data["aiStart"])
+
+    def ai_shell_command(self, agent: str, machine_id: str) -> builtins.list[str]:
+        """The argv that starts the agent's TUI — pass it to :meth:`shell`."""
+        data = self.request(_AI_SHELL_COMMAND_QUERY, {"agent": agent, "machineId": machine_id})
+        return list(data.get("aiShellCommand") or [])
+
+    def ai_stop(self, agent: str) -> CommandResult:
+        """Stop an agent's sandboxes. Its saved login survives."""
+        data = self.request(_AI_STOP_MUTATION, {"agent": agent})
+        return CommandResult.from_graphql(data["aiStop"])
+
+    def ai_remove(self, agent: str, keep_home: bool = False) -> CommandResult:
+        """Remove an agent's sandboxes, and unless ``keep_home`` its login too."""
+        data = self.request(_AI_REMOVE_MUTATION, {"agent": agent, "keepHome": keep_home})
+        return CommandResult.from_graphql(data["aiRemove"])
 
     # -- docker -----------------------------------------------------------------
     #

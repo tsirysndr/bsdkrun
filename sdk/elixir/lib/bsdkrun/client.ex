@@ -47,7 +47,15 @@ defmodule Bsdkrun.Client do
   """
 
   alias Bsdkrun.{Error, GraphQL, GraphQLSocket, Types}
-  alias Bsdkrun.Types.{CommandResult, DockerContainer, DockerStatus, SandboxInfo, SnapshotInfo}
+  alias Bsdkrun.Types.{
+    AiAgent,
+    AiSession,
+    CommandResult,
+    DockerContainer,
+    DockerStatus,
+    SandboxInfo,
+    SnapshotInfo
+  }
 
   @type t :: %__MODULE__{url: String.t(), token: String.t()}
   defstruct [:url, :token]
@@ -293,6 +301,90 @@ defmodule Bsdkrun.Client do
 
     with {:ok, data} <- gql(client, mutation, %{id: id, name: name, description: description}) do
       {:ok, Types.command_result_from_graphql(data["commitMachine"])}
+    end
+  end
+
+  # --- ai agents ---------------------------------------------------------------
+  #
+  # A sandbox is a machine, so its terminal is the ordinary `shell/3` with the
+  # argv `ai_shell_command/3` returns.
+
+  @ai_agent_fields "id label flavor description installed running"
+  @ai_session_fields "id name agent running workspace createdAt"
+
+  @doc "The coding agents, and whether each one's sandbox image is built."
+  @spec ai_agents(t()) :: {:ok, [AiAgent.t()]} | {:error, Error.t()}
+  def ai_agents(client) do
+    with {:ok, data} <- gql(client, "{ aiAgents { #{@ai_agent_fields} } }", %{}) do
+      {:ok, Enum.map(data["aiAgents"] || [], &Types.ai_agent_from_graphql/1)}
+    end
+  end
+
+  @doc "Agent sandboxes, newest first."
+  @spec ai_sessions(t()) :: {:ok, [AiSession.t()]} | {:error, Error.t()}
+  def ai_sessions(client) do
+    with {:ok, data} <- gql(client, "{ aiSessions { #{@ai_session_fields} } }", %{}) do
+      {:ok, Enum.map(data["aiSessions"] || [], &Types.ai_session_from_graphql/1)}
+    end
+  end
+
+  @doc """
+  Start (or reuse) a sandbox; returns its machine id.
+
+  Options: `:cpus`, `:mem`, `:workspace` (a path **on the engine's host**), and
+  `:new` to boot a second sandbox against the same saved login.
+  """
+  @spec ai_start(t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, Error.t()}
+  def ai_start(client, agent, opts \\ []) do
+    o = to_map(opts)
+    mutation = "mutation($input: AiStartInput!) { aiStart(input: $input) }"
+
+    input = %{
+      agent: agent,
+      cpus: Map.get(o, :cpus),
+      mem: Map.get(o, :mem),
+      workspace: Map.get(o, :workspace),
+      new: Map.get(o, :new, false)
+    }
+
+    with {:ok, data} <- gql(client, mutation, %{input: input}) do
+      {:ok, to_string(data["aiStart"])}
+    end
+  end
+
+  @doc "The argv that starts the agent's TUI — pass it to `shell/3`."
+  @spec ai_shell_command(t(), String.t(), String.t()) ::
+          {:ok, [String.t()]} | {:error, Error.t()}
+  def ai_shell_command(client, agent, machine_id) do
+    query =
+      "query($agent: String!, $machineId: String!) " <>
+        "{ aiShellCommand(agent: $agent, machineId: $machineId) }"
+
+    with {:ok, data} <- gql(client, query, %{agent: agent, machineId: machine_id}) do
+      {:ok, data["aiShellCommand"] || []}
+    end
+  end
+
+  @doc "Stop an agent's sandboxes. Its saved login survives."
+  @spec ai_stop(t(), String.t()) :: {:ok, CommandResult.t()} | {:error, Error.t()}
+  def ai_stop(client, agent) do
+    mutation = "mutation($agent: String!) { aiStop(agent: $agent) { exitCode stdout stderr } }"
+
+    with {:ok, data} <- gql(client, mutation, %{agent: agent}) do
+      {:ok, Types.command_result_from_graphql(data["aiStop"])}
+    end
+  end
+
+  @doc "Remove an agent's sandboxes, and unless `keep_home` its saved login too."
+  @spec ai_remove(t(), String.t(), boolean()) ::
+          {:ok, CommandResult.t()} | {:error, Error.t()}
+  def ai_remove(client, agent, keep_home \\ false) do
+    mutation =
+      "mutation($agent: String!, $keepHome: Boolean!) { " <>
+        "aiRemove(agent: $agent, keepHome: $keepHome) { exitCode stdout stderr } }"
+
+    with {:ok, data} <- gql(client, mutation, %{agent: agent, keepHome: keep_home}) do
+      {:ok, Types.command_result_from_graphql(data["aiRemove"])}
     end
   end
 

@@ -277,6 +277,8 @@ pub struct AiSession {
     pub running: bool,
     /// The directory shared into it, on the engine's host.
     pub workspace: Option<String>,
+    /// A user-given name for this session, when one was set.
+    pub label: Option<String>,
     pub created_at: String,
 }
 
@@ -288,6 +290,7 @@ impl From<ops::AiSession> for AiSession {
             agent: s.agent,
             running: s.running,
             workspace: s.workspace,
+            label: s.label,
             created_at: s.created_at,
         }
     }
@@ -660,6 +663,8 @@ pub struct AiStartInput {
     /// saved login is shared between them.
     #[graphql(default)]
     pub new: bool,
+    /// A name for this session, shown in listings and the desktop's switcher.
+    pub name: Option<String>,
 }
 
 /// Starting the Docker engine VM. Every field is optional: the zero value is
@@ -1130,6 +1135,7 @@ impl Mutation {
             mem: input.mem,
             workspace: input.workspace,
             new: input.new,
+            name: input.name,
         };
         api(ctx)?.ops.ai_start(&opts).await.map_err(gql_err)
     }

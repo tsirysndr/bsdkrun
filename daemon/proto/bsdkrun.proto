@@ -454,6 +454,8 @@ message AiSession {
   // The directory shared into it, on the engine's host.
   optional string workspace = 5;
   string created_at = 6;
+  // A user-given name for this session.
+  optional string label = 7;
 }
 
 message AiAgentsRequest {}
@@ -479,6 +481,8 @@ message AiStartRequest {
   // Boot a second sandbox instead of reusing the running one. The saved login
   // is shared between them.
   bool new = 5;
+  // A name for this session, shown in listings and the desktop's switcher.
+  optional string name = 6;
 }
 
 message AiStartResponse {

@@ -236,6 +236,8 @@ pub struct AiStartOpts {
     pub workspace: Option<String>,
     /// Boot a second sandbox rather than reusing the running one.
     pub new: bool,
+    /// A name for this session, shown in listings and the desktop's switcher.
+    pub name: Option<String>,
 }
 
 impl AiStartOpts {
@@ -250,6 +252,7 @@ impl AiStartOpts {
                 no_workspace: self.workspace.is_none(),
                 cwd: false,
                 new: self.new,
+                name: self.name.clone(),
                 detach: true,
             }),
         })

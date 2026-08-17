@@ -50,10 +50,10 @@ import bsdkrun/error.{type Error, AuthError, DecodeFailed, GraphqlError}
 import bsdkrun/graphql_transport
 import bsdkrun/subject.{type Subject}
 import bsdkrun/types.{
-  type CommandResult, type DockerContainer, type DockerStatus, type ExecResult,
-  type SandboxInfo, type ShellEvent, type ShellSessionInfo, type SnapshotInfo,
-  type SubscriptionEvent, ExecResult, ShellClosed, ShellData, ShellError,
-  ShellExit, SubComplete, SubError, SubNext,
+  type AiAgent, type AiSession, type CommandResult, type DockerContainer,
+  type DockerStatus, type ExecResult, type SandboxInfo, type ShellEvent,
+  type ShellSessionInfo, type SnapshotInfo, type SubscriptionEvent, ExecResult,
+  ShellClosed, ShellData, ShellError, ShellExit, SubComplete, SubError, SubNext,
 }
 import bsdkrun/ws
 import gleam/bit_array
@@ -194,6 +194,10 @@ fn run_mutation(
 /// verbatim so `sandbox_info_from_graphql` always has what it expects.
 const machine_fields = "id name image kind command status running exitCode pid detached cpus mem volume stateDir createdAt finishedAt network netIp origin ports { bind host guest }"
 
+const ai_agent_fields = "id label flavor description installed running"
+
+const ai_session_fields = "id name agent running workspace createdAt"
+
 const docker_status_fields = "running machineId machineRunning socket socketReady apiPort version containers images mounts disk diskSize"
 
 const docker_container_fields = "id name image command state status ports created"
@@ -316,6 +320,123 @@ pub fn commit(
     ]),
     "commitMachine",
     "commitMachine",
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ai agents
+//
+// A sandbox is a machine, so its terminal is the ordinary shell with the argv
+// `ai_shell_command` returns.
+// ---------------------------------------------------------------------------
+
+/// The coding agents, and whether each one's sandbox image is built.
+pub fn ai_agents(client: Client) -> Result(List(AiAgent), Error) {
+  let doc = "{ aiAgents { " <> ai_agent_fields <> " } }"
+  use data <- result.try(query(client, doc, json.object([])))
+  field_dynamic_list(data, "aiAgents")
+  |> list.try_map(types.ai_agent_from_graphql)
+}
+
+/// Agent sandboxes, newest first.
+pub fn ai_sessions(client: Client) -> Result(List(AiSession), Error) {
+  let doc = "{ aiSessions { " <> ai_session_fields <> " } }"
+  use data <- result.try(query(client, doc, json.object([])))
+  field_dynamic_list(data, "aiSessions")
+  |> list.try_map(types.ai_session_from_graphql)
+}
+
+/// Start (or reuse) a sandbox; returns its machine id.
+///
+/// `workspace` is a path **on the engine's host** — a remote daemon cannot see
+/// your own filesystem. `new` boots a second sandbox against the same login.
+pub fn ai_start(
+  client: Client,
+  agent agent: String,
+  cpus cpus: Option(Int),
+  mem mem: Option(Int),
+  workspace workspace: Option(String),
+  new new: Bool,
+) -> Result(String, Error) {
+  let doc = "mutation($input: AiStartInput!) { aiStart(input: $input) }"
+  use data <- result.try(query(
+    client,
+    doc,
+    json.object([
+      #(
+        "input",
+        json.object([
+          #("agent", json.string(agent)),
+          #("cpus", json.nullable(cpus, json.int)),
+          #("mem", json.nullable(mem, json.int)),
+          #("workspace", json.nullable(workspace, json.string)),
+          #("new", json.bool(new)),
+        ]),
+      ),
+    ]),
+  ))
+  case field_string(data, "aiStart") {
+    Ok(id) -> Ok(id)
+    Error(Nil) -> Error(DecodeFailed("aiStart", string.inspect(data)))
+  }
+}
+
+/// The argv that starts the agent's TUI — pass it to the shell.
+pub fn ai_shell_command(
+  client: Client,
+  agent agent: String,
+  machine_id machine_id: String,
+) -> Result(List(String), Error) {
+  let doc =
+    "query($agent: String!, $machineId: String!) { aiShellCommand(agent: $agent, machineId: $machineId) }"
+  use data <- result.try(query(
+    client,
+    doc,
+    json.object([
+      #("agent", json.string(agent)),
+      #("machineId", json.string(machine_id)),
+    ]),
+  ))
+  case
+    decode.run(
+      data,
+      decode.field("aiShellCommand", decode.list(decode.string), decode.success),
+    )
+  {
+    Ok(argv) -> Ok(argv)
+    Error(_) -> Error(DecodeFailed("aiShellCommand", string.inspect(data)))
+  }
+}
+
+/// Stop an agent's sandboxes. Its saved login survives.
+pub fn ai_stop(
+  client: Client,
+  agent agent: String,
+) -> Result(CommandResult, Error) {
+  command_mutation(
+    client,
+    "mutation($agent: String!) { aiStop(agent: $agent) { exitCode stdout stderr } }",
+    json.object([#("agent", json.string(agent))]),
+    "aiStop",
+    "aiStop",
+  )
+}
+
+/// Remove an agent's sandboxes, and unless `keep_home` its saved login too.
+pub fn ai_remove(
+  client: Client,
+  agent agent: String,
+  keep_home keep_home: Bool,
+) -> Result(CommandResult, Error) {
+  command_mutation(
+    client,
+    "mutation($agent: String!, $keepHome: Boolean!) { aiRemove(agent: $agent, keepHome: $keepHome) { exitCode stdout stderr } }",
+    json.object([
+      #("agent", json.string(agent)),
+      #("keepHome", json.bool(keep_home)),
+    ]),
+    "aiRemove",
+    "aiRemove",
   )
 }
 

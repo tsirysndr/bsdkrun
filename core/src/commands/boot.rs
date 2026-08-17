@@ -2610,6 +2610,14 @@ pub(crate) fn cmd_ai_start(args: AiStartArgs) -> Result<()> {
         }
     };
 
+    // Wait for the guest agent before reporting success. A sandbox that has
+    // *booted* is not yet a sandbox you can `exec` into: connecting in that
+    // window fails with "the guest agent accepted the connection but sent no
+    // output", which is what both the CLI attach below and the desktop panel
+    // (which opens a terminal on the id this prints) used to race into.
+    wait_for_agent(&vm.id, &vm.kind, None)
+        .with_context(|| format!("waiting for the {} sandbox to come up", agent.label))?;
+
     if args.detach {
         println!("{}", vm.id);
         return Ok(());
@@ -2645,8 +2653,12 @@ fn boot_ai_sandbox(
     let built = ensure_flavor_built(&spec, agent.flavor, args.vm.cpus, args.vm.mem)?;
 
     id::set_override(&machine_id);
-    let name = ai::next_name(agent.id)?;
+    let name = ai::next_name(agent.id, args.name.as_deref())?;
     names::set_override(&name);
+    // Recorded rather than parsed back out of the machine name: a label can
+    // contain dashes, and the agent has to stay unambiguous.
+    ai::record_agent(&vdir, agent.id);
+    ai::record_label(&vdir, args.name.as_deref());
 
     info!(agent = agent.id, sandbox = %name, "booting the agent sandbox");
     let largs = LinuxArgs {

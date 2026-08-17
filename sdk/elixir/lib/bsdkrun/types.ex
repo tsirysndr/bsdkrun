@@ -110,6 +110,41 @@ defmodule Bsdkrun.Types do
     ]
   end
 
+  defmodule AiAgent do
+    @moduledoc """
+    A coding agent bsdkrun can sandbox.
+
+    Each runs in a disposable microVM with a persistent login, a shared skills
+    store, and only the folder you choose to share.
+    """
+
+    @type t :: %__MODULE__{
+            id: String.t(),
+            label: String.t(),
+            flavor: String.t(),
+            description: String.t(),
+            installed: boolean(),
+            running: integer()
+          }
+
+    defstruct [:id, :label, :flavor, :description, :installed, :running]
+  end
+
+  defmodule AiSession do
+    @moduledoc "One agent sandbox. It is a machine, so `logs`/`stop` work on `id`."
+
+    @type t :: %__MODULE__{
+            id: String.t(),
+            name: String.t(),
+            agent: String.t(),
+            running: boolean(),
+            workspace: String.t() | nil,
+            created_at: integer()
+          }
+
+    defstruct [:id, :name, :agent, :running, :workspace, :created_at]
+  end
+
   defmodule DockerStatus do
     @moduledoc """
     The Docker engine VM: whether it is up, and how to reach it.
@@ -370,6 +405,32 @@ defmodule Bsdkrun.Types do
       ports: (row["ports"] || []) |> Enum.map(&port_forward/1),
       size: row["size"],
       created_at: num(row["createdAt"])
+    }
+  end
+
+  @doc "Map a GraphQL `AiAgent` row to an `AiAgent` struct."
+  @spec ai_agent_from_graphql(map()) :: AiAgent.t()
+  def ai_agent_from_graphql(row) do
+    %AiAgent{
+      id: to_string(row["id"] || ""),
+      label: to_string(row["label"] || ""),
+      flavor: to_string(row["flavor"] || ""),
+      description: to_string(row["description"] || ""),
+      installed: truthy(row["installed"]),
+      running: num(row["running"]) || 0
+    }
+  end
+
+  @doc "Map a GraphQL `AiSession` row to an `AiSession` struct."
+  @spec ai_session_from_graphql(map()) :: AiSession.t()
+  def ai_session_from_graphql(row) do
+    %AiSession{
+      id: to_string(row["id"] || ""),
+      name: to_string(row["name"] || ""),
+      agent: to_string(row["agent"] || ""),
+      running: truthy(row["running"]),
+      workspace: row["workspace"],
+      created_at: num(row["createdAt"]) || 0
     }
   end
 

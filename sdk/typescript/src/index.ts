@@ -112,6 +112,8 @@ export type {
   SnapshotInfo,
   DockerStatus,
   DockerContainer,
+  AiAgent,
+  AiSession,
   ImageInfo,
   VolumeInfo,
   NetworkInfo,
@@ -142,6 +144,7 @@ export type {
   RunFlavorOptions,
   BranchOptions,
   DockerStartOptions,
+  AiStartOptions,
 } from "./client.js";
 
 export { fromGraphQLMachine } from "./sandbox.js";

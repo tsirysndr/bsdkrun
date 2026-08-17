@@ -10,7 +10,7 @@ import scala.collection.mutable
 import scala.concurrent.duration.Duration
 import ujson.Value
 
-import bsdkrun.Types.{DockerContainer, DockerStatus, SandboxInfo, SnapshotInfo}
+import bsdkrun.Types.{AiAgent, AiSession, DockerContainer, DockerStatus, SandboxInfo, SnapshotInfo}
 
 /** A client for a remote `bsdkrund` over its GraphQL API.
   *
@@ -327,6 +327,81 @@ final class Client private (val url: String, token: String):
         "mem" -> mem.map(ujson.Num(_)).getOrElse(ujson.Null)
       )
     ).map(commandResult(_, "updateMachine", "updateMachine"))
+
+  // -- ai agents ------------------------------------------------------------------
+  //
+  // A sandbox is a machine, so its terminal is the ordinary shell with the argv
+  // `aiShellCommand` returns.
+
+  /** The coding agents, and whether each one's sandbox image is built. */
+  def aiAgents(): Either[BsdkrunError, Seq[AiAgent]] =
+    request(s"{ aiAgents { ${Client.AiAgentFields} } }").map: data =>
+      data.objOpt
+        .flatMap(_.get("aiAgents"))
+        .flatMap(_.arrOpt)
+        .map(_.map(Types.aiAgent).toSeq)
+        .getOrElse(Seq.empty)
+
+  /** Agent sandboxes, newest first. */
+  def aiSessions(): Either[BsdkrunError, Seq[AiSession]] =
+    request(s"{ aiSessions { ${Client.AiSessionFields} } }").map: data =>
+      data.objOpt
+        .flatMap(_.get("aiSessions"))
+        .flatMap(_.arrOpt)
+        .map(_.map(Types.aiSession).toSeq)
+        .getOrElse(Seq.empty)
+
+  /** Start (or reuse) a sandbox; returns its machine id.
+    *
+    * `workspace` is a path **on the engine's host** — a remote daemon cannot
+    * see your own filesystem. `newSession` boots a second sandbox against the
+    * same saved login.
+    */
+  def aiStart(
+      agent: String,
+      cpus: Option[Int] = None,
+      mem: Option[Int] = None,
+      workspace: Option[String] = None,
+      newSession: Boolean = false
+  ): Either[BsdkrunError, String] =
+    request(
+      "mutation($input:AiStartInput!){ aiStart(input:$input) }",
+      ujson.Obj(
+        "input" -> ujson.Obj(
+          "agent" -> agent,
+          "cpus" -> cpus.map(ujson.Num(_)).getOrElse(ujson.Null),
+          "mem" -> mem.map(ujson.Num(_)).getOrElse(ujson.Null),
+          "workspace" -> workspace.map(ujson.Str(_)).getOrElse(ujson.Null),
+          "new" -> newSession
+        )
+      )
+    ).map(data => Types.str(data, "aiStart"))
+
+  /** The argv that starts the agent's TUI — pass it to the shell. */
+  def aiShellCommand(agent: String, machineId: String): Either[BsdkrunError, Seq[String]] =
+    request(
+      "query($agent:String!,$machineId:String!){ aiShellCommand(agent:$agent, machineId:$machineId) }",
+      ujson.Obj("agent" -> agent, "machineId" -> machineId)
+    ).map: data =>
+      data.objOpt
+        .flatMap(_.get("aiShellCommand"))
+        .flatMap(_.arrOpt)
+        .map(_.flatMap(_.strOpt).toSeq)
+        .getOrElse(Seq.empty)
+
+  /** Stop an agent's sandboxes. Its saved login survives. */
+  def aiStop(agent: String): Either[BsdkrunError, CommandResult] =
+    request(
+      "mutation($agent:String!){ aiStop(agent:$agent){ exitCode stdout stderr } }",
+      ujson.Obj("agent" -> agent)
+    ).map(commandResult(_, "aiStop", "aiStop"))
+
+  /** Remove an agent's sandboxes, and unless `keepHome` its saved login too. */
+  def aiRemove(agent: String, keepHome: Boolean = false): Either[BsdkrunError, CommandResult] =
+    request(
+      "mutation($agent:String!,$keepHome:Boolean!){ aiRemove(agent:$agent, keepHome:$keepHome){ exitCode stdout stderr } }",
+      ujson.Obj("agent" -> agent, "keepHome" -> keepHome)
+    ).map(commandResult(_, "aiRemove", "aiRemove"))
 
   // -- docker -------------------------------------------------------------------
   //
@@ -698,6 +773,12 @@ object Client:
     "id name image kind command status running exitCode pid detached " +
       "cpus mem volume stateDir createdAt finishedAt network netIp origin " +
       "ports { bind host guest }"
+
+  private[bsdkrun] val AiAgentFields =
+    "id label flavor description installed running"
+
+  private[bsdkrun] val AiSessionFields =
+    "id name agent running workspace createdAt"
 
   private[bsdkrun] val DockerStatusFields =
     "running machineId machineRunning socket socketReady apiPort version " +

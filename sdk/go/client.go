@@ -51,6 +51,19 @@ var (
 	commitMutation = "mutation($id: String!, $name: String!, $description: String!) { " +
 		"commitMachine(id: $id, name: $name, description: $description) { " + cmdResultFields + " } }"
 
+	aiAgentFields   = "id label flavor description installed running"
+	aiSessionFields = "id name agent running workspace createdAt"
+
+	aiAgentsQuery       = "{ aiAgents { " + aiAgentFields + " } }"
+	aiSessionsQuery     = "{ aiSessions { " + aiSessionFields + " } }"
+	aiShellCommandQuery = "query($agent: String!, $machineId: String!) { " +
+		"aiShellCommand(agent: $agent, machineId: $machineId) }"
+	aiStartMutation = "mutation($input: AiStartInput!) { aiStart(input: $input) }"
+	aiStopMutation  = "mutation($agent: String!) { aiStop(agent: $agent) { " +
+		cmdResultFields + " } }"
+	aiRemoveMutation = "mutation($agent: String!, $keepHome: Boolean!) { " +
+		"aiRemove(agent: $agent, keepHome: $keepHome) { " + cmdResultFields + " } }"
+
 	dockerStatusFields = "running machineId machineRunning socket socketReady apiPort " +
 		"version containers images mounts disk diskSize"
 	dockerContainerFields = "id name image command state status ports created"
@@ -259,6 +272,106 @@ func (c *Client) Update(id string, cpus, mem int) (*CommandResult, error) {
 func (c *Client) Commit(id, name, description string) (*CommandResult, error) {
 	variables := map[string]any{"id": id, "name": name, "description": description}
 	return c.commandResult(commitMutation, variables, "commitMachine")
+}
+
+// -- ai agents ----------------------------------------------------------------
+//
+// A sandbox is a machine, so its terminal is the ordinary Shell with the argv
+// AiShellCommand returns.
+
+// AiAgents lists the coding agents and whether each one's image is built.
+func (c *Client) AiAgents() ([]AiAgent, error) {
+	data, err := c.Request(aiAgentsQuery, nil)
+	if err != nil {
+		return nil, err
+	}
+	rows, _ := data["aiAgents"].([]any)
+	out := make([]AiAgent, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, aiAgentFromGraphQL(asMap(row)))
+	}
+	return out, nil
+}
+
+// AiSessions lists agent sandboxes, newest first.
+func (c *Client) AiSessions() ([]AiSession, error) {
+	data, err := c.Request(aiSessionsQuery, nil)
+	if err != nil {
+		return nil, err
+	}
+	rows, _ := data["aiSessions"].([]any)
+	out := make([]AiSession, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, aiSessionFromGraphQL(asMap(row)))
+	}
+	return out, nil
+}
+
+// AiStartOpts tunes AiStart. The zero value reuses the agent's running
+// sandbox and shares nothing.
+type AiStartOpts struct {
+	Cpus int
+	Mem  int
+	// Workspace is a directory **on the engine's host** to share, at the same
+	// path. A remote daemon cannot see your own filesystem.
+	Workspace string
+	// New boots a second sandbox against the same saved login.
+	New bool
+}
+
+// AiStart starts (or reuses) a sandbox and returns its machine id.
+func (c *Client) AiStart(agent string, opts *AiStartOpts) (string, error) {
+	if opts == nil {
+		opts = &AiStartOpts{}
+	}
+	input := map[string]any{
+		"agent":     agent,
+		"cpus":      nil,
+		"mem":       nil,
+		"workspace": nil,
+		"new":       opts.New,
+	}
+	if opts.Cpus != 0 {
+		input["cpus"] = opts.Cpus
+	}
+	if opts.Mem != 0 {
+		input["mem"] = opts.Mem
+	}
+	if opts.Workspace != "" {
+		input["workspace"] = opts.Workspace
+	}
+	data, err := c.Request(aiStartMutation, map[string]any{"input": input})
+	if err != nil {
+		return "", err
+	}
+	return asString(data["aiStart"]), nil
+}
+
+// AiShellCommand returns the argv that starts the agent's TUI — pass it to
+// Shell.
+func (c *Client) AiShellCommand(agent, machineID string) ([]string, error) {
+	data, err := c.Request(aiShellCommandQuery,
+		map[string]any{"agent": agent, "machineId": machineID})
+	if err != nil {
+		return nil, err
+	}
+	raw, _ := data["aiShellCommand"].([]any)
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		out = append(out, asString(v))
+	}
+	return out, nil
+}
+
+// AiStop stops an agent's sandboxes. Its saved login survives.
+func (c *Client) AiStop(agent string) (*CommandResult, error) {
+	return c.commandResult(aiStopMutation, map[string]any{"agent": agent}, "aiStop")
+}
+
+// AiRemove removes an agent's sandboxes, and unless keepHome its login too.
+func (c *Client) AiRemove(agent string, keepHome bool) (*CommandResult, error) {
+	variables := map[string]any{"agent": agent, "keepHome": keepHome}
+	return c.commandResult(aiRemoveMutation, variables, "aiRemove")
 }
 
 // -- docker -------------------------------------------------------------------

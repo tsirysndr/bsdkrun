@@ -51,6 +51,36 @@ pub type SandboxInfo {
   )
 }
 
+/// A coding agent bsdkrun can sandbox.
+///
+/// Each runs in a disposable microVM with a persistent login, a shared skills
+/// store, and only the folder you choose to share.
+pub type AiAgent {
+  AiAgent(
+    id: String,
+    label: String,
+    /// The catalog flavor that installs it.
+    flavor: String,
+    description: String,
+    /// Its flavor is provisioned, so a sandbox boots in a second.
+    installed: Bool,
+    running: Int,
+  )
+}
+
+/// One agent sandbox. It is a machine, so `logs`/`stop` work on `id`.
+pub type AiSession {
+  AiSession(
+    id: String,
+    name: String,
+    agent: String,
+    running: Bool,
+    /// The directory shared into it, on the engine's host.
+    workspace: Option(String),
+    created_at: Int,
+  )
+}
+
 /// The Docker engine VM: whether it is up, and how to reach it.
 ///
 /// bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
@@ -528,6 +558,52 @@ fn sandbox_info_from_graphql_decoder() -> Decoder(SandboxInfo) {
     ports:,
     origin:,
   ))
+}
+
+fn ai_agent_decoder() -> Decoder(AiAgent) {
+  use id <- field_or("id", "", decode.string)
+  use label <- field_or("label", "", decode.string)
+  use flavor <- field_or("flavor", "", decode.string)
+  use description <- field_or("description", "", decode.string)
+  use installed <- field_or("installed", False, decode.bool)
+  use running <- optional_field("running", lenient_int())
+
+  decode.success(AiAgent(
+    id:,
+    label:,
+    flavor:,
+    description:,
+    installed:,
+    running: option.unwrap(running, 0),
+  ))
+}
+
+/// Decode a GraphQL `AiAgent` object.
+pub fn ai_agent_from_graphql(dyn: Dynamic) -> Result(AiAgent, Error) {
+  decode_or(dyn, ai_agent_decoder(), "aiAgent")
+}
+
+fn ai_session_decoder() -> Decoder(AiSession) {
+  use id <- field_or("id", "", decode.string)
+  use name <- field_or("name", "", decode.string)
+  use agent <- field_or("agent", "", decode.string)
+  use running <- field_or("running", False, decode.bool)
+  use workspace <- optional_field("workspace", decode.string)
+  use created_at <- optional_field("createdAt", lenient_int())
+
+  decode.success(AiSession(
+    id:,
+    name:,
+    agent:,
+    running:,
+    workspace:,
+    created_at: option.unwrap(created_at, 0),
+  ))
+}
+
+/// Decode a GraphQL `AiSession` object.
+pub fn ai_session_from_graphql(dyn: Dynamic) -> Result(AiSession, Error) {
+  decode_or(dyn, ai_session_decoder(), "aiSession")
 }
 
 fn docker_status_decoder() -> Decoder(DockerStatus) {

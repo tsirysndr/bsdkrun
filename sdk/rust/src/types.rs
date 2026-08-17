@@ -95,6 +95,63 @@ pub struct SandboxInfo {
     pub origin: Option<String>,
 }
 
+/// A coding agent bsdkrun can sandbox.
+///
+/// Each runs in a disposable microVM with a persistent login, a shared skills
+/// store, and only the folder you choose to share.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AiAgent {
+    /// Stable id — `claude`, `codex`, … Also the CLI alias.
+    pub id: String,
+    pub label: String,
+    /// The catalog flavor that installs it.
+    pub flavor: String,
+    pub description: String,
+    /// Its flavor is provisioned, so a sandbox boots in a second. False means
+    /// the first launch installs a toolchain — minutes.
+    pub installed: bool,
+    pub running: i64,
+}
+
+impl AiAgent {
+    pub fn from_graphql(a: &Value) -> AiAgent {
+        AiAgent {
+            id: get_str(a, "id"),
+            label: get_str(a, "label"),
+            flavor: get_str(a, "flavor"),
+            description: get_str(a, "description"),
+            installed: get_bool(a, "installed"),
+            running: get_num(a, "running").unwrap_or(0),
+        }
+    }
+}
+
+/// One agent sandbox. It is a machine, so `logs`/`stop` work on `id`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AiSession {
+    pub id: String,
+    pub name: String,
+    pub agent: String,
+    pub running: bool,
+    /// The directory shared into it, on the engine's host.
+    pub workspace: Option<String>,
+    /// Unix epoch seconds.
+    pub created_at: i64,
+}
+
+impl AiSession {
+    pub fn from_graphql(s: &Value) -> AiSession {
+        AiSession {
+            id: get_str(s, "id"),
+            name: get_str(s, "name"),
+            agent: get_str(s, "agent"),
+            running: get_bool(s, "running"),
+            workspace: get_opt_str(s, "workspace"),
+            created_at: get_num(s, "createdAt").unwrap_or(0),
+        }
+    }
+}
+
 /// The Docker engine VM: whether it is up, and how to reach it.
 ///
 /// bsdkrun runs one `docker:dind` microVM and serves its API on a host unix

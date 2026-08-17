@@ -248,6 +248,75 @@ module Bsdkrun
       )
     end
 
+    # ---- ai agents -------------------------------------------------------------
+    #
+    # A sandbox is a machine, so its terminal is the ordinary {#shell} with the
+    # argv {#ai_shell_command} returns.
+
+    AI_AGENT_FIELDS = "id label flavor description installed running"
+    AI_SESSION_FIELDS = "id name agent running workspace createdAt"
+
+    # The coding agents, and whether each one's sandbox image is built.
+    # @return [Array<AiAgent>]
+    def ai_agents
+      data = request("{ aiAgents { #{AI_AGENT_FIELDS} } }")
+      (data["aiAgents"] || []).map { |a| AiAgent.from_graphql(a) }
+    end
+
+    # Agent sandboxes, newest first.
+    # @return [Array<AiSession>]
+    def ai_sessions
+      data = request("{ aiSessions { #{AI_SESSION_FIELDS} } }")
+      (data["aiSessions"] || []).map { |s| AiSession.from_graphql(s) }
+    end
+
+    # Start (or reuse) a sandbox; returns its machine id.
+    #
+    # @param agent [String] +claude+, +codex+, ...
+    # @param workspace [String, nil] a directory **on the engine's host**.
+    # @param new [Boolean] boot a second sandbox against the same saved login.
+    # @return [String]
+    def ai_start(agent, cpus: nil, mem: nil, workspace: nil, new: false)
+      data = request(
+        "mutation($input:AiStartInput!){ aiStart(input:$input) }",
+        { input: { agent: agent, cpus: cpus, mem: mem,
+                   workspace: workspace, new: new } }
+      )
+      data["aiStart"].to_s
+    end
+
+    # The argv that starts the agent's TUI — pass it to {#shell}.
+    # @return [Array<String>]
+    def ai_shell_command(agent, machine_id)
+      data = request(
+        "query($agent:String!,$machineId:String!){ " \
+        "aiShellCommand(agent:$agent, machineId:$machineId) }",
+        { agent: agent, machineId: machine_id }
+      )
+      Array(data["aiShellCommand"])
+    end
+
+    # Stop an agent's sandboxes. Its saved login survives.
+    # @return [CommandResult]
+    def ai_stop(agent)
+      run_command_mutation(
+        "aiStop",
+        "mutation($agent:String!){ aiStop(agent:$agent){ exitCode stdout stderr } }",
+        { agent: agent }
+      )
+    end
+
+    # Remove an agent's sandboxes, and unless +keep_home+ its saved login too.
+    # @return [CommandResult]
+    def ai_remove(agent, keep_home: false)
+      run_command_mutation(
+        "aiRemove",
+        "mutation($agent:String!,$keepHome:Boolean!){ " \
+        "aiRemove(agent:$agent, keepHome:$keepHome){ exitCode stdout stderr } }",
+        { agent: agent, keepHome: keep_home }
+      )
+    end
+
     # ---- docker --------------------------------------------------------------
     #
     # bsdkrun runs one +docker:dind+ microVM and serves its API on a host unix

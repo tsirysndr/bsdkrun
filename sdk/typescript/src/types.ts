@@ -337,6 +337,34 @@ export interface SnapshotInfo {
   createdAt: number;
 }
 
+/** A coding agent bsdkrun can sandbox. */
+export interface AiAgent {
+  /** Stable id — `claude`, `codex`, … Also the CLI alias. */
+  id: string;
+  label: string;
+  /** The catalog flavor that installs it. */
+  flavor: string;
+  description: string;
+  /**
+   * Its flavor is provisioned, so a sandbox boots in a second. False means the
+   * first launch installs a toolchain — minutes.
+   */
+  installed: boolean;
+  running: number;
+}
+
+/** One agent sandbox. It is a machine, so `logs`/`stop` work on `id`. */
+export interface AiSession {
+  id: string;
+  name: string;
+  agent: string;
+  running: boolean;
+  /** The directory shared into it, on the engine's host. */
+  workspace: string | null;
+  /** Unix epoch seconds. */
+  createdAt: number;
+}
+
 /**
  * The Docker engine VM: whether it is up, and how to reach it.
  *

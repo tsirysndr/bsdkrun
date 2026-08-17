@@ -141,6 +141,61 @@ func (s *SandboxInfo) normalize() {
 	}
 }
 
+// AiAgent is a coding agent bsdkrun can sandbox.
+//
+// Each runs in a disposable microVM with a persistent login, a shared skills
+// store, and only the folder you choose to share.
+type AiAgent struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	// Flavor is the catalog flavor that installs it.
+	Flavor      string `json:"flavor"`
+	Description string `json:"description"`
+	// Installed means its flavor is provisioned, so a sandbox boots in a
+	// second; false means the first launch installs a toolchain (minutes).
+	Installed bool  `json:"installed"`
+	Running   int64 `json:"running"`
+}
+
+// AiSession is one agent sandbox. It is a machine, so Logs/Stop work on ID.
+type AiSession struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Agent   string `json:"agent"`
+	Running bool   `json:"running"`
+	// Workspace is the directory shared into it, on the engine's host.
+	Workspace string `json:"workspace"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+func aiAgentFromGraphQL(m map[string]any) AiAgent {
+	a := AiAgent{
+		ID:          asString(m["id"]),
+		Label:       asString(m["label"]),
+		Flavor:      asString(m["flavor"]),
+		Description: asString(m["description"]),
+		Installed:   asBool(m["installed"]),
+	}
+	if n, ok := asInt(m["running"]); ok {
+		a.Running = n
+	}
+	return a
+}
+
+func aiSessionFromGraphQL(m map[string]any) AiSession {
+	s := AiSession{
+		ID:        asString(m["id"]),
+		Name:      asString(m["name"]),
+		Agent:     asString(m["agent"]),
+		Running:   asBool(m["running"]),
+		Workspace: asString(m["workspace"]),
+	}
+	if n, ok := asInt(m["createdAt"]); ok {
+		s.CreatedAt = n
+	}
+	return s
+}
+
 // DockerStatus is the Docker engine VM: whether it is up, and how to reach
 // it.
 //

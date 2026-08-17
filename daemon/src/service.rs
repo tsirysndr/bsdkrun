@@ -192,6 +192,7 @@ impl From<ops::AiSession> for AiSession {
             agent: s.agent,
             running: s.running,
             workspace: s.workspace,
+            label: s.label,
             created_at: s.created_at,
         }
     }
@@ -637,6 +638,7 @@ impl Bsdkrun for BsdkrunService {
             mem: r.mem,
             workspace: r.workspace,
             new: r.new,
+            name: r.name,
         };
         let machine_id = self.ops.ai_start(&opts).await?;
         Ok(Response::new(AiStartResponse { machine_id }))

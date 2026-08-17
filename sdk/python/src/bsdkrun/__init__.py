@@ -33,6 +33,8 @@ from .filesystem import FileSystem, FileTransferError
 from .process import BinaryResult, RawResult, run, run_binary, run_checked, spawn
 from .sandbox import Sandbox
 from .types import (
+    AiAgent,
+    AiSession,
     CommandResult,
     DockerContainer,
     DockerStatus,
@@ -93,6 +95,8 @@ __all__ = [
     "SnapshotInfo",
     "DockerStatus",
     "DockerContainer",
+    "AiAgent",
+    "AiSession",
     # errors
     "BsdkrunError",
     "BinaryNotFound",

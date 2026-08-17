@@ -186,6 +186,8 @@ pub struct Session {
     pub running: bool,
     /// The host directory shared into it, if any.
     pub workspace: Option<String>,
+    /// A user-given name for this session, when one was set.
+    pub label: Option<String>,
     pub created_at: String,
 }
 
@@ -233,18 +235,23 @@ pub fn sessions() -> Result<Vec<Session>> {
         let Some(name) = m.name.as_deref() else {
             continue;
         };
-        let Some(rest) = name.strip_prefix(MACHINE_PREFIX) else {
+        if !name.starts_with(MACHINE_PREFIX) {
+            continue;
+        }
+        let vdir = PathBuf::from(&m.state_dir);
+        // The agent comes from the state dir, not from the name: a labelled
+        // sandbox is `bsdkrun-ai-claude-refactor-auth`, and splitting that on a
+        // dash cannot tell the agent from the label.
+        let Some(agent) = agent_of(&vdir) else {
             continue;
         };
-        // `bsdkrun-ai-claude-2` → agent `claude`. Splitting on the last dash
-        // keeps agent ids with dashes working.
-        let agent = rest.rsplit_once('-').map(|(a, _)| a).unwrap_or(rest);
         out.push(Session {
             running: m.status == "running" && m.pid.map(db::pid_alive).unwrap_or(false),
-            workspace: workspace_of(&PathBuf::from(&m.state_dir)),
+            workspace: workspace_of(&vdir),
+            label: label_of(&vdir),
             id: m.id,
             name: name.to_string(),
-            agent: agent.to_string(),
+            agent,
             created_at: m.created_at,
         });
     }
@@ -265,9 +272,26 @@ pub fn running_session(agent: &str) -> Result<Option<Session>> {
     Ok(sessions_for(agent)?.into_iter().find(|s| s.running))
 }
 
-/// The next free `bsdkrun-ai-<agent>-<n>`.
-pub fn next_name(agent: &str) -> Result<String> {
-    let taken: Vec<String> = sessions_for(agent)?.into_iter().map(|s| s.name).collect();
+/// The machine name for a new sandbox: `bsdkrun-ai-<agent>-<label or n>`.
+///
+/// A label goes in the name too, so `bsdkrun logs bsdkrun-ai-claude-refactor`
+/// works — the agent is still read from the state dir, which is what keeps a
+/// dashed label unambiguous.
+pub fn next_name(agent: &str, label: Option<&str>) -> Result<String> {
+    let taken: Vec<String> = sessions()?.into_iter().map(|s| s.name).collect();
+    if let Some(label) = label.map(slug).filter(|l| !l.is_empty()) {
+        let candidate = format!("{MACHINE_PREFIX}{agent}-{label}");
+        if !taken.contains(&candidate) {
+            return Ok(candidate);
+        }
+        // A repeated label still has to produce a unique machine name.
+        for n in 2.. {
+            let candidate = format!("{MACHINE_PREFIX}{agent}-{label}-{n}");
+            if !taken.contains(&candidate) {
+                return Ok(candidate);
+            }
+        }
+    }
     for n in 1.. {
         let candidate = format!("{MACHINE_PREFIX}{agent}-{n}");
         if !taken.contains(&candidate) {
@@ -277,9 +301,64 @@ pub fn next_name(agent: &str) -> Result<String> {
     unreachable!("the loop returns on the first free name")
 }
 
-/// The file recording which host directory a sandbox shares, so `ai ls` can
-/// show it (the machine row does not carry `--mount`).
+/// A machine-name-safe form of a user's label.
+fn slug(label: &str) -> String {
+    label
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
+/// Files recording what a sandbox is, in its state dir. The machine row
+/// carries none of it, and the *name* is not a safe place to encode the agent:
+/// a user-given label like `refactor-auth` contains a dash, so parsing one out
+/// of `bsdkrun-ai-claude-refactor-auth` would be ambiguous.
 const WORKSPACE_FILE: &str = "ai-workspace";
+const AGENT_FILE: &str = "ai-agent";
+const LABEL_FILE: &str = "ai-label";
+
+/// Record which agent a sandbox runs.
+pub fn record_agent(vdir: &Path, agent: &str) {
+    let _ = std::fs::write(vdir.join(AGENT_FILE), agent.as_bytes());
+}
+
+pub fn agent_of(vdir: &Path) -> Option<String> {
+    read_trimmed(vdir.join(AGENT_FILE))
+}
+
+/// Record a user-given name for a sandbox ("refactor-auth"), shown in `ai ls`
+/// and in the panel's session switcher.
+pub fn record_label(vdir: &Path, label: Option<&str>) {
+    let f = vdir.join(LABEL_FILE);
+    match label.map(str::trim).filter(|l| !l.is_empty()) {
+        Some(l) => {
+            let _ = std::fs::write(&f, l.as_bytes());
+        }
+        None => {
+            let _ = std::fs::remove_file(&f);
+        }
+    }
+}
+
+pub fn label_of(vdir: &Path) -> Option<String> {
+    read_trimmed(vdir.join(LABEL_FILE))
+}
+
+fn read_trimmed(path: PathBuf) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
 
 pub fn record_workspace(vdir: &Path, workspace: Option<&Path>) {
     let f = vdir.join(WORKSPACE_FILE);
@@ -374,6 +453,21 @@ pub fn skills_link_script(agent: &Agent) -> String {
     )
 }
 
+/// Start the sandbox's own dockerd, if it has one and it is not already up.
+///
+/// The guest's init runs the agent, not a service manager, so nothing else
+/// would ever start it. Backgrounded and silenced: an agent that wants Docker
+/// will find it a second later, and one that does not should never see its log.
+///
+/// This is the sandbox's *own* daemon. Sharing the host's docker socket would
+/// be far easier and is exactly what must not happen — control of the host's
+/// Docker is control of the host.
+pub fn docker_start_script() -> String {
+    "if command -v dockerd >/dev/null 2>&1 && ! docker info >/dev/null 2>&1; then \
+     (dockerd >/var/log/dockerd.log 2>&1 &) ; fi"
+        .to_string()
+}
+
 /// The argv that opens an agent's TUI in its sandbox.
 ///
 /// Wrapped in a shell so the session can `cd` into the shared workspace and
@@ -397,11 +491,12 @@ pub fn tui_argv(agent: &Agent, workspace: Option<&str>) -> Vec<String> {
         format!(
             "export HOME={home}; export TERM=${{TERM:-xterm-256color}}; \
              export PATH=\"$HOME/.local/bin:/usr/local/bin:$PATH\"; \
-             {skills}; {cd}\
+             {skills}; {docker}; {cd}\
              if command -v {probe} >/dev/null 2>&1; then exec {cmd}; else \
              echo \"[bsdkrun] {label} is not installed in this sandbox\"; exec bash; fi",
             home = GUEST_HOME,
             skills = skills_link_script(agent),
+            docker = docker_start_script(),
             probe = shell_quote(agent.command[0]),
             label = agent.label,
         ),
@@ -483,6 +578,9 @@ mod tests {
         assert!(script.contains("exec claude"), "{script}");
         assert!(script.contains(".claude/skills"), "{script}");
         assert!(script.contains(".agents/skills"), "{script}");
+        // The sandbox starts its *own* dockerd — never the host's socket.
+        assert!(script.contains("dockerd"), "{script}");
+        assert!(!script.contains("/var/run/docker.sock"), "{script}");
     }
 
     #[test]
@@ -504,11 +602,11 @@ mod tests {
     }
 
     #[test]
-    fn session_names_increment_per_agent() {
-        // Names are `<prefix><agent>-<n>`; the agent is recovered by splitting
-        // on the LAST dash, which is what keeps `claude-code`-style ids working.
-        let name = format!("{MACHINE_PREFIX}claude-2");
-        let rest = name.strip_prefix(MACHINE_PREFIX).unwrap();
-        assert_eq!(rest.rsplit_once('-').unwrap().0, "claude");
+    fn labels_are_slugged_into_machine_names() {
+        assert_eq!(slug("Refactor Auth!"), "refactor-auth");
+        assert_eq!(slug("  spaced  "), "spaced");
+        assert_eq!(slug("a/b"), "a-b");
+        // A label that slugs to nothing falls back to the numbered form.
+        assert_eq!(slug("!!!"), "");
     }
 }

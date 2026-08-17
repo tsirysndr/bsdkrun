@@ -412,6 +412,71 @@
 
 
 ;; ---------------------------------------------------------------------------
+;; ai agents
+;;
+;; A sandbox is a machine, so its terminal is the ordinary shell with the argv
+;; [[ai-shell-command]] returns.
+;; ---------------------------------------------------------------------------
+
+(def ^:private ai-agent-fields "id label flavor description installed running")
+(def ^:private ai-session-fields "id name agent running workspace createdAt")
+
+(defn ai-agents
+  "The coding agents, and whether each one's sandbox image is built."
+  [client]
+  (let [data (request client (str "{ aiAgents { " ai-agent-fields " } }"))]
+    (mapv types/ai-agent-from-graphql (get data "aiAgents"))))
+
+(defn ai-sessions
+  "Agent sandboxes, newest first."
+  [client]
+  (let [data (request client (str "{ aiSessions { " ai-session-fields " } }"))]
+    (mapv types/ai-session-from-graphql (get data "aiSessions"))))
+
+(defn ai-start!
+  "Start (or reuse) a sandbox; returns its machine id.
+
+  `:workspace` is a path **on the engine's host** — a remote daemon cannot see
+  your own filesystem. `:new` boots a second sandbox against the same login."
+  ([client agent] (ai-start! client agent {}))
+  ([client agent {:keys [cpus mem workspace new]}]
+   (let [data (request client
+                        "mutation($input:AiStartInput!){ aiStart(input:$input) }"
+                        {:input {:agent agent
+                                 :cpus cpus
+                                 :mem mem
+                                 :workspace workspace
+                                 :new (boolean new)}})]
+     (str (get data "aiStart")))))
+
+(defn ai-shell-command
+  "The argv that starts the agent's TUI — pass it to the shell."
+  [client agent machine-id]
+  (let [data (request client
+                       (str "query($agent:String!,$machineId:String!){ "
+                            "aiShellCommand(agent:$agent, machineId:$machineId) }")
+                       {:agent agent :machineId machine-id})]
+    (vec (get data "aiShellCommand"))))
+
+(defn ai-stop!
+  "Stop an agent's sandboxes. Its saved login survives."
+  [client agent]
+  (command-result-mutation!
+   client "aiStop"
+   "mutation($agent:String!){ aiStop(agent:$agent){ exitCode stdout stderr } }"
+   {:agent agent}))
+
+(defn ai-remove!
+  "Remove an agent's sandboxes, and unless `:keep-home` its saved login too."
+  ([client agent] (ai-remove! client agent {}))
+  ([client agent {:keys [keep-home]}]
+   (command-result-mutation!
+    client "aiRemove"
+    (str "mutation($agent:String!,$keepHome:Boolean!){ "
+         "aiRemove(agent:$agent, keepHome:$keepHome){ exitCode stdout stderr } }")
+    {:agent agent :keepHome (boolean keep-home)})))
+
+;; ---------------------------------------------------------------------------
 ;; docker
 ;;
 ;; bsdkrun runs one `docker:dind` microVM and serves its API on a host unix

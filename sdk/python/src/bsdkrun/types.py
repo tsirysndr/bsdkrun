@@ -27,6 +27,8 @@ __all__ = [
     "SnapshotInfo",
     "DockerStatus",
     "DockerContainer",
+    "AiAgent",
+    "AiSession",
 ]
 
 
@@ -121,6 +123,66 @@ class SnapshotInfo:
             size=row.get("size"),
             created_at=int(row.get("created_at") or 0),
         )
+
+
+@dataclass(frozen=True)
+class AiAgent:
+    """A coding agent bsdkrun can sandbox.
+
+    Each runs in a disposable microVM with a persistent login, a shared skills
+    store, and only the folder you choose to share.
+    """
+
+    id: str
+    label: str
+    #: The catalog flavor that installs it.
+    flavor: str
+    description: str
+    #: Its flavor is provisioned, so a sandbox boots in a second. False means
+    #: the first launch installs a toolchain — minutes.
+    installed: bool
+    running: int
+
+    @classmethod
+    def from_graphql(cls, a: Mapping[str, Any]) -> AiAgent:
+        return cls(
+            id=str(a.get("id") or ""),
+            label=str(a.get("label") or ""),
+            flavor=str(a.get("flavor") or ""),
+            description=str(a.get("description") or ""),
+            installed=bool(a.get("installed")),
+            running=int(a.get("running") or 0),
+        )
+
+    #: `bsdkrun ai agents --json` uses the same field names.
+    from_row = from_graphql
+
+
+@dataclass(frozen=True)
+class AiSession:
+    """One agent sandbox. It is a machine, so ``logs``/``stop`` work on ``id``."""
+
+    id: str
+    name: str
+    agent: str
+    running: bool
+    #: The directory shared into it, on the engine's host.
+    workspace: str | None
+    created_at: int
+
+    @classmethod
+    def from_graphql(cls, s: Mapping[str, Any]) -> AiSession:
+        created = s.get("createdAt", s.get("created_at"))
+        return cls(
+            id=str(s.get("id") or ""),
+            name=str(s.get("name") or ""),
+            agent=str(s.get("agent") or ""),
+            running=bool(s.get("running")),
+            workspace=s.get("workspace"),
+            created_at=int(created or 0),
+        )
+
+    from_row = from_graphql
 
 
 @dataclass(frozen=True)

@@ -40,6 +40,33 @@ object Types:
     /** `"running"` or `"exited"`, the way the CLI's table renders it. */
     def status: String = if running then "running" else "exited"
 
+  /** A coding agent bsdkrun can sandbox.
+    *
+    * Each runs in a disposable microVM with a persistent login, a shared skills
+    * store, and only the folder you choose to share.
+    */
+  final case class AiAgent(
+      id: String,
+      label: String,
+      /** The catalog flavor that installs it. */
+      flavor: String,
+      description: String,
+      /** Its flavor is provisioned, so a sandbox boots in a second. */
+      installed: Boolean,
+      running: Long
+  )
+
+  /** One agent sandbox. It is a machine, so `logs`/`stop` work on `id`. */
+  final case class AiSession(
+      id: String,
+      name: String,
+      agent: String,
+      running: Boolean,
+      /** The directory shared into it, on the engine's host. */
+      workspace: Option[String],
+      createdAt: Option[Long]
+  )
+
   /** The Docker engine VM: whether it is up, and how to reach it.
     *
     * bsdkrun runs one `docker:dind` microVM and serves its API on a host unix
@@ -199,6 +226,28 @@ object Types:
       createdAt = optLong(v, "created_at").orElse(optLong(v, "createdAt")),
       finishedAt = optLong(v, "finished_at").orElse(optLong(v, "finishedAt")),
       origin = optStr(v, "origin")
+    )
+
+  /** A GraphQL `AiAgent`, or an `ai agents --json` row. */
+  def aiAgent(v: Value): AiAgent =
+    AiAgent(
+      id = str(v, "id"),
+      label = str(v, "label"),
+      flavor = str(v, "flavor"),
+      description = str(v, "description"),
+      installed = bool(v, "installed"),
+      running = optLong(v, "running").getOrElse(0L)
+    )
+
+  /** A GraphQL `AiSession`, or an `ai ls --json` row. */
+  def aiSession(v: Value): AiSession =
+    AiSession(
+      id = str(v, "id"),
+      name = str(v, "name"),
+      agent = str(v, "agent"),
+      running = bool(v, "running"),
+      workspace = optStr(v, "workspace"),
+      createdAt = optLong(v, "created_at").orElse(optLong(v, "createdAt"))
     )
 
   /** A GraphQL `DockerStatus`, or a `docker status --json` row — both spellings

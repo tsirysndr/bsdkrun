@@ -559,6 +559,11 @@ pub struct AiRunArgs {
     #[arg(long)]
     pub new: bool,
 
+    /// Name this session, e.g. `--name refactor-auth`. Shown in `ai ls` and in
+    /// the desktop's session switcher.
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
+
     /// Start it in the background and print its id, instead of attaching.
     #[arg(short = 'd', long)]
     pub detach: bool,
@@ -599,6 +604,11 @@ pub struct AiStartArgs {
     #[arg(long)]
     pub new: bool,
 
+    /// Name this session, e.g. `--name refactor-auth`. Shown in `ai ls` and in
+    /// the desktop's session switcher; also used for the machine's name.
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
+
     /// Start it in the background and print its id, instead of attaching.
     #[arg(short = 'd', long)]
     pub detach: bool,
@@ -615,6 +625,7 @@ impl AiRunArgs {
             workspace: self.workspace,
             no_workspace: self.no_workspace,
             new: self.new,
+            name: self.name,
             detach: self.detach,
         }
     }

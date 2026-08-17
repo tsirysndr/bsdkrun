@@ -157,6 +157,53 @@ module Bsdkrun
     end
   end
 
+  # A coding agent bsdkrun can sandbox.
+  #
+  # Each runs in a disposable microVM with a persistent login, a shared skills
+  # store, and only the folder you choose to share.
+  AiAgent = Data.define(
+    :id, :label, :flavor, :description, :installed, :running
+  ) do
+    # @param a [Hash]
+    # @return [AiAgent]
+    def self.from_graphql(a)
+      new(
+        id: a["id"].to_s,
+        label: a["label"].to_s,
+        flavor: a["flavor"].to_s,
+        description: (a["description"] || "").to_s,
+        installed: !!a["installed"],
+        running: a["running"].to_i
+      )
+    end
+
+    class << self
+      alias from_row from_graphql
+    end
+  end
+
+  # One agent sandbox. It is a machine, so +logs+/+stop+ work on +id+.
+  AiSession = Data.define(
+    :id, :name, :agent, :running, :workspace, :created_at
+  ) do
+    # @param s [Hash]
+    # @return [AiSession]
+    def self.from_graphql(s)
+      new(
+        id: s["id"].to_s,
+        name: s["name"].to_s,
+        agent: s["agent"].to_s,
+        running: !!s["running"],
+        workspace: s["workspace"],
+        created_at: (s["createdAt"] || s["created_at"]).to_i
+      )
+    end
+
+    class << self
+      alias from_row from_graphql
+    end
+  end
+
   # The Docker engine VM: whether it is up, and how to reach it.
   #
   # bsdkrun runs one +docker:dind+ microVM and serves its API on a host unix

@@ -57,6 +57,7 @@ one CLI, no daemon required.
   - [`nanos`](#nanos--boot-a-nanos-nanovms-unikernel)
   - [`solo5` / `mirage`](#solo5--mirage--run-a-mirageos-solo5-unikernel)
 - [Managing machines](#managing-machines)
+- [AI coding agents in sandboxes](#ai-coding-agents-in-sandboxes)
 - [Docker — replace Docker Desktop](#docker--replace-docker-desktop)
 - [Snapshots, branches & restore](#snapshots-branches--restore)
 - [Flavors — preconfigured environments & snapshots](#flavors--preconfigured-environments--snapshots)
@@ -107,6 +108,10 @@ one CLI, no daemon required.
   microVMs from one base image instantly; named persistent volumes (`-v`), host bind mounts
   (`--mount`), [extra disks](#disks) (`--attach-disk`), and [`grow`](#resizing-the-disk) to enlarge
   images.
+- **AI coding agents, sandboxed** — [`bsdkrun claude`](#ai-coding-agents-in-sandboxes)
+  (or codex / gemini / opencode / crush / copilot / kilo / qwen) runs a coding agent in
+  a microVM that sees only the folder you share. Logins persist per agent, skills are
+  shared across all of them, and each sandbox ships git, Docker and Nix.
 - **Docker Desktop, replaced** — [`bsdkrun docker start`](#docker--replace-docker-desktop)
   runs a Docker engine in a microVM and serves its API on a host socket, so your own
   `docker`, `compose` and `buildx` drive it unchanged: published container ports are
@@ -1119,6 +1124,69 @@ If `exec` times out, check inside the guest that networking is up (`ifconfig` sh
 
 > The FreeBSD binary is dynamically linked for FreeBSD 14+; the NetBSD binary is built natively on
 > NetBSD 10.
+
+---
+
+## AI coding agents in sandboxes
+
+`bsdkrun claude` boots a microVM, shares the directory you ran it in, and drops
+you into Claude Code. The agent can run anything it likes in there — install
+packages, start containers, delete files — and it cannot reach the rest of your
+machine.
+
+```sh
+cd ~/code/my-app
+bsdkrun claude                  # or codex / gemini / opencode / crush / copilot / kilo / qwen
+
+bsdkrun ai agents               # who's available, and whether each is installed
+bsdkrun ai ls                   # sandboxes, grouped by project
+bsdkrun claude --new --name review   # a second session, same saved login
+bsdkrun claude --repo https://github.com/owner/api   # clone instead of sharing
+bsdkrun claude --no-workspace   # share nothing at all
+bsdkrun ai rm claude            # remove its sandboxes and saved login
+```
+
+**Three kinds of state, split on purpose**, because they have different
+lifetimes and different blast radii:
+
+| State | Lives in | Why there |
+| ----- | -------- | --------- |
+| The agent's login | a per-agent volume mounted at `$HOME` | log in once per agent, not once per session — `--new` starts a second sandbox against the same login |
+| Skills | one host directory, mounted into **every** sandbox | a skill installed once is visible to every agent, in both directions |
+| Your code | nothing, unless you say so | the sandbox is the product; access is a deliberate act |
+
+**Skills are shared.** `~/.agents/skills` — the cross-agent convention — is
+mounted into every sandbox, and each agent's own skills path is symlinked at
+it. Install a skill on the host and Claude, Codex and Gemini all see it;
+install one *from inside* a sandbox and it appears on the host.
+
+**Each sandbox comes with a toolchain**: git, Docker (its own daemon, started
+for you) and Determinate Nix. An agent that has to install Docker before it can
+run your tests is an agent you wait for.
+
+**Your git identity comes along.** `user.name` and `user.email` are read from
+your host config, and `~/.ssh` is mounted **read-only** so `git push` works with
+the keys you already use.
+
+> **What that costs.** Read-only stops an agent rewriting your SSH config; it
+> does **not** stop it reading a private key. `--no-ssh` opts out, and a sandbox
+> without it can still clone over HTTPS. Sharing your whole `$HOME` as a
+> workspace is refused outright.
+
+**In the desktop app and the web UI** there's a right-hand panel (⌘J) with the
+agent's TUI, an agent dropdown, a folder picker, a git-clone button, and a
+searchable session switcher grouped by project. Hiding the panel keeps the
+session running.
+
+**Where paths resolve.** `--workspace` names a directory on the machine running
+the *engine*. Driving a remote `bsdkrund`, that's the VPS — your laptop's
+filesystem isn't reachable from it, so use `--repo` (the clone happens inside
+the sandbox) or a path on that host.
+
+> The first launch of an agent installs its toolchain. bsdkrun pulls a prebuilt
+> image from `ghcr.io/tsirysndr` when one exists, and otherwise provisions a VM
+> once and caches it — the CLI streams the build, the UIs show it in a progress
+> log.
 
 ---
 

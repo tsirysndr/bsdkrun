@@ -1,6 +1,6 @@
 ---
 name: bsdkrun-cli
-description: Reference for the bsdkrun CLI — a Firecracker-style microVM launcher for FreeBSD, NetBSD, and Linux (OCI) guests on macOS/Linux, built on libkrun. Also replaces Docker Desktop: `bsdkrun docker` runs a Docker engine in a microVM and serves its API on a host socket, so the normal `docker`/`compose`/`buildx` CLIs drive it. Use when running, managing, networking, snapshotting, or troubleshooting bsdkrun machines or its Docker engine, or when writing commands/scripts against the CLI. Covers every subcommand and its flags.
+description: Reference for the bsdkrun CLI — a Firecracker-style microVM launcher for FreeBSD, NetBSD, and Linux (OCI) guests on macOS/Linux, built on libkrun. Also replaces Docker Desktop (`bsdkrun docker` runs a Docker engine in a microVM and serves its API on a host socket, so the normal `docker`/`compose`/`buildx` CLIs drive it) and sandboxes AI coding agents (`bsdkrun claude`, `codex`, `gemini`, … each in its own microVM). Use when running, managing, networking, snapshotting, or troubleshooting bsdkrun machines or its Docker engine, or when writing commands/scripts against the CLI. Covers every subcommand and its flags.
 license: MIT
 metadata:
   author: tsirysndr
@@ -46,6 +46,18 @@ Interact:
 - `bsdkrun doctor [--json]` — check the host can run machines; exits 1 on any failure.
 - `bsdkrun shell <id>` — attach an interactive console to a detached machine.
 - `bsdkrun logs [-f] [--boot] <id>` — show the console log (`--boot` = bsdkrun's own boot log).
+
+AI coding agents (sandboxed, one microVM each):
+- `bsdkrun claude` — Claude Code in a sandbox that shares the current directory; also
+  `codex`, `gemini`, `opencode`, `crush`, `copilot`, `kilo`, `qwen`.
+- `bsdkrun ai agents [--json]` — the agents, and whether each one's image is built.
+- `bsdkrun ai ls [--json]` — sandboxes, grouped by project.
+- `bsdkrun ai start <agent> [--workspace PATH] [--repo URL] [--name N] [--project P] [--new] [-d]`
+- `bsdkrun ai stop|rm <agent>` — `rm` also drops the saved login unless `--keep-home`.
+- Per-agent `$HOME` volume (login persists), `~/.agents/skills` shared into **every**
+  sandbox, host git identity + read-only `~/.ssh` injected, and git/Docker/Nix
+  preinstalled. `--no-workspace` shares nothing; `--no-ssh` withholds the keys.
+- Paths resolve on the *engine's* host — for a remote daemon use `--repo`.
 
 Docker (a Docker engine in a microVM, driven by the host's own `docker` CLI):
 - `bsdkrun docker start [--cpus N] [--mem M] [--disk-size 60G] [--mount PATH]` — boot (or

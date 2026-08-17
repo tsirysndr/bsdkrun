@@ -146,6 +146,55 @@ Show the guest console log. `-f/--follow` streams live; `--boot` shows bsdkrun's
 
 ---
 
+## AI coding agents (`bsdkrun ai`, `bsdkrun claude`, …)
+
+A coding agent in a disposable microVM. It sees the folder you share and nothing
+else of your machine. Eight agents: `claude`, `codex`, `gemini`, `opencode`, `crush`,
+`copilot`, `kilo`, `qwen`.
+
+Three kinds of state, deliberately separated: the **login** lives on a per-agent volume
+mounted at `$HOME` (so a second session does not re-authenticate); **skills** live in one
+host directory (`~/.agents/skills`) mounted into every sandbox with each agent's own
+skills path symlinked at it; **your code** is shared only when you ask.
+
+Each sandbox ships git, Docker (its own daemon, started automatically — never the host's
+socket) and Determinate Nix. The host's git identity is applied, and `~/.ssh` is mounted
+read-only so `git push` works.
+
+### `bsdkrun <agent>` (e.g. `bsdkrun claude`)
+Boot or reuse a sandbox, share the current directory, and attach to the agent's TUI.
+- `--workspace PATH` — share this directory instead of the current one.
+- `--no-workspace` — share nothing.
+- `--repo URL` — clone a repository *inside* the sandbox and start there. Needs no
+  access to your filesystem, so it is how you hand a **remote** engine a codebase.
+- `--name NAME` — name the session (shown in `ai ls` and the desktop switcher).
+- `--project P` — group it; defaults to the shared folder's (or repo's) name.
+- `--new` — a second sandbox against the same saved login.
+- `--no-ssh` — do not share `~/.ssh`.
+- `-d` — start it in the background and print its id instead of attaching.
+- `--cpus N` / `--mem M`.
+
+### `ai agents [--json]`
+Every agent, with `installed` (its image is built, so a sandbox boots in a second).
+
+### `ai ls [--json]`
+Sandboxes, grouped by project, with state and shared folder.
+
+### `ai start <agent> [OPTIONS]`
+The same as the aliases above, naming the agent explicitly.
+
+### `ai stop <agent>` / `ai rm <agent> [--keep-home]`
+`stop` powers its sandboxes off; the saved login survives. `rm` removes the sandboxes
+*and* the login unless `--keep-home`.
+
+> A sandbox is a machine: `ps`, `logs`, `stop`, `rm` and `exec` all work on its id, and
+> a single session can be deleted with `bsdkrun rm <id>`.
+
+> **Where paths resolve.** `--workspace` names a directory on the machine running the
+> engine. Driving a remote `bsdkrund`, that is the remote host.
+
+---
+
 ## Docker (`bsdkrun docker`)
 
 A Docker engine in a microVM, with its API served on a host unix socket so the *host's*
@@ -330,6 +379,11 @@ the macOS cache filesystem is case-insensitive. `init --size <SIZE>` creates it 
 custom ceiling; `status` reports its state and disk use; `attach`/`detach [-f]` manage the mount;
 `rm -f` permanently deletes the store, cached images, and volumes. Stop running machines before
 initialization or detachment.
+
+### `image rm [-f] <IMAGE>...`
+Remove a **dangling** image (one no machine references) and its extracted rootfs.
+Refused when a machine still uses it — that machine's rootfs is what would go — unless
+`-f`, after which it will not boot. `images --json` reports `used_by`.
 
 ### `images [--json]`
 List downloaded images.

@@ -364,11 +364,20 @@ pub fn catalog() -> &'static [CatalogFlavor] {
         CatalogFlavor {
             name: "gleam",
             category: "language",
-            description: "Gleam on the BEAM (installed via Nix).",
-            base: Base::Oci("debian:12-slim"),
+            description: "Gleam 1.18 on the BEAM (official image).",
+            // The project's own image rather than debian + Nix. It is
+            // `erlang:latest` plus the gleam binary, so erlang and rebar3 —
+            // the whole reason the Nix list existed — are already in it, and a
+            // launch pulls instead of provisioning. Multi-arch (verified
+            // linux/amd64 + linux/arm64), which the Nix path got for free and
+            // a single-arch image would have quietly broken on Apple silicon.
+            //
+            // Pinned to a release tag: `latest` here would change the language
+            // version under a project without anything in this repo moving.
+            base: Base::Oci("ghcr.io/gleam-lang/gleam:v1.18.1-erlang"),
             ports: NONE,
             env: NONE,
-            nix: &["gleam", "erlang", "rebar3"],
+            nix: NONE,
             provision: NONE,
         },
         CatalogFlavor {
@@ -455,6 +464,38 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             provision: provision![
                 apt!["git"],
                 npm!["@qwen-code/qwen-code"],
+                docker_engine!(),
+                nix_engine!(),
+            ],
+        },
+        CatalogFlavor {
+            name: "kiro-cli",
+            category: "ai",
+            description: "Kiro CLI — AWS's agentic coding CLI.",
+            base: Base::Oci("node:22"),
+            ports: NONE,
+            env: NONE,
+            nix: NONE,
+            // The one agent installed by `curl | bash` rather than a package
+            // manager. AWS ships Kiro CLI as a zip from its own CDN
+            // (`prod.download.cli.kiro.dev/stable/latest/kirocli-<arch>-linux.zip`,
+            // verified present for both aarch64 and x86_64); the `kiro-cli` npm
+            // package is an unrelated 0.0.1 placeholder installing a `kirox`
+            // binary, so npm would produce a flavor whose agent does not exist.
+            //
+            // `unzip` is what the installer needs and what it fails on — it
+            // checks for it up front and exits, which in a build reads as a
+            // download problem.
+            //
+            // `--force` skips its "existing installation found" branch, the
+            // only path that reads from /dev/tty. There is no tty in a build,
+            // and a rebuild over a cached layer is exactly when it would hit.
+            provision: provision![
+                apt!["git", "curl", "unzip"],
+                "curl -fsSL https://cli.kiro.dev/install | bash -s -- --force",
+                // The installer puts it in ~/.local/bin, which is not on PATH
+                // in a non-login shell — where the sandbox's wrapper runs it.
+                "ln -sf \"$HOME/.local/bin/kiro-cli\" /usr/local/bin/kiro-cli",
                 docker_engine!(),
                 nix_engine!(),
             ],
@@ -583,6 +624,23 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             category: "service",
             description: "Redis 7 in-memory data store.",
             base: Base::Oci("redis:7"),
+            ports: &["6379:6379"],
+            env: NONE,
+            nix: NONE,
+            provision: NONE,
+        },
+        CatalogFlavor {
+            name: "dragonfly",
+            category: "service",
+            description: "DragonflyDB 1.40 — Redis-compatible in-memory store.",
+            // Pinned, and from ghcr.io rather than Docker Hub: the Hub mirror
+            // `dragonflydb/dragonfly` has not moved since v1.27.1 and is
+            // amd64-only, so on Apple silicon it would either fail to pull or
+            // land an emulated guest. The ghcr image is multi-arch (verified
+            // linux/amd64 + linux/arm64 for v1.40.1).
+            base: Base::Oci("ghcr.io/dragonflydb/dragonfly:v1.40.1"),
+            // The Redis port, because that is the point: existing clients
+            // connect without knowing what is answering.
             ports: &["6379:6379"],
             env: NONE,
             nix: NONE,

@@ -535,7 +535,8 @@ pub enum AiCmd {
 
 #[derive(Parser, Serialize, Deserialize)]
 pub struct AiUploadArgs {
-    /// What to send: `skills`, `ssh`, or `workspace` (the current directory).
+    /// What to send: `skills`, `ssh`, `git`, or `workspace` (the current
+    /// directory). `git` is your `user.name` and `user.email`.
     #[arg(long, value_name = "KIND", default_value = "workspace")]
     pub what: String,
 
@@ -565,7 +566,7 @@ pub struct AiUploadArgs {
 
 #[derive(Parser, Serialize, Deserialize)]
 pub struct AiReceiveArgs {
-    /// `skills`, `ssh` or `workspace`.
+    /// `skills`, `ssh`, `git` or `workspace`.
     #[arg(long, value_name = "KIND")]
     pub what: String,
 

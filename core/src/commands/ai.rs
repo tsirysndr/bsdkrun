@@ -174,21 +174,30 @@ pub(crate) fn cmd_upload(
     let kind = upload::Kind::parse(what)?;
     let agent = ai::require(agent)?;
 
-    let source = kind.local_source(dir.map(std::path::Path::new))?;
-    if !source.is_dir() {
-        anyhow::bail!(
-            "{} does not exist — there is nothing to upload",
-            source.display()
-        );
-    }
+    // `git` is synthesized from `git config` rather than read off disk — see
+    // `pack_git_identity` for why it is two values and not `~/.gitconfig`.
+    let (packed, source) = if kind == upload::Kind::Git {
+        (upload::pack_git_identity()?, None)
+    } else {
+        let source = kind.local_source(dir.map(std::path::Path::new))?;
+        if !source.is_dir() {
+            anyhow::bail!(
+                "{} does not exist — there is nothing to upload",
+                source.display()
+            );
+        }
+        (upload::pack(&source, all)?, Some(source))
+    };
 
-    let packed = upload::pack(&source, all)?;
     // The name has to be settled before the upload, not after: it decides the
     // destination directory, and re-deriving it on the far side from a tar
     // would be a second, silently different answer.
-    let name = name
-        .map(|n| n.to_string())
-        .or_else(|| source.file_name().map(|n| n.to_string_lossy().into_owned()));
+    let name = name.map(|n| n.to_string()).or_else(|| {
+        source
+            .as_ref()
+            .and_then(|s| s.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+    });
     let dest = upload::receive(kind, agent.id, name.as_deref(), &packed.bytes)?;
 
     if json {
@@ -202,6 +211,21 @@ pub(crate) fn cmd_upload(
                 "bytes": packed.size,
                 "skipped": packed.skipped,
             })
+        );
+        return Ok(());
+    }
+
+    if kind == upload::Kind::Git {
+        let (name, email) = ai::git_identity();
+        println!(
+            "uploaded git identity to {}: {} <{}>",
+            dest.join(".gitconfig").display(),
+            name.as_deref().unwrap_or("(no name)"),
+            email.as_deref().unwrap_or("(no email)")
+        );
+        println!(
+            "every {} sandbox on this engine commits as that.",
+            agent.label
         );
         return Ok(());
     }

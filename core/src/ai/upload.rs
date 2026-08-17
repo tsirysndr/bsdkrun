@@ -39,6 +39,8 @@ pub enum Kind {
     Ssh,
     /// A project directory, into a workspace the sandbox can mount.
     Workspace,
+    /// `user.name` and `user.email`, so commits made in the sandbox are yours.
+    Git,
 }
 
 impl Kind {
@@ -47,7 +49,10 @@ impl Kind {
             "skills" => Ok(Kind::Skills),
             "ssh" => Ok(Kind::Ssh),
             "workspace" | "project" | "dir" => Ok(Kind::Workspace),
-            other => anyhow::bail!("unknown upload kind {other:?} (skills | ssh | workspace)"),
+            "git" | "gitconfig" | "identity" => Ok(Kind::Git),
+            other => {
+                anyhow::bail!("unknown upload kind {other:?} (skills | ssh | workspace | git)")
+            }
         }
     }
 
@@ -56,6 +61,24 @@ impl Kind {
             Kind::Skills => "skills",
             Kind::Ssh => "ssh",
             Kind::Workspace => "workspace",
+            Kind::Git => "git",
+        }
+    }
+
+    /// Whether receiving this kind replaces its destination.
+    ///
+    /// Not a blanket rule, because getting it wrong is unrecoverable: `Git`
+    /// lands *in the home volume root*, which also holds the agent's saved
+    /// login, and clearing that would sign you out of every session on the
+    /// engine. `Skills` is a shared store other agents may have added to.
+    fn replaces_destination(self) -> bool {
+        match self {
+            // A workspace must match the local tree exactly — a file deleted
+            // here and left there is the kind of difference that wastes an
+            // afternoon. `.ssh` lands in its own subdirectory, so replacing it
+            // touches nothing else.
+            Kind::Workspace | Kind::Ssh => true,
+            Kind::Skills | Kind::Git => false,
         }
     }
 
@@ -72,6 +95,8 @@ impl Kind {
                 Some(w) => Ok(w.to_path_buf()),
                 None => std::env::current_dir().context("resolving the directory to upload"),
             },
+            // Synthesized from `git config`, not read from a directory.
+            Kind::Git => Ok(home),
         }
     }
 }
@@ -195,6 +220,60 @@ fn refuse_wholesale(source: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Pack the local git identity as a one-file `.gitconfig`.
+///
+/// Two values, not the whole `~/.gitconfig`. A real gitconfig is full of
+/// things that are true only on the machine that wrote it — an
+/// `osxkeychain` credential helper that does not exist on Linux, signing keys
+/// that are not in the sandbox, `includeIf` paths pointing at directories the
+/// guest has never seen. Shipping it wholesale produces a sandbox where `git
+/// commit` fails for reasons the uploaded file does not obviously explain.
+///
+/// This matters only for a remote engine. Locally, [`super::git_identity`]
+/// already reads the same two values and the sandbox wrapper sets them at
+/// startup — but it reads them on the *engine's* host, so against a VPS it
+/// finds an empty config and commits come out as `root@<container-id>`.
+pub fn pack_git_identity() -> Result<Packed> {
+    let (name, email) = super::git_identity();
+    if name.is_none() && email.is_none() {
+        anyhow::bail!(
+            "no git identity to upload — `git config --global user.name` and \
+             `user.email` are both unset on this machine"
+        );
+    }
+
+    let mut config = String::from("# Uploaded by `bsdkrun ai upload --what git`.\n[user]\n");
+    if let Some(name) = &name {
+        config.push_str(&format!("\tname = {name}\n"));
+    }
+    if let Some(email) = &email {
+        config.push_str(&format!("\temail = {email}\n"));
+    }
+
+    let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut builder = tar::Builder::new(gz);
+    let mut header = tar::Header::new_gnu();
+    header.set_size(config.len() as u64);
+    header.set_mode(0o644);
+    header.set_mtime(0);
+    header.set_cksum();
+    builder
+        .append_data(&mut header, ".gitconfig", config.as_bytes())
+        .context("packing the git identity")?;
+    let bytes = builder
+        .into_inner()
+        .context("finishing the git identity archive")?
+        .finish()
+        .context("compressing the git identity archive")?;
+
+    Ok(Packed {
+        bytes,
+        files: 1,
+        size: config.len() as u64,
+        skipped: Vec::new(),
+    })
 }
 
 /// Tar a local directory, gzipped, skipping build output unless `everything`.
@@ -426,6 +505,9 @@ pub fn destination(kind: Kind, agent: &str, name: Option<&str>) -> Result<PathBu
         // Into the agent's home volume, which every sandbox of that agent
         // mounts at $HOME — so the keys are there for this session and the next.
         Kind::Ssh => Ok(home_dir(agent)?.join(".ssh")),
+        // The home volume root: the tar carries a single `.gitconfig`, and
+        // $HOME is where git looks for it.
+        Kind::Git => home_dir(agent),
         Kind::Workspace => {
             let name = slug(name.unwrap_or("workspace"));
             let dir = db::state_dir()?.join("ai-workspaces").join(name);
@@ -442,7 +524,7 @@ pub fn destination(kind: Kind, agent: &str, name: Option<&str>) -> Result<PathBu
 /// is a shared store other agents may have added to.
 pub fn receive(kind: Kind, agent: &str, name: Option<&str>, tar_gz: &[u8]) -> Result<PathBuf> {
     let dest = destination(kind, agent, name)?;
-    if kind != Kind::Skills {
+    if kind.replaces_destination() {
         crate::host::force_remove_dir_all(&dest);
     }
     std::fs::create_dir_all(&dest).with_context(|| format!("creating {}", dest.display()))?;
@@ -631,6 +713,50 @@ mod tests {
         assert!(out_all.join("secrets/key.pem").exists());
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn the_git_identity_packs_as_a_single_gitconfig() {
+        // Skipped rather than failed on a machine with no git identity — CI
+        // runners routinely have none, and this asserts about shape, not about
+        // whose name is configured.
+        let (name, email) = crate::ai::git_identity();
+        if name.is_none() && email.is_none() {
+            return;
+        }
+
+        let packed = pack_git_identity().unwrap();
+        assert_eq!(packed.files, 1);
+
+        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(&packed.bytes[..]));
+        let mut entries = archive.entries().unwrap();
+        let mut entry = entries.next().unwrap().unwrap();
+        assert_eq!(entry.path().unwrap().to_string_lossy(), ".gitconfig");
+
+        let mut body = String::new();
+        std::io::Read::read_to_string(&mut entry, &mut body).unwrap();
+        assert!(body.contains("[user]"));
+        if let Some(email) = email {
+            assert!(
+                body.contains(&email),
+                "the email must survive the round trip"
+            );
+        }
+        // Nothing else: a credential helper or signing key from the host would
+        // be broken or absent inside the guest.
+        assert!(!body.contains("credential"));
+        assert!(!body.contains("gpgsign"));
+        assert!(entries.next().is_none(), "exactly one file");
+    }
+
+    /// The one that would be unrecoverable: `git` unpacks into the home volume
+    /// root, which also holds the agent's saved login.
+    #[test]
+    fn receiving_a_git_identity_does_not_wipe_the_home_volume() {
+        assert!(!Kind::Git.replaces_destination());
+        assert!(!Kind::Skills.replaces_destination());
+        assert!(Kind::Workspace.replaces_destination());
+        assert!(Kind::Ssh.replaces_destination());
     }
 
     #[test]

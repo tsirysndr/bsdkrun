@@ -107,10 +107,6 @@ pub struct Agent {
 }
 
 /// Every agent bsdkrun can sandbox.
-///
-/// Kiro is deliberately absent: it is an IDE, and the `kiro-cli` npm package is
-/// a 0.0.1 placeholder — there is no terminal CLI to run. Adding one later is a
-/// row here plus a catalog flavor.
 pub const AGENTS: &[Agent] = &[
     Agent {
         id: "claude",
@@ -175,6 +171,18 @@ pub const AGENTS: &[Agent] = &[
         command: &["qwen"],
         skills_path: ".qwen/skills",
         description: "Alibaba's terminal coding agent.",
+    },
+    // The only agent here not installed from a package registry: `kiro-cli` on
+    // npm is still a 0.0.1 placeholder whose binary is named `kirox`, so the
+    // flavor runs AWS's own installer instead. See `flavors.rs` for why that
+    // is a `curl | bash` when nothing else is.
+    Agent {
+        id: "kiro",
+        label: "Kiro CLI",
+        flavor: "kiro-cli",
+        command: &["kiro-cli"],
+        skills_path: ".kiro/skills",
+        description: "AWS's agentic coding CLI.",
     },
 ];
 
@@ -701,7 +709,10 @@ mod tests {
     fn agents_are_findable_by_id_and_by_flavor_name() {
         assert_eq!(find("claude").unwrap().id, "claude");
         assert_eq!(find("claude-code").unwrap().id, "claude");
-        assert!(find("kiro").is_none());
+        // Kiro's id and flavor name differ, which is the case this covers.
+        assert_eq!(find("kiro").unwrap().id, "kiro");
+        assert_eq!(find("kiro-cli").unwrap().id, "kiro");
+        assert!(find("nonesuch").is_none());
     }
 
     #[test]

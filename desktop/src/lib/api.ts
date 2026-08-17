@@ -92,6 +92,9 @@ export const api = {
       name: name ?? null,
       repo: repo ?? null,
     }),
+  /** Resume one stopped sandbox, streaming its boot. */
+  resumeAgent: (launchId: string, machine: string) =>
+    invoke<void>("resume_agent", { launchId, machine }),
   /** The argv that starts the agent's TUI in a sandbox. */
   aiShellCommand: (agent: string, machineId: string) =>
     invoke<string[]>("ai_shell_command", { agent, machineId }),

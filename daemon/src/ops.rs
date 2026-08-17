@@ -15,10 +15,11 @@
 
 use bsdkrun_core::api;
 use bsdkrun_core::cli::{
-    AiArgs, AiCmd, AiStartArgs, BranchArgs, BsdArgs, Command as CoreCommand, DockerArgs, DockerCmd,
-    DockerStartArgs, ExecArgs, FetchArgs, FlavorAddArgs, FlavorArgs, FlavorCmd, FlavorPrebuildArgs,
-    FlavorRunArgs, IdArgs, LinuxArgs, LogsArgs, NanosArgs, NetConfig, OsvArgs, RunConfig,
-    Solo5Args, SshArgs, SystemdArgs, TailscaleArgs, UnikraftArgs, VmConfig,
+    AiArgs, AiCmd, AiResumeArgs, AiStartArgs, BranchArgs, BsdArgs, Command as CoreCommand,
+    DockerArgs, DockerCmd, DockerStartArgs, ExecArgs, FetchArgs, FlavorAddArgs, FlavorArgs,
+    FlavorCmd, FlavorPrebuildArgs, FlavorRunArgs, IdArgs, LinuxArgs, LogsArgs, NanosArgs,
+    NetConfig, OsvArgs, RunConfig, Solo5Args, SshArgs, SystemdArgs, TailscaleArgs, UnikraftArgs,
+    VmConfig,
 };
 use bsdkrun_core::net::PortForward;
 
@@ -244,6 +245,28 @@ pub struct AiStartOpts {
     /// Needs no access to the caller's filesystem, which makes it the natural
     /// way to hand a remote engine a codebase.
     pub repo: Option<String>,
+}
+
+/// Resuming one specific stopped sandbox.
+///
+/// Distinct from [`AiStartOpts`], which reasons about an *agent* and would
+/// boot a second sandbox rather than bring back the one asked for — losing the
+/// workspace, name and project recorded against it.
+pub struct AiResumeOpts {
+    /// Machine id or name of the sandbox to resume.
+    pub machine: String,
+}
+
+impl AiResumeOpts {
+    pub fn to_command(&self) -> CoreCommand {
+        CoreCommand::Ai(AiArgs {
+            cmd: AiCmd::Resume(AiResumeArgs {
+                machine: self.machine.clone(),
+                // The caller opens its own terminal on the id this prints.
+                detach: true,
+            }),
+        })
+    }
 }
 
 impl AiStartOpts {

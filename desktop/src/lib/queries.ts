@@ -349,25 +349,27 @@ export function useStartAgent() {
       const info = agents.find((a) => a.id === agent);
       const label = info?.label ?? agent;
 
-      // Stream whenever there is something worth watching. A first install
-      // builds the flavor; a `--repo` clones inside the sandbox — both take
-      // long enough that a modal closing on submit reads as "nothing
-      // happened", and a clone that fails (bad URL, private repo, no key) has
-      // its only explanation in that output.
+      // Anything that actually boots is streamed. A first run pulls an OCI
+      // image and provisions a toolchain; even a later one boots a VM — none
+      // of which shows progress otherwise, so the panel just sat there.
+      //
+      // The exception is a reuse: `ai start` returns the running sandbox
+      // immediately, and a modal that opens and closes within a frame is
+      // noise. `info.running` is what decides it, so this never guesses.
       const cloning = !!repo?.trim();
       const installing = !info?.installed;
-      const machineId =
-        installing || cloning
-          ? await streamInstall(
-              setLaunch,
-              progressTitle(label, installing, repo),
-              agent,
-              workspace,
-              newSession,
-              name,
-              repo,
-            )
-          : await api.aiStart(agent, workspace, newSession, name, repo);
+      const reusing = !newSession && !cloning && (info?.running ?? 0) > 0;
+      const machineId = reusing
+        ? await api.aiStart(agent, workspace, newSession, name, repo)
+        : await streamInstall(
+            setLaunch,
+            progressTitle(label, installing, repo),
+            agent,
+            workspace,
+            newSession,
+            name,
+            repo,
+          );
 
       const command = await api.aiShellCommand(agent, machineId);
       setSession({
@@ -423,6 +425,7 @@ function streamInstall(
     mode: "launch",
     lines: [],
     status: "running",
+    autoClose: true,
   });
   return new Promise<string>((resolve, reject) => {
     let unlisten: (() => void) | null = null;
@@ -454,11 +457,27 @@ export function useAttachAgentSession() {
   const setSession = useSetAtom(agentSessionAtom);
   const setOpen = useSetAtom(agentPanelOpenAtom);
   const setSelected = useSetAtom(agentSelectedAtom);
+  const setLaunch = useSetAtom(launchStateAtom);
+  const qc = useQueryClient();
   return useCallback(
-    async (session: { id: string; agent: string }) => {
-      const command = await api.aiShellCommand(session.agent, session.id);
+    async (session: { id: string; agent: string; running?: boolean }) => {
       setSelected(session.agent);
       setOpen(true);
+
+      // A stopped session has to come back before there is anything to attach
+      // to — otherwise the terminal opens on a dead VM and reports "the guest
+      // agent accepted the connection but sent no output", which reads as a
+      // bug rather than as "this one is not running".
+      //
+      // `resumeAgent` waits for the guest agent and streams the boot, so the
+      // wait is visible and the terminal opens into something alive.
+      if (session.running === false) {
+        await streamResume(setLaunch, session.id);
+        qc.invalidateQueries({ queryKey: ["ai"] });
+        qc.invalidateQueries({ queryKey: qk.machines });
+      }
+
+      const command = await api.aiShellCommand(session.agent, session.id);
       setSession({
         key: `${session.id}-${Date.now()}`,
         agent: session.agent,
@@ -466,8 +485,39 @@ export function useAttachAgentSession() {
         command,
       });
     },
-    [setSession, setOpen, setSelected],
+    [setSession, setOpen, setSelected, setLaunch, qc],
   );
+}
+
+/** Resume a stopped sandbox with its boot in the progress modal. */
+function streamResume(
+  setLaunch: (s: any) => void,
+  machineId: string,
+): Promise<string> {
+  const launchId = `agent-resume-${machineId}-${Date.now()}`;
+  setLaunch({
+    launchId,
+    name: "Resuming the sandbox",
+    mode: "launch",
+    lines: [],
+    status: "running",
+    autoClose: true,
+  });
+  return new Promise<string>((resolve, reject) => {
+    let unlisten: (() => void) | null = null;
+    onFlavorDone((p) => {
+      if (p.launch_id !== launchId) return;
+      unlisten?.();
+      if (p.error) reject(new Error(p.error));
+      else resolve(p.id ?? machineId);
+    }).then((u) => {
+      unlisten = u;
+    });
+    api.resumeAgent(launchId, machineId).catch((e) => {
+      unlisten?.();
+      reject(e);
+    });
+  });
 }
 
 /** Stop one sandbox. It is a machine, so this is the ordinary machine stop. */

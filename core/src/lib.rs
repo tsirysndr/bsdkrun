@@ -189,6 +189,7 @@ pub fn dispatch(cmd: Command) -> Result<()> {
             AiCmd::Start(a) => commands::boot::cmd_ai_start(a.with_cli_cwd()),
             AiCmd::Ls(a) => commands::ai::cmd_sessions(a.json),
             AiCmd::Stop(a) => commands::ai::cmd_stop(&a.agent),
+            AiCmd::Resume(a) => commands::boot::cmd_ai_resume(&a.machine, a.detach),
             AiCmd::Rm(a) => commands::ai::cmd_rm(&a.agent, a.keep_home),
             AiCmd::ShellCommand(a) => commands::ai::cmd_shell_command(&a.agent, &a.machine),
             AiCmd::Upload(a) => commands::ai::cmd_upload(

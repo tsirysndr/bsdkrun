@@ -2674,6 +2674,57 @@ pub(crate) fn cmd_ai_start(args: AiStartArgs) -> Result<()> {
     super::guest::cmd_exec(&vm.id, &argv, &[], true)
 }
 
+/// `bsdkrun ai resume <machine>` — bring one stopped sandbox back and attach.
+///
+/// Distinct from `ai start`, which reasons about an *agent*: it would happily
+/// boot a second sandbox rather than resume the one you asked for, losing the
+/// workspace, name and project recorded against it.
+///
+/// The waiting is the point. `bsdkrun start <id>` returns once the VM is
+/// launched, and a terminal opened in that window fails with "the guest agent
+/// accepted the connection but sent no output" — the same race `cmd_ai_start`
+/// documents, reached from the other direction.
+pub(crate) fn cmd_ai_resume(machine: &str, detach: bool) -> Result<()> {
+    let db = db::Db::open()?;
+    let vm = db.find_machine(machine)?;
+
+    // The agent is recorded in the state dir rather than parsed out of the
+    // name, because a user label may contain dashes.
+    let vdir = std::path::PathBuf::from(&vm.state_dir);
+    let agent_id = ai::agent_of(&vdir).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{} is not an agent sandbox — use `bsdkrun start {}` to resume an \
+             ordinary machine",
+            vm.name.as_deref().unwrap_or(&vm.id),
+            machine
+        )
+    })?;
+    let agent = ai::require(&agent_id)?;
+
+    let running = vm.status == "running" && vm.pid.map(db::pid_alive).unwrap_or(false);
+    if !running {
+        info!(id = %vm.id, agent = agent.id, "resuming the stopped sandbox");
+        // Resumes in place, with the env and mounts recorded at first boot —
+        // which is what keeps the workspace share and the home volume.
+        cmd_start(&vm.id)?;
+    }
+
+    // Re-read: `cmd_start` forks a fresh supervisor, so the pid and status on
+    // the row read above are stale the moment it returns.
+    let vm = db::Db::open()?.find_machine(&vm.id)?;
+    wait_for_agent(&vm.id, &vm.kind, None)
+        .with_context(|| format!("waiting for the {} sandbox to come up", agent.label))?;
+
+    if detach {
+        println!("{}", vm.id);
+        return Ok(());
+    }
+
+    let workspace = ai::workspace_of(&vdir);
+    let argv = super::ai::attach_argv(agent, workspace.as_deref());
+    super::guest::cmd_exec(&vm.id, &argv, &[], true)
+}
+
 /// Boot one sandbox VM for an agent.
 fn boot_ai_sandbox(
     agent: &ai::Agent,

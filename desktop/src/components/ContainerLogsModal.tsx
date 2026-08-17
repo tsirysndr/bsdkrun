@@ -100,7 +100,7 @@ export default function ContainerLogsModal({
               }}
               // 13px/1.6 on a near-black panel: the xterm log view already
               // runs at 14px, and 11px grey was unreadable next to it.
-              className="h-[60vh] select-text overflow-auto whitespace-pre-wrap break-all rounded-lg bg-[#0a0d13] p-4 font-mono text-[13px] leading-[1.6] text-foreground-100"
+              className="h-[60vh] select-text overflow-auto whitespace-pre-wrap break-all rounded-lg p-4 font-mono text-[14px] leading-[1.65] text-foreground"
             >
               {text || (loading ? "Loading…" : "(no output yet)")}
             </pre>

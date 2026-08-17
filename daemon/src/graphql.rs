@@ -678,6 +678,21 @@ pub struct AiStartInput {
     pub repo: Option<String>,
 }
 
+impl From<AiStartInput> for ops::AiStartOpts {
+    fn from(input: AiStartInput) -> Self {
+        Self {
+            agent: input.agent,
+            cpus: input.cpus,
+            mem: input.mem,
+            workspace: input.workspace,
+            new: input.new,
+            name: input.name,
+            project: input.project,
+            repo: input.repo,
+        }
+    }
+}
+
 /// Starting the Docker engine VM. Every field is optional: the zero value is
 /// what `bsdkrun docker start` with no flags does.
 #[derive(InputObject, Default)]
@@ -1140,16 +1155,7 @@ impl Mutation {
         ctx: &Context<'_>,
         input: AiStartInput,
     ) -> async_graphql::Result<String> {
-        let opts = ops::AiStartOpts {
-            agent: input.agent,
-            cpus: input.cpus,
-            mem: input.mem,
-            workspace: input.workspace,
-            new: input.new,
-            name: input.name,
-            project: input.project,
-            repo: input.repo,
-        };
+        let opts: ops::AiStartOpts = input.into();
         api(ctx)?.ops.ai_start(&opts).await.map_err(gql_err)
     }
 
@@ -1891,6 +1897,33 @@ impl Subscription_ {
             volume: input.volume,
             repo: input.repo,
         };
+        Ok(launch_stream(api.ops.clone(), opts.to_command()))
+    }
+
+    /// Start (or reuse) an agent sandbox, streaming everything that happens on
+    /// the way: the image pull, the flavor build on a first run, and the boot.
+    ///
+    /// The mutation form (`aiStart`) returns only when the sandbox is up, which
+    /// from a UI is an unexplained wait — a first run pulls an OCI image and
+    /// provisions a toolchain, and neither has any visible progress otherwise.
+    async fn launch_agent(
+        &self,
+        ctx: &Context<'_>,
+        input: AiStartInput,
+    ) -> async_graphql::Result<impl Stream<Item = LaunchEvent>> {
+        let api = api(ctx)?;
+        let opts: ops::AiStartOpts = input.into();
+        Ok(launch_stream(api.ops.clone(), opts.to_command()))
+    }
+
+    /// Resume one stopped sandbox by id, streaming its boot.
+    async fn resume_agent(
+        &self,
+        ctx: &Context<'_>,
+        machine: String,
+    ) -> async_graphql::Result<impl Stream<Item = LaunchEvent>> {
+        let api = api(ctx)?;
+        let opts = ops::AiResumeOpts { machine };
         Ok(launch_stream(api.ops.clone(), opts.to_command()))
     }
 

@@ -513,6 +513,12 @@ pub enum AiCmd {
     Ls(AiLsArgs),
     /// Stop an agent's sandboxes. Its saved login survives.
     Stop(AiAgentArgs),
+    /// Resume one stopped sandbox by id and attach to it.
+    ///
+    /// `ai start` picks or boots a sandbox for an *agent*; this resumes the
+    /// specific one you already have, keeping its workspace, its name and its
+    /// place in a project.
+    Resume(AiResumeArgs),
     /// Remove an agent's sandboxes and (unless `--keep-home`) its saved login.
     Rm(AiRmArgs),
     /// (internal) Print the argv that starts an agent's TUI, as JSON.
@@ -531,6 +537,18 @@ pub enum AiCmd {
     /// (internal) Receive an upload on the engine's host, as a tar on stdin.
     #[command(name = "__receive", hide = true)]
     Receive(AiReceiveArgs),
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct AiResumeArgs {
+    /// The sandbox to resume (a machine id or name).
+    #[arg(value_name = "MACHINE")]
+    pub machine: String,
+
+    /// Print the id and return instead of attaching. What the UIs use: they
+    /// open their own terminal on the id.
+    #[arg(short = 'd', long)]
+    pub detach: bool,
 }
 
 #[derive(Parser, Serialize, Deserialize)]

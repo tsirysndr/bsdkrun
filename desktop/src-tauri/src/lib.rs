@@ -342,6 +342,31 @@ async fn launch_agent(
     Ok(())
 }
 
+/// Resume one stopped sandbox, streaming its boot into the progress modal.
+///
+/// `ai resume`, not `start <id>`: the latter returns as soon as the VM is
+/// launched, and a terminal opened in that window fails with "the guest agent
+/// accepted the connection but sent no output".
+#[tauri::command]
+async fn resume_agent(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    launch_id: String,
+    machine: String,
+) -> Result<(), String> {
+    let bin = state.binary().map_err(|e| e.to_string())?;
+    let args: Vec<String> = vec!["ai".into(), "resume".into(), machine, "-d".into()];
+    stream_bsdkrun(
+        app,
+        bin,
+        args,
+        launch_id,
+        true,
+        "timed out resuming the agent sandbox",
+    );
+    Ok(())
+}
+
 /// The argv that starts an agent's TUI in a sandbox, for `term_open`.
 #[tauri::command]
 async fn ai_shell_command(
@@ -1562,6 +1587,7 @@ pub fn run() {
             update_machine_network,
             stop_machine,
             restart_machine,
+            resume_agent,
             remove_machine,
             remove_image,
             remove_volume,

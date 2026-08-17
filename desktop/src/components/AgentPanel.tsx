@@ -16,6 +16,7 @@ import {
   IconBrandGit,
   IconFolder,
   IconFolderOff,
+  IconPlayerPlayFilled,
   IconPlayerStopFilled,
   IconPlus,
   IconSparkles,
@@ -263,32 +264,37 @@ export default function AgentPanel() {
             <IconBrandGit size={16} />
           </Button>
         </Tooltip>
+        {/* One button, because start and stop are the same question asked in
+            two states — and the panel only ever has one sandbox attached. */}
         <Tooltip
           content={
             session
               ? "Stop this sandbox (its login is kept)"
-              : "Nothing running to stop"
+              : `Start a ${agent?.label ?? agentId} sandbox`
           }
           placement="bottom"
         >
-          {/* Wrapped: a disabled HeroUI button swallows the pointer events a
-              Tooltip needs, so the explanation vanishes exactly when it is
-              wanted. */}
-          <span>
-            <Button
-              isIconOnly
-              size="sm"
-              variant="light"
-              isDisabled={!session || stopping}
-              isLoading={stopping}
-              onPress={stopCurrent}
-              // Danger-tinted on hover, because the neighbouring X only hides
-              // the panel — this one ends the VM, and they are one icon apart.
-              className="text-foreground-400 data-[hover=true]:text-danger"
-            >
+          <Button
+            isIconOnly
+            size="sm"
+            variant="light"
+            isDisabled={starting || stopping}
+            isLoading={starting || stopping}
+            onPress={session ? stopCurrent : () => start()}
+            // Danger-tinted on hover only when it stops: the neighbouring X
+            // merely hides the panel, and they are one icon apart.
+            className={
+              session
+                ? "text-foreground-400 data-[hover=true]:text-danger"
+                : "text-foreground-400 data-[hover=true]:text-success"
+            }
+          >
+            {session ? (
               <IconPlayerStopFilled size={15} />
-            </Button>
-          </span>
+            ) : (
+              <IconPlayerPlayFilled size={15} />
+            )}
+          </Button>
         </Tooltip>
         <Tooltip content="Switch session" placement="bottom">
           <Button

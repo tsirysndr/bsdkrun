@@ -567,15 +567,46 @@ export const api = {
    * simply takes as long as it takes; the panel shows an installing state
    * rather than a progress log.
    */
+  /**
+   * Start a sandbox, streaming the image pull, the flavor build and the boot.
+   *
+   * Not `aiStart`: that mutation returns only when the sandbox is up, and the
+   * caller waits on a `flavor://done` this never emitted — so the panel hung
+   * rather than opening a terminal. It is a subscription for the same reason
+   * `launchFlavor` is.
+   */
   launchAgent: async (
-    _launchId: string,
+    launchId: string,
     agent: string,
     workspace: string | null,
     newSession: boolean,
     name?: string,
     repo?: string,
   ): Promise<void> => {
-    await api.aiStart(agent, workspace, newSession, name, repo);
+    streamLaunch(
+      launchId,
+      "launchAgent",
+      `subscription($i:AiStartInput!){ launchAgent(input:$i){ line machineId error } }`,
+      {
+        i: {
+          agent,
+          workspace: orNull(workspace),
+          new: newSession,
+          name: orNull(name),
+          repo: orNull(repo),
+        },
+      },
+    );
+  },
+
+  /** Resume one stopped sandbox, streaming its boot. */
+  resumeAgent: async (launchId: string, machine: string): Promise<void> => {
+    streamLaunch(
+      launchId,
+      "resumeAgent",
+      `subscription($m:String!){ resumeAgent(machine:$m){ line machineId error } }`,
+      { m: machine },
+    );
   },
 
   /** The argv that starts the agent's TUI in a sandbox. */

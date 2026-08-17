@@ -177,5 +177,13 @@ export interface LaunchState {
   status: "running" | "done" | "error";
   machineId?: string | null;
   error?: string | null;
+  /**
+   * Dismiss the modal on success instead of waiting to be closed.
+   *
+   * Set for agent launches, whose result is the terminal appearing behind this
+   * modal — a flavor launch instead *offers* its result (the machine id and a
+   * button to open it), so it stays. Errors ignore this either way.
+   */
+  autoClose?: boolean;
 }
 export const launchStateAtom = atom<LaunchState | null>(null);

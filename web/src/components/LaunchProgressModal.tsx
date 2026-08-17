@@ -68,6 +68,21 @@ export default function LaunchProgressModal() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [launch?.lines.length, launch?.status]);
 
+  // An agent launch dismisses itself once it succeeds: the result is the agent
+  // appearing in the panel behind this modal, so leaving it up hides the very
+  // thing it was reporting on. A flavor launch keeps its result — there the
+  // machine id and the "open it" button *are* the outcome.
+  //
+  // Errors never auto-close, whatever the mode: the log is the only place the
+  // reason exists.
+  const autoClose = launch?.autoClose && launch.status === "done";
+  useEffect(() => {
+    if (!autoClose) return;
+    // Long enough to register as "it finished", short enough not to be a wait.
+    const t = setTimeout(() => setLaunch(null), 600);
+    return () => clearTimeout(t);
+  }, [autoClose, setLaunch]);
+
   if (!launch) return null;
   const running = launch.status === "running";
   const build = launch.mode === "build";
@@ -124,7 +139,7 @@ export default function LaunchProgressModal() {
         <ModalBody className="pb-2">
           <div
             ref={logRef}
-            className="h-72 select-text overflow-auto rounded-lg border border-white/10 bg-black/40 p-4 font-mono text-[13px] leading-[1.6] text-foreground-100"
+            className="h-72 select-text overflow-auto rounded-lg border border-white/10 p-4 font-mono text-[14px] leading-[1.65] text-foreground"
           >
             {launch.lines.length === 0 ? (
               <div className="flex items-center gap-2 text-foreground-500">

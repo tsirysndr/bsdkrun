@@ -16,6 +16,7 @@ import {
   IconBrandGit,
   IconFolder,
   IconFolderOff,
+  IconPlayerStopFilled,
   IconPlus,
   IconSparkles,
   IconX,
@@ -28,7 +29,12 @@ import {
   agentSessionAtom,
   agentWorkspaceAtom,
 } from "../state/atoms";
-import { useAiAgents, useAttachAgentSession, useStartAgent } from "../lib/queries";
+import {
+  useAiAgents,
+  useAttachAgentSession,
+  useStartAgent,
+  useStopAgentSession,
+} from "../lib/queries";
 import { useToast } from "../state/toast";
 import { HAS_NATIVE_FOLDER_PICKER, pickWorkspace } from "../lib/api";
 import TerminalPane from "./TerminalPane";
@@ -59,6 +65,7 @@ export default function AgentPanel() {
   const { data: agents = [] } = useAiAgents(open);
   const startAgent = useStartAgent();
   const attachSession = useAttachAgentSession();
+  const stopSession = useStopAgentSession();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [prompt, setPrompt] = useState<"repo" | "name" | "workspace" | null>(
     null,
@@ -69,6 +76,7 @@ export default function AgentPanel() {
   // Start the session lazily: opening the panel should not boot a VM until the
   // user has had a chance to pick an agent and a folder.
   const [starting, setStarting] = useState(false);
+  const [stopping, setStopping] = useState(false);
 
   const start = useCallback(
     async (opts?: { newSession?: boolean; name?: string; repo?: string }) => {
@@ -89,6 +97,27 @@ export default function AgentPanel() {
     },
     [agentId, workspace, startAgent, toast],
   );
+
+  /**
+   * Stop the sandbox this panel is attached to.
+   *
+   * Stop, not remove: the agent's login lives on its home volume, so the next
+   * session picks up where this one left off. `useStopAgentSession` clears the
+   * live session atom, which drops the panel back to its idle state — the
+   * terminal is showing a dead PTY the moment the VM goes away.
+   */
+  const stopCurrent = async () => {
+    if (!session) return;
+    setStopping(true);
+    try {
+      await stopSession.mutateAsync(session.machineId);
+      toast("success", "Sandbox stopped");
+    } catch (e) {
+      toast("error", "Could not stop the sandbox", String(e));
+    } finally {
+      setStopping(false);
+    }
+  };
 
   /** Apply a chosen folder: a different folder is a different sandbox. */
   const useFolder = async (dir: string) => {
@@ -233,6 +262,33 @@ export default function AgentPanel() {
           >
             <IconBrandGit size={16} />
           </Button>
+        </Tooltip>
+        <Tooltip
+          content={
+            session
+              ? "Stop this sandbox (its login is kept)"
+              : "Nothing running to stop"
+          }
+          placement="bottom"
+        >
+          {/* Wrapped: a disabled HeroUI button swallows the pointer events a
+              Tooltip needs, so the explanation vanishes exactly when it is
+              wanted. */}
+          <span>
+            <Button
+              isIconOnly
+              size="sm"
+              variant="light"
+              isDisabled={!session || stopping}
+              isLoading={stopping}
+              onPress={stopCurrent}
+              // Danger-tinted on hover, because the neighbouring X only hides
+              // the panel — this one ends the VM, and they are one icon apart.
+              className="text-foreground-400 data-[hover=true]:text-danger"
+            >
+              <IconPlayerStopFilled size={15} />
+            </Button>
+          </span>
         </Tooltip>
         <Tooltip content="Switch session" placement="bottom">
           <Button

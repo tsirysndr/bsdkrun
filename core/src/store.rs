@@ -124,6 +124,22 @@ pub fn volumes_dir() -> Result<PathBuf> {
     crate::db::volumes_dir_default()
 }
 
+/// Where machine snapshots live when the store is active.
+///
+/// A snapshot is a `clonefile` of a machine's rootfs, and `clonefile` fails
+/// `EXDEV` across volumes — a snapshot taken into `<state>/snapshots` on the
+/// boot volume would silently degrade to a byte-for-byte copy of a multi-GiB
+/// nix rootfs. Keeping snapshots on the same volume as the rootfs keeps them
+/// instant and free.
+pub fn snapshots_dir() -> Option<PathBuf> {
+    if !is_active() {
+        return None;
+    }
+    let dir = root().ok()?.join("snapshots");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
 /// Where a machine's writable rootfs clone lives when the store is active.
 ///
 /// Without `--volume` the guest's root is a per-machine CoW clone of the base

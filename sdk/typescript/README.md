@@ -386,6 +386,22 @@ return the new machine's id. `runSolo5` boots a MirageOS unikernel under the
 `stop`/`start`/`remove`/`update`/`commit` return
 a `RemoteCommandResult` (`{exitCode, stdout, stderr}`).
 
+### Snapshots
+
+A snapshot is a **copy-on-write clone of a machine's disk state** — instant to
+take, free until the two sides diverge. `branch` boots a new machine from one
+(or from a machine, which is snapshotted first); `restore`/`rollback` put one
+back, leaving the machine stopped. A BSD guest is powered off to snapshot it:
+a mounted UFS cannot be cloned consistently.
+
+```ts
+const snap = await client.snapshot(machineId, "before-upgrade");
+await client.snapshots(machineId); // newest first
+const branchId = await client.branch(snap.name, { name: "web-test" });
+await client.restore(machineId, snap.name); // or client.rollback(machineId)
+await client.removeSnapshots([snap.name]);
+```
+
 For a live terminal instead of a one-shot `exec`, use `shell()`:
 
 ```ts

@@ -331,6 +331,22 @@ client
 `CommandResult { exit_code, stdout, stderr }` — a non-zero exit there is a
 state to report, not an error.
 
+### Snapshots
+
+A snapshot is a **copy-on-write clone of a machine's disk state** — instant to
+take, free until the two sides diverge. `branch` boots a new machine from one
+(or from a machine, which is snapshotted first); `restore`/`rollback` put one
+back, leaving the machine stopped. A BSD guest is powered off to snapshot it:
+a mounted UFS cannot be cloned consistently.
+
+```rust
+let snap = client.snapshot(&id, Some("before-upgrade"), "")?;
+let all = client.snapshots(Some(&id))?; // newest first
+let branch = client.branch(&snap.name).name("web-test").launch()?;
+client.restore(&id, &snap.name, true, true)?; // or client.rollback(&id, true, true)
+client.remove_snapshots(&[snap.name])?;
+```
+
 For a live terminal instead of a one-shot `exec`, use `shell()`:
 
 ```rust

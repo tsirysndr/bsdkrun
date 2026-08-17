@@ -21,15 +21,19 @@ use serde_json::{json, Value};
 use crate::args::{strvec, NetOpts};
 use crate::error::{Error, Result};
 use crate::transport::{http_request, normalize_url, ws_url, WsTransport, TOKEN_ENV, URL_ENV};
-use crate::types::{CommandResult, RemoteExecResult, SandboxInfo, ShellSessionInfo};
+use crate::types::{
+    CommandResult, RemoteExecResult, SandboxInfo, ShellSessionInfo, SnapshotInfo,
+};
 
 // ---------------------------------------------------------------------------
 // GraphQL documents
 // ---------------------------------------------------------------------------
 
 const MACHINE_FIELDS: &str = "id name image kind command status running exitCode pid detached \
-     cpus mem volume stateDir createdAt finishedAt network netIp \
+     cpus mem volume stateDir createdAt finishedAt network netIp origin \
      ports { bind host guest }";
+const SNAPSHOT_FIELDS: &str = "id name machineId machineName kind image path parent description \
+     cpus mem size createdAt ports { bind host guest }";
 const CMD_RESULT_FIELDS: &str = "exitCode stdout stderr";
 const SESSION_FIELDS: &str = "id machineId finished truncated";
 
@@ -66,6 +70,37 @@ fn commit_mutation() -> String {
          commitMachine(id: $id, name: $name, description: $description) {{ {CMD_RESULT_FIELDS} }} }}"
     )
 }
+
+fn snapshots_query() -> String {
+    format!("query($machine: String) {{ snapshots(machine: $machine) {{ {SNAPSHOT_FIELDS} }} }}")
+}
+fn snapshot_mutation() -> String {
+    format!(
+        "mutation($id: String!, $name: String, $description: String!) {{ \
+         snapshotMachine(id: $id, name: $name, description: $description) \
+         {{ {SNAPSHOT_FIELDS} }} }}"
+    )
+}
+fn remove_snapshots_mutation() -> String {
+    format!(
+        "mutation($names: [String!]!) {{ \
+         removeSnapshots(names: $names) {{ {CMD_RESULT_FIELDS} }} }}"
+    )
+}
+fn restore_mutation() -> String {
+    format!(
+        "mutation($id: String!, $snapshot: String!, $force: Boolean!, $backup: Boolean!) {{ \
+         restoreMachine(id: $id, snapshot: $snapshot, force: $force, backup: $backup) \
+         {{ {CMD_RESULT_FIELDS} }} }}"
+    )
+}
+fn rollback_mutation() -> String {
+    format!(
+        "mutation($id: String!, $force: Boolean!, $backup: Boolean!) {{ \
+         rollbackMachine(id: $id, force: $force, backup: $backup) {{ {CMD_RESULT_FIELDS} }} }}"
+    )
+}
+const BRANCH_MUTATION: &str = "mutation($input: BranchInput!) { branchSnapshot(input: $input) }";
 
 const RUN_LINUX_MUTATION: &str = "mutation($input: RunLinuxInput!) { runLinux(input: $input) }";
 const RUN_BSD_MUTATION: &str = "mutation($input: RunBsdInput!) { runBsd(input: $input) }";
@@ -290,6 +325,91 @@ impl Client {
             json!({"id": id, "name": name, "description": description}),
         )?;
         Ok(CommandResult::from_graphql(&data["commitMachine"]))
+    }
+
+    // -- snapshots ---------------------------------------------------------
+    //
+    // A snapshot is a copy-on-write clone of a machine's disk state: instant
+    // to take, free until the two sides diverge. `branch` boots a new machine
+    // from one; `restore`/`rollback` put one back.
+
+    /// Snapshots, newest first. `machine` narrows to one machine's.
+    pub fn snapshots(&self, machine: Option<&str>) -> Result<Vec<SnapshotInfo>> {
+        let data = self.request(&snapshots_query(), json!({ "machine": machine }))?;
+        Ok(data
+            .get("snapshots")
+            .and_then(Value::as_array)
+            .map(|rows| rows.iter().map(SnapshotInfo::from_graphql).collect())
+            .unwrap_or_default())
+    }
+
+    /// Capture a machine's disk state. `name` defaults to `<machine>-<n>`.
+    ///
+    /// A BSD guest is powered off first — a mounted UFS cannot be cloned
+    /// consistently — so the machine is left stopped; [`Client::start`] brings
+    /// it back.
+    pub fn snapshot(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        description: &str,
+    ) -> Result<SnapshotInfo> {
+        let data = self.request(
+            &snapshot_mutation(),
+            json!({"id": id, "name": name, "description": description}),
+        )?;
+        Ok(SnapshotInfo::from_graphql(&data["snapshotMachine"]))
+    }
+
+    /// Delete snapshots and their data. Machines branched from them stay.
+    pub fn remove_snapshots<S: AsRef<str>>(&self, names: &[S]) -> Result<CommandResult> {
+        let names: Vec<&str> = names.iter().map(AsRef::as_ref).collect();
+        let data = self.request(&remove_snapshots_mutation(), json!({ "names": names }))?;
+        Ok(CommandResult::from_graphql(&data["removeSnapshots"]))
+    }
+
+    /// Put a machine's disk state back to one of its snapshots.
+    ///
+    /// `force` stops the machine first (it holds the very files being
+    /// replaced); `backup` snapshots the state being overwritten, which is a
+    /// CoW clone and therefore free. The machine is left stopped.
+    pub fn restore(
+        &self,
+        id: &str,
+        snapshot: &str,
+        force: bool,
+        backup: bool,
+    ) -> Result<CommandResult> {
+        let data = self.request(
+            &restore_mutation(),
+            json!({"id": id, "snapshot": snapshot, "force": force, "backup": backup}),
+        )?;
+        Ok(CommandResult::from_graphql(&data["restoreMachine"]))
+    }
+
+    /// Restore a machine to its most recent snapshot.
+    pub fn rollback(&self, id: &str, force: bool, backup: bool) -> Result<CommandResult> {
+        let data = self.request(
+            &rollback_mutation(),
+            json!({"id": id, "force": force, "backup": backup}),
+        )?;
+        Ok(CommandResult::from_graphql(&data["rollbackMachine"]))
+    }
+
+    /// Boot a NEW machine from a snapshot — see [`BranchBuilder`].
+    ///
+    /// The snapshot is cloned, never booted in place, so the machine it came
+    /// from is untouched and one snapshot can be branched any number of times.
+    pub fn branch(&self, snapshot: impl Into<String>) -> BranchBuilder {
+        BranchBuilder {
+            client: self.clone(),
+            snapshot: snapshot.into(),
+            name: None,
+            cpus: None,
+            mem: None,
+            ports: Vec::new(),
+            no_ports: false,
+        }
     }
 
     /// One-shot read of a machine's console log (bsdkrun's boot log with
@@ -771,6 +891,76 @@ macro_rules! remote_net_vm_setters {
             self
         }
     };
+}
+
+/// A `branchSnapshot` mutation being assembled — see [`Client::branch`].
+///
+/// Unlike the `run_*` builders this has no `NetOpts`: a branch inherits the
+/// snapshot's own port forwards unless told otherwise, and the guest's network
+/// identity comes from the snapshot, not from the caller.
+pub struct BranchBuilder {
+    client: Client,
+    snapshot: String,
+    name: Option<String>,
+    cpus: Option<u32>,
+    mem: Option<u32>,
+    ports: Vec<String>,
+    no_ports: bool,
+}
+
+impl BranchBuilder {
+    /// Name the new machine. Generated when unset.
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// vCPU count. Defaults to what the snapshot recorded.
+    pub fn cpus(mut self, cpus: u32) -> Self {
+        self.cpus = Some(cpus);
+        self
+    }
+
+    /// Guest RAM in MiB. Defaults to what the snapshot recorded.
+    pub fn mem(mut self, mib: u32) -> Self {
+        self.mem = Some(mib);
+        self
+    }
+
+    /// Add a host→guest forward, `"[BIND:]HOST:GUEST"`. Given at least one,
+    /// these replace the snapshot's recorded forwards.
+    pub fn port(mut self, forward: impl Into<String>) -> Self {
+        self.ports.push(forward.into());
+        self
+    }
+
+    /// Add a port forward from numbers instead of a string.
+    pub fn forward(self, host: u16, guest: u16) -> Self {
+        self.port(format!("{host}:{guest}"))
+    }
+
+    /// Forward nothing, ignoring what the snapshot recorded.
+    pub fn no_ports(mut self) -> Self {
+        self.no_ports = true;
+        self
+    }
+
+    /// Boot the branch and return its machine id.
+    ///
+    /// With no `port` set, the snapshot's own forwards are inherited — with
+    /// any host port that is already taken swapped for a free one, since the
+    /// machine the snapshot came from is usually still running on it.
+    pub fn launch(self) -> Result<String> {
+        let input = json!({
+            "snapshot": self.snapshot,
+            "name": self.name,
+            "cpus": self.cpus,
+            "mem": self.mem,
+            "ports": self.ports,
+            "noPorts": self.no_ports,
+        });
+        launch_mutation(&self.client, BRANCH_MUTATION, "branchSnapshot", input)
+    }
 }
 
 /// A `runLinux` mutation being assembled — see [`Client::run_linux`].

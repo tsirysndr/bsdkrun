@@ -21,7 +21,13 @@
 import { AuthError, BsdkrunError, GraphQLError } from "./errors.js";
 import { SubscriptionManager } from "./graphql-protocol.js";
 import { fromGraphQLMachine } from "./sandbox.js";
-import type { CommandResult, SandboxInfo, ShellOutput, ShellSessionInfo } from "./types.js";
+import type {
+  CommandResult,
+  SandboxInfo,
+  ShellOutput,
+  ShellSessionInfo,
+  SnapshotInfo,
+} from "./types.js";
 
 /** `Client.fromEnv()` reads these. */
 export const URL_ENV = "BSDKRUN_URL";
@@ -198,10 +204,48 @@ export interface ShellSession {
 /** Matches web/src/lib/api.ts's `MACHINE_FIELDS` fragment exactly. */
 const MACHINE_FIELDS = `
   id name image kind command status running exitCode pid detached
-  cpus mem volume stateDir createdAt finishedAt network netIp
+  cpus mem volume stateDir createdAt finishedAt network netIp origin
   ports { bind host guest }
 `;
+const SNAPSHOT_FIELDS = `
+  id name machineId machineName kind image path parent description
+  cpus mem size createdAt ports { bind host guest }
+`;
 const COMMAND_RESULT_FIELDS = `exitCode stdout stderr`;
+
+/** Options for {@link Client.branch}. */
+export interface BranchOptions {
+  /** Name for the new machine; generated when absent. */
+  name?: string;
+  /** Defaults to what the snapshot recorded. */
+  cpus?: number;
+  /** Defaults to what the snapshot recorded. */
+  mem?: number;
+  /** Host↔guest forwards, each `"[BIND:]HOST:GUEST"`. Empty inherits the snapshot's. */
+  ports?: string[];
+  /** Forward nothing, ignoring what the snapshot recorded. */
+  noPorts?: boolean;
+}
+
+/** A GraphQL `Snapshot` as the SDK's {@link SnapshotInfo}. */
+function toSnapshot(s: Record<string, any>): SnapshotInfo {
+  return {
+    id: String(s.id),
+    name: String(s.name),
+    machineId: String(s.machineId ?? ""),
+    machineName: String(s.machineName ?? ""),
+    kind: String(s.kind ?? ""),
+    image: String(s.image ?? ""),
+    path: String(s.path ?? ""),
+    parent: (s.parent as string | null) ?? null,
+    description: String(s.description ?? ""),
+    cpus: Number(s.cpus ?? 0),
+    mem: Number(s.mem ?? 0),
+    ports: (s.ports as SnapshotInfo["ports"]) ?? [],
+    size: (s.size as string | null) ?? null,
+    createdAt: Number(s.createdAt ?? 0),
+  };
+}
 const SHELL_OUTPUT_FIELDS = `dataBase64 exitCode`;
 
 // ---------------------------------------------------------------------------
@@ -491,6 +535,107 @@ export class Client {
       { id, name, description },
     );
     return d.commitMachine;
+  }
+
+  // ---- snapshots ------------------------------------------------------------
+  //
+  // A snapshot is a copy-on-write clone of a machine's disk state: instant to
+  // take, free until the two sides diverge. `branch` boots a new machine from
+  // one; `restore`/`rollback` put one back over the machine it came from.
+
+  /** Snapshots, newest first — all of them, or one machine's. */
+  async snapshots(machine?: string): Promise<SnapshotInfo[]> {
+    const d = await this.request<{ snapshots: any[] }>(
+      `query($machine:String){ snapshots(machine:$machine){ ${SNAPSHOT_FIELDS} } }`,
+      { machine: machine ?? null },
+    );
+    return d.snapshots.map(toSnapshot);
+  }
+
+  /**
+   * Capture a machine's disk state. `name` defaults to `<machine>-<n>`.
+   *
+   * A BSD guest is powered off first — a mounted UFS cannot be cloned
+   * consistently — so the machine is left stopped; call {@link start} to
+   * bring it back.
+   */
+  async snapshot(id: string, name?: string, description = ""): Promise<SnapshotInfo> {
+    const d = await this.request<{ snapshotMachine: any }>(
+      `mutation($id:String!,$name:String,$description:String!){
+         snapshotMachine(id:$id, name:$name, description:$description){ ${SNAPSHOT_FIELDS} }
+       }`,
+      { id, name: name ?? null, description },
+    );
+    return toSnapshot(d.snapshotMachine);
+  }
+
+  /** Delete snapshots and their data. Machines branched from them are unaffected. */
+  async removeSnapshots(names: string[]): Promise<CommandResult> {
+    const d = await this.request<{ removeSnapshots: CommandResult }>(
+      `mutation($names:[String!]!){ removeSnapshots(names:$names){ ${COMMAND_RESULT_FIELDS} } }`,
+      { names },
+    );
+    return d.removeSnapshots;
+  }
+
+  /**
+   * Put a machine's disk state back to one of its snapshots.
+   *
+   * `force` (default) stops the machine first — it holds the very files being
+   * replaced. `backup` (default) snapshots the state being overwritten, which
+   * is a CoW clone and therefore free. The machine is left stopped.
+   */
+  async restore(
+    id: string,
+    snapshot: string,
+    opts: { force?: boolean; backup?: boolean } = {},
+  ): Promise<CommandResult> {
+    const d = await this.request<{ restoreMachine: CommandResult }>(
+      `mutation($id:String!,$snapshot:String!,$force:Boolean!,$backup:Boolean!){
+         restoreMachine(id:$id, snapshot:$snapshot, force:$force, backup:$backup){ ${COMMAND_RESULT_FIELDS} }
+       }`,
+      { id, snapshot, force: opts.force ?? true, backup: opts.backup ?? true },
+    );
+    return d.restoreMachine;
+  }
+
+  /** Restore a machine to its most recent snapshot. */
+  async rollback(
+    id: string,
+    opts: { force?: boolean; backup?: boolean } = {},
+  ): Promise<CommandResult> {
+    const d = await this.request<{ rollbackMachine: CommandResult }>(
+      `mutation($id:String!,$force:Boolean!,$backup:Boolean!){
+         rollbackMachine(id:$id, force:$force, backup:$backup){ ${COMMAND_RESULT_FIELDS} }
+       }`,
+      { id, force: opts.force ?? true, backup: opts.backup ?? true },
+    );
+    return d.rollbackMachine;
+  }
+
+  /**
+   * Boot a NEW machine from a snapshot, returning its id.
+   *
+   * The snapshot is cloned, never booted in place, so the machine it came from
+   * is untouched and one snapshot can be branched any number of times. With no
+   * `ports`, the snapshot's forwards are inherited — with any host port that is
+   * already taken swapped for a free one.
+   */
+  async branch(snapshot: string, opts: BranchOptions = {}): Promise<string> {
+    const d = await this.request<{ branchSnapshot: string }>(
+      `mutation($input:BranchInput!){ branchSnapshot(input:$input) }`,
+      {
+        input: {
+          snapshot,
+          name: opts.name ?? null,
+          cpus: opts.cpus ?? null,
+          mem: opts.mem ?? null,
+          ports: opts.ports ?? [],
+          noPorts: opts.noPorts ?? false,
+        },
+      },
+    );
+    return d.branchSnapshot;
   }
 
   async logs(id: string, boot = false): Promise<string> {

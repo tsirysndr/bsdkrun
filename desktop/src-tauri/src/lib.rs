@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use bsdkrun::{BkError, Flavor, Image, Machine, Network, VersionEntry, Volume};
+use bsdkrun::{BkError, Flavor, Image, Machine, Network, Snapshot, VersionEntry, Volume};
 use target::Target;
 use term::{LogStreams, Terminals};
 
@@ -224,6 +224,113 @@ async fn list_versions(
 async fn list_flavors(state: State<'_, AppState>) -> Result<Vec<Flavor>, BkError> {
     let bin = state.binary()?;
     bsdkrun::list_flavors(&bin).await
+}
+
+// ---- snapshots -------------------------------------------------------------
+//
+// A snapshot is a copy-on-write clone of a machine's disk state — instant, and
+// free until the two sides diverge — so the UI can offer it as casually as it
+// offers "stop".
+
+#[tauri::command]
+async fn list_snapshots(
+    state: State<'_, AppState>,
+    machine: Option<String>,
+) -> Result<Vec<Snapshot>, BkError> {
+    let bin = state.binary()?;
+    bsdkrun::list_snapshots(&bin, machine.as_deref()).await
+}
+
+/// Capture a machine's disk state — `bsdkrun snapshot <id> [name]`. Returns the
+/// snapshot's name (generated when none was given).
+///
+/// A BSD guest is powered off first: a mounted UFS cannot be cloned
+/// consistently, so the machine is left stopped and the UI should say so.
+#[tauri::command]
+async fn snapshot_machine(
+    state: State<'_, AppState>,
+    id: String,
+    name: Option<String>,
+    description: String,
+) -> Result<String, BkError> {
+    let bin = state.binary()?;
+    let mut args: Vec<String> = vec!["snapshot".into(), id];
+    if let Some(n) = name.filter(|n| !n.is_empty()) {
+        args.push(n);
+    }
+    if !description.is_empty() {
+        args.push("--description".into());
+        args.push(description);
+    }
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let out = bsdkrun::run(&bin, &refs).await?;
+    Ok(out.trim().to_string())
+}
+
+/// Remove a snapshot and its data — `bsdkrun snapshot rm <name>`.
+#[tauri::command]
+async fn remove_snapshot(state: State<'_, AppState>, name: String) -> Result<(), BkError> {
+    let bin = state.binary()?;
+    bsdkrun::run(&bin, &["snapshot", "rm", &name]).await?;
+    Ok(())
+}
+
+/// Put a machine back to a snapshot — `bsdkrun restore -f <id> <snapshot>`.
+/// Always `-f`: the UI asked the user already, and a running machine holds the
+/// files being replaced. The machine is left stopped.
+#[tauri::command]
+async fn restore_machine(
+    state: State<'_, AppState>,
+    id: String,
+    snapshot: String,
+    backup: bool,
+) -> Result<String, BkError> {
+    let bin = state.binary()?;
+    let mut args: Vec<&str> = vec!["restore", "-f", &id, &snapshot];
+    if !backup {
+        args.push("--no-backup");
+    }
+    let out = bsdkrun::run(&bin, &args).await?;
+    Ok(out.trim().to_string())
+}
+
+/// Restore a machine to its most recent snapshot — `bsdkrun rollback -f <id>`.
+#[tauri::command]
+async fn rollback_machine(
+    state: State<'_, AppState>,
+    id: String,
+    backup: bool,
+) -> Result<String, BkError> {
+    let bin = state.binary()?;
+    let mut args: Vec<&str> = vec!["rollback", "-f", &id];
+    if !backup {
+        args.push("--no-backup");
+    }
+    let out = bsdkrun::run(&bin, &args).await?;
+    Ok(out.trim().to_string())
+}
+
+/// Boot a new machine from a snapshot — `bsdkrun branch -d <snapshot>`.
+/// Returns the new machine's id.
+#[tauri::command]
+async fn branch_snapshot(
+    state: State<'_, AppState>,
+    snapshot: String,
+    name: Option<String>,
+    ports: Vec<String>,
+) -> Result<String, BkError> {
+    let bin = state.binary()?;
+    let mut args: Vec<String> = vec!["branch".into(), "-d".into(), snapshot];
+    if let Some(n) = name.filter(|n| !n.is_empty()) {
+        args.push("--name".into());
+        args.push(n);
+    }
+    for p in ports.iter().filter(|p| !p.is_empty()) {
+        args.push("--port".into());
+        args.push(p.clone());
+    }
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    bsdkrun::run_detached(&bin, &refs).await
 }
 
 // ---- global networks -------------------------------------------------------
@@ -1170,6 +1277,12 @@ pub fn run() {
             list_volumes,
             list_versions,
             list_flavors,
+            list_snapshots,
+            snapshot_machine,
+            remove_snapshot,
+            restore_machine,
+            rollback_machine,
+            branch_snapshot,
             list_networks,
             create_network,
             remove_network,

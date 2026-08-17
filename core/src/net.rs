@@ -77,6 +77,21 @@ pub fn free_local_port() -> Result<u16> {
     Ok(port)
 }
 
+/// `preferred` if nothing else holds it, else a free port the kernel picks.
+///
+/// Used when a machine inherits another's port forwards (`bsdkrun branch`):
+/// the machine it was branched from is usually still running and still bound,
+/// and gvproxy simply fails to bind rather than telling anyone why.
+pub fn free_host_port(bind: std::net::IpAddr, preferred: u16) -> Option<u16> {
+    if TcpListener::bind((bind, preferred)).is_ok() {
+        return Some(preferred);
+    }
+    TcpListener::bind((bind, 0))
+        .ok()
+        .and_then(|l| l.local_addr().ok())
+        .map(|a| a.port())
+}
+
 /// A host→guest TCP port forward.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct PortForward {

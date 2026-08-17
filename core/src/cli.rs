@@ -187,6 +187,25 @@ pub enum Command {
     /// Snapshot a machine's current state into a named flavor (like `docker commit`).
     Commit(CommitArgs),
 
+    /// Save a machine's current disk state under a name (`snapshot <ID> [NAME]`),
+    /// or manage saved ones (`snapshot ls` / `snapshot rm`).
+    Snapshot(SnapshotArgs),
+
+    /// List saved snapshots — all of them, or one machine's.
+    Snapshots(SnapshotLsArgs),
+
+    /// Boot a new machine from a snapshot — or from a machine, which is
+    /// snapshotted first. Either way the original is untouched: a branch is a
+    /// copy-on-write copy of a machine's state.
+    Branch(BranchArgs),
+
+    /// Put a machine's disk state back to one of its snapshots.
+    Restore(RestoreArgs),
+
+    /// Restore a machine to its most recent snapshot (`restore`, without having
+    /// to name it).
+    Rollback(RollbackArgs),
+
     /// List flavors: the built-in catalog + your saved snapshots.
     Flavors(FlavorsListArgs),
 
@@ -426,6 +445,128 @@ pub struct CommitArgs {
     /// Optional description.
     #[arg(short, long, default_value = "")]
     pub description: String,
+}
+
+/// `bsdkrun snapshot` — one verb with two shapes: a bare `snapshot <ID> [NAME]`
+/// takes one, and `snapshot ls` / `snapshot rm` manage the saved ones.
+///
+/// `args_conflicts_with_subcommands` is what lets both live under one name: it
+/// tells clap that `snapshot ls` is the subcommand, not a machine called "ls".
+#[derive(Parser, Serialize, Deserialize)]
+#[command(args_conflicts_with_subcommands = true)]
+pub struct SnapshotArgs {
+    #[command(subcommand)]
+    pub cmd: Option<SnapshotCmd>,
+
+    /// Machine to snapshot (id, name, or a unique id prefix).
+    #[arg(value_name = "ID")]
+    pub id: Option<String>,
+
+    /// Name for the snapshot. Defaults to `<machine>-<n>`.
+    #[arg(value_name = "NAME")]
+    pub name: Option<String>,
+
+    /// Optional description.
+    #[arg(short, long, default_value = "")]
+    pub description: String,
+
+    /// Print the snapshot as JSON (for scripting / the SDK).
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Subcommand, Serialize, Deserialize)]
+pub enum SnapshotCmd {
+    /// List saved snapshots (all, or one machine's).
+    Ls(SnapshotLsArgs),
+    /// Remove saved snapshots and their data.
+    Rm(SnapshotRmArgs),
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct SnapshotLsArgs {
+    /// Only this machine's snapshots (id, name, or unique id prefix).
+    #[arg(value_name = "MACHINE")]
+    pub machine: Option<String>,
+
+    /// Emit the list as a JSON array (for scripting / the SDK).
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct SnapshotRmArgs {
+    /// Snapshot name(s) or id(s) to remove.
+    #[arg(value_name = "SNAPSHOT", required = true)]
+    pub names: Vec<String>,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct BranchArgs {
+    /// What to branch from: a snapshot (name, id, or unique id prefix), or a
+    /// machine — which is snapshotted first, then branched.
+    #[arg(value_name = "SNAPSHOT|MACHINE")]
+    pub snapshot: String,
+
+    /// Name for the new machine. Defaults to a generated one.
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
+
+    /// Run detached in the background (like `docker run -d`).
+    #[arg(short = 'd', long)]
+    pub detach: bool,
+
+    /// vCPUs for the branch. Defaults to what the snapshot recorded.
+    #[arg(long)]
+    pub cpus: Option<u8>,
+
+    /// Guest RAM in MiB. Defaults to what the snapshot recorded.
+    #[arg(long)]
+    pub mem: Option<u32>,
+
+    /// Host↔guest port forward (repeatable). Given at least once, these
+    /// *replace* the snapshot's recorded forwards — two machines cannot both
+    /// hold the same host port.
+    #[arg(long = "port", value_name = "[BIND:]HOST:GUEST")]
+    pub ports: Vec<PortForward>,
+
+    /// Do not forward any port (ignore the ones the snapshot recorded).
+    #[arg(long, conflicts_with = "ports")]
+    pub no_ports: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct RestoreArgs {
+    /// Machine to restore (id, name, or unique id prefix).
+    #[arg(value_name = "ID")]
+    pub id: String,
+
+    /// Snapshot to restore it to (name, id, or unique id prefix).
+    #[arg(value_name = "SNAPSHOT")]
+    pub snapshot: String,
+
+    /// Stop the machine first if it is running.
+    #[arg(short, long)]
+    pub force: bool,
+
+    /// Skip the automatic snapshot of the state being replaced.
+    #[arg(long)]
+    pub no_backup: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct RollbackArgs {
+    /// Machine to roll back (id, name, or unique id prefix).
+    #[arg(value_name = "ID")]
+    pub id: String,
+
+    /// Stop the machine first if it is running.
+    #[arg(short, long)]
+    pub force: bool,
+
+    /// Skip the automatic snapshot of the state being replaced.
+    #[arg(long)]
+    pub no_backup: bool,
 }
 
 #[derive(Parser, Serialize, Deserialize)]

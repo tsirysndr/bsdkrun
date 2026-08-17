@@ -46,6 +46,36 @@ pub type SandboxInfo {
     created_at: Int,
     finished_at: Option(Int),
     ports: List(PortForward),
+    /// The snapshot this machine was branched from, if any.
+    origin: Option(String),
+  )
+}
+
+/// A machine snapshot: one machine's disk state, captured under a name.
+///
+/// A copy-on-write clone rather than a memory image — the files the guest
+/// wrote, not what it was executing. `client.branch` boots a new machine from
+/// one; `client.restore` puts one back over the machine it came from.
+pub type SnapshotInfo {
+  SnapshotInfo(
+    id: String,
+    name: String,
+    machine_id: String,
+    /// The machine's name when it was taken; empty if it had none.
+    machine_name: String,
+    /// `"linux"`, `"freebsd"`, `"netbsd"` or `"unikraft"`.
+    kind: String,
+    image: String,
+    path: String,
+    /// The snapshot the source machine was itself branched from, if any.
+    parent: Option(String),
+    description: String,
+    cpus: Int,
+    mem: Int,
+    ports: List(PortForward),
+    /// Human-readable, when measured — a CoW clone costs nothing to take.
+    size: Option(String),
+    created_at: Int,
   )
 }
 
@@ -289,6 +319,7 @@ pub fn sandbox_info_decoder() -> Decoder(SandboxInfo) {
   use net_ip <- optional_field("net_ip", decode.string)
   use created_at <- field_or("created_at", 0, lenient_int())
   use finished_at <- optional_field("finished_at", lenient_int())
+  use origin <- optional_field("origin", decode.string)
   use ports <- field_or("ports", [], decode.list(port_forward_decoder()))
 
   decode.success(SandboxInfo(
@@ -310,6 +341,7 @@ pub fn sandbox_info_decoder() -> Decoder(SandboxInfo) {
     created_at:,
     finished_at:,
     ports:,
+    origin:,
   ))
 }
 
@@ -424,6 +456,7 @@ fn sandbox_info_from_graphql_decoder() -> Decoder(SandboxInfo) {
   use net_ip <- optional_field("netIp", decode.string)
   use created_at <- optional_field("createdAt", lenient_int())
   use finished_at <- optional_field("finishedAt", lenient_int())
+  use origin <- optional_field("origin", decode.string)
   use ports <- field_or("ports", [], decode.list(port_forward_decoder()))
 
   decode.success(SandboxInfo(
@@ -445,7 +478,49 @@ fn sandbox_info_from_graphql_decoder() -> Decoder(SandboxInfo) {
     created_at: option.unwrap(created_at, 0),
     finished_at:,
     ports:,
+    origin:,
   ))
+}
+
+/// Decoder for one GraphQL `Snapshot` object (the `SNAPSHOT_FIELDS`
+/// selection) into a `SnapshotInfo`.
+fn snapshot_info_from_graphql_decoder() -> Decoder(SnapshotInfo) {
+  use id <- field_or("id", "", decode.string)
+  use name <- field_or("name", "", decode.string)
+  use machine_id <- field_or("machineId", "", decode.string)
+  use machine_name <- field_or("machineName", "", decode.string)
+  use kind <- field_or("kind", "", decode.string)
+  use image <- field_or("image", "", decode.string)
+  use path <- field_or("path", "", decode.string)
+  use parent <- optional_field("parent", decode.string)
+  use description <- field_or("description", "", decode.string)
+  use cpus <- optional_field("cpus", lenient_int())
+  use mem <- optional_field("mem", lenient_int())
+  use ports <- field_or("ports", [], decode.list(port_forward_decoder()))
+  use size <- optional_field("size", decode.string)
+  use created_at <- optional_field("createdAt", lenient_int())
+
+  decode.success(SnapshotInfo(
+    id:,
+    name:,
+    machine_id:,
+    machine_name:,
+    kind:,
+    image:,
+    path:,
+    parent:,
+    description:,
+    cpus: option.unwrap(cpus, 0),
+    mem: option.unwrap(mem, 0),
+    ports:,
+    size:,
+    created_at: option.unwrap(created_at, 0),
+  ))
+}
+
+/// Decode a GraphQL `Snapshot` object into a `SnapshotInfo`.
+pub fn snapshot_info_from_graphql(dyn: Dynamic) -> Result(SnapshotInfo, Error) {
+  decode_or(dyn, snapshot_info_from_graphql_decoder(), "snapshot")
 }
 
 /// Decode a GraphQL `Machine` object (the `machine`/`machines` query result,

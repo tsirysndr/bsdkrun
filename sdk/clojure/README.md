@@ -394,6 +394,22 @@ camelCase fields (`:kernel-version` -> `kernelVersion`, `:attach-disk` ->
 `stop!`/`start!`/`remove!`/`update!`/`commit!` return a command-result map
 (`{:exit-code :stdout :stderr}`).
 
+### Snapshots
+
+A snapshot is a **copy-on-write clone of a machine's disk state** — instant to
+take, free until the two sides diverge. `branch` boots a new machine from one
+(or from a machine, which is snapshotted first); `restore`/`rollback` put one
+back, leaving the machine stopped. A BSD guest is powered off to snapshot it:
+a mounted UFS cannot be cloned consistently.
+
+```clojure
+(def snap (client/snapshot! c id {:name "before-upgrade"}))
+(client/snapshots c {:machine id})            ; newest first
+(client/branch! c (:name snap) {:name "web-test"})
+(client/restore! c id (:name snap))           ; or (client/rollback! c id)
+(client/remove-snapshots! c (:name snap))
+```
+
 For a live terminal instead of a one-shot `exec!`, use `shell!`:
 
 ```clojure

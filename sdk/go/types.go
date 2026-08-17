@@ -93,6 +93,36 @@ type SandboxInfo struct {
 	Ports      []PortForward `json:"ports"`
 	CreatedAt  int64         `json:"created_at"`
 	FinishedAt *int64        `json:"finished_at"`
+	// Origin is the snapshot this machine was branched from, if any.
+	Origin string `json:"origin"`
+}
+
+// SnapshotInfo is a machine snapshot: one machine's disk state, captured
+// under a name.
+//
+// A copy-on-write clone rather than a memory image — the files the guest
+// wrote, not what it was executing. Client.Branch boots a new machine from
+// one; Client.Restore puts one back over the machine it came from.
+type SnapshotInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// MachineID is the machine it was taken from; MachineName is what that
+	// machine was called at the time (a copy — a snapshot outlives it).
+	MachineID   string `json:"machine_id"`
+	MachineName string `json:"machine_name"`
+	// Kind is the guest OS: linux / freebsd / netbsd / unikraft.
+	Kind  string `json:"kind"`
+	Image string `json:"image"`
+	Path  string `json:"path"`
+	// Parent is the snapshot the source machine was itself branched from.
+	Parent      string        `json:"parent"`
+	Description string        `json:"description"`
+	Cpus        int           `json:"cpus"`
+	Mem         int           `json:"mem"`
+	Ports       []PortForward `json:"ports"`
+	// Size is human-readable when measured; taking a CoW clone costs nothing.
+	Size      string `json:"size"`
+	CreatedAt int64  `json:"created_at"`
 }
 
 // normalize fills the fields the CLI's JSON rows leave implicit.
@@ -253,6 +283,7 @@ func sandboxInfoFromGraphQL(m map[string]any) SandboxInfo {
 		StateDir: asString(m["stateDir"]),
 		Network:  asString(m["network"]),
 		NetIP:    asString(m["netIp"]),
+		Origin:   asString(m["origin"]),
 	}
 	if n, ok := asInt(m["cpus"]); ok {
 		info.Cpus = int(n)
@@ -278,6 +309,47 @@ func sandboxInfoFromGraphQL(m map[string]any) SandboxInfo {
 		}
 	}
 	info.normalize()
+	return info
+}
+
+func snapshotInfoFromGraphQL(m map[string]any) SnapshotInfo {
+	info := SnapshotInfo{
+		ID:          asString(m["id"]),
+		Name:        asString(m["name"]),
+		MachineID:   asString(m["machineId"]),
+		MachineName: asString(m["machineName"]),
+		Kind:        asString(m["kind"]),
+		Image:       asString(m["image"]),
+		Path:        asString(m["path"]),
+		Parent:      asString(m["parent"]),
+		Description: asString(m["description"]),
+		Size:        asString(m["size"]),
+	}
+	if n, ok := asInt(m["cpus"]); ok {
+		info.Cpus = int(n)
+	}
+	if n, ok := asInt(m["mem"]); ok {
+		info.Mem = int(n)
+	}
+	if n, ok := asInt(m["createdAt"]); ok {
+		info.CreatedAt = n
+	}
+	if ports, ok := m["ports"].([]any); ok {
+		for _, p := range ports {
+			pm := asMap(p)
+			port := PortForward{Bind: asString(pm["bind"])}
+			if n, ok := asInt(pm["host"]); ok {
+				port.Host = int(n)
+			}
+			if n, ok := asInt(pm["guest"]); ok {
+				port.Guest = int(n)
+			}
+			if port.Bind == "" {
+				port.Bind = "127.0.0.1"
+			}
+			info.Ports = append(info.Ports, port)
+		}
+	}
 	return info
 }
 

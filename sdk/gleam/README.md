@@ -331,6 +331,24 @@ update syntax, matching the corresponding GraphQL mutation's fields
 (`daemon/src/graphql.rs`). `stop`/`start`/`remove`/`update`/`commit` return a
 `CommandResult` (`exit_code`, `stdout`, `stderr`).
 
+### Snapshots
+
+A snapshot is a **copy-on-write clone of a machine's disk state** — instant to
+take, free until the two sides diverge. `branch` boots a new machine from one
+(or from a machine, which is snapshotted first); `restore`/`rollback` put one
+back, leaving the machine stopped. A BSD guest is powered off to snapshot it:
+a mounted UFS cannot be cloned consistently.
+
+```gleam
+let assert Ok(snap) =
+  client.snapshot(c, id: id, name: Some("before-upgrade"), description: "")
+let assert Ok(_) = client.snapshots(c, machine: Some(id))
+let assert Ok(branch_id) =
+  client.branch(c, snapshot: snap.name, name: Some("web-test"), cpus: None,
+                mem: None, ports: [], no_ports: False)
+let assert Ok(_) = client.restore(c, id: id, snapshot: snap.name, force: True, backup: True)
+```
+
 For a live terminal instead of a one-shot `exec`, use `shell`:
 
 ```gleam

@@ -130,7 +130,31 @@
      :net-ip (get m "netIp")
      :created-at (to-int (get m "createdAt"))
      :finished-at (to-int-or-nil (get m "finishedAt"))
+     :origin (get m "origin")
      :ports (mapv port-forward-from-row (or (get m "ports") []))}))
+
+(defn snapshot-info-from-graphql
+  "A machine snapshot as reported by the daemon's GraphQL API.
+
+  A snapshot is a copy-on-write clone of one machine's disk state, not a
+  memory image — the files the guest wrote, not what it was executing.
+  `bsdkrun.client/branch!` boots a new machine from one;
+  `bsdkrun.client/restore!` puts one back over the machine it came from."
+  [s]
+  {:id (str (get s "id"))
+   :name (str (get s "name"))
+   :machine-id (str (or (get s "machineId") ""))
+   :machine-name (str (or (get s "machineName") ""))
+   :kind (str (or (get s "kind") ""))
+   :image (str (or (get s "image") ""))
+   :path (str (or (get s "path") ""))
+   :parent (get s "parent")
+   :description (str (or (get s "description") ""))
+   :cpus (to-int (get s "cpus"))
+   :mem (to-int (get s "mem"))
+   :ports (mapv port-forward-from-row (or (get s "ports") []))
+   :size (get s "size")
+   :created-at (to-int (get s "createdAt"))})
 
 (defn command-result-from-graphql
   "The outcome of a `bsdkrun.client` lifecycle mutation (`stopMachine`,

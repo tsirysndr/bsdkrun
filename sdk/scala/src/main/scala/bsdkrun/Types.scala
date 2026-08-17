@@ -33,10 +33,40 @@ object Types:
       netIp: Option[String],
       ports: Seq[PortForward],
       createdAt: Option[Long],
-      finishedAt: Option[Long]
+      finishedAt: Option[Long],
+      /** The snapshot this machine was branched from, if any. */
+      origin: Option[String] = None
   ):
     /** `"running"` or `"exited"`, the way the CLI's table renders it. */
     def status: String = if running then "running" else "exited"
+
+  /** A machine snapshot: one machine's disk state, captured under a name.
+    *
+    * A copy-on-write clone rather than a memory image — the files the guest
+    * wrote, not what it was executing. [[Client.branch]] boots a new machine
+    * from one; [[Client.restoreMachine]] puts one back over the machine it
+    * came from.
+    */
+  final case class SnapshotInfo(
+      id: String,
+      name: String,
+      machineId: String,
+      /** The machine's name when it was taken; empty if it had none. */
+      machineName: String,
+      /** `"linux"`, `"freebsd"`, `"netbsd"` or `"unikraft"`. */
+      kind: String,
+      image: String,
+      path: String,
+      /** The snapshot the source machine was itself branched from, if any. */
+      parent: Option[String],
+      description: String,
+      cpus: Int,
+      mem: Int,
+      ports: Seq[PortForward],
+      /** Human-readable, when measured — a CoW clone costs nothing to take. */
+      size: Option[String],
+      createdAt: Option[Long]
+  )
 
   /** A downloaded image, as `bsdkrun images --json` reports it. */
   final case class ImageInfo(
@@ -125,7 +155,33 @@ object Types:
         .map(_.map(portForward).toSeq)
         .getOrElse(Seq.empty),
       createdAt = optLong(v, "created_at").orElse(optLong(v, "createdAt")),
-      finishedAt = optLong(v, "finished_at").orElse(optLong(v, "finishedAt"))
+      finishedAt = optLong(v, "finished_at").orElse(optLong(v, "finishedAt")),
+      origin = optStr(v, "origin")
+    )
+
+  /** A GraphQL `Snapshot` (camelCase) or a `snapshots --json` row (snake_case)
+    * — both are accepted, as everywhere else here.
+    */
+  def snapshotInfo(v: Value): SnapshotInfo =
+    SnapshotInfo(
+      id = str(v, "id"),
+      name = str(v, "name"),
+      machineId = optStr(v, "machine_id").orElse(optStr(v, "machineId")).getOrElse(""),
+      machineName = optStr(v, "machine_name").orElse(optStr(v, "machineName")).getOrElse(""),
+      kind = str(v, "kind"),
+      image = str(v, "image"),
+      path = str(v, "path"),
+      parent = optStr(v, "parent"),
+      description = str(v, "description"),
+      cpus = int(v, "cpus"),
+      mem = int(v, "mem"),
+      ports = v.objOpt
+        .flatMap(_.get("ports"))
+        .flatMap(_.arrOpt)
+        .map(_.map(portForward).toSeq)
+        .getOrElse(Seq.empty),
+      size = optStr(v, "size"),
+      createdAt = optLong(v, "created_at").orElse(optLong(v, "createdAt"))
     )
 
   def imageInfo(v: Value): ImageInfo =

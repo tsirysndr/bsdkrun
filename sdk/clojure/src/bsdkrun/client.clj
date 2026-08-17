@@ -329,8 +329,13 @@
   "The `Machine` field selection shared by `list-machines` / `get-machine` —
   mirrors `web/src/lib/api.ts`'s `MACHINE_FIELDS` fragment exactly."
   "id name image kind command status running exitCode pid detached
-   cpus mem volume stateDir createdAt finishedAt network netIp
+   cpus mem volume stateDir createdAt finishedAt network netIp origin
    ports { bind host guest }")
+
+(def ^:private snapshot-fields
+  "The `Snapshot` field selection shared by every snapshot document."
+  "id name machineId machineName kind image path parent description
+   cpus mem size createdAt ports { bind host guest }")
 
 (defn list-machines
   "`{:all true}` includes stopped machines too (default running only).
@@ -404,6 +409,95 @@
     (str "mutation($id:String!,$name:String!,$description:String!){ "
          "commitMachine(id:$id, name:$name, description:$description){ exitCode stdout stderr } }")
     {:id id :name name :description (or description "")})))
+
+
+;; ---------------------------------------------------------------------------
+;; snapshots
+;;
+;; A snapshot is a copy-on-write clone of a machine's disk state: instant to
+;; take, free until the two sides diverge. [[branch!]] boots a new machine from
+;; one; [[restore!]] / [[rollback!]] put one back.
+;; ---------------------------------------------------------------------------
+
+(defn snapshots
+  "Snapshots, newest first. `{:machine \"web\"}` narrows to one machine's."
+  ([client] (snapshots client {}))
+  ([client {:keys [machine]}]
+   (let [data (request client
+                        (str "query($machine:String){ snapshots(machine:$machine){ "
+                             snapshot-fields " } }")
+                        {:machine machine})]
+     (mapv types/snapshot-info-from-graphql (get data "snapshots")))))
+
+(defn snapshot!
+  "Capture a machine's disk state; returns the snapshot map.
+
+  `{:name ...}` defaults to `<machine>-<n>`. A BSD guest is powered off first
+  — a mounted UFS cannot be cloned consistently — so the machine is left
+  stopped; [[start!]] brings it back."
+  ([client id] (snapshot! client id {}))
+  ([client id {:keys [name description]}]
+   (let [data (request client
+                        (str "mutation($id:String!,$name:String,$description:String!){ "
+                             "snapshotMachine(id:$id, name:$name, description:$description){ "
+                             snapshot-fields " } }")
+                        {:id id :name name :description (or description "")})]
+     (types/snapshot-info-from-graphql (get data "snapshotMachine")))))
+
+(defn remove-snapshots!
+  "Delete snapshots and their data. Machines branched from them are
+  unaffected. `names` is a single name or a collection of them."
+  [client names]
+  (command-result-mutation!
+   client "removeSnapshots"
+   "mutation($names:[String!]!){ removeSnapshots(names:$names){ exitCode stdout stderr } }"
+   {:names (vec (util/as-seq names))}))
+
+(defn restore!
+  "Put a machine's disk state back to one of its snapshots.
+
+  `:force` (default true) stops the machine first — it holds the very files
+  being replaced. `:backup` (default true) snapshots the state being
+  overwritten, which is a CoW clone and therefore free. The machine is left
+  stopped."
+  ([client id snapshot] (restore! client id snapshot {}))
+  ([client id snapshot {:keys [force backup] :or {force true backup true}}]
+   (command-result-mutation!
+    client "restoreMachine"
+    (str "mutation($id:String!,$snapshot:String!,$force:Boolean!,$backup:Boolean!){ "
+         "restoreMachine(id:$id, snapshot:$snapshot, force:$force, backup:$backup){ "
+         "exitCode stdout stderr } }")
+    {:id id :snapshot snapshot :force (boolean force) :backup (boolean backup)})))
+
+(defn rollback!
+  "Restore a machine to its most recent snapshot."
+  ([client id] (rollback! client id {}))
+  ([client id {:keys [force backup] :or {force true backup true}}]
+   (command-result-mutation!
+    client "rollbackMachine"
+    (str "mutation($id:String!,$force:Boolean!,$backup:Boolean!){ "
+         "rollbackMachine(id:$id, force:$force, backup:$backup){ exitCode stdout stderr } }")
+    {:id id :force (boolean force) :backup (boolean backup)})))
+
+(defn branch!
+  "Boot a NEW machine from a snapshot — or from a machine, which is
+  snapshotted first — and return the new machine's id.
+
+  The state is cloned, never booted in place, so the source is untouched and
+  one snapshot can be branched any number of times. With no `:ports`, the
+  snapshot's own forwards are inherited, with any host port that is already
+  taken swapped for a free one."
+  ([client snapshot] (branch! client snapshot {}))
+  ([client snapshot {:keys [name cpus mem ports no-ports]}]
+   (let [data (request client
+                        "mutation($input:BranchInput!){ branchSnapshot(input:$input) }"
+                        {:input {:snapshot snapshot
+                                 :name name
+                                 :cpus cpus
+                                 :mem mem
+                                 :ports (vec (util/as-seq (or ports [])))
+                                 :noPorts (boolean no-ports)}})]
+     (str (get data "branchSnapshot")))))
 
 (defn logs
   "One-shot console log fetch. `{:boot true}` shows bsdkrun's own boot log

@@ -355,6 +355,7 @@ mod tests {
             network: None,
             net_ip: None,
             ports: vec![crate::net::PortForward::loopback(18080, 80)],
+            origin: None,
         }
     }
 

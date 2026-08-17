@@ -91,6 +91,77 @@ pub struct SandboxInfo {
     pub ports: Vec<PortForward>,
     pub created_at: i64,
     pub finished_at: Option<i64>,
+    /// The snapshot this machine was branched from, if any.
+    pub origin: Option<String>,
+}
+
+/// A machine snapshot: one machine's disk state, captured under a name.
+///
+/// A copy-on-write clone rather than a memory image — the files the guest
+/// wrote, not what it was executing. [`crate::Client::branch`] boots a new
+/// machine from one; [`crate::Client::restore`] puts one back.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SnapshotInfo {
+    pub id: String,
+    pub name: String,
+    pub machine_id: String,
+    /// The machine's name when the snapshot was taken; empty if it had none.
+    pub machine_name: String,
+    /// `linux` / `freebsd` / `netbsd` / `unikraft`.
+    pub kind: String,
+    pub image: String,
+    pub path: String,
+    /// The snapshot the source machine was itself branched from, if any.
+    pub parent: Option<String>,
+    pub description: String,
+    pub cpus: u32,
+    pub mem: u64,
+    pub ports: Vec<PortForward>,
+    /// Human-readable, when measured — a CoW clone costs nothing to take.
+    pub size: Option<String>,
+    pub created_at: i64,
+}
+
+impl SnapshotInfo {
+    /// Build from a GraphQL `Snapshot` (camelCase).
+    pub fn from_graphql(s: &Value) -> SnapshotInfo {
+        SnapshotInfo {
+            id: get_str(s, "id"),
+            name: get_str(s, "name"),
+            machine_id: get_str(s, "machineId"),
+            machine_name: get_str(s, "machineName"),
+            kind: get_str(s, "kind"),
+            image: get_str(s, "image"),
+            path: get_str(s, "path"),
+            parent: get_opt_str(s, "parent"),
+            description: get_str(s, "description"),
+            cpus: get_num(s, "cpus").unwrap_or(0) as u32,
+            mem: get_num(s, "mem").unwrap_or(0) as u64,
+            ports: ports_from(s.get("ports")),
+            size: get_opt_str(s, "size"),
+            created_at: get_num(s, "createdAt").unwrap_or(0),
+        }
+    }
+
+    /// Build from a CLI `snapshots --json` row (snake_case).
+    pub fn from_row(row: &Value) -> SnapshotInfo {
+        SnapshotInfo {
+            id: get_str(row, "id"),
+            name: get_str(row, "name"),
+            machine_id: get_str(row, "machine_id"),
+            machine_name: get_str(row, "machine_name"),
+            kind: get_str(row, "kind"),
+            image: get_str(row, "image"),
+            path: get_str(row, "path"),
+            parent: get_opt_str(row, "parent"),
+            description: get_str(row, "description"),
+            cpus: get_num(row, "cpus").unwrap_or(0) as u32,
+            mem: get_num(row, "mem").unwrap_or(0) as u64,
+            ports: ports_from(row.get("ports")),
+            size: get_opt_str(row, "size"),
+            created_at: get_num(row, "created_at").unwrap_or(0),
+        }
+    }
 }
 
 impl SandboxInfo {
@@ -117,6 +188,7 @@ impl SandboxInfo {
             ports: ports_from(row.get("ports")),
             created_at: get_num(row, "created_at").unwrap_or(0),
             finished_at: get_num(row, "finished_at"),
+            origin: get_opt_str(row, "origin"),
         }
     }
 
@@ -151,6 +223,7 @@ impl SandboxInfo {
             ports: ports_from(m.get("ports")),
             created_at: get_num(m, "createdAt").unwrap_or(0),
             finished_at: get_num(m, "finishedAt"),
+            origin: get_opt_str(m, "origin"),
         }
     }
 }

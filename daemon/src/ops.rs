@@ -15,9 +15,10 @@
 
 use bsdkrun_core::api;
 use bsdkrun_core::cli::{
-    BsdArgs, Command as CoreCommand, ExecArgs, FetchArgs, FlavorAddArgs, FlavorArgs, FlavorCmd,
-    FlavorPrebuildArgs, FlavorRunArgs, IdArgs, LinuxArgs, LogsArgs, NanosArgs, NetConfig, OsvArgs,
-    RunConfig, Solo5Args, SshArgs, SystemdArgs, TailscaleArgs, UnikraftArgs, VmConfig,
+    BranchArgs, BsdArgs, Command as CoreCommand, ExecArgs, FetchArgs, FlavorAddArgs, FlavorArgs,
+    FlavorCmd, FlavorPrebuildArgs, FlavorRunArgs, IdArgs, LinuxArgs, LogsArgs, NanosArgs,
+    NetConfig, OsvArgs, RunConfig, Solo5Args, SshArgs, SystemdArgs, TailscaleArgs, UnikraftArgs,
+    VmConfig,
 };
 use bsdkrun_core::net::PortForward;
 
@@ -26,7 +27,7 @@ use crate::supervisor::Supervisor;
 
 /// The domain types are the engine's own — the shapes it already used for
 /// `--json` — so nothing is re-declared or re-parsed here.
-pub use bsdkrun_core::api::{Flavor, Image, Machine, Network, Version, Volume};
+pub use bsdkrun_core::api::{Flavor, Image, Machine, Network, Snapshot, Version, Volume};
 
 // ---------------------------------------------------------------------------
 // option structs
@@ -187,6 +188,48 @@ impl RunBsdOpts {
             BsdOs::Netbsd => CoreCommand::Netbsd(args),
         }
     }
+}
+
+/// Booting a new machine from a snapshot. Like every other boot here it is
+/// detached — the daemon outlives the request, so a foreground VM would have
+/// nowhere to live.
+#[derive(Debug, Default, Clone)]
+pub struct BranchOpts {
+    /// Snapshot name, id, or unique id prefix.
+    pub snapshot: String,
+    pub name: Option<String>,
+    pub cpus: Option<u32>,
+    pub mem: Option<u32>,
+    /// Host↔guest forwards, each "[BIND:]HOST:GUEST". Empty inherits the
+    /// snapshot's (remapped if a port is taken); see `no_ports` to drop them.
+    pub ports: Vec<String>,
+    pub no_ports: bool,
+}
+
+impl BranchOpts {
+    pub fn to_command(&self) -> CoreCommand {
+        CoreCommand::Branch(BranchArgs {
+            snapshot: self.snapshot.clone(),
+            name: self.name.clone(),
+            detach: true,
+            cpus: self.cpus.map(|c| c.min(255) as u8),
+            mem: self.mem,
+            ports: self.ports.iter().filter_map(|p| p.parse().ok()).collect(),
+            no_ports: self.no_ports,
+        })
+    }
+}
+
+/// The same three lines the CLI prints after a restore, as one string: what was
+/// restored, where the replaced state went, and how to start the machine again.
+fn restore_message(r: &api::Restored) -> String {
+    let id = r.machine.get(..12).unwrap_or(&r.machine);
+    let mut out = format!("{id} restored to {}\n", r.snapshot);
+    if let Some(b) = &r.backup {
+        out.push_str(&format!("previous state saved as {b}\n"));
+    }
+    out.push_str(&format!("start it with: bsdkrun start {id}"));
+    out
 }
 
 #[derive(Debug, Default, Clone)]
@@ -651,6 +694,94 @@ impl Ops {
         let id = id.to_string();
         let cpus = cpus.map(|c| c.min(255) as u8);
         as_result(blocking("updating a machine", move || api::update(&id, cpus, mem)).await)
+    }
+
+    // -- snapshots -----------------------------------------------------------
+    //
+    // Snapshot / restore / rollback only move files, so they run in-process
+    // like any other engine call. `branch` boots, so it goes to a supervisor.
+
+    pub async fn list_snapshots(&self, machine: Option<String>) -> OpResult<Vec<Snapshot>> {
+        blocking("listing snapshots", move || {
+            api::list_snapshots(machine.as_deref())
+        })
+        .await
+    }
+
+    /// Snapshot a machine's disk state. Returns the snapshot itself rather than
+    /// a `CommandResult`: a UI that has just taken one wants to show it.
+    pub async fn snapshot(
+        &self,
+        id: &str,
+        name: Option<String>,
+        description: &str,
+    ) -> OpResult<Snapshot> {
+        let (id, description) = (id.to_string(), description.to_string());
+        blocking("snapshotting a machine", move || {
+            let row = api::create_snapshot(&id, name.as_deref(), &description)?;
+            Ok(bsdkrun_core::api::snapshot(&row))
+        })
+        .await
+    }
+
+    pub async fn remove_snapshots(&self, names: &[String]) -> OpResult<CommandResult> {
+        require_non_empty("snapshots", names)?;
+        let names = names.to_vec();
+        as_result(
+            blocking("removing snapshots", move || {
+                let mut removed = Vec::new();
+                for name in &names {
+                    removed.push(api::remove_snapshot(name)?);
+                }
+                Ok(removed.join("\n"))
+            })
+            .await,
+        )
+    }
+
+    /// Put a machine's state back to a snapshot. The machine is left stopped —
+    /// a caller that wants it running calls `start` next.
+    pub async fn restore_snapshot(
+        &self,
+        id: &str,
+        snapshot: &str,
+        force: bool,
+        backup: bool,
+    ) -> OpResult<CommandResult> {
+        let (id, snapshot) = (id.to_string(), snapshot.to_string());
+        as_result(
+            blocking("restoring a machine", move || {
+                let r = api::restore_snapshot(&id, &snapshot, force, backup)?;
+                Ok(restore_message(&r))
+            })
+            .await,
+        )
+    }
+
+    pub async fn rollback_machine(
+        &self,
+        id: &str,
+        force: bool,
+        backup: bool,
+    ) -> OpResult<CommandResult> {
+        let id = id.to_string();
+        as_result(
+            blocking("rolling back a machine", move || {
+                let r = api::rollback_snapshot(&id, force, backup)?;
+                Ok(restore_message(&r))
+            })
+            .await,
+        )
+    }
+
+    /// Boot a new machine from a snapshot, returning its id.
+    pub async fn branch(&self, opts: &BranchOpts) -> OpResult<String> {
+        if opts.snapshot.trim().is_empty() {
+            return Err(OpError::InvalidArgument(
+                "snapshot must not be empty".into(),
+            ));
+        }
+        Ok(self.supervisor.detached(&opts.to_command()).await?)
     }
 
     pub async fn commit(&self, id: &str, name: &str, description: &str) -> OpResult<CommandResult> {

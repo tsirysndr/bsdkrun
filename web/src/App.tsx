@@ -10,10 +10,13 @@ import Sidebar from "./components/Sidebar";
 import MachinesView from "./components/MachinesView";
 import ImagesView from "./components/ImagesView";
 import VolumesView from "./components/VolumesView";
+import SnapshotsView from "./components/SnapshotsView";
 import FlavorsView from "./components/FlavorsView";
 import NetworksView from "./components/NetworksView";
 import RunDialog from "./components/RunDialog";
 import CommitDialog from "./components/CommitDialog";
+import SnapshotDialog from "./components/SnapshotDialog";
+import BranchDialog from "./components/BranchDialog";
 import EditResourcesDialog from "./components/EditResourcesDialog";
 import EditNetworkDialog from "./components/EditNetworkDialog";
 import NewFlavorModal from "./components/NewFlavorModal";
@@ -49,6 +52,7 @@ function Workspace() {
             {view === "machines" && <MachinesView />}
             {view === "images" && <ImagesView />}
             {view === "volumes" && <VolumesView />}
+            {view === "snapshots" && <SnapshotsView />}
             {view === "flavors" && <FlavorsView />}
             {view === "networks" && <NetworksView />}
           </div>
@@ -60,6 +64,8 @@ function Workspace() {
       {/* Overlays */}
       <RunDialog />
       <CommitDialog />
+      <SnapshotDialog />
+      <BranchDialog />
       <EditResourcesDialog />
       <EditNetworkDialog />
       <NewFlavorModal />

@@ -193,6 +193,23 @@ val stop = client.followLogs(id, onLine = println)
 val session = client.shell(id).map(_.onOutput(bytes => print(new String(bytes))))
 ```
 
+### Snapshots
+
+A snapshot is a **copy-on-write clone of a machine's disk state** — instant to
+take, free until the two sides diverge. `branch` boots a new machine from one
+(or from a machine, which is snapshotted first); `restoreMachine`/`rollbackMachine` put one
+back, leaving the machine stopped. A BSD guest is powered off to snapshot it:
+a mounted UFS cannot be cloned consistently.
+
+```scala
+for
+  snap  <- client.snapshotMachine(id, Some("before-upgrade"))
+  _     <- client.snapshots(Some(id))            // newest first
+  bid   <- client.branch(snap.name, name = Some("web-test"))
+  _     <- client.restoreMachine(id, snap.name)  // or client.rollbackMachine(id)
+yield bid
+```
+
 A URL set without a token is an error rather than a silent unauthenticated
 fallback, and an `UNAUTHENTICATED` response becomes `BsdkrunError.Auth`
 specifically, so a caller does not retry a bad token forever.

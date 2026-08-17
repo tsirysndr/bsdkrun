@@ -361,6 +361,22 @@ GraphQL mutation (`daemon/src/graphql.rs`) — `run_bsd(client, os: :freebsd, ..
 etc. — and return the new machine's id. `stop`/`start`/`remove`/`update`/
 `commit` return a `CommandResult` (`exit_code`, `stdout`, `stderr`).
 
+### Snapshots
+
+A snapshot is a **copy-on-write clone of a machine's disk state** — instant to
+take, free until the two sides diverge. `branch` boots a new machine from one
+(or from a machine, which is snapshotted first); `restore`/`rollback` put one
+back, leaving the machine stopped. A BSD guest is powered off to snapshot it:
+a mounted UFS cannot be cloned consistently.
+
+```elixir
+{:ok, snap} = Client.snapshot(client, id, name: "before-upgrade")
+{:ok, _all} = Client.snapshots(client, id)      # newest first
+{:ok, branch_id} = Client.branch(client, snap.name, name: "web-test")
+{:ok, _} = Client.restore(client, id, snap.name)  # or Client.rollback(client, id)
+{:ok, _} = Client.remove_snapshots(client, snap.name)
+```
+
 For a live terminal instead of a one-shot `exec`, use `shell`:
 
 ```elixir

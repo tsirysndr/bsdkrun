@@ -35,8 +35,14 @@ module Bsdkrun
     # +web/src/lib/api.ts+'s +MACHINE_FIELDS+ fragment exactly.
     MACHINE_FIELDS = <<~GQL.freeze
       id name image kind command status running exitCode pid detached
-      cpus mem volume stateDir createdAt finishedAt network netIp
+      cpus mem volume stateDir createdAt finishedAt network netIp origin
       ports { bind host guest }
+    GQL
+
+    # The +Snapshot+ selection, likewise shared by every snapshot document.
+    SNAPSHOT_FIELDS = <<~GQL.freeze
+      id name machineId machineName kind image path parent description
+      cpus mem size createdAt ports { bind host guest }
     GQL
 
     # @return [String] the GraphQL endpoint URL (normalized).
@@ -240,6 +246,112 @@ module Bsdkrun
         "commitMachine(id:$id, name:$name, description:$description){ exitCode stdout stderr } }",
         { id: id, name: name, description: description }
       )
+    end
+
+    # ---- snapshots ---------------------------------------------------------
+    #
+    # A snapshot is a copy-on-write clone of a machine's disk state: instant to
+    # take, free until the two sides diverge. {#branch} boots a new machine
+    # from one; {#restore}/{#rollback} put one back.
+
+    # List snapshots, newest first.
+    # @param machine [String, nil] only this machine's, when given.
+    # @return [Array<SnapshotInfo>]
+    def snapshots(machine: nil)
+      data = request(
+        "query($machine:String){ snapshots(machine:$machine){ #{SNAPSHOT_FIELDS} } }",
+        { machine: machine }
+      )
+      (data["snapshots"] || []).map { |s| SnapshotInfo.from_graphql(s) }
+    end
+
+    # Capture a machine's disk state.
+    #
+    # A BSD guest is powered off first — a mounted UFS cannot be cloned
+    # consistently — so the machine is left stopped; {#start} brings it back.
+    #
+    # @param id [String]
+    # @param name [String, nil] defaults to +<machine>-<n>+.
+    # @param description [String]
+    # @return [SnapshotInfo]
+    def snapshot(id, name: nil, description: "")
+      data = request(
+        "mutation($id:String!,$name:String,$description:String!){ " \
+        "snapshotMachine(id:$id, name:$name, description:$description){ #{SNAPSHOT_FIELDS} } }",
+        { id: id, name: name, description: description }
+      )
+      SnapshotInfo.from_graphql(data["snapshotMachine"])
+    end
+
+    # Delete snapshots and their data. Machines branched from them are
+    # unaffected.
+    # @param names [String, Array<String>]
+    # @return [CommandResult]
+    def remove_snapshots(names)
+      run_command_mutation(
+        "removeSnapshots",
+        "mutation($names:[String!]!){ removeSnapshots(names:$names){ exitCode stdout stderr } }",
+        { names: Array(names) }
+      )
+    end
+
+    # Put a machine's disk state back to one of its snapshots.
+    #
+    # +force+ stops the machine first (it holds the very files being
+    # replaced); +backup+ snapshots the state being overwritten, which is a
+    # CoW clone and therefore free. The machine is left stopped.
+    #
+    # @param id [String]
+    # @param snapshot [String]
+    # @param force [Boolean]
+    # @param backup [Boolean]
+    # @return [CommandResult]
+    def restore(id, snapshot, force: true, backup: true)
+      run_command_mutation(
+        "restoreMachine",
+        "mutation($id:String!,$snapshot:String!,$force:Boolean!,$backup:Boolean!){ " \
+        "restoreMachine(id:$id, snapshot:$snapshot, force:$force, backup:$backup){ " \
+        "exitCode stdout stderr } }",
+        { id: id, snapshot: snapshot, force: force, backup: backup }
+      )
+    end
+
+    # Restore a machine to its most recent snapshot.
+    # @param id [String]
+    # @param force [Boolean]
+    # @param backup [Boolean]
+    # @return [CommandResult]
+    def rollback(id, force: true, backup: true)
+      run_command_mutation(
+        "rollbackMachine",
+        "mutation($id:String!,$force:Boolean!,$backup:Boolean!){ " \
+        "rollbackMachine(id:$id, force:$force, backup:$backup){ exitCode stdout stderr } }",
+        { id: id, force: force, backup: backup }
+      )
+    end
+
+    # Boot a NEW machine from a snapshot — or from a machine, which is
+    # snapshotted first — and return the new machine's id.
+    #
+    # The state is cloned, never booted in place, so the source is untouched
+    # and one snapshot can be branched any number of times. With no +ports+,
+    # the snapshot's own forwards are inherited, with any host port that is
+    # already taken swapped for a free one.
+    #
+    # @param snapshot [String] snapshot name/id, or a machine id.
+    # @param name [String, nil]
+    # @param cpus [Integer, nil]
+    # @param mem [Integer, nil]
+    # @param ports [Array<String>]
+    # @param no_ports [Boolean]
+    # @return [String] the new machine's id.
+    def branch(snapshot, name: nil, cpus: nil, mem: nil, ports: [], no_ports: false)
+      data = request(
+        "mutation($input:BranchInput!){ branchSnapshot(input:$input) }",
+        { input: { snapshot: snapshot, name: name, cpus: cpus, mem: mem,
+                   ports: Array(ports), noPorts: no_ports } }
+      )
+      data["branchSnapshot"].to_s
     end
 
     # One-shot console log fetch. Use {#follow_logs} to stream instead.

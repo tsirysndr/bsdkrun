@@ -85,13 +85,17 @@ fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .id("app:nav:volumes")
         .accelerator("CmdOrCtrl+3")
         .build(app)?;
+    let nav_snapshots = MenuItemBuilder::new("Snapshots")
+        .id("app:nav:snapshots")
+        .accelerator("CmdOrCtrl+4")
+        .build(app)?;
     let nav_flavors = MenuItemBuilder::new("Flavors")
         .id("app:nav:flavors")
-        .accelerator("CmdOrCtrl+4")
+        .accelerator("CmdOrCtrl+5")
         .build(app)?;
     let nav_networks = MenuItemBuilder::new("Networks")
         .id("app:nav:networks")
-        .accelerator("CmdOrCtrl+5")
+        .accelerator("CmdOrCtrl+6")
         .build(app)?;
     let palette = MenuItemBuilder::new("Command Palette…")
         .id("app:palette")
@@ -101,6 +105,7 @@ fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .item(&nav_machines)
         .item(&nav_images)
         .item(&nav_volumes)
+        .item(&nav_snapshots)
         .item(&nav_flavors)
         .item(&nav_networks)
         .separator()

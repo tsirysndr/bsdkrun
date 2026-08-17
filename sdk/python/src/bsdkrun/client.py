@@ -25,7 +25,14 @@ from typing import Any
 
 from .errors import GraphQLError
 from .transport import TOKEN_ENV, URL_ENV, WSTransport, http_request, normalize_url, ws_url
-from .types import CommandResult, ExecResult, PortForward, SandboxInfo, ShellSessionInfo
+from .types import (
+    CommandResult,
+    ExecResult,
+    PortForward,
+    SandboxInfo,
+    ShellSessionInfo,
+    SnapshotInfo,
+)
 
 __all__ = ["Client", "ShellSession"]
 
@@ -35,8 +42,12 @@ __all__ = ["Client", "ShellSession"]
 
 _MACHINE_FIELDS = (
     "id name image kind command status running exitCode pid detached "
-    "cpus mem volume stateDir createdAt finishedAt network netIp "
+    "cpus mem volume stateDir createdAt finishedAt network netIp origin "
     "ports { bind host guest }"
+)
+_SNAPSHOT_FIELDS = (
+    "id name machineId machineName kind image path parent description "
+    "cpus mem size createdAt ports { bind host guest }"
 )
 _CMD_RESULT_FIELDS = "exitCode stdout stderr"
 _SESSION_FIELDS = "id machineId finished truncated"
@@ -59,6 +70,29 @@ _COMMIT_MUTATION = (
     f"mutation($id: String!, $name: String!, $description: String!) {{ "
     f"commitMachine(id: $id, name: $name, description: $description) {{ {_CMD_RESULT_FIELDS} }} }}"
 )
+
+_SNAPSHOTS_QUERY = (
+    f"query($machine: String) {{ snapshots(machine: $machine) {{ {_SNAPSHOT_FIELDS} }} }}"
+)
+_SNAPSHOT_MUTATION = (
+    f"mutation($id: String!, $name: String, $description: String!) {{ "
+    f"snapshotMachine(id: $id, name: $name, description: $description) "
+    f"{{ {_SNAPSHOT_FIELDS} }} }}"
+)
+_REMOVE_SNAPSHOTS_MUTATION = (
+    f"mutation($names: [String!]!) {{ removeSnapshots(names: $names) {{ {_CMD_RESULT_FIELDS} }} }}"
+)
+_RESTORE_MUTATION = (
+    f"mutation($id: String!, $snapshot: String!, $force: Boolean!, $backup: Boolean!) {{ "
+    f"restoreMachine(id: $id, snapshot: $snapshot, force: $force, backup: $backup) "
+    f"{{ {_CMD_RESULT_FIELDS} }} }}"
+)
+_ROLLBACK_MUTATION = (
+    f"mutation($id: String!, $force: Boolean!, $backup: Boolean!) {{ "
+    f"rollbackMachine(id: $id, force: $force, backup: $backup) "
+    f"{{ {_CMD_RESULT_FIELDS} }} }}"
+)
+_BRANCH_MUTATION = "mutation($input: BranchInput!) { branchSnapshot(input: $input) }"
 
 _RUN_LINUX_MUTATION = "mutation($input: RunLinuxInput!) { runLinux(input: $input) }"
 _RUN_BSD_MUTATION = "mutation($input: RunBsdInput!) { runBsd(input: $input) }"
@@ -369,6 +403,91 @@ class Client:
     def commit(self, id: str, name: str, description: str = "") -> CommandResult:
         data = self.request(_COMMIT_MUTATION, {"id": id, "name": name, "description": description})
         return CommandResult.from_graphql(data["commitMachine"])
+
+    # -- snapshots ------------------------------------------------------------
+    #
+    # A snapshot is a copy-on-write clone of a machine's disk state, so taking
+    # one is instant and costs nothing until the two sides diverge. `branch`
+    # boots a new machine from one; `restore`/`rollback` put one back.
+
+    def snapshots(self, machine: str | None = None) -> builtins.list[SnapshotInfo]:
+        """List snapshots, newest first — all of them, or one machine's."""
+        data = self.request(_SNAPSHOTS_QUERY, {"machine": machine})
+        return [SnapshotInfo.from_graphql(s) for s in data.get("snapshots") or []]
+
+    def snapshot(self, id: str, name: str | None = None, description: str = "") -> SnapshotInfo:
+        """Capture a machine's disk state.
+
+        ``name`` defaults to ``<machine>-<n>``. A BSD guest is powered off
+        first — a mounted UFS cannot be cloned consistently — so the machine is
+        left stopped; :meth:`start` brings it back.
+        """
+        data = self.request(
+            _SNAPSHOT_MUTATION, {"id": id, "name": name, "description": description}
+        )
+        return SnapshotInfo.from_graphql(data["snapshotMachine"])
+
+    def remove_snapshots(self, names: builtins.list[str]) -> CommandResult:
+        """Delete snapshots and their data. Machines branched from them stay."""
+        data = self.request(_REMOVE_SNAPSHOTS_MUTATION, {"names": names})
+        return CommandResult.from_graphql(data["removeSnapshots"])
+
+    def restore(
+        self,
+        id: str,
+        snapshot: str,
+        *,
+        force: bool = True,
+        backup: bool = True,
+    ) -> CommandResult:
+        """Put a machine's disk state back to one of its snapshots.
+
+        ``force`` stops the machine first (it holds the very files being
+        replaced); ``backup`` snapshots the state being overwritten, which is a
+        CoW clone and therefore free. The machine is left stopped.
+        """
+        data = self.request(
+            _RESTORE_MUTATION,
+            {"id": id, "snapshot": snapshot, "force": force, "backup": backup},
+        )
+        return CommandResult.from_graphql(data["restoreMachine"])
+
+    def rollback(self, id: str, *, force: bool = True, backup: bool = True) -> CommandResult:
+        """Restore a machine to its most recent snapshot."""
+        data = self.request(_ROLLBACK_MUTATION, {"id": id, "force": force, "backup": backup})
+        return CommandResult.from_graphql(data["rollbackMachine"])
+
+    def branch(
+        self,
+        snapshot: str,
+        *,
+        name: str | None = None,
+        cpus: int | None = None,
+        mem: int | None = None,
+        ports: Any = None,
+        no_ports: bool = False,
+    ) -> str:
+        """Boot a NEW machine from a snapshot, returning its id.
+
+        The snapshot is cloned, never booted in place, so the machine it came
+        from is untouched and one snapshot can be branched any number of times.
+        With no ``ports``, the snapshot's own forwards are inherited — with any
+        host port that is already taken swapped for a free one.
+        """
+        data = self.request(
+            _BRANCH_MUTATION,
+            {
+                "input": {
+                    "snapshot": snapshot,
+                    "name": name,
+                    "cpus": cpus,
+                    "mem": mem,
+                    "ports": _port_strings(ports),
+                    "noPorts": no_ports,
+                }
+            },
+        )
+        return str(data["branchSnapshot"])
 
     def logs(self, id: str, boot: bool = False) -> str:
         """One-shot read of a machine's console log."""

@@ -43,9 +43,9 @@ pub mod volumes;
 pub use binary::{reset_binary_cache, resolve_binary, set_binary_path};
 pub use cache::{Cache, CacheEntry, RestoreResult};
 pub use client::{
-    BsdOs, Client, FollowLogsBuilder, RunBsdBuilder, RunFlavorBuilder, RunLinuxBuilder,
-    RunNanosBuilder, RunOsvBuilder, RunSolo5Builder, RunUnikraftBuilder, ShellBuilder,
-    ShellSession, Subscription,
+    BranchBuilder, BsdOs, Client, FollowLogsBuilder, RunBsdBuilder, RunFlavorBuilder,
+    RunLinuxBuilder, RunNanosBuilder, RunOsvBuilder, RunSolo5Builder, RunUnikraftBuilder,
+    ShellBuilder, ShellSession, Subscription,
 };
 pub use error::{Error, Result};
 pub use filesystem::FileSystem;
@@ -58,5 +58,5 @@ pub use sandbox::{
 pub use transport::{normalize_url, ws_url, TOKEN_ENV, URL_ENV};
 pub use types::{
     CommandResult, ExecResult, ImageInfo, NetworkInfo, PortForward, RemoteExecResult, SandboxInfo,
-    ShellSessionInfo, VolumeInfo,
+    ShellSessionInfo, SnapshotInfo, VolumeInfo,
 };

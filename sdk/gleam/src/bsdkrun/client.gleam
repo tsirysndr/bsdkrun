@@ -51,8 +51,8 @@ import bsdkrun/graphql_transport
 import bsdkrun/subject.{type Subject}
 import bsdkrun/types.{
   type CommandResult, type ExecResult, type SandboxInfo, type ShellEvent,
-  type ShellSessionInfo, type SubscriptionEvent, ExecResult, ShellClosed,
-  ShellData, ShellError, ShellExit, SubComplete, SubError, SubNext,
+  type ShellSessionInfo, type SnapshotInfo, type SubscriptionEvent, ExecResult,
+  ShellClosed, ShellData, ShellError, ShellExit, SubComplete, SubError, SubNext,
 }
 import bsdkrun/ws
 import gleam/bit_array
@@ -191,7 +191,9 @@ fn run_mutation(
 
 /// The `MACHINE_FIELDS` selection `web/src/lib/api.ts` uses, transcribed
 /// verbatim so `sandbox_info_from_graphql` always has what it expects.
-const machine_fields = "id name image kind command status running exitCode pid detached cpus mem volume stateDir createdAt finishedAt network netIp ports { bind host guest }"
+const machine_fields = "id name image kind command status running exitCode pid detached cpus mem volume stateDir createdAt finishedAt network netIp origin ports { bind host guest }"
+
+const snapshot_fields = "id name machineId machineName kind image path parent description cpus mem size createdAt ports { bind host guest }"
 
 /// Machines. `all: True` includes stopped ones, like `bsdkrun ps -a`.
 pub fn list(client: Client, all all: Bool) -> Result(List(SandboxInfo), Error) {
@@ -310,6 +312,162 @@ pub fn commit(
     "commitMachine",
     "commitMachine",
   )
+}
+
+// ---------------------------------------------------------------------------
+// snapshots
+//
+// A snapshot is a copy-on-write clone of a machine's disk state: instant to
+// take, free until the two sides diverge. `branch` boots a new machine from
+// one; `restore`/`rollback` put one back.
+// ---------------------------------------------------------------------------
+
+/// Snapshots, newest first. `machine` narrows the list to one machine's.
+pub fn snapshots(
+  client: Client,
+  machine machine: Option(String),
+) -> Result(List(SnapshotInfo), Error) {
+  let doc =
+    "query($machine: String) { snapshots(machine: $machine) { "
+    <> snapshot_fields
+    <> " } }"
+  use data <- result.try(query(
+    client,
+    doc,
+    json.object([#("machine", json.nullable(machine, json.string))]),
+  ))
+  field_dynamic_list(data, "snapshots")
+  |> list.try_map(types.snapshot_info_from_graphql)
+}
+
+/// Capture a machine's disk state. `name` of `None` yields `<machine>-<n>`.
+///
+/// A BSD guest is powered off first — a mounted UFS cannot be cloned
+/// consistently — so the machine is left stopped; `start` brings it back.
+pub fn snapshot(
+  client: Client,
+  id id: String,
+  name name: Option(String),
+  description description: String,
+) -> Result(SnapshotInfo, Error) {
+  let doc =
+    "mutation($id: String!, $name: String, $description: String!) { snapshotMachine(id: $id, name: $name, description: $description) { "
+    <> snapshot_fields
+    <> " } }"
+  use data <- result.try(query(
+    client,
+    doc,
+    json.object([
+      #("id", json.string(id)),
+      #("name", json.nullable(name, json.string)),
+      #("description", json.string(description)),
+    ]),
+  ))
+  case field_dynamic(data, "snapshotMachine") {
+    Ok(row) -> types.snapshot_info_from_graphql(row)
+    Error(Nil) -> Error(DecodeFailed("snapshotMachine", string.inspect(data)))
+  }
+}
+
+/// Delete snapshots and their data. Machines already branched from them are
+/// unaffected.
+pub fn remove_snapshots(
+  client: Client,
+  names names: List(String),
+) -> Result(CommandResult, Error) {
+  command_mutation(
+    client,
+    "mutation($names: [String!]!) { removeSnapshots(names: $names) { exitCode stdout stderr } }",
+    json.object([#("names", json.array(names, json.string))]),
+    "removeSnapshots",
+    "removeSnapshots",
+  )
+}
+
+/// Put a machine's disk state back to one of its snapshots.
+///
+/// `force` stops the machine first — it holds the very files being replaced.
+/// `backup` snapshots the state being overwritten, which is a CoW clone and
+/// therefore free. The machine is left stopped.
+pub fn restore(
+  client: Client,
+  id id: String,
+  snapshot snapshot: String,
+  force force: Bool,
+  backup backup: Bool,
+) -> Result(CommandResult, Error) {
+  command_mutation(
+    client,
+    "mutation($id: String!, $snapshot: String!, $force: Boolean!, $backup: Boolean!) { restoreMachine(id: $id, snapshot: $snapshot, force: $force, backup: $backup) { exitCode stdout stderr } }",
+    json.object([
+      #("id", json.string(id)),
+      #("snapshot", json.string(snapshot)),
+      #("force", json.bool(force)),
+      #("backup", json.bool(backup)),
+    ]),
+    "restoreMachine",
+    "restoreMachine",
+  )
+}
+
+/// Restore a machine to its most recent snapshot.
+pub fn rollback(
+  client: Client,
+  id id: String,
+  force force: Bool,
+  backup backup: Bool,
+) -> Result(CommandResult, Error) {
+  command_mutation(
+    client,
+    "mutation($id: String!, $force: Boolean!, $backup: Boolean!) { rollbackMachine(id: $id, force: $force, backup: $backup) { exitCode stdout stderr } }",
+    json.object([
+      #("id", json.string(id)),
+      #("force", json.bool(force)),
+      #("backup", json.bool(backup)),
+    ]),
+    "rollbackMachine",
+    "rollbackMachine",
+  )
+}
+
+/// Boot a NEW machine from a snapshot — or from a machine, which is
+/// snapshotted first — and return the new machine's id.
+///
+/// The state is cloned, never booted in place, so the source is untouched and
+/// one snapshot can be branched any number of times. An empty `ports`
+/// inherits the snapshot's own forwards, with any host port that is already
+/// taken swapped for a free one; `no_ports` drops them instead.
+pub fn branch(
+  client: Client,
+  snapshot snapshot: String,
+  name name: Option(String),
+  cpus cpus: Option(Int),
+  mem mem: Option(Int),
+  ports ports: List(String),
+  no_ports no_ports: Bool,
+) -> Result(String, Error) {
+  let doc = "mutation($input: BranchInput!) { branchSnapshot(input: $input) }"
+  use data <- result.try(query(
+    client,
+    doc,
+    json.object([
+      #(
+        "input",
+        json.object([
+          #("snapshot", json.string(snapshot)),
+          #("name", json.nullable(name, json.string)),
+          #("cpus", json.nullable(cpus, json.int)),
+          #("mem", json.nullable(mem, json.int)),
+          #("ports", json.array(ports, json.string)),
+          #("noPorts", json.bool(no_ports)),
+        ]),
+      ),
+    ]),
+  ))
+  case field_string(data, "branchSnapshot") {
+    Ok(id) -> Ok(id)
+    Error(Nil) -> Error(DecodeFailed("branchSnapshot", string.inspect(data)))
+  }
 }
 
 /// A machine's console log as a single string, as it stands right now. Use

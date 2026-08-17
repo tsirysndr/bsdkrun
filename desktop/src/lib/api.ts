@@ -9,6 +9,7 @@ import type {
   ProbeResult,
   RunSpec,
   Settings,
+  Snapshot,
   SystemStats,
   VersionEntry,
   Volume,
@@ -50,6 +51,23 @@ export const api = {
   createFlavor: (spec: NewFlavor) => invoke<void>("create_flavor", { ...spec }),
   commitMachine: (id: string, name: string, description: string) =>
     invoke<string>("commit_machine", { id, name, description }),
+
+  // Snapshots: copy-on-write captures of a machine's disk state. `machine`
+  // narrows the list to one machine's; omit it for every snapshot on the host.
+  listSnapshots: (machine?: string | null) =>
+    invoke<Snapshot[]>("list_snapshots", { machine: machine ?? null }),
+  /** Returns the snapshot's name — generated when none was given. */
+  snapshotMachine: (id: string, name: string | null, description: string) =>
+    invoke<string>("snapshot_machine", { id, name, description }),
+  removeSnapshot: (name: string) => invoke<void>("remove_snapshot", { name }),
+  /** Leaves the machine stopped; start it to run the restored state. */
+  restoreMachine: (id: string, snapshot: string, backup: boolean) =>
+    invoke<string>("restore_machine", { id, snapshot, backup }),
+  rollbackMachine: (id: string, backup: boolean) =>
+    invoke<string>("rollback_machine", { id, backup }),
+  /** Boots a new machine from a snapshot; returns its id. */
+  branchSnapshot: (snapshot: string, name: string | null, ports: string[]) =>
+    invoke<string>("branch_snapshot", { snapshot, name, ports }),
   removeFlavor: (name: string, force: boolean) =>
     invoke<void>("remove_flavor", { name, force }),
 

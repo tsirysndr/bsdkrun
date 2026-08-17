@@ -89,6 +89,34 @@ export interface CommitTarget {
 }
 export const commitTargetAtom = atom<CommitTarget | null>(null);
 
+// The machine being snapshotted (`bsdkrun snapshot`); null ⇒ closed.
+export interface SnapshotTarget {
+  id: string;
+  label: string;
+  kind: string; // guest kind — a BSD guest is powered off to capture a clean disk
+  running: boolean;
+}
+export const snapshotTargetAtom = atom<SnapshotTarget | null>(null);
+
+// What is being branched into a new machine; null ⇒ closed.
+export interface BranchTarget {
+  /**
+   * A snapshot name/id, or a machine id — the engine snapshots a machine
+   * first, so "branch this machine" needs no separate step in the UI.
+   */
+  snapshot: string;
+  /** What to call the source in the dialog's copy. */
+  label: string;
+  /** True when `snapshot` names a live machine rather than a saved snapshot. */
+  fromMachine: boolean;
+  kind: string;
+  /** Whether that machine is running — a BSD guest is powered off to snapshot. */
+  running?: boolean;
+  /** Recorded forwards, offered as the branch's defaults. */
+  ports: string[];
+}
+export const branchTargetAtom = atom<BranchTarget | null>(null);
+
 // The machine whose CPU/RAM is being edited; null ⇒ closed.
 export interface EditResourcesTarget {
   id: string;

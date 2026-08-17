@@ -48,6 +48,18 @@ pub fn flavors_dir() -> Result<PathBuf> {
     Ok(state_dir()?.join("flavors"))
 }
 
+/// Directory holding machine snapshots (`<state>/snapshots/<id>`): the CoW
+/// clone of a machine's rootfs / disk / unikernel at one point in time.
+///
+/// Not the only place they can live: a snapshot has to be taken on the same
+/// filesystem as the data it clones or `clonefile` fails `EXDEV` and the
+/// "snapshot" becomes a full copy of a multi-GiB rootfs. On macOS a Linux
+/// rootfs lives on the case-sensitive store, so its snapshots do too — the
+/// choice is made per machine, in `commands::snapshot`.
+pub fn snapshots_dir() -> Result<PathBuf> {
+    Ok(state_dir()?.join("snapshots"))
+}
+
 /// The historical location for named volumes, `<state>/volumes`. Prefer
 /// [`volumes_dir`] — on macOS the volumes may have been relocated onto the
 /// case-sensitive store.
@@ -113,6 +125,35 @@ pub struct MachineRow {
     /// Host↔guest TCP port forwards, comma-joined `HOST:GUEST` pairs (see
     /// [`crate::net::format_ports`] / `parse_ports`), or `None` if there are none.
     pub ports: Option<String>,
+    /// The snapshot this machine was branched from, if any (`bsdkrun branch`).
+    pub origin: Option<String>,
+}
+
+/// A machine snapshot: a named CoW clone of one machine's disk state, plus what
+/// `branch` needs to boot a new machine from it.
+#[derive(Debug, Clone)]
+pub struct SnapshotRow {
+    /// Short id, like a machine's (12 hex chars).
+    pub id: String,
+    /// User-facing name, unique across the host.
+    pub name: String,
+    pub machine_id: String,
+    /// The machine's display name when the snapshot was taken — kept as a
+    /// string so a snapshot outlives the machine it came from.
+    pub machine_name: String,
+    /// Guest OS: linux / freebsd / netbsd / unikraft.
+    pub kind: String,
+    pub image: String,
+    /// `<snapshots>/<id>`, holding `rootfs/`, `disk.<ext>` or the unikernel.
+    pub path: String,
+    /// The snapshot the source machine itself was branched from, if any — the
+    /// lineage `snapshot ls --tree` and the UIs draw.
+    pub parent: Option<String>,
+    pub description: String,
+    pub cpus: i64,
+    pub mem: i64,
+    pub ports: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -287,6 +328,34 @@ impl Db {
             )
             .execute(&self.pool)
             .await?;
+            // Machine snapshots: a named, point-in-time CoW clone of a
+            // machine's disk state, plus everything `branch` needs to boot a
+            // new machine from it (resources and port forwards).
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS snapshots (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    machine_id TEXT NOT NULL,
+                    machine_name TEXT NOT NULL DEFAULT '',
+                    kind TEXT NOT NULL,
+                    image TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    parent TEXT,
+                    description TEXT NOT NULL DEFAULT '',
+                    cpus INTEGER NOT NULL DEFAULT 1,
+                    mem INTEGER NOT NULL DEFAULT 512,
+                    ports TEXT,
+                    created_at TEXT NOT NULL
+                )",
+            )
+            .execute(&self.pool)
+            .await?;
+            // Which snapshot a machine was branched from, so the UI can draw the
+            // lineage (machine → snapshot → branch) instead of showing a branch
+            // as an unrelated machine.
+            let _ = sqlx::query("ALTER TABLE machines ADD COLUMN origin TEXT")
+                .execute(&self.pool)
+                .await;
             // Host-level key/value settings (domains feature state, daemon pids).
             // Runtime pids live here rather than a config file so the lazy
             // respawn pattern (`pid_alive` check, then respawn) works exactly as
@@ -543,7 +612,7 @@ impl Db {
             .block_on(async {
                 let rows = sqlx::query(
                     "SELECT id, name, image, kind, command, status, exit_code, pid, detached,
-                            cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip, ports
+                            cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip, ports, origin
                      FROM machines ORDER BY created_at DESC",
                 )
                 .fetch_all(&self.pool)
@@ -559,7 +628,7 @@ impl Db {
         if let Some(row) = self.rt.block_on(async {
             sqlx::query(
                 "SELECT id, name, image, kind, command, status, exit_code, pid, detached,
-                        cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip, ports
+                        cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip, ports, origin
                  FROM machines WHERE name = ? LIMIT 1",
             )
             .bind(prefix)
@@ -572,7 +641,7 @@ impl Db {
         let matches: Vec<MachineRow> = self.rt.block_on(async {
             let rows = sqlx::query(
                 "SELECT id, name, image, kind, command, status, exit_code, pid, detached,
-                        cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip, ports
+                        cpus, mem, state_dir, created_at, finished_at, volume, network, net_ip, ports, origin
                  FROM machines WHERE id LIKE ? ORDER BY created_at DESC",
             )
             .bind(format!("{prefix}%"))
@@ -781,6 +850,119 @@ impl Db {
                     .execute(&self.pool)
                     .await?;
                 Ok::<_, sqlx::Error>(r.rows_affected() > 0)
+            })
+            .map_err(Into::into)
+    }
+
+    // ---- machine snapshots -------------------------------------------------
+
+    /// Record (or replace) a snapshot.
+    pub fn upsert_snapshot(&self, s: &SnapshotRow) -> Result<()> {
+        self.rt
+            .block_on(async {
+                sqlx::query(
+                    "INSERT OR REPLACE INTO snapshots
+                     (id, name, machine_id, machine_name, kind, image, path, parent,
+                      description, cpus, mem, ports, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(&s.id)
+                .bind(&s.name)
+                .bind(&s.machine_id)
+                .bind(&s.machine_name)
+                .bind(&s.kind)
+                .bind(&s.image)
+                .bind(&s.path)
+                .bind(&s.parent)
+                .bind(&s.description)
+                .bind(s.cpus)
+                .bind(s.mem)
+                .bind(&s.ports)
+                .bind(now())
+                .execute(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .map_err(Into::into)
+    }
+
+    /// Every snapshot, newest first.
+    pub fn list_snapshots(&self) -> Result<Vec<SnapshotRow>> {
+        self.rt
+            .block_on(async {
+                let rows = sqlx::query(&format!("{SNAPSHOT_COLS} ORDER BY created_at DESC"))
+                    .fetch_all(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(rows.into_iter().map(row_to_snapshot).collect())
+            })
+            .map_err(Into::into)
+    }
+
+    /// One machine's snapshots, newest first.
+    pub fn machine_snapshots(&self, machine_id: &str) -> Result<Vec<SnapshotRow>> {
+        self.rt
+            .block_on(async {
+                let rows = sqlx::query(&format!(
+                    "{SNAPSHOT_COLS} WHERE machine_id = ? ORDER BY created_at DESC"
+                ))
+                .bind(machine_id)
+                .fetch_all(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(rows.into_iter().map(row_to_snapshot).collect())
+            })
+            .map_err(Into::into)
+    }
+
+    /// Find a snapshot by name, by full id, or by a unique id prefix — the same
+    /// three ways [`Self::find_machine`] accepts a machine.
+    pub fn find_snapshot(&self, key: &str) -> Result<Option<SnapshotRow>> {
+        if key.is_empty() {
+            return Ok(None);
+        }
+        self.rt
+            .block_on(async {
+                let exact = sqlx::query(&format!("{SNAPSHOT_COLS} WHERE name = ? OR id = ?"))
+                    .bind(key)
+                    .bind(key)
+                    .fetch_optional(&self.pool)
+                    .await?;
+                if let Some(r) = exact {
+                    return Ok::<_, sqlx::Error>(Some(row_to_snapshot(r)));
+                }
+                let rows = sqlx::query(&format!("{SNAPSHOT_COLS} WHERE id LIKE ?"))
+                    .bind(format!("{key}%"))
+                    .fetch_all(&self.pool)
+                    .await?;
+                Ok(match rows.len() {
+                    1 => rows.into_iter().next().map(row_to_snapshot),
+                    _ => None,
+                })
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn remove_snapshot(&self, id: &str) -> Result<bool> {
+        self.rt
+            .block_on(async {
+                let r = sqlx::query("DELETE FROM snapshots WHERE id = ?")
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(r.rows_affected() > 0)
+            })
+            .map_err(Into::into)
+    }
+
+    /// Record which snapshot a machine was branched from.
+    pub fn set_machine_origin(&self, id: &str, origin: &str) -> Result<()> {
+        self.rt
+            .block_on(async {
+                sqlx::query("UPDATE machines SET origin = ? WHERE id = ?")
+                    .bind(origin)
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(())
             })
             .map_err(Into::into)
     }
@@ -997,6 +1179,29 @@ fn row_to_flavor(r: sqlx::sqlite::SqliteRow) -> FlavorRow {
     }
 }
 
+/// The snapshot column list, shared by every snapshot query so a new column is
+/// added in one place.
+const SNAPSHOT_COLS: &str = "SELECT id, name, machine_id, machine_name, kind, image, path, \
+                             parent, description, cpus, mem, ports, created_at FROM snapshots";
+
+fn row_to_snapshot(r: sqlx::sqlite::SqliteRow) -> SnapshotRow {
+    SnapshotRow {
+        id: r.get("id"),
+        name: r.get("name"),
+        machine_id: r.get("machine_id"),
+        machine_name: r.get("machine_name"),
+        kind: r.get("kind"),
+        image: r.get("image"),
+        path: r.get("path"),
+        parent: r.get("parent"),
+        description: r.get("description"),
+        cpus: r.get("cpus"),
+        mem: r.get("mem"),
+        ports: r.get("ports"),
+        created_at: r.get("created_at"),
+    }
+}
+
 fn row_to_volume(r: sqlx::sqlite::SqliteRow) -> VolumeRow {
     VolumeRow {
         name: r.get("name"),
@@ -1027,6 +1232,7 @@ fn row_to_machine(r: sqlx::sqlite::SqliteRow) -> MachineRow {
         network: r.get("network"),
         net_ip: r.get("net_ip"),
         ports: r.get("ports"),
+        origin: r.get("origin"),
     }
 }
 
@@ -1118,6 +1324,20 @@ pub fn record_image(reference: &str, digest: &str, size: i64, rootfs: &str) {
     }
 }
 
+/// The snapshot the next recorded machine was branched from, set by
+/// `bsdkrun branch` and consumed by the first [`record_machine`] after it.
+///
+/// A one-shot override rather than a parameter because the row is written from
+/// two places (a foreground boot, and the *parent* of a detached fork) that
+/// both sit behind `run_machine`'s shared signature — the same reason
+/// [`crate::id::set_override`] exists.
+static ORIGIN_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Record which snapshot the next machine to boot came from.
+pub fn set_origin_override(snapshot: &str) {
+    *ORIGIN_OVERRIDE.lock().unwrap() = Some(snapshot.to_string());
+}
+
 /// Record a machine row. `kind` is `linux` / `firmware` / `kernel` — the guest
 /// type, which `shell`/`logs`/etc. use to apply the right behavior.
 #[allow(clippy::too_many_arguments)]
@@ -1136,11 +1356,24 @@ pub fn record_machine(
     volume: Option<&str>,
     ports: Option<&str>,
 ) {
+    let mut origin = ORIGIN_OVERRIDE.lock().unwrap().take();
     if let Err(e) = Db::open().and_then(|db| {
+        if origin.is_none() {
+            // A restart re-records the row; carry the branch lineage over.
+            origin = db.find_machine(id).ok().and_then(|m| m.origin);
+        }
         db.insert_machine(
             id, name, image, kind, command, status, pid, detached, cpus, mem, state_dir, volume,
             ports,
-        )
+        )?;
+        // After the insert, and re-applied on a plain restart: `INSERT OR
+        // REPLACE` rewrites the whole row, so a branch's recorded origin would
+        // otherwise be erased the first time the machine is stopped and
+        // started again.
+        if let Some(o) = &origin {
+            db.set_machine_origin(id, o)?;
+        }
+        Ok(())
     }) {
         tracing::warn!("recording machine in state db: {e:#}");
     }

@@ -109,6 +109,7 @@ export type {
   PortForward,
   GuestKind,
   SandboxInfo,
+  SnapshotInfo,
   ImageInfo,
   VolumeInfo,
   NetworkInfo,
@@ -137,6 +138,7 @@ export type {
   RunSolo5Options,
   RunOsvOptions,
   RunFlavorOptions,
+  BranchOptions,
 } from "./client.js";
 
 export { fromGraphQLMachine } from "./sandbox.js";

@@ -29,8 +29,10 @@ import (
 
 const (
 	machineFields = "id name image kind command status running exitCode pid detached " +
-		"cpus mem volume stateDir createdAt finishedAt network netIp " +
+		"cpus mem volume stateDir createdAt finishedAt network netIp origin " +
 		"ports { bind host guest }"
+	snapshotFields = "id name machineId machineName kind image path parent description " +
+		"cpus mem size createdAt ports { bind host guest }"
 	cmdResultFields = "exitCode stdout stderr"
 	sessionFields   = "id machineId finished truncated"
 )
@@ -48,6 +50,20 @@ var (
 		"updateMachine(id: $id, cpus: $cpus, mem: $mem) { " + cmdResultFields + " } }"
 	commitMutation = "mutation($id: String!, $name: String!, $description: String!) { " +
 		"commitMachine(id: $id, name: $name, description: $description) { " + cmdResultFields + " } }"
+
+	snapshotsQuery = "query($machine: String) { snapshots(machine: $machine) { " +
+		snapshotFields + " } }"
+	snapshotMutation = "mutation($id: String!, $name: String, $description: String!) { " +
+		"snapshotMachine(id: $id, name: $name, description: $description) { " +
+		snapshotFields + " } }"
+	removeSnapshotsMutation = "mutation($names: [String!]!) { " +
+		"removeSnapshots(names: $names) { " + cmdResultFields + " } }"
+	restoreMutation = "mutation($id: String!, $snapshot: String!, $force: Boolean!, " +
+		"$backup: Boolean!) { restoreMachine(id: $id, snapshot: $snapshot, force: $force, " +
+		"backup: $backup) { " + cmdResultFields + " } }"
+	rollbackMutation = "mutation($id: String!, $force: Boolean!, $backup: Boolean!) { " +
+		"rollbackMachine(id: $id, force: $force, backup: $backup) { " + cmdResultFields + " } }"
+	branchMutation = "mutation($input: BranchInput!) { branchSnapshot(input: $input) }"
 
 	runLinuxMutation    = "mutation($input: RunLinuxInput!) { runLinux(input: $input) }"
 	runBsdMutation      = "mutation($input: RunBsdInput!) { runBsd(input: $input) }"
@@ -228,6 +244,122 @@ func (c *Client) Update(id string, cpus, mem int) (*CommandResult, error) {
 func (c *Client) Commit(id, name, description string) (*CommandResult, error) {
 	variables := map[string]any{"id": id, "name": name, "description": description}
 	return c.commandResult(commitMutation, variables, "commitMachine")
+}
+
+// -- snapshots --------------------------------------------------------------
+//
+// A snapshot is a copy-on-write clone of a machine's disk state: instant to
+// take, free until the two sides diverge. Branch boots a new machine from
+// one; Restore/Rollback put one back.
+
+// Snapshots lists snapshots, newest first. A non-empty machine narrows the
+// list to that machine's.
+func (c *Client) Snapshots(machine string) ([]SnapshotInfo, error) {
+	variables := map[string]any{"machine": nil}
+	if machine != "" {
+		variables["machine"] = machine
+	}
+	data, err := c.Request(snapshotsQuery, variables)
+	if err != nil {
+		return nil, err
+	}
+	rows, _ := data["snapshots"].([]any)
+	out := make([]SnapshotInfo, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, snapshotInfoFromGraphQL(asMap(row)))
+	}
+	return out, nil
+}
+
+// Snapshot captures a machine's disk state. An empty name is filled in by the
+// engine as "<machine>-<n>".
+//
+// A BSD guest is powered off first — a mounted UFS cannot be cloned
+// consistently — so the machine is left stopped; Start brings it back.
+func (c *Client) Snapshot(id, name, description string) (*SnapshotInfo, error) {
+	variables := map[string]any{"id": id, "name": nil, "description": description}
+	if name != "" {
+		variables["name"] = name
+	}
+	data, err := c.Request(snapshotMutation, variables)
+	if err != nil {
+		return nil, err
+	}
+	info := snapshotInfoFromGraphQL(asMap(data["snapshotMachine"]))
+	return &info, nil
+}
+
+// RemoveSnapshots deletes snapshots and their data. Machines already branched
+// from them are unaffected.
+func (c *Client) RemoveSnapshots(names []string) (*CommandResult, error) {
+	return c.commandResult(removeSnapshotsMutation, map[string]any{"names": names}, "removeSnapshots")
+}
+
+// Restore puts a machine's disk state back to one of its snapshots.
+//
+// force stops the machine first (it holds the very files being replaced);
+// backup snapshots the state being overwritten, which is a CoW clone and
+// therefore free. The machine is left stopped.
+func (c *Client) Restore(id, snapshot string, force, backup bool) (*CommandResult, error) {
+	variables := map[string]any{"id": id, "snapshot": snapshot, "force": force, "backup": backup}
+	return c.commandResult(restoreMutation, variables, "restoreMachine")
+}
+
+// Rollback restores a machine to its most recent snapshot.
+func (c *Client) Rollback(id string, force, backup bool) (*CommandResult, error) {
+	variables := map[string]any{"id": id, "force": force, "backup": backup}
+	return c.commandResult(rollbackMutation, variables, "rollbackMachine")
+}
+
+// BranchOpts tunes Branch. The zero value inherits everything the snapshot
+// recorded and lets the engine name the machine.
+type BranchOpts struct {
+	// Name for the new machine; generated when empty.
+	Name string
+	// Cpus / Mem default to what the snapshot recorded when 0.
+	Cpus int
+	Mem  int
+	// Ports are host↔guest forwards, each "[BIND:]HOST:GUEST". Empty inherits
+	// the snapshot's, remapping any host port that is already taken.
+	Ports []string
+	// NoPorts forwards nothing, ignoring what the snapshot recorded.
+	NoPorts bool
+}
+
+// Branch boots a NEW machine from a snapshot — or from a machine, which is
+// snapshotted first — and returns the new machine's id.
+//
+// The state is cloned, never booted in place, so the source is untouched and
+// one snapshot can be branched any number of times.
+func (c *Client) Branch(snapshot string, opts *BranchOpts) (string, error) {
+	if opts == nil {
+		opts = &BranchOpts{}
+	}
+	input := map[string]any{
+		"snapshot": snapshot,
+		"name":     nil,
+		"cpus":     nil,
+		"mem":      nil,
+		"ports":    opts.Ports,
+		"noPorts":  opts.NoPorts,
+	}
+	if opts.Name != "" {
+		input["name"] = opts.Name
+	}
+	if opts.Cpus != 0 {
+		input["cpus"] = opts.Cpus
+	}
+	if opts.Mem != 0 {
+		input["mem"] = opts.Mem
+	}
+	if opts.Ports == nil {
+		input["ports"] = []string{}
+	}
+	data, err := c.Request(branchMutation, map[string]any{"input": input})
+	if err != nil {
+		return "", err
+	}
+	return asString(data["branchSnapshot"]), nil
 }
 
 // Logs is a one-shot read of a machine's console log (or bsdkrun's boot log

@@ -328,6 +328,9 @@ pub struct Machine {
     pub net_ip: Option<String>,
     #[serde(default)]
     pub ports: Vec<PortForward>,
+    /// The snapshot this machine was branched from, if any.
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -378,6 +381,44 @@ pub struct Flavor {
 
 pub async fn list_flavors(bin: &Target) -> Result<Vec<Flavor>, BkError> {
     let out = run(bin, &["flavors", "--json"]).await?;
+    serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
+}
+
+/// A machine snapshot (mirrors `bsdkrun snapshots --json`): one machine's disk
+/// state, captured under a name and bootable as a new machine (`branch`).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Snapshot {
+    pub id: String,
+    pub name: String,
+    pub machine_id: String,
+    /// The machine's name when it was taken; empty if it had none.
+    #[serde(default)]
+    pub machine_name: String,
+    /// "linux" | "freebsd" | "netbsd" | "unikraft".
+    pub kind: String,
+    pub image: String,
+    pub path: String,
+    /// The snapshot the source machine was itself branched from, if any.
+    #[serde(default)]
+    pub parent: Option<String>,
+    #[serde(default)]
+    pub description: String,
+    pub cpus: i64,
+    pub mem: i64,
+    #[serde(default)]
+    pub ports: Vec<PortForward>,
+    #[serde(default)]
+    pub size: Option<String>,
+    pub created_at: String,
+}
+
+pub async fn list_snapshots(bin: &Target, machine: Option<&str>) -> Result<Vec<Snapshot>, BkError> {
+    let mut args = vec!["snapshots"];
+    if let Some(m) = machine.filter(|m| !m.is_empty()) {
+        args.push(m);
+    }
+    args.push("--json");
+    let out = run(bin, &args).await?;
     serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
 }
 

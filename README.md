@@ -57,6 +57,7 @@ one CLI, no daemon required.
   - [`nanos`](#nanos--boot-a-nanos-nanovms-unikernel)
   - [`solo5` / `mirage`](#solo5--mirage--run-a-mirageos-solo5-unikernel)
 - [Managing machines](#managing-machines)
+- [Snapshots, branches & restore](#snapshots-branches--restore)
 - [Flavors — preconfigured environments & snapshots](#flavors--preconfigured-environments--snapshots)
 - [Networking](#networking)
 - [Machine domains — local DNS + HTTPS](#machine-domains--local-dns--https)
@@ -105,7 +106,11 @@ one CLI, no daemon required.
   microVMs from one base image instantly; named persistent volumes (`-v`), host bind mounts
   (`--mount`), [extra disks](#disks) (`--attach-disk`), and [`grow`](#resizing-the-disk) to enlarge
   images.
-- **Flavors & snapshots** — [ready-to-boot environments](#flavors--preconfigured-environments--snapshots)
+- **Snapshot, branch, restore** — [`snapshot`](#snapshots-branches--restore) captures a machine's
+  disk state as a CoW clone (instant, free until it diverges); `branch` boots a disposable copy of a
+  snapshot *or of a running machine*; `restore`/`rollback` put one back — with the replaced state
+  saved first, so an undo is always an undo away. Linux, FreeBSD, NetBSD and Unikraft alike.
+- **Flavors** — [ready-to-boot environments](#flavors--preconfigured-environments--snapshots)
   (languages, databases, web servers, AI coding agents), your own `flavors.toml` stacks, and
   `commit` to freeze a running machine into a reusable flavor, like `docker commit`.
 - **Clone a repo on boot** — `--repo <git-url>` clones into the guest (installing git if the base
@@ -886,6 +891,9 @@ bsdkrun doctor             # check this host can run machines, and what to fix i
 bsdkrun stop $id           # stop a running machine (BSD guests clean-poweroff first)
 bsdkrun start $id          # re-boot a stopped machine in place — resumes its own disk/rootfs
 bsdkrun update $id --cpus 4 --mem 2048   # change recorded vCPU / RAM (applies on next start)
+bsdkrun snapshot $id v1    # capture its disk state (CoW — instant); see Snapshots below
+bsdkrun branch $id -d      # boot a copy of it, leaving the original untouched
+bsdkrun rollback $id -f    # undo back to its most recent snapshot
 bsdkrun rm $id             # remove a machine and its state (-f stops it first)
 ```
 
@@ -1105,6 +1113,58 @@ If `exec` times out, check inside the guest that networking is up (`ifconfig` sh
 
 > The FreeBSD binary is dynamically linked for FreeBSD 14+; the NetBSD binary is built natively on
 > NetBSD 10.
+
+---
+
+## Snapshots, branches & restore
+
+A **snapshot** is a named, point-in-time capture of one machine's disk state, and it is a
+**copy-on-write clone** (`clonefile` on APFS, `--reflink` on btrfs/XFS): taking one is instant and
+costs no disk until the two sides diverge. That is what makes the other two verbs worth having —
+**branch** boots a *new* machine from a snapshot, and **restore** puts a machine back to one.
+
+```sh
+bsdkrun snapshot web before-upgrade    # capture web's disk state under a name
+bsdkrun snapshot web                   # ...or let it name itself (web-1, web-2, …)
+bsdkrun snapshots [web]                # list every snapshot, or just this machine's
+bsdkrun branch before-upgrade -d       # boot a NEW machine from that state
+bsdkrun branch web -d --name web-test  # branch a MACHINE: snapshot it, then boot the copy
+bsdkrun restore web before-upgrade -f  # put web back (stops it first with -f)
+bsdkrun rollback web -f                # ...or just undo to its most recent snapshot
+bsdkrun snapshot rm before-upgrade     # delete a snapshot and its data
+```
+
+What is captured depends on the guest, because "disk state" does:
+
+| Guest              | What a snapshot holds                                             |
+| ------------------ | ----------------------------------------------------------------- |
+| Linux (OCI)        | the writable rootfs tree the guest serves over virtio-fs           |
+| FreeBSD / NetBSD   | the raw root disk holding the whole UFS                            |
+| Unikraft           | the unikernel image, its cmdline, and any `--mount`ed host dirs    |
+
+Three things are worth knowing before you rely on it:
+
+- **It is a disk snapshot, not a memory one.** libkrun has no save-VM API, so what comes back is
+  what the guest *wrote*, not what it was thinking. A restored machine boots; it does not resume.
+- **A BSD guest is powered off to snapshot it.** A mounted UFS cannot be cloned consistently — a
+  live copy boots into an `fsck` that discards recent writes — so the guest is cleanly shut down
+  first and left stopped. Linux guests are only flushed (`sync`), and keep running.
+- **`restore` is undoable.** The state being replaced is itself snapshotted first (free, being a
+  clone), so a mistyped restore is one `rollback` away from being reversed. `--no-backup` opts out.
+
+`branch` never boots the snapshot itself: every guest family clones the state into the new machine
+first, so branching twice gives two independent machines and leaves the snapshot pristine. Port
+forwards are inherited from the snapshot, with any host port that is already taken swapped for a
+free one — the machine it came from is usually still running on it.
+
+`restore` and `rollback` leave the machine **stopped**; `bsdkrun start <id>` runs the restored
+state. All of this is in the desktop app and the web UI too (a **Snapshots** view, plus per-machine
+snapshot / branch / restore buttons), and in every SDK.
+
+> **`snapshot` vs `commit`.** `commit` freezes a machine into a reusable *flavor* — a template you
+> boot fresh machines from by name, like `docker commit`. A snapshot belongs to the machine it came
+> from: it is a point you can go back to, or fork off. Use `commit` to publish an environment, and
+> `snapshot` to keep a safety net.
 
 ---
 

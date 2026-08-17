@@ -41,6 +41,7 @@ from .types import (
     Result,
     SandboxInfo,
     ShellSessionInfo,
+    SnapshotInfo,
     VolumeInfo,
 )
 
@@ -87,6 +88,7 @@ __all__ = [
     "CommandResult",
     "ShellSessionInfo",
     "ExecResult",
+    "SnapshotInfo",
     # errors
     "BsdkrunError",
     "BinaryNotFound",

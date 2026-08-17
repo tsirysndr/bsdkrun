@@ -24,6 +24,7 @@ __all__ = [
     "CommandResult",
     "ShellSessionInfo",
     "ExecResult",
+    "SnapshotInfo",
 ]
 
 
@@ -52,6 +53,71 @@ class PortForward:
             host=int(row.get("host") or 0),
             guest=int(row.get("guest") or 0),
             bind=str(row.get("bind") or "127.0.0.1"),
+        )
+
+
+@dataclass(frozen=True)
+class SnapshotInfo:
+    """A machine snapshot: one machine's disk state, captured under a name.
+
+    A copy-on-write clone rather than a memory image — the files the guest
+    wrote, not what it was executing. Boot a new machine from it with
+    :meth:`~bsdkrun.client.Client.branch`, or put it back over the machine it
+    came from with :meth:`~bsdkrun.client.Client.restore`.
+    """
+
+    id: str
+    name: str
+    machine_id: str
+    machine_name: str
+    kind: str
+    image: str
+    path: str
+    parent: str | None
+    description: str
+    cpus: int
+    mem: int
+    ports: list[PortForward]
+    size: str | None
+    created_at: int
+
+    @classmethod
+    def from_graphql(cls, s: Mapping[str, Any]) -> SnapshotInfo:
+        return cls(
+            id=str(s.get("id")),
+            name=str(s.get("name")),
+            machine_id=str(s.get("machineId") or ""),
+            machine_name=str(s.get("machineName") or ""),
+            kind=str(s.get("kind") or ""),
+            image=str(s.get("image") or ""),
+            path=str(s.get("path") or ""),
+            parent=s.get("parent"),
+            description=str(s.get("description") or ""),
+            cpus=int(s.get("cpus") or 0),
+            mem=int(s.get("mem") or 0),
+            ports=[PortForward.from_row(p) for p in s.get("ports") or []],
+            size=s.get("size"),
+            created_at=int(s.get("createdAt") or 0),
+        )
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any]) -> SnapshotInfo:
+        """Build from ``bsdkrun snapshots --json`` (snake_case)."""
+        return cls(
+            id=str(row.get("id")),
+            name=str(row.get("name")),
+            machine_id=str(row.get("machine_id") or ""),
+            machine_name=str(row.get("machine_name") or ""),
+            kind=str(row.get("kind") or ""),
+            image=str(row.get("image") or ""),
+            path=str(row.get("path") or ""),
+            parent=row.get("parent"),
+            description=str(row.get("description") or ""),
+            cpus=int(row.get("cpus") or 0),
+            mem=int(row.get("mem") or 0),
+            ports=[PortForward.from_row(p) for p in row.get("ports") or []],
+            size=row.get("size"),
+            created_at=int(row.get("created_at") or 0),
         )
 
 

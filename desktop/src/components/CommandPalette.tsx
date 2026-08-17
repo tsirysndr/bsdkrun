@@ -16,10 +16,12 @@ import {
   IconPlayerPlayFilled,
   IconCamera,
   IconCpu,
+  IconGitBranch,
   IconTerminal2,
   IconCornerDownLeft,
 } from "@tabler/icons-react";
 import {
+  branchTargetAtom,
   commitTargetAtom,
   editResourcesAtom,
   openTerminalAtom,
@@ -27,6 +29,7 @@ import {
   runOpenAtom,
   selectedMachineAtom,
   settingsOpenAtom,
+  snapshotTargetAtom,
   shortcutsOpenAtom,
   viewAtom,
 } from "../state/atoms";
@@ -35,6 +38,7 @@ import {
   useMachines,
   useRefreshAll,
   useRestartMachine,
+  useSnapshots,
   useStopMachine,
 } from "../lib/queries";
 import { useLaunchFlavor } from "../hooks/useLaunchFlavor";
@@ -60,12 +64,15 @@ export default function CommandPalette() {
   const [open, setOpen] = useAtom(paletteOpenAtom);
   const { data: machines = [] } = useMachines();
   const { data: flavors = [] } = useFlavors();
+  const { data: snapshots = [] } = useSnapshots();
   const setView = useSetAtom(viewAtom);
   const setRunOpen = useSetAtom(runOpenAtom);
   const setSettingsOpen = useSetAtom(settingsOpenAtom);
   const setShortcutsOpen = useSetAtom(shortcutsOpenAtom);
   const setSelected = useSetAtom(selectedMachineAtom);
   const setCommitTarget = useSetAtom(commitTargetAtom);
+  const setSnapshotTarget = useSetAtom(snapshotTargetAtom);
+  const setBranchTarget = useSetAtom(branchTargetAtom);
   const setEditResources = useSetAtom(editResourcesAtom);
   const openTerm = useSetAtom(openTerminalAtom);
   const refreshAll = useRefreshAll();
@@ -137,6 +144,14 @@ export default function CommandPalette() {
         run: nav("volumes"),
       },
       {
+        id: "nav-snapshots",
+        title: "Go to Snapshots",
+        section: "Navigate",
+        icon: IconCamera,
+        keywords: "snapshot restore rollback branch clone state",
+        run: nav("snapshots"),
+      },
+      {
         id: "nav-flavors",
         title: "Go to Flavors",
         section: "Navigate",
@@ -197,11 +212,42 @@ export default function CommandPalette() {
           },
         },
       ];
-      // A unikernel has no disk, so there is nothing to snapshot.
+      cmds.push({
+        id: `branch-machine-${m.id}`,
+        title: `Branch ${label}`,
+        subtitle: `${shortId(m.id)} · a disposable copy of this machine`,
+        section: "Machines",
+        icon: IconGitBranch,
+        keywords: `${m.id} branch clone copy fork duplicate snapshot`,
+        run: () => {
+          setOpen(false);
+          setBranchTarget({
+            snapshot: m.id,
+            label,
+            fromMachine: true,
+            kind: m.kind,
+            running: m.running,
+            ports: m.ports.map((p) => `${p.host}:${p.guest}`),
+          });
+        },
+      });
+      cmds.push({
+        id: `take-snapshot-${m.id}`,
+        title: `Take a snapshot of ${label}`,
+        subtitle: shortId(m.id),
+        section: "Machines",
+        icon: IconCamera,
+        keywords: `${m.id} snapshot save capture state restore rollback branch`,
+        run: () => {
+          setOpen(false);
+          setSnapshotTarget({ id: m.id, label, kind: m.kind, running: m.running });
+        },
+      });
+      // A unikernel has no rootfs to turn into a reusable flavor.
       if (!isUnikraft(m.kind)) {
         cmds.push({
           id: `snapshot-${m.id}`,
-          title: `Snapshot ${label}`,
+          title: `Commit ${label} as a flavor`,
           subtitle: shortId(m.id),
           section: "Machines",
           icon: IconCamera,
@@ -270,6 +316,27 @@ export default function CommandPalette() {
       return cmds;
     });
 
+    // Branching is the palette-shaped half of a snapshot: one keystroke to a
+    // disposable copy of a known-good machine.
+    const snapshotCmds: Command[] = snapshots.map((s) => ({
+      id: `branch-${s.id}`,
+      title: `Branch ${s.name}`,
+      subtitle: `${s.machine_name || shortId(s.machine_id)} · ${s.description || s.kind}`,
+      section: "Snapshots",
+      icon: IconGitBranch,
+      keywords: `${s.name} ${s.machine_name} ${s.kind} branch clone copy snapshot boot`,
+      run: () => {
+        setOpen(false);
+        setBranchTarget({
+          snapshot: s.name,
+          label: s.name,
+          fromMachine: false,
+          kind: s.kind,
+          ports: s.ports.map((p) => `${p.host}:${p.guest}`),
+        });
+      },
+    }));
+
     const flavorCmds: Command[] = flavors.map((f) => ({
       id: `flavor-${f.source}-${f.name}`,
       title: `Launch ${f.name}`,
@@ -284,8 +351,8 @@ export default function CommandPalette() {
       },
     }));
 
-    return [...base, ...machineCmds, ...flavorCmds];
-  }, [machines, flavors]);
+    return [...base, ...machineCmds, ...snapshotCmds, ...flavorCmds];
+  }, [machines, snapshots, flavors]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

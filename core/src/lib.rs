@@ -174,6 +174,31 @@ pub fn dispatch(cmd: Command) -> Result<()> {
         Command::Commit(args) => {
             commands::machines::cmd_commit(&args.id, &args.name, &args.description)
         }
+        Command::Snapshot(args) => match args.cmd {
+            Some(SnapshotCmd::Ls(a)) => commands::snapshot::cmd_ls(a.machine.as_deref(), a.json),
+            Some(SnapshotCmd::Rm(a)) => commands::snapshot::cmd_rm(&a.names),
+            None => {
+                let id = args.id.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "which machine? `bsdkrun snapshot <ID> [NAME]` (see `bsdkrun ps -a`)"
+                    )
+                })?;
+                commands::snapshot::cmd_create(
+                    &id,
+                    args.name.as_deref(),
+                    &args.description,
+                    args.json,
+                )
+            }
+        },
+        Command::Snapshots(args) => commands::snapshot::cmd_ls(args.machine.as_deref(), args.json),
+        Command::Branch(args) => commands::boot::cmd_branch(args),
+        Command::Restore(args) => {
+            commands::snapshot::cmd_restore(&args.id, &args.snapshot, args.force, !args.no_backup)
+        }
+        Command::Rollback(args) => {
+            commands::snapshot::cmd_rollback(&args.id, args.force, !args.no_backup)
+        }
         Command::Flavors(args) => commands::flavor::cmd_flavors(args.json),
         Command::Flavor(args) => match args.cmd {
             FlavorCmd::Run(a) => commands::boot::cmd_flavor_run(a),

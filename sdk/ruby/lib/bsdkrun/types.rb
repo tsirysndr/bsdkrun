@@ -34,7 +34,7 @@ module Bsdkrun
   SandboxInfo = Data.define(
     :id, :name, :image, :kind, :command, :status, :running, :exit_code,
     :pid, :detached, :cpus, :mem, :volume, :state_dir, :network, :net_ip,
-    :created_at, :finished_at, :ports
+    :created_at, :finished_at, :ports, :origin
   ) do
     # Map a +ps --json+ row (String keys) to a typed instance.
     # @param row [Hash]
@@ -60,7 +60,8 @@ module Bsdkrun
         net_ip: row["net_ip"],
         created_at: row["created_at"].to_i,
         finished_at: to_i_or_nil(row["finished_at"]),
-        ports: (row["ports"] || []).map { |p| PortForward.from_row(p) }
+        ports: (row["ports"] || []).map { |p| PortForward.from_row(p) },
+        origin: row["origin"]
       )
     end
 
@@ -96,7 +97,62 @@ module Bsdkrun
         net_ip: m["netIp"],
         created_at: m["createdAt"].to_i,
         finished_at: to_i_or_nil(m["finishedAt"]),
-        ports: (m["ports"] || []).map { |p| PortForward.from_row(p) }
+        ports: (m["ports"] || []).map { |p| PortForward.from_row(p) },
+        origin: m["origin"]
+      )
+    end
+  end
+
+  # A machine snapshot: one machine's disk state, captured under a name.
+  #
+  # A copy-on-write clone rather than a memory image — the files the guest
+  # wrote, not what it was executing. {Bsdkrun::Client#branch} boots a new
+  # machine from one; {Bsdkrun::Client#restore} puts one back.
+  SnapshotInfo = Data.define(
+    :id, :name, :machine_id, :machine_name, :kind, :image, :path, :parent,
+    :description, :cpus, :mem, :ports, :size, :created_at
+  ) do
+    # Map a GraphQL +Snapshot+ (camelCase) to a typed instance.
+    # @param s [Hash]
+    # @return [SnapshotInfo]
+    def self.from_graphql(s)
+      new(
+        id: s["id"].to_s,
+        name: s["name"].to_s,
+        machine_id: s["machineId"].to_s,
+        machine_name: (s["machineName"] || "").to_s,
+        kind: s["kind"].to_s,
+        image: (s["image"] || "").to_s,
+        path: (s["path"] || "").to_s,
+        parent: s["parent"],
+        description: (s["description"] || "").to_s,
+        cpus: s["cpus"].to_i,
+        mem: s["mem"].to_i,
+        ports: (s["ports"] || []).map { |p| PortForward.from_row(p) },
+        size: s["size"],
+        created_at: s["createdAt"].to_i
+      )
+    end
+
+    # Map a +bsdkrun snapshots --json+ row (snake_case).
+    # @param row [Hash]
+    # @return [SnapshotInfo]
+    def self.from_row(row)
+      new(
+        id: row["id"].to_s,
+        name: row["name"].to_s,
+        machine_id: row["machine_id"].to_s,
+        machine_name: (row["machine_name"] || "").to_s,
+        kind: row["kind"].to_s,
+        image: (row["image"] || "").to_s,
+        path: (row["path"] || "").to_s,
+        parent: row["parent"],
+        description: (row["description"] || "").to_s,
+        cpus: row["cpus"].to_i,
+        mem: row["mem"].to_i,
+        ports: (row["ports"] || []).map { |p| PortForward.from_row(p) },
+        size: row["size"],
+        created_at: row["created_at"].to_i
       )
     end
   end

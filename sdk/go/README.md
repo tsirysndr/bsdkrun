@@ -293,6 +293,22 @@ tender rather than libkrun:
 `Stop`/`Start`/`Remove`/`Update`/`Commit` return a
 `*CommandResult{ExitCode, Stdout, Stderr}`.
 
+### Snapshots
+
+A snapshot is a **copy-on-write clone of a machine's disk state** — instant to
+take, free until the two sides diverge. `Branch` boots a new machine from one
+(or from a machine, which is snapshotted first); `Restore`/`Rollback` put one
+back, leaving the machine stopped. A BSD guest is powered off to snapshot it:
+a mounted UFS cannot be cloned consistently.
+
+```go
+snap, _ := client.Snapshot(id, "before-upgrade", "")
+all, _ := client.Snapshots(id) // newest first
+branchID, _ := client.Branch(snap.Name, &bsdkrun.BranchOpts{Name: "web-test"})
+client.Restore(id, snap.Name, true, true) // or client.Rollback(id, true, true)
+client.RemoveSnapshots([]string{snap.Name})
+```
+
 For a live terminal instead of a one-shot `Exec`, use `Shell`:
 
 ```go

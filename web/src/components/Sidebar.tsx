@@ -5,6 +5,7 @@ import {
   IconDatabase,
   IconApps,
   IconNetwork,
+  IconCamera,
   IconSettings,
   IconKeyboard,
   IconCloud,
@@ -22,6 +23,7 @@ import {
   useMachines,
   useNetworks,
   useProbe,
+  useSnapshots,
   useVolumes,
 } from "../lib/queries";
 import { clearConnection, getConnection } from "../lib/connection";
@@ -36,8 +38,9 @@ const ITEMS: {
   { key: "machines", label: "Machines", icon: IconServer2, hint: "⌘1" },
   { key: "images", label: "Images", icon: IconStack2, hint: "⌘2" },
   { key: "volumes", label: "Volumes", icon: IconDatabase, hint: "⌘3" },
-  { key: "flavors", label: "Flavors", icon: IconApps, hint: "⌘4" },
-  { key: "networks", label: "Networks", icon: IconNetwork, hint: "⌘5" },
+  { key: "snapshots", label: "Snapshots", icon: IconCamera, hint: "⌘4" },
+  { key: "flavors", label: "Flavors", icon: IconApps, hint: "⌘5" },
+  { key: "networks", label: "Networks", icon: IconNetwork, hint: "⌘6" },
 ];
 
 export default function Sidebar() {
@@ -47,6 +50,7 @@ export default function Sidebar() {
   const { data: volumes = [] } = useVolumes();
   const { data: flavors = [] } = useFlavors();
   const { data: networks = [] } = useNetworks();
+  const { data: snapshots = [] } = useSnapshots();
   const [, setSettingsOpen] = useAtom(settingsOpenAtom);
   const [, setShortcutsOpen] = useAtom(shortcutsOpenAtom);
 
@@ -54,6 +58,7 @@ export default function Sidebar() {
     machines: machines.filter((m) => m.running).length,
     images: images.length,
     volumes: volumes.length,
+    snapshots: snapshots.length,
     // Only badge user-created flavors (snapshots + flavors.toml), not the
     // static catalog — otherwise it'd always show a large constant.
     flavors: flavors.filter((f) => f.source !== "catalog").length,

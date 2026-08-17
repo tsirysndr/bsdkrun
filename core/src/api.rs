@@ -26,6 +26,10 @@ use crate::{db, fetch, flavors, net};
 pub use crate::commands::flavor::{add_flavor, remove_flavor};
 pub use crate::commands::guest::{guest_os_kind, interactive_term, is_bsd};
 pub use crate::commands::machines::{commit, remove_machine, stop, update};
+pub use crate::commands::snapshot::{
+    create as create_snapshot, remove as remove_snapshot, restore as restore_snapshot,
+    rollback as rollback_snapshot, Restored,
+};
 pub use crate::commands::volumes::remove_volume;
 pub use crate::network::{
     connect as connect_network, create as create_network, disconnect as disconnect_network,
@@ -60,6 +64,9 @@ pub struct Machine {
     /// Host↔guest TCP port forwards (`--port HOST:GUEST`), empty if none.
     #[serde(default)]
     pub ports: Vec<net::PortForward>,
+    /// The snapshot this machine was branched from (`bsdkrun branch`), if any.
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +125,67 @@ pub struct Flavor {
     pub created_at: Option<String>,
 }
 
+/// A machine snapshot: one machine's disk state, captured under a name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Snapshot {
+    /// Short id (12 hex chars), like a machine's.
+    pub id: String,
+    pub name: String,
+    pub machine_id: String,
+    /// The machine's display name when the snapshot was taken. Empty if it had
+    /// none — the snapshot outlives the machine, so this is a copy, not a join.
+    pub machine_name: String,
+    /// "linux" | "freebsd" | "netbsd" | "unikraft".
+    pub kind: String,
+    pub image: String,
+    pub path: String,
+    /// The snapshot the source machine was itself branched from, if any.
+    pub parent: Option<String>,
+    pub description: String,
+    pub cpus: i64,
+    pub mem: i64,
+    pub ports: Vec<net::PortForward>,
+    /// Human-readable ("2.3 GiB"), or `None` when it could not be measured.
+    /// Snapshots are CoW clones, so this is what the data *would* cost, not
+    /// what taking it cost.
+    pub size: Option<String>,
+    pub created_at: String,
+}
+
+/// Every snapshot, newest first; or one machine's when `machine` is given.
+pub fn list_snapshots(machine: Option<&str>) -> Result<Vec<Snapshot>> {
+    Ok(crate::commands::snapshot::list(machine)?
+        .iter()
+        .map(snapshot)
+        .collect())
+}
+
+/// One snapshot by name, id, or unique id prefix.
+pub fn find_snapshot(key: &str) -> Result<Option<Snapshot>> {
+    Ok(db::Db::open()?.find_snapshot(key)?.map(|s| snapshot(&s)))
+}
+
+/// A stored snapshot row as the wire shape. Sizing is deliberately not done
+/// here — `du` over a rootfs is slow, and a listing renders many rows.
+pub fn snapshot(s: &db::SnapshotRow) -> Snapshot {
+    Snapshot {
+        id: s.id.clone(),
+        name: s.name.clone(),
+        machine_id: s.machine_id.clone(),
+        machine_name: s.machine_name.clone(),
+        kind: s.kind.clone(),
+        image: s.image.clone(),
+        path: s.path.clone(),
+        parent: s.parent.clone(),
+        description: s.description.clone(),
+        cpus: s.cpus,
+        mem: s.mem,
+        ports: s.ports.as_deref().map(net::parse_ports).unwrap_or_default(),
+        size: None,
+        created_at: s.created_at.clone(),
+    }
+}
+
 /// A downloadable BSD release.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Version {
@@ -164,6 +232,7 @@ pub fn list_machines(all: bool) -> Result<Vec<Machine>> {
             network: m.network,
             net_ip: m.net_ip,
             ports: m.ports.as_deref().map(net::parse_ports).unwrap_or_default(),
+            origin: m.origin,
         });
     }
     Ok(out)

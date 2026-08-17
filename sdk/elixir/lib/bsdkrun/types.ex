@@ -38,7 +38,8 @@ defmodule Bsdkrun.Types do
             net_ip: String.t() | nil,
             created_at: integer(),
             finished_at: integer() | nil,
-            ports: [PortForward.t()]
+            ports: [PortForward.t()],
+            origin: String.t() | nil
           }
 
     defstruct [
@@ -60,7 +61,52 @@ defmodule Bsdkrun.Types do
       :net_ip,
       :created_at,
       :finished_at,
-      :ports
+      :ports,
+      :origin
+    ]
+  end
+
+  defmodule SnapshotInfo do
+    @moduledoc """
+    A machine snapshot: one machine's disk state, captured under a name.
+
+    A copy-on-write clone rather than a memory image — the files the guest
+    wrote, not what it was executing. `Bsdkrun.Client.branch/3` boots a new
+    machine from one; `Bsdkrun.Client.restore/4` puts one back.
+    """
+
+    @type t :: %__MODULE__{
+            id: String.t(),
+            name: String.t(),
+            machine_id: String.t(),
+            machine_name: String.t(),
+            kind: String.t(),
+            image: String.t(),
+            path: String.t(),
+            parent: String.t() | nil,
+            description: String.t(),
+            cpus: integer(),
+            mem: integer(),
+            ports: [PortForward.t()],
+            size: String.t() | nil,
+            created_at: integer()
+          }
+
+    defstruct [
+      :id,
+      :name,
+      :machine_id,
+      :machine_name,
+      :kind,
+      :image,
+      :path,
+      :parent,
+      :description,
+      :cpus,
+      :mem,
+      :ports,
+      :size,
+      :created_at
     ]
   end
 
@@ -241,7 +287,29 @@ defmodule Bsdkrun.Types do
       net_ip: row["netIp"],
       created_at: num(row["createdAt"]),
       finished_at: num(row["finishedAt"]),
-      ports: (row["ports"] || []) |> Enum.map(&port_forward/1)
+      ports: (row["ports"] || []) |> Enum.map(&port_forward/1),
+      origin: row["origin"]
+    }
+  end
+
+  @doc "Map a GraphQL `Snapshot` row to a `SnapshotInfo` struct."
+  @spec snapshot_info_from_graphql(map()) :: SnapshotInfo.t()
+  def snapshot_info_from_graphql(row) do
+    %SnapshotInfo{
+      id: to_string(row["id"]),
+      name: to_string(row["name"]),
+      machine_id: to_string(row["machineId"] || ""),
+      machine_name: to_string(row["machineName"] || ""),
+      kind: to_string(row["kind"] || ""),
+      image: to_string(row["image"] || ""),
+      path: to_string(row["path"] || ""),
+      parent: row["parent"],
+      description: to_string(row["description"] || ""),
+      cpus: num(row["cpus"]),
+      mem: num(row["mem"]),
+      ports: (row["ports"] || []) |> Enum.map(&port_forward/1),
+      size: row["size"],
+      created_at: num(row["createdAt"])
     }
   end
 

@@ -20,16 +20,21 @@ import {
   IconCopy,
   IconCamera,
   IconCpu,
+  IconGitBranch,
+  IconHistory,
+  IconPackageExport,
   IconNetwork,
   IconTrash,
   IconSettingsBolt,
 } from "@tabler/icons-react";
 import { useSetAtom } from "jotai";
 import {
+  branchTargetAtom,
   commitTargetAtom,
   editNetworkAtom,
   editResourcesAtom,
   selectedMachineAtom,
+  snapshotTargetAtom,
 } from "../state/atoms";
 import {
   useMachines,
@@ -39,6 +44,7 @@ import {
 } from "../lib/queries";
 import { ago, exitLabel, isUnikraft, kindColor, shortId } from "../lib/format";
 import { useToast } from "../state/toast";
+import SnapshotsPane from "./SnapshotsPane";
 import TerminalPane from "./TerminalPane";
 import LogsPane from "./LogsPane";
 import SetupPane from "./SetupPane";
@@ -102,6 +108,7 @@ function Inspect({ m }: { m: Machine }) {
             : "—"
         }
       />
+      {m.origin && <Row label="Branched from" value={m.origin} />}
       <Row label="Created" value={m.created_at || "—"} />
       {m.finished_at && <Row label="Finished" value={m.finished_at} />}
       <Row label="State dir" value={m.state_dir || "—"} mono />
@@ -118,6 +125,8 @@ export default function MachineDetail() {
   const setCommitTarget = useSetAtom(commitTargetAtom);
   const setEditResources = useSetAtom(editResourcesAtom);
   const setEditNetwork = useSetAtom(editNetworkAtom);
+  const setSnapshotTarget = useSetAtom(snapshotTargetAtom);
+  const setBranchTarget = useSetAtom(branchTargetAtom);
   const toast = useToast();
   const m = machines.find((x) => x.id === selected) || null;
   const [tab, setTab] = useState<string>("logs");
@@ -228,7 +237,50 @@ export default function MachineDetail() {
                     <IconNetwork size={16} />
                   </Button>
                 </Tooltip>
-                {/* A unikernel has no disk, so there is nothing to snapshot. */}
+                {/* Branching goes straight from the machine: the snapshot it
+                    needs is taken on the way, and kept. */}
+                <Tooltip content="Branch — boot a copy of this machine" placement="bottom">
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="flat"
+                    className="text-violet-300"
+                    onPress={() =>
+                      setBranchTarget({
+                        snapshot: m.id,
+                        label: m.name || m.image || shortId(m.id),
+                        fromMachine: true,
+                        kind: m.kind,
+                        running: m.running,
+                        ports: m.ports.map((p) => `${p.host}:${p.guest}`),
+                      })
+                    }
+                  >
+                    <IconGitBranch size={16} />
+                  </Button>
+                </Tooltip>
+                {/* Even a unikernel has state worth capturing: its image, its
+                    cmdline and any host directories it mounts. */}
+                <Tooltip content="Take a snapshot of this machine" placement="bottom">
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="flat"
+                    className="text-sky-300"
+                    onPress={() =>
+                      setSnapshotTarget({
+                        id: m.id,
+                        label: m.name || m.image || shortId(m.id),
+                        kind: m.kind,
+                        running: m.running,
+                      })
+                    }
+                  >
+                    <IconCamera size={16} />
+                  </Button>
+                </Tooltip>
+                {/* `commit` is the other kind of snapshot: a reusable flavor.
+                    A unikernel has no rootfs for one. */}
                 <Tooltip
                   content={
                     isUnikraft(m.kind)
@@ -253,7 +305,7 @@ export default function MachineDetail() {
                       })
                     }
                   >
-                    <IconCamera size={16} />
+                    <IconPackageExport size={16} />
                   </Button>
                   </div>
                 </Tooltip>
@@ -344,6 +396,14 @@ export default function MachineDetail() {
                   }
                 />
                 <Tab
+                  key="snapshots"
+                  title={
+                    <span className="flex items-center gap-1.5">
+                      <IconHistory size={15} /> Snapshots
+                    </span>
+                  }
+                />
+                <Tab
                   key="inspect"
                   title={
                     <span className="flex items-center gap-1.5">
@@ -376,6 +436,11 @@ export default function MachineDetail() {
                       inside the guest via its agent.
                     </div>
                   ))}
+                {tab === "snapshots" && (
+                  <div className="h-full overflow-auto">
+                    <SnapshotsPane machine={m} />
+                  </div>
+                )}
                 {tab === "inspect" && (
                   <div className="h-full overflow-auto p-5">
                     <Inspect m={m} />

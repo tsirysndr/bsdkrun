@@ -146,7 +146,43 @@ Show the guest console log. `-f/--follow` streams live; `--boot` shows bsdkrun's
 
 ---
 
-## Snapshots & flavors
+## Machine snapshots (`snapshot` / `branch` / `restore` / `rollback`)
+
+A snapshot is a **copy-on-write clone of a machine's disk state** — instant to take, free until the
+two sides diverge. It is *not* a memory image: libkrun has no save-VM API, so a restored machine
+boots, it does not resume. What is captured depends on the guest: a Linux rootfs tree, a BSD raw
+root disk, or a unikernel image plus its `--mount`ed host directories.
+
+### `snapshot <ID> [NAME] [-d DESC] [--json]`
+Capture a machine's disk state. `NAME` defaults to `<machine>-<n>`. **A BSD guest is powered off
+first** — a mounted UFS cannot be cloned consistently — so it is left stopped; a Linux guest is only
+flushed and keeps running.
+
+### `snapshots [MACHINE] [--json]` / `snapshot ls [MACHINE] [--json]`
+List snapshots, newest first; `MACHINE` narrows to one machine's.
+
+### `snapshot rm <SNAPSHOT>...`
+Delete snapshots and their data. Machines already branched from them are unaffected.
+
+### `branch <SNAPSHOT|MACHINE> [--name NAME] [-d] [--cpus N] [--mem M] [--port H:G] [--no-ports]`
+Boot a **new** machine from a snapshot, printing its id. Naming a *machine* instead snapshots it
+first, then branches that — "give me a copy of this machine" in one command. The state is cloned,
+never booted in place, so the source is untouched and one snapshot can be branched repeatedly.
+Without `--port`, the snapshot's own forwards are inherited, with any host port that is already
+taken swapped for a free one.
+
+### `restore <ID> <SNAPSHOT> [-f] [--no-backup]`
+Put a machine's disk state back to one of its snapshots. The machine must be stopped; `-f` stops it
+first. The state being replaced is snapshotted first (a free CoW clone) unless `--no-backup`, so a
+mistaken restore is reversible. The machine is left **stopped** — `start` it to run the restored
+state.
+
+### `rollback <ID> [-f] [--no-backup]`
+`restore` to the machine's most recent snapshot, without having to name it.
+
+---
+
+## Flavors (reusable environments)
 
 ### `commit [-d DESC] <id> <name>`
 Snapshot a machine's current state into a named flavor (like `docker commit`). BSD guests are
@@ -174,6 +210,10 @@ provisioning output; a no-op if already cached.
 
 ### `flavor rm <name>`
 Remove a saved snapshot or user flavor (catalog flavors can't be removed).
+
+> `commit` freezes a machine into a reusable *flavor* (a template to boot fresh machines from);
+> `snapshot` keeps a point *this* machine can go back to, or be forked from. Different verbs, and
+> `flavor rm` does not touch machine snapshots — that is `snapshot rm`.
 
 ---
 

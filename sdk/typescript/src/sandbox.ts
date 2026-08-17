@@ -105,6 +105,7 @@ export function fromGraphQLMachine(m: Record<string, unknown>): SandboxInfo {
     ports: (m.ports as SandboxInfo["ports"] | undefined) ?? [],
     createdAt: Number(m.createdAt),
     finishedAt: num(m.finishedAt),
+    origin: (m.origin as string | null) ?? null,
   };
 }
 

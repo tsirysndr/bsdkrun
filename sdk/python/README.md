@@ -294,6 +294,22 @@ return the new machine's id. `run_solo5` boots a MirageOS unikernel under the
 `stop`/`start`/`remove`/`update`/`commit` return a
 `CommandResult(exit_code, stdout, stderr)`.
 
+### Snapshots
+
+A snapshot is a **copy-on-write clone of a machine's disk state** — instant to
+take, free until the two sides diverge. `branch` boots a new machine from one
+(or from a machine, which is snapshotted first); `restore`/`rollback` put one
+back, leaving the machine stopped. A BSD guest is powered off to snapshot it:
+a mounted UFS cannot be cloned consistently.
+
+```python
+snap = client.snapshot(machine_id, "before-upgrade")
+client.snapshots(machine_id)             # newest first
+branch_id = client.branch(snap.name, name="web-test")
+client.restore(machine_id, snap.name)    # or client.rollback(machine_id)
+client.remove_snapshots([snap.name])
+```
+
 For a live terminal instead of a one-shot `exec`, use `shell()`:
 
 ```python

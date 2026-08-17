@@ -84,6 +84,8 @@ pub struct Machine {
     pub network: Option<String>,
     pub net_ip: Option<String>,
     pub ports: Vec<PortForward>,
+    /// The snapshot this machine was branched from, if any.
+    pub origin: Option<String>,
 }
 
 #[derive(SimpleObject)]
@@ -123,6 +125,7 @@ impl From<ops::Machine> for Machine {
                     guest: p.guest as i32,
                 })
                 .collect(),
+            origin: m.origin,
         }
     }
 }
@@ -231,6 +234,60 @@ impl From<ops::Flavor> for Flavor {
             ports: f.ports,
             nix: f.nix,
             created_at: f.created_at,
+        }
+    }
+}
+
+/// A machine snapshot: one machine's disk state, captured under a name.
+#[derive(SimpleObject)]
+pub struct Snapshot {
+    pub id: String,
+    pub name: String,
+    pub machine_id: String,
+    /// The machine's name when the snapshot was taken; empty if it had none.
+    /// A copy, not a join — a snapshot outlives the machine it came from.
+    pub machine_name: String,
+    /// "linux" | "freebsd" | "netbsd" | "unikraft".
+    pub kind: String,
+    pub image: String,
+    pub path: String,
+    /// The snapshot the source machine was itself branched from, if any.
+    pub parent: Option<String>,
+    pub description: String,
+    pub cpus: i32,
+    pub mem: f64,
+    pub ports: Vec<PortForward>,
+    /// Human-readable, when measured. Snapshots are copy-on-write clones, so
+    /// this is what the data would cost, not what taking it cost.
+    pub size: Option<String>,
+    pub created_at: String,
+}
+
+impl From<ops::Snapshot> for Snapshot {
+    fn from(s: ops::Snapshot) -> Self {
+        Snapshot {
+            id: s.id,
+            name: s.name,
+            machine_id: s.machine_id,
+            machine_name: s.machine_name,
+            kind: s.kind,
+            image: s.image,
+            path: s.path,
+            parent: s.parent,
+            description: s.description,
+            cpus: s.cpus as i32,
+            mem: s.mem as f64,
+            ports: s
+                .ports
+                .into_iter()
+                .map(|p| PortForward {
+                    bind: p.bind.to_string(),
+                    host: p.host as i32,
+                    guest: p.guest as i32,
+                })
+                .collect(),
+            size: s.size,
+            created_at: s.created_at,
         }
     }
 }
@@ -459,6 +516,27 @@ pub struct RunUnikraftInput {
     pub mounts: Vec<String>,
 }
 
+/// Booting a new machine from a snapshot.
+#[derive(InputObject)]
+pub struct BranchInput {
+    /// Snapshot name, id, or unique id prefix.
+    pub snapshot: String,
+    /// Name for the new machine. A generated one if absent.
+    pub name: Option<String>,
+    /// Defaults to what the snapshot recorded.
+    pub cpus: Option<u32>,
+    /// Defaults to what the snapshot recorded.
+    pub mem: Option<u32>,
+    /// Host↔guest forwards, each "[BIND:]HOST:GUEST". Empty inherits the
+    /// snapshot's, remapping any host port that is already taken — the machine
+    /// it was branched from is usually still running on it.
+    #[graphql(default)]
+    pub ports: Vec<String>,
+    /// Forward nothing, ignoring what the snapshot recorded.
+    #[graphql(default)]
+    pub no_ports: bool,
+}
+
 /// Solo5 (MirageOS): runs under the `solo5-hvt` tender rather than libkrun.
 /// The unikernel declares its own network and block devices in its `MFT1`
 /// manifest note, so only what the host alone can know is asked for here.
@@ -653,6 +731,22 @@ impl Query {
             .collect())
     }
 
+    /// Saved snapshots, newest first. `machine` narrows to one machine's.
+    async fn snapshots(
+        &self,
+        ctx: &Context<'_>,
+        machine: Option<String>,
+    ) -> async_graphql::Result<Vec<Snapshot>> {
+        Ok(api(ctx)?
+            .ops
+            .list_snapshots(machine)
+            .await
+            .map_err(gql_err)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
     async fn flavors(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<Flavor>> {
         Ok(api(ctx)?
             .ops
@@ -776,6 +870,94 @@ impl Mutation {
             .await
             .map_err(gql_err)?
             .into())
+    }
+
+    // -- snapshots -----------------------------------------------------------
+
+    /// Capture a machine's disk state under a name (`name` defaults to
+    /// `<machine>-<n>`). A BSD guest is powered off first — a live UFS cannot
+    /// be cloned consistently — so it is left stopped.
+    async fn snapshot_machine(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+        name: Option<String>,
+        #[graphql(default)] description: String,
+    ) -> async_graphql::Result<Snapshot> {
+        Ok(api(ctx)?
+            .ops
+            .snapshot(&id, name, &description)
+            .await
+            .map_err(gql_err)?
+            .into())
+    }
+
+    /// Remove snapshots and their data.
+    async fn remove_snapshots(
+        &self,
+        ctx: &Context<'_>,
+        names: Vec<String>,
+    ) -> async_graphql::Result<CommandResult> {
+        Ok(api(ctx)?
+            .ops
+            .remove_snapshots(&names)
+            .await
+            .map_err(gql_err)?
+            .into())
+    }
+
+    /// Put a machine's disk state back to one of its snapshots. `force` stops a
+    /// running machine first; unless `backup` is false the replaced state is
+    /// itself snapshotted (a CoW clone, so the safety net is free). The machine
+    /// is left stopped — call `start` to bring it back up.
+    async fn restore_machine(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+        snapshot: String,
+        #[graphql(default)] force: bool,
+        #[graphql(default = true)] backup: bool,
+    ) -> async_graphql::Result<CommandResult> {
+        Ok(api(ctx)?
+            .ops
+            .restore_snapshot(&id, &snapshot, force, backup)
+            .await
+            .map_err(gql_err)?
+            .into())
+    }
+
+    /// Restore a machine to its most recent snapshot.
+    async fn rollback_machine(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+        #[graphql(default)] force: bool,
+        #[graphql(default = true)] backup: bool,
+    ) -> async_graphql::Result<CommandResult> {
+        Ok(api(ctx)?
+            .ops
+            .rollback_machine(&id, force, backup)
+            .await
+            .map_err(gql_err)?
+            .into())
+    }
+
+    /// Boot a new machine from a snapshot, returning its id. The snapshot is
+    /// cloned, never booted in place, so the original stays restorable.
+    async fn branch_snapshot(
+        &self,
+        ctx: &Context<'_>,
+        input: BranchInput,
+    ) -> async_graphql::Result<String> {
+        let opts = ops::BranchOpts {
+            snapshot: input.snapshot,
+            name: input.name,
+            cpus: input.cpus,
+            mem: input.mem,
+            ports: input.ports,
+            no_ports: input.no_ports,
+        };
+        api(ctx)?.ops.branch(&opts).await.map_err(gql_err)
     }
 
     /// Snapshot a machine into a named flavor, like `docker commit`.

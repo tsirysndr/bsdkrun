@@ -12,7 +12,8 @@ metadata:
 
 `bsdkrun` runs lightweight microVMs (FreeBSD / NetBSD / Linux OCI images) on macOS
 (Hypervisor.framework) and Linux (KVM), built on **libkrun**. It's Docker-like:
-`run → ps → exec/shell → stop → start → rm`, plus snapshots (`commit`/flavors),
+`run → ps → exec/shell → stop → start → rm`, plus machine snapshots
+(`snapshot`/`branch`/`restore`), reusable flavors (`commit`),
 persistent volumes, port forwards, an in-guest agent (for `exec`/`ssh`/tailscale),
 and optional **global networks** with internal DNS.
 
@@ -46,8 +47,19 @@ Interact:
 - `bsdkrun shell <id>` — attach an interactive console to a detached machine.
 - `bsdkrun logs [-f] [--boot] <id>` — show the console log (`--boot` = bsdkrun's own boot log).
 
-Snapshots & flavors (reusable environments):
-- `bsdkrun commit <id> <name>` — snapshot a machine into a flavor (like `docker commit`).
+Snapshots (a machine's disk state, copy-on-write):
+- `bsdkrun snapshot <id> [name] [-d DESC]` — capture a machine's disk state (BSD guests are powered
+  off first, and left stopped; Linux guests keep running).
+- `bsdkrun snapshots [machine] [--json]` — list snapshots, newest first.
+- `bsdkrun snapshot rm <name>...` — delete snapshots and their data.
+- `bsdkrun branch <snapshot|machine> [-d] [--name N] [--port H:G]` — boot a NEW machine from a
+  snapshot; naming a machine snapshots it first. Prints the new machine's id.
+- `bsdkrun restore <id> <snapshot> [-f]` — put a machine back to a snapshot (`-f` stops it first;
+  the replaced state is snapshotted first unless `--no-backup`). Left stopped — `start` to run it.
+- `bsdkrun rollback <id> [-f]` — restore to the machine's most recent snapshot.
+
+Flavors (reusable environments):
+- `bsdkrun commit <id> <name>` — freeze a machine into a flavor (like `docker commit`).
 - `bsdkrun flavors [--json]` — list the catalog + your snapshots.
 - `bsdkrun flavor run [-d] <name> [--port H:G] [-v NAME]` — boot a machine from a flavor.
 - `bsdkrun flavor add --base <ref> [--nix PKG] [--provision CMD]... <name>` — define a custom flavor.

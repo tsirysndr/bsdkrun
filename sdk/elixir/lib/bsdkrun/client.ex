@@ -47,7 +47,7 @@ defmodule Bsdkrun.Client do
   """
 
   alias Bsdkrun.{Error, GraphQL, GraphQLSocket, Types}
-  alias Bsdkrun.Types.{CommandResult, SandboxInfo}
+  alias Bsdkrun.Types.{CommandResult, SandboxInfo, SnapshotInfo}
 
   @type t :: %__MODULE__{url: String.t(), token: String.t()}
   defstruct [:url, :token]
@@ -205,7 +205,11 @@ defmodule Bsdkrun.Client do
   # --- lifecycle / listing ---------------------------------------------------
 
   @machine_fields "id name image kind command status running exitCode pid detached " <>
-                     "cpus mem volume stateDir createdAt finishedAt network netIp ports { bind host guest }"
+                     "cpus mem volume stateDir createdAt finishedAt network netIp origin " <>
+                     "ports { bind host guest }"
+
+  @snapshot_fields "id name machineId machineName kind image path parent description " <>
+                      "cpus mem size createdAt ports { bind host guest }"
 
   @doc "List machines. `all: true` includes exited ones (default: running only)."
   @spec list(t(), boolean()) :: {:ok, [SandboxInfo.t()]} | {:error, Error.t()}
@@ -289,6 +293,129 @@ defmodule Bsdkrun.Client do
 
     with {:ok, data} <- gql(client, mutation, %{id: id, name: name, description: description}) do
       {:ok, Types.command_result_from_graphql(data["commitMachine"])}
+    end
+  end
+
+  # --- snapshots -------------------------------------------------------------
+  #
+  # A snapshot is a copy-on-write clone of a machine's disk state: instant to
+  # take, free until the two sides diverge. `branch/3` boots a new machine from
+  # one; `restore/4` and `rollback/3` put one back.
+
+  @doc "List snapshots, newest first. Pass a machine id/name to narrow to its own."
+  @spec snapshots(t(), String.t() | nil) :: {:ok, [SnapshotInfo.t()]} | {:error, Error.t()}
+  def snapshots(client, machine \\ nil) do
+    query = "query($machine: String) { snapshots(machine: $machine) { #{@snapshot_fields} } }"
+
+    with {:ok, data} <- gql(client, query, %{machine: machine}) do
+      {:ok, Enum.map(data["snapshots"] || [], &Types.snapshot_info_from_graphql/1)}
+    end
+  end
+
+  @doc """
+  Capture a machine's disk state. `:name` defaults to `<machine>-<n>`.
+
+  A BSD guest is powered off first — a mounted UFS cannot be cloned
+  consistently — so the machine is left stopped; `start/2` brings it back.
+  """
+  @spec snapshot(t(), String.t(), keyword()) :: {:ok, SnapshotInfo.t()} | {:error, Error.t()}
+  def snapshot(client, id, opts \\ []) do
+    o = to_map(opts)
+
+    mutation =
+      "mutation($id: String!, $name: String, $description: String!) { " <>
+        "snapshotMachine(id: $id, name: $name, description: $description) { #{@snapshot_fields} } }"
+
+    variables = %{id: id, name: Map.get(o, :name), description: Map.get(o, :description, "")}
+
+    with {:ok, data} <- gql(client, mutation, variables) do
+      {:ok, Types.snapshot_info_from_graphql(data["snapshotMachine"])}
+    end
+  end
+
+  @doc "Delete snapshots and their data. Machines branched from them are unaffected."
+  @spec remove_snapshots(t(), String.t() | [String.t()]) ::
+          {:ok, CommandResult.t()} | {:error, Error.t()}
+  def remove_snapshots(client, names) do
+    mutation =
+      "mutation($names: [String!]!) { removeSnapshots(names: $names) { exitCode stdout stderr } }"
+
+    with {:ok, data} <- gql(client, mutation, %{names: List.wrap(names)}) do
+      {:ok, Types.command_result_from_graphql(data["removeSnapshots"])}
+    end
+  end
+
+  @doc """
+  Put a machine's disk state back to one of its snapshots.
+
+  `:force` (default `true`) stops the machine first — it holds the very files
+  being replaced. `:backup` (default `true`) snapshots the state being
+  overwritten, which is a CoW clone and therefore free. The machine is left
+  stopped.
+  """
+  @spec restore(t(), String.t(), String.t(), keyword()) ::
+          {:ok, CommandResult.t()} | {:error, Error.t()}
+  def restore(client, id, snapshot, opts \\ []) do
+    o = to_map(opts)
+
+    mutation =
+      "mutation($id: String!, $snapshot: String!, $force: Boolean!, $backup: Boolean!) { " <>
+        "restoreMachine(id: $id, snapshot: $snapshot, force: $force, backup: $backup) " <>
+        "{ exitCode stdout stderr } }"
+
+    variables = %{
+      id: id,
+      snapshot: snapshot,
+      force: Map.get(o, :force, true),
+      backup: Map.get(o, :backup, true)
+    }
+
+    with {:ok, data} <- gql(client, mutation, variables) do
+      {:ok, Types.command_result_from_graphql(data["restoreMachine"])}
+    end
+  end
+
+  @doc "Restore a machine to its most recent snapshot."
+  @spec rollback(t(), String.t(), keyword()) :: {:ok, CommandResult.t()} | {:error, Error.t()}
+  def rollback(client, id, opts \\ []) do
+    o = to_map(opts)
+
+    mutation =
+      "mutation($id: String!, $force: Boolean!, $backup: Boolean!) { " <>
+        "rollbackMachine(id: $id, force: $force, backup: $backup) { exitCode stdout stderr } }"
+
+    variables = %{id: id, force: Map.get(o, :force, true), backup: Map.get(o, :backup, true)}
+
+    with {:ok, data} <- gql(client, mutation, variables) do
+      {:ok, Types.command_result_from_graphql(data["rollbackMachine"])}
+    end
+  end
+
+  @doc """
+  Boot a NEW machine from a snapshot — or from a machine, which is snapshotted
+  first — and return the new machine's id.
+
+  The state is cloned, never booted in place, so the source is untouched and
+  one snapshot can be branched any number of times. With no `:ports`, the
+  snapshot's own forwards are inherited, with any host port that is already
+  taken swapped for a free one.
+  """
+  @spec branch(t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, Error.t()}
+  def branch(client, snapshot, opts \\ []) do
+    o = to_map(opts)
+    mutation = "mutation($input: BranchInput!) { branchSnapshot(input: $input) }"
+
+    input = %{
+      snapshot: snapshot,
+      name: Map.get(o, :name),
+      cpus: Map.get(o, :cpus),
+      mem: Map.get(o, :mem),
+      ports: Map.get(o, :ports, []),
+      noPorts: Map.get(o, :no_ports, false)
+    }
+
+    with {:ok, data} <- gql(client, mutation, %{input: input}) do
+      {:ok, to_string(data["branchSnapshot"])}
     end
   end
 

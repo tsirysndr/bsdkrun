@@ -2531,6 +2531,172 @@ pub(crate) fn cmd_flavor_prebuild(name: &str, cpus: u8, mem: u32, force: bool) -
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// branching a snapshot
+// ---------------------------------------------------------------------------
+
+/// `bsdkrun branch <snapshot|machine>` — boot a NEW machine from saved state.
+///
+/// The snapshot itself is never booted: every guest family clones its state
+/// into the new machine first (`prepare_bsd_disk` for a disk, the rootfs clone
+/// for Linux, an explicit copy for a unikernel's mounts), so branching twice
+/// from one snapshot gives two independent machines and leaves the snapshot
+/// pristine. That is what makes "try it and throw it away" cheap.
+///
+/// Naming a *machine* branches it as it is right now: a snapshot is taken
+/// first and the branch boots from that. Nobody wanting a copy of a machine
+/// should have to think about snapshots to get one — and the snapshot is
+/// worth keeping either way, since it is what the branch diverged from.
+pub(crate) fn cmd_branch(args: BranchArgs) -> Result<()> {
+    let snap = resolve_branch_source(&args.snapshot)?;
+    let payload = crate::commands::snapshot::snapshot_payload(&snap)?;
+
+    let cpus = args.cpus.unwrap_or(snap.cpus.clamp(1, 255) as u8);
+    let mem = args.mem.unwrap_or(snap.mem.max(64) as u32);
+    let ports = branch_ports(&args, &snap);
+
+    // The new machine records where it came from, so `snapshot` on the branch
+    // carries the lineage forward and the UIs can draw the tree.
+    db::set_origin_override(&snap.name);
+    if let Some(name) = &args.name {
+        names::set_override(name);
+    }
+
+    let net = NetConfig {
+        no_net: false,
+        ports,
+        mac: None,
+        network: None,
+        name: args.name.clone(),
+    };
+
+    match payload {
+        crate::commands::snapshot::Payload::Rootfs(rootfs) => {
+            let largs = flavor_linux_args(
+                snap.image.clone(),
+                args.detach,
+                cpus,
+                mem,
+                None,
+                net.ports.clone(),
+                vec![],
+            );
+            boot_linux_from(largs, Some(rootfs), &[])
+        }
+        crate::commands::snapshot::Payload::Disk(disk) => {
+            let bargs = BsdArgs {
+                version: None,
+                firmware: None,
+                force: false,
+                attach_disk: vec![],
+                disk_size: None,
+                run: RunConfig {
+                    detach: args.detach,
+                    // Never in place: the branch gets a CoW clone of the
+                    // snapshot's disk, so the snapshot stays restorable.
+                    persist: false,
+                    volume: None,
+                },
+                net,
+                vm: VmConfig { cpus, mem },
+                verbose: false,
+                repo: None,
+                command: vec![],
+            };
+            if snap.kind == "netbsd" {
+                boot_netbsd_disk(bargs, Some(disk))
+            } else {
+                boot_freebsd_disk(bargs, Some(disk))
+            }
+        }
+        crate::commands::snapshot::Payload::Unikernel { kernel, spec } => {
+            // A unikernel's mounts are plain host directories shared over
+            // virtio-fs — booting the snapshot's own copies would let the
+            // branch write into the snapshot. Clone them into the machine dir
+            // first, which means minting its id here (as `start` does) so the
+            // copies land where the machine will actually look for them.
+            let machine_id = id::short_id();
+            let vdir = machine_dir_or_tmp(&machine_id);
+            let mut volumes = Vec::with_capacity(spec.volumes.len());
+            for (i, v) in spec.volumes.iter().enumerate() {
+                let dst = vdir.join("volumes").join(i.to_string());
+                std::fs::create_dir_all(dst.parent().unwrap())?;
+                host::remove_dir_all_detached(&dst);
+                host::clone_or_copy_tree(&v.host, &dst)
+                    .with_context(|| format!("cloning mounted directory {}", v.host.display()))?;
+                volumes.push(unikraft::Volume {
+                    host: dst,
+                    guest: v.guest.clone(),
+                });
+            }
+            id::set_override(&machine_id);
+            boot_unikraft_image(
+                &kernel,
+                &spec.cmdline,
+                spec.initramfs.as_deref(),
+                args.detach,
+                net,
+                VmConfig { cpus, mem },
+                &volumes,
+            )
+        }
+    }
+}
+
+/// What to branch from: a snapshot by name/id, or a machine — which is
+/// snapshotted on the spot so the branch has something immutable to clone.
+fn resolve_branch_source(key: &str) -> Result<db::SnapshotRow> {
+    if let Some(snap) = db::Db::open()?.find_snapshot(key)? {
+        return Ok(snap);
+    }
+    // Not a snapshot: if it names a machine, branch that machine's state now.
+    // A machine lookup that also fails reports the snapshot error, since
+    // `branch` is a snapshot verb and that is what the user most likely meant.
+    let db = db::Db::open()?;
+    let Ok(vm) = db.find_machine(key) else {
+        anyhow::bail!("no such snapshot or machine: {key} (see `bsdkrun snapshots`)");
+    };
+    let label = vm.name.clone().unwrap_or_else(|| vm.id.clone());
+    info!(machine = %label, "snapshotting before branching");
+    crate::commands::snapshot::create(&vm.id, None, &format!("branch point for {label}"))
+}
+
+/// The port forwards a branch boots with: the ones asked for, none, or the
+/// snapshot's — with any host port that is already taken remapped to a free
+/// one, since the machine the snapshot came from is usually still running on it
+/// and gvproxy would otherwise fail to bind (or, worse, the branch would look
+/// up and answer on nobody's port).
+fn branch_ports(args: &BranchArgs, snap: &db::SnapshotRow) -> Vec<PortForward> {
+    if args.no_ports {
+        return vec![];
+    }
+    if !args.ports.is_empty() {
+        return args.ports.clone();
+    }
+    snap.ports
+        .as_deref()
+        .map(net::parse_ports)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| match net::free_host_port(p.bind, p.host) {
+            Some(host) if host != p.host => {
+                info!(
+                    guest = p.guest,
+                    was = p.host,
+                    now = host,
+                    "host port already in use — the branch takes a free one"
+                );
+                PortForward {
+                    bind: p.bind,
+                    host,
+                    guest: p.guest,
+                }
+            }
+            _ => p,
+        })
+        .collect()
+}
+
 /// `bsdkrun flavor run <name>` — boot a machine from a catalog/user flavor or a
 /// saved snapshot. Provisioned flavors are built once (cached) then cloned.
 pub(crate) fn cmd_flavor_run(args: FlavorRunArgs) -> Result<()> {

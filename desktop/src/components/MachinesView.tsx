@@ -18,13 +18,17 @@ import {
   IconServer2,
   IconCpu,
   IconChevronRight,
+  IconCamera,
+  IconGitBranch,
   IconTrash,
 } from "@tabler/icons-react";
 import {
   filterAtom,
   openTerminalAtom,
   runOpenAtom,
+  branchTargetAtom,
   selectedMachineAtom,
+  snapshotTargetAtom,
 } from "../state/atoms";
 import { ago, exitLabel, fullDate, isUnikraft, kindColor, shortId } from "../lib/format";
 import {
@@ -65,6 +69,8 @@ export default function MachinesView() {
   const { data: machines = [], isLoading, refetch } = useMachines();
   const filter = useAtomValue(filterAtom).toLowerCase();
   const setSelected = useSetAtom(selectedMachineAtom);
+  const setSnapshotTarget = useSetAtom(snapshotTargetAtom);
+  const setBranchTarget = useSetAtom(branchTargetAtom);
   const openTerminal = useSetAtom(openTerminalAtom);
   const setRunOpen = useSetAtom(runOpenAtom);
   const stopMutation = useStopMachine();
@@ -341,6 +347,47 @@ export default function MachinesView() {
                         </Button>
                       </Tooltip>
                     )}
+                    <Tooltip
+                      content="Branch — boot a copy of this machine"
+                      placement="top"
+                    >
+                      <Button
+                        isIconOnly
+                        size="sm"
+                        variant="light"
+                        className="text-violet-300"
+                        onPress={() =>
+                          setBranchTarget({
+                            snapshot: m.id,
+                            label: m.name || m.image || shortId(m.id),
+                            fromMachine: true,
+                            kind: m.kind,
+                            running: m.running,
+                            ports: m.ports.map((p) => `${p.host}:${p.guest}`),
+                          })
+                        }
+                      >
+                        <IconGitBranch size={16} />
+                      </Button>
+                    </Tooltip>
+                    <Tooltip content="Take a snapshot" placement="top">
+                      <Button
+                        isIconOnly
+                        size="sm"
+                        variant="light"
+                        className="text-sky-300"
+                        onPress={() =>
+                          setSnapshotTarget({
+                            id: m.id,
+                            label: m.name || m.image || shortId(m.id),
+                            kind: m.kind,
+                            running: m.running,
+                          })
+                        }
+                      >
+                        <IconCamera size={16} />
+                      </Button>
+                    </Tooltip>
                     <Tooltip content="Logs & details" placement="top">
                       <Button
                         isIconOnly

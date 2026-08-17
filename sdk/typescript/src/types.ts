@@ -304,6 +304,37 @@ export interface SandboxInfo {
   createdAt: number;
   /** Unix epoch seconds, or null while running. */
   finishedAt: number | null;
+  /** The snapshot this machine was branched from, if any. */
+  origin?: string | null;
+}
+
+/**
+ * A machine snapshot: one machine's disk state, captured under a name.
+ *
+ * A copy-on-write clone rather than a memory image — the files the guest
+ * wrote, not what it was executing. Boot a new machine from it with
+ * `Client.branch`, or put it back with `Client.restore`.
+ */
+export interface SnapshotInfo {
+  id: string;
+  name: string;
+  machineId: string;
+  /** The machine's name when it was taken; empty if it had none. */
+  machineName: string;
+  /** `"linux"` | `"freebsd"` | `"netbsd"` | `"unikraft"`. */
+  kind: string;
+  image: string;
+  path: string;
+  /** The snapshot the source machine was itself branched from, if any. */
+  parent: string | null;
+  description: string;
+  cpus: number;
+  mem: number;
+  ports: PortForward[];
+  /** Human-readable, when measured. Taking a CoW clone costs nothing. */
+  size: string | null;
+  /** Unix epoch seconds. */
+  createdAt: number;
 }
 
 /** An image as reported by `bsdkrun images --json`. */

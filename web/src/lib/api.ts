@@ -20,6 +20,7 @@ import type {
   ProbeResult,
   RunSpec,
   Settings,
+  Snapshot,
   SystemStats,
   VersionEntry,
   Volume,
@@ -49,8 +50,13 @@ function listen<T>(event: string, cb: (p: T) => void): Promise<UnlistenFn> {
 
 const MACHINE_FIELDS = `
   id name image kind command status running exitCode pid detached
-  cpus mem volume stateDir createdAt finishedAt network netIp
+  cpus mem volume stateDir createdAt finishedAt network netIp origin
   ports { bind host guest }
+`;
+
+const SNAPSHOT_FIELDS = `
+  id name machineId machineName kind image path parent description
+  cpus mem size createdAt ports { bind host guest }
 `;
 
 /**
@@ -78,6 +84,7 @@ function toMachine(m: any): Machine {
     finished_at: m.finishedAt ?? null,
     network: m.network ?? null,
     net_ip: m.netIp ?? null,
+    origin: m.origin ?? null,
     ports: (m.ports ?? []).map((p: any) => ({
       bind: p.bind,
       host: p.host,
@@ -103,6 +110,27 @@ const toVolume = (v: any): Volume => ({
   size: v.size ?? null,
   created_at: v.createdAt ?? null,
   tracked: v.tracked,
+});
+
+const toSnapshot = (s: any): Snapshot => ({
+  id: s.id,
+  name: s.name,
+  machine_id: s.machineId,
+  machine_name: s.machineName ?? "",
+  kind: s.kind,
+  image: s.image,
+  path: s.path,
+  parent: s.parent ?? null,
+  description: s.description ?? "",
+  cpus: s.cpus,
+  mem: s.mem,
+  ports: (s.ports ?? []).map((p: any) => ({
+    bind: p.bind,
+    host: p.host,
+    guest: p.guest,
+  })),
+  size: s.size ?? null,
+  created_at: s.createdAt,
 });
 
 const toFlavor = (f: any): Flavor => ({ ...f, created_at: f.createdAt ?? null });
@@ -433,6 +461,85 @@ export const api = {
     );
     if (d.commitMachine.exitCode !== 0) throw new Error(d.commitMachine.stderr.trim());
     return name;
+  },
+
+  // ---- snapshots -----------------------------------------------------------
+
+  listSnapshots: async (machine?: string | null): Promise<Snapshot[]> => {
+    const d = await gql<{ snapshots: any[] }>(
+      `query($m:String){ snapshots(machine:$m){ ${SNAPSHOT_FIELDS} } }`,
+      { m: machine ?? null },
+    );
+    return d.snapshots.map(toSnapshot);
+  },
+
+  /** Returns the snapshot's name — generated when none was given. */
+  snapshotMachine: async (
+    id: string,
+    name: string | null,
+    description: string,
+  ): Promise<string> => {
+    const d = await gql<{ snapshotMachine: { name: string } }>(
+      `mutation($i:String!,$n:String,$d:String!){ snapshotMachine(id:$i,name:$n,description:$d){ name } }`,
+      { i: id, n: orNull(name), d: description },
+    );
+    return d.snapshotMachine.name;
+  },
+
+  removeSnapshot: async (name: string) => {
+    const d = await gql<{ removeSnapshots: { exitCode: number; stderr: string } }>(
+      `mutation($n:[String!]!){ removeSnapshots(names:$n){ exitCode stderr } }`,
+      { n: [name] },
+    );
+    if (d.removeSnapshots.exitCode !== 0)
+      throw new Error(d.removeSnapshots.stderr.trim());
+  },
+
+  /** Leaves the machine stopped; start it to run the restored state. */
+  restoreMachine: async (id: string, snapshot: string, backup: boolean) => {
+    const d = await gql<{
+      restoreMachine: { exitCode: number; stdout: string; stderr: string };
+    }>(
+      `mutation($i:String!,$s:String!,$b:Boolean!){ restoreMachine(id:$i,snapshot:$s,force:true,backup:$b){ exitCode stdout stderr } }`,
+      { i: id, s: snapshot, b: backup },
+    );
+    if (d.restoreMachine.exitCode !== 0)
+      throw new Error(d.restoreMachine.stderr.trim());
+    return d.restoreMachine.stdout.trim();
+  },
+
+  rollbackMachine: async (id: string, backup: boolean) => {
+    const d = await gql<{
+      rollbackMachine: { exitCode: number; stdout: string; stderr: string };
+    }>(
+      `mutation($i:String!,$b:Boolean!){ rollbackMachine(id:$i,force:true,backup:$b){ exitCode stdout stderr } }`,
+      { i: id, b: backup },
+    );
+    if (d.rollbackMachine.exitCode !== 0)
+      throw new Error(d.rollbackMachine.stderr.trim());
+    return d.rollbackMachine.stdout.trim();
+  },
+
+  /** Boots a new machine from a snapshot; returns its id. */
+  branchSnapshot: async (
+    snapshot: string,
+    name: string | null,
+    ports: string[],
+  ): Promise<string> => {
+    const d = await gql<{ branchSnapshot: string }>(
+      `mutation($i:BranchInput!){ branchSnapshot(input:$i) }`,
+      {
+        i: {
+          snapshot,
+          name: orNull(name),
+          ports: clean(ports),
+          // An empty `ports` inherits the snapshot's; only an explicit request
+          // for none should drop them.
+          noPorts: false,
+        },
+      },
+    );
+    return d.branchSnapshot;
   },
 
   removeFlavor: async (name: string, force: boolean) => {

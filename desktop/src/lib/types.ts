@@ -27,6 +27,33 @@ export interface Machine {
   network: string | null;
   net_ip: string | null;
   ports: PortForward[];
+  /** The snapshot this machine was branched from, if any. */
+  origin?: string | null;
+}
+
+/**
+ * A machine snapshot: one machine's disk state, captured under a name.
+ *
+ * Copy-on-write, not a memory image — the guest's files, not what it was
+ * thinking. `branch` boots a new machine from it; `restore` puts it back.
+ */
+export interface Snapshot {
+  id: string;
+  name: string;
+  machine_id: string;
+  /** The machine's name when it was taken; empty if it had none. */
+  machine_name: string;
+  kind: string; // "linux" | "freebsd" | "netbsd" | "unikraft"
+  image: string;
+  path: string;
+  /** The snapshot the source machine was itself branched from, if any. */
+  parent?: string | null;
+  description: string;
+  cpus: number;
+  mem: number;
+  ports: PortForward[];
+  size?: string | null;
+  created_at: string;
 }
 
 export interface Image {
@@ -157,4 +184,10 @@ export interface RunSpec {
   args: string[];
 }
 
-export type ViewKey = "machines" | "images" | "volumes" | "flavors" | "networks";
+export type ViewKey =
+  | "machines"
+  | "images"
+  | "volumes"
+  | "snapshots"
+  | "flavors"
+  | "networks";

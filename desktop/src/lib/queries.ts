@@ -11,6 +11,10 @@ export const qk = {
   machines: ["machines"] as const,
   images: ["images"] as const,
   volumes: ["volumes"] as const,
+  // Every machine's list lives under the same "snapshots" prefix, so one
+  // invalidate after a mutation refreshes the global view and each machine's.
+  snapshots: (machine?: string | null) =>
+    machine ? (["snapshots", machine] as const) : (["snapshots"] as const),
   flavors: ["flavors"] as const,
   networks: ["networks"] as const,
   probe: ["probe"] as const,
@@ -49,6 +53,21 @@ export function useVolumes() {
     queryFn: () => api.listVolumes(),
     refetchInterval: 10000,
     refetchIntervalInBackground: true,
+    placeholderData: (prev) => prev,
+  });
+}
+
+/**
+ * Snapshots, all or one machine's. Polled gently: they only change when
+ * someone takes, branches or removes one.
+ */
+export function useSnapshots(machine?: string | null) {
+  return useQuery({
+    queryKey: qk.snapshots(machine),
+    queryFn: () => api.listSnapshots(machine ?? null),
+    refetchInterval: 15000,
+    refetchIntervalInBackground: true,
+    staleTime: 5000,
     placeholderData: (prev) => prev,
   });
 }
@@ -249,6 +268,92 @@ export function useCommitMachine() {
       qc.invalidateQueries({ queryKey: qk.flavors });
       // A BSD machine is powered off to take a consistent snapshot.
       qc.invalidateQueries({ queryKey: qk.machines });
+    },
+  });
+}
+
+// ---- snapshots -------------------------------------------------------------
+
+/** Invalidate every snapshot list — the global one and each machine's. */
+function invalidateSnapshots(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ["snapshots"] });
+}
+
+export function useSnapshotMachine() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      name = null,
+      description = "",
+    }: {
+      id: string;
+      name?: string | null;
+      description?: string;
+    }) => api.snapshotMachine(id, name, description),
+    onSuccess: () => {
+      invalidateSnapshots(qc);
+      // A BSD guest is powered off to capture a consistent disk.
+      qc.invalidateQueries({ queryKey: qk.machines });
+    },
+  });
+}
+
+export function useRemoveSnapshot() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => api.removeSnapshot(name),
+    onSuccess: () => invalidateSnapshots(qc),
+  });
+}
+
+export function useRestoreMachine() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      snapshot,
+      backup = true,
+    }: {
+      id: string;
+      snapshot: string;
+      backup?: boolean;
+    }) => api.restoreMachine(id, snapshot, backup),
+    onSuccess: () => {
+      // The machine is left stopped, and the safety backup is a new snapshot.
+      qc.invalidateQueries({ queryKey: qk.machines });
+      invalidateSnapshots(qc);
+    },
+  });
+}
+
+export function useRollbackMachine() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, backup = true }: { id: string; backup?: boolean }) =>
+      api.rollbackMachine(id, backup),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.machines });
+      invalidateSnapshots(qc);
+    },
+  });
+}
+
+export function useBranchSnapshot() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      snapshot,
+      name = null,
+      ports = [],
+    }: {
+      snapshot: string;
+      name?: string | null;
+      ports?: string[];
+    }) => api.branchSnapshot(snapshot, name, ports),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.machines });
+      qc.invalidateQueries({ queryKey: qk.volumes });
     },
   });
 }

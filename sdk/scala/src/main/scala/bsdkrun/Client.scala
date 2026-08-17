@@ -10,7 +10,7 @@ import scala.collection.mutable
 import scala.concurrent.duration.Duration
 import ujson.Value
 
-import bsdkrun.Types.SandboxInfo
+import bsdkrun.Types.{SandboxInfo, SnapshotInfo}
 
 /** A client for a remote `bsdkrund` over its GraphQL API.
   *
@@ -328,6 +328,115 @@ final class Client private (val url: String, token: String):
       )
     ).map(commandResult(_, "updateMachine", "updateMachine"))
 
+  // -- snapshots --------------------------------------------------------------
+  //
+  // A snapshot is a copy-on-write clone of a machine's disk state: instant to
+  // take, free until the two sides diverge. `branch` boots a new machine from
+  // one; `restoreMachine`/`rollbackMachine` put one back.
+
+  /** Snapshots, newest first. `machine` narrows the list to one machine's. */
+  def snapshots(machine: Option[String] = None): Either[BsdkrunError, Seq[SnapshotInfo]] =
+    request(
+      s"query($$machine:String){ snapshots(machine:$$machine){ ${Client.SnapshotFields} } }",
+      ujson.Obj("machine" -> machine.map(ujson.Str(_)).getOrElse(ujson.Null))
+    ).map: data =>
+      data.objOpt
+        .flatMap(_.get("snapshots"))
+        .flatMap(_.arrOpt)
+        .map(_.map(Types.snapshotInfo).toSeq)
+        .getOrElse(Seq.empty)
+
+  /** Capture a machine's disk state. `name` of `None` yields `<machine>-<n>`.
+    *
+    * A BSD guest is powered off first — a mounted UFS cannot be cloned
+    * consistently — so the machine is left stopped; `startMachine` brings it
+    * back.
+    */
+  def snapshotMachine(
+      id: String,
+      name: Option[String] = None,
+      description: String = ""
+  ): Either[BsdkrunError, SnapshotInfo] =
+    request(
+      s"mutation($$id:String!,$$name:String,$$description:String!){ " +
+        s"snapshotMachine(id:$$id, name:$$name, description:$$description){ ${Client.SnapshotFields} } }",
+      ujson.Obj(
+        "id" -> id,
+        "name" -> name.map(ujson.Str(_)).getOrElse(ujson.Null),
+        "description" -> description
+      )
+    ).map: data =>
+      Types.snapshotInfo(data.objOpt.flatMap(_.get("snapshotMachine")).getOrElse(ujson.Obj()))
+
+  /** Delete snapshots and their data. Machines branched from them are
+    * unaffected.
+    */
+  def removeSnapshots(names: Seq[String]): Either[BsdkrunError, CommandResult] =
+    request(
+      "mutation($names:[String!]!){ removeSnapshots(names:$names){ exitCode stdout stderr } }",
+      ujson.Obj("names" -> names)
+    ).map(commandResult(_, "removeSnapshots", "removeSnapshots"))
+
+  /** Put a machine's disk state back to one of its snapshots.
+    *
+    * `force` stops the machine first — it holds the very files being replaced.
+    * `backup` snapshots the state being overwritten, which is a CoW clone and
+    * therefore free. The machine is left stopped.
+    */
+  def restoreMachine(
+      id: String,
+      snapshot: String,
+      force: Boolean = true,
+      backup: Boolean = true
+  ): Either[BsdkrunError, CommandResult] =
+    request(
+      "mutation($id:String!,$snapshot:String!,$force:Boolean!,$backup:Boolean!){ " +
+        "restoreMachine(id:$id, snapshot:$snapshot, force:$force, backup:$backup){ exitCode stdout stderr } }",
+      ujson.Obj("id" -> id, "snapshot" -> snapshot, "force" -> force, "backup" -> backup)
+    ).map(commandResult(_, "restoreMachine", "restoreMachine"))
+
+  /** Restore a machine to its most recent snapshot. */
+  def rollbackMachine(
+      id: String,
+      force: Boolean = true,
+      backup: Boolean = true
+  ): Either[BsdkrunError, CommandResult] =
+    request(
+      "mutation($id:String!,$force:Boolean!,$backup:Boolean!){ " +
+        "rollbackMachine(id:$id, force:$force, backup:$backup){ exitCode stdout stderr } }",
+      ujson.Obj("id" -> id, "force" -> force, "backup" -> backup)
+    ).map(commandResult(_, "rollbackMachine", "rollbackMachine"))
+
+  /** Boot a NEW machine from a snapshot — or from a machine, which is
+    * snapshotted first — and return the new machine's id.
+    *
+    * The state is cloned, never booted in place, so the source is untouched
+    * and one snapshot can be branched any number of times. Empty `ports`
+    * inherits the snapshot's own forwards, with any host port that is already
+    * taken swapped for a free one; `noPorts` drops them instead.
+    */
+  def branch(
+      snapshot: String,
+      name: Option[String] = None,
+      cpus: Option[Int] = None,
+      mem: Option[Int] = None,
+      ports: Seq[String] = Seq.empty,
+      noPorts: Boolean = false
+  ): Either[BsdkrunError, String] =
+    request(
+      "mutation($input:BranchInput!){ branchSnapshot(input:$input) }",
+      ujson.Obj(
+        "input" -> ujson.Obj(
+          "snapshot" -> snapshot,
+          "name" -> name.map(ujson.Str(_)).getOrElse(ujson.Null),
+          "cpus" -> cpus.map(ujson.Num(_)).getOrElse(ujson.Null),
+          "mem" -> mem.map(ujson.Num(_)).getOrElse(ujson.Null),
+          "ports" -> ports,
+          "noPorts" -> noPorts
+        )
+      )
+    ).map(data => Types.str(data, "branchSnapshot"))
+
   /** Read a machine's console log, or bsdkrun's own boot log. */
   def logs(id: String, boot: Boolean = false): Either[BsdkrunError, String] =
     request(
@@ -515,8 +624,12 @@ object Client:
   /** The `Machine` field selection shared by the machine queries. */
   private[bsdkrun] val MachineFields =
     "id name image kind command status running exitCode pid detached " +
-      "cpus mem volume stateDir createdAt finishedAt network netIp " +
+      "cpus mem volume stateDir createdAt finishedAt network netIp origin " +
       "ports { bind host guest }"
+
+  private[bsdkrun] val SnapshotFields =
+    "id name machineId machineName kind image path parent description " +
+      "cpus mem size createdAt ports { bind host guest }"
 
   /** Trim, add `http://` if no scheme was given, strip trailing slashes, and
     * append `/graphql` unless the path already ends with it.

@@ -9,8 +9,8 @@ use crate::{agent, api, db, host};
 
 use super::flavor::valid_flavor_name;
 use super::guest::{guest_os_kind, reject_unikraft};
+use super::snapshot;
 use super::truncate;
-use super::volume_dir;
 
 #[allow(clippy::print_literal)] // padded tabular headers read clearer as args
 pub(crate) fn cmd_ps(all: bool, json: bool) -> Result<()> {
@@ -329,41 +329,35 @@ pub fn commit(id: &str, name: &str, description: &str) -> Result<String> {
     // consistently). See [`quiesce_guest_for_snapshot`].
     quiesce_guest_for_snapshot(&vm);
 
-    let mdir = std::path::PathBuf::from(&vm.state_dir);
-    if vm.kind == "linux" {
-        // The machine's writable rootfs (per-machine clone, or its volume).
-        let src = match &vm.volume {
-            Some(v) => volume_dir(v)?.join("rootfs"),
-            None => mdir.join("rootfs"),
-        };
-        if !src.exists() {
+    // Where the machine's state actually lives, resolved the same way the boot
+    // path resolves it — via `machine_payload`, which knows that on macOS a
+    // Linux rootfs sits on the case-sensitive store rather than in the state
+    // dir. Resolving it here by hand is what made `commit` report "no rootfs to
+    // snapshot" for every Linux machine on a host with a store attached.
+    let payload = match snapshot::machine_payload(&vm) {
+        Ok(p) => p,
+        Err(e) => {
             let _ = std::fs::remove_dir_all(&dir);
-            anyhow::bail!("machine {} has no rootfs to snapshot", vm.id);
+            return Err(e);
         }
-        // Flush the guest's just-synced writes (virtio-fs passes them through to
-        // these host files) to disk before the extent-level clone.
-        let _ = std::process::Command::new("sync").status();
-        host::cow_copy(&src, &dir.join("rootfs"), true)?;
-    } else {
-        // BSD: snapshot the raw disk (`root.<ext>`), from the volume or state dir.
-        let base = match &vm.volume {
-            Some(v) => volume_dir(v)?,
-            None => mdir.clone(),
-        };
-        let disk = ["root.raw", "root.img"]
-            .iter()
-            .map(|f| base.join(f))
-            .find(|p| p.exists())
-            .ok_or_else(|| {
-                let _ = std::fs::remove_dir_all(&dir);
-                anyhow::anyhow!("machine {} has no disk to snapshot", vm.id)
-            })?;
-        // Flush the guest's just-synced writes from the host page cache to disk
-        // so `clonefile` (extent-level) captures them — without this the snapshot
-        // silently misses recent changes even though the file *reads* current.
-        fullsync_file(&disk);
-        let ext = disk.extension().and_then(|e| e.to_str()).unwrap_or("img");
-        host::cow_copy(&disk, &dir.join(format!("disk.{ext}")), false)?;
+    };
+    match payload {
+        snapshot::Payload::Rootfs(src) => {
+            // Flush the guest's just-synced writes (virtio-fs passes them through
+            // to these host files) to disk before the extent-level clone.
+            let _ = std::process::Command::new("sync").status();
+            host::clone_or_copy_tree(&src, &dir.join("rootfs"))?;
+        }
+        snapshot::Payload::Disk(disk) => {
+            // Flush the guest's just-synced writes from the host page cache to disk
+            // so `clonefile` (extent-level) captures them — without this the snapshot
+            // silently misses recent changes even though the file *reads* current.
+            fullsync_file(&disk);
+            let ext = disk.extension().and_then(|e| e.to_str()).unwrap_or("img");
+            host::clone_or_copy_file(&disk, &dir.join(format!("disk.{ext}")))?;
+        }
+        // Rejected above — a unikernel has no rootfs to turn into a flavor.
+        snapshot::Payload::Unikernel { .. } => unreachable!("reject_unikraft ran first"),
     }
 
     db.upsert_flavor(

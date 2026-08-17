@@ -235,6 +235,49 @@ pub fn plain_copy_tree(src: &Path, dst: &Path) -> Result<()> {
     plain_copy(src, dst, true)
 }
 
+/// The filesystem a path is on, walking up to the first ancestor that exists —
+/// so this answers for a destination that has not been created yet.
+pub fn device_of(path: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    let mut p = path;
+    loop {
+        if let Ok(md) = std::fs::symlink_metadata(p) {
+            return Some(md.dev());
+        }
+        p = p.parent()?;
+    }
+}
+
+/// Whether a CoW clone between these two paths can work at all.
+///
+/// `clonefile`/`--reflink` share *extents*, which cannot cross a filesystem:
+/// the copy silently degrades to a byte-for-byte one, and on macOS `cp -Rc`
+/// announces it with an alarming "clonefile failed: Cross-device link" on the
+/// way to succeeding. Callers that know a copy leaves the volume should use
+/// [`plain_copy_tree`] instead and skip the noise.
+pub fn same_device(a: &Path, b: &Path) -> bool {
+    match (device_of(a), device_of(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// CoW-clone a tree when the two ends share a filesystem, else copy it plainly.
+pub fn clone_or_copy_tree(src: &Path, dst: &Path) -> Result<()> {
+    if same_device(src, dst) {
+        return cow_copy(src, dst, true);
+    }
+    plain_copy_tree(src, dst)
+}
+
+/// [`clone_or_copy_tree`] for a single file.
+pub fn clone_or_copy_file(src: &Path, dst: &Path) -> Result<()> {
+    if same_device(src, dst) {
+        return cow_copy(src, dst, false);
+    }
+    plain_copy(src, dst, false)
+}
+
 fn plain_copy(src: &Path, dst: &Path, recursive: bool) -> Result<()> {
     if recursive {
         let _ = std::fs::remove_dir_all(dst);

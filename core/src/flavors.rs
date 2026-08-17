@@ -73,6 +73,36 @@ macro_rules! docker_engine {
     };
 }
 
+/// The GitHub CLI, in every agent sandbox.
+///
+/// An agent that can read a repository but not its issues, PRs or checks is
+/// working with half the context — and `gh` is also how it authenticates git
+/// over HTTPS without a key.
+///
+/// Two routes, because the sandboxes are not one distro: alpine (nanoclaw is
+/// `docker:dind`) has it as a package, and debian needs GitHub's own apt repo
+/// — Debian's archive does not carry `gh` at all, so `apt-get install gh`
+/// alone fails on every one of these images. `|| true` throughout, since a
+/// sandbox without `gh` still works; the agent is already installed by here.
+macro_rules! gh_cli {
+    () => {
+        "command -v gh >/dev/null 2>&1 || \
+         (command -v apk >/dev/null 2>&1 && apk add --no-cache github-cli) || \
+         (command -v apt-get >/dev/null 2>&1 && \
+          apt-get update && \
+          apt-get install -y curl ca-certificates && \
+          mkdir -p -m 755 /etc/apt/keyrings && \
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+            -o /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
+          chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
+          echo \"deb [arch=$(dpkg --print-architecture) \
+signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] \
+https://cli.github.com/packages stable main\" \
+            > /etc/apt/sources.list.d/github-cli.list && \
+          apt-get update && apt-get install -y gh) || true"
+    };
+}
+
 /// Determinate Nix, for an agent that needs a toolchain the sandbox lacks.
 ///
 /// `--init none` because the guest has no systemd for the daemon to hook
@@ -381,6 +411,31 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             provision: NONE,
         },
         CatalogFlavor {
+            name: "uv",
+            category: "language",
+            description: "Python 3.13 with uv 0.12 (Astral's installer/resolver).",
+            // Astral's own image, pinned to both versions it carries: the uv
+            // release and the Python it is built against. `python3.13-trixie`
+            // alone would move either one underneath a project.
+            base: Base::Oci("ghcr.io/astral-sh/uv:0.12.5-python3.13-trixie"),
+            ports: NONE,
+            env: NONE,
+            nix: NONE,
+            provision: NONE,
+        },
+        CatalogFlavor {
+            name: "mise",
+            category: "language",
+            description: "mise — one runtime manager for node, python, go, rust…",
+            // The project's own image, pinned. mise releases date-versioned and
+            // often, so `latest` here would mean a different tool on a rebuild.
+            base: Base::Oci("ghcr.io/jdx/mise:2026.8.8"),
+            ports: NONE,
+            env: NONE,
+            nix: NONE,
+            provision: NONE,
+        },
+        CatalogFlavor {
             name: "clojure",
             category: "language",
             description: "Clojure with the official CLI tools.",
@@ -404,6 +459,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             provision: provision![
                 apt!["git", "ripgrep"],
                 npm!["@anthropic-ai/claude-code"],
+                gh_cli!(),
                 docker_engine!(),
                 nix_engine!(),
             ],
@@ -419,6 +475,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             provision: provision![
                 apt!["git"],
                 npm!["@openai/codex"],
+                gh_cli!(),
                 docker_engine!(),
                 nix_engine!(),
             ],
@@ -434,6 +491,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             provision: provision![
                 apt!["git", "ripgrep"],
                 npm!["@google/gemini-cli"],
+                gh_cli!(),
                 docker_engine!(),
                 nix_engine!(),
             ],
@@ -449,6 +507,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             provision: provision![
                 apt!["git"],
                 npm!["@kilocode/cli"],
+                gh_cli!(),
                 docker_engine!(),
                 nix_engine!(),
             ],
@@ -464,6 +523,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             provision: provision![
                 apt!["git"],
                 npm!["@qwen-code/qwen-code"],
+                gh_cli!(),
                 docker_engine!(),
                 nix_engine!(),
             ],
@@ -496,6 +556,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
                 // The installer puts it in ~/.local/bin, which is not on PATH
                 // in a non-login shell — where the sandbox's wrapper runs it.
                 "ln -sf \"$HOME/.local/bin/kiro-cli\" /usr/local/bin/kiro-cli",
+                gh_cli!(),
                 docker_engine!(),
                 nix_engine!(),
             ],
@@ -514,6 +575,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
                     npm!["opencode-ai"],
                     " || curl -fsSL https://opencode.ai/install | bash"
                 ),
+                gh_cli!(),
                 docker_engine!(),
                 nix_engine!(),
             ],
@@ -529,6 +591,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             provision: provision![
                 apt!["git", "curl"],
                 npm!["@charmland/crush"],
+                gh_cli!(),
                 docker_engine!(),
                 nix_engine!(),
             ],
@@ -544,6 +607,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             provision: provision![
                 apt!["git"],
                 npm!["@github/copilot"],
+                gh_cli!(),
                 docker_engine!(),
                 nix_engine!(),
             ],

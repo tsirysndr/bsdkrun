@@ -14,6 +14,8 @@ RUN apt-get update && apt-get install -y git ripgrep
 
 RUN npm install -g @google/gemini-cli
 
+RUN command -v gh >/dev/null 2>&1 || (command -v apk >/dev/null 2>&1 && apk add --no-cache github-cli) || (command -v apt-get >/dev/null 2>&1 && apt-get update && apt-get install -y curl ca-certificates && mkdir -p -m 755 /etc/apt/keyrings && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list && apt-get update && apt-get install -y gh) || true
+
 RUN command -v dockerd >/dev/null 2>&1 || (curl -fsSL https://get.docker.com | sh) || true
 
 RUN command -v nix >/dev/null 2>&1 || (curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux --no-confirm --init none) || true

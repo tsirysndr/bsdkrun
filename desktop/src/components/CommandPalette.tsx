@@ -46,7 +46,7 @@ import {
   useStopMachine,
 } from "../lib/queries";
 import { useLaunchFlavor } from "../hooks/useLaunchFlavor";
-import { useStartAgent } from "../lib/queries";
+import { useAiSessions, useAttachAgentSession, useStartAgent } from "../lib/queries";
 import { useToast } from "../state/toast";
 import { isUnikraft, kindColor, shortId } from "../lib/format";
 import type { ViewKey } from "../lib/types";
@@ -71,7 +71,9 @@ export default function CommandPalette() {
   const { data: flavors = [] } = useFlavors();
   const { data: snapshots = [] } = useSnapshots();
   const { data: aiAgents = [] } = useAiAgents();
+  const { data: aiSessions = [] } = useAiSessions();
   const startAgent = useStartAgent();
+  const attachSession = useAttachAgentSession();
   const setAgentPanel = useSetAtom(agentPanelOpenAtom);
   const setView = useSetAtom(viewAtom);
   const setRunOpen = useSetAtom(runOpenAtom);
@@ -380,6 +382,30 @@ export default function CommandPalette() {
       },
     }));
 
+    // Live sessions, grouped under their project in the subtitle so a search
+    // for the project name finds every session on that codebase.
+    const sessionCmds: Command[] = aiSessions.map((s) => {
+      const name = s.label || s.name;
+      const project = s.project || "no project";
+      const agentLabel =
+        aiAgents.find((a) => a.id === s.agent)?.label ?? s.agent;
+      return {
+        id: `ai-session-${s.id}`,
+        title: `Open ${name}`,
+        subtitle: `${project} · ${agentLabel} · ${s.running ? "running" : "stopped"}`,
+        section: "AI sessions",
+        icon: IconSparkles,
+        keywords: `ai session ${name} ${project} ${s.agent} ${s.workspace ?? ""} ${
+          s.running ? "running" : "stopped"
+        }`,
+        running: s.running,
+        run: () => {
+          setOpen(false);
+          attachSession(s).catch(() => {});
+        },
+      };
+    });
+
     const flavorCmds: Command[] = flavors.map((f) => ({
       id: `flavor-${f.source}-${f.name}`,
       title: `Launch ${f.name}`,
@@ -394,8 +420,15 @@ export default function CommandPalette() {
       },
     }));
 
-    return [...base, ...agentCmds, ...machineCmds, ...snapshotCmds, ...flavorCmds];
-  }, [machines, snapshots, flavors, aiAgents]);
+    return [
+      ...base,
+      ...sessionCmds,
+      ...agentCmds,
+      ...machineCmds,
+      ...snapshotCmds,
+      ...flavorCmds,
+    ];
+  }, [machines, snapshots, flavors, aiAgents, aiSessions]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

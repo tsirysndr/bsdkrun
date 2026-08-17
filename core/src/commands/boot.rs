@@ -2659,6 +2659,10 @@ fn boot_ai_sandbox(
     // contain dashes, and the agent has to stay unambiguous.
     ai::record_agent(&vdir, agent.id);
     ai::record_label(&vdir, args.name.as_deref());
+    ai::record_project(
+        &vdir,
+        ai::resolve_project(args.project.as_deref(), workspace).as_deref(),
+    );
 
     info!(agent = agent.id, sandbox = %name, "booting the agent sandbox");
     let largs = LinuxArgs {

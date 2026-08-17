@@ -61,15 +61,27 @@ export const api = {
   aiAgents: () => invoke<AiAgent[]>("ai_agents"),
   aiSessions: () => invoke<AiSession[]>("ai_sessions"),
   /** Starts or reuses a sandbox; returns its machine id. */
-  aiStart: (agent: string, workspace: string | null, newSession: boolean) =>
-    invoke<string>("ai_start", { agent, workspace, newSession }),
+  aiStart: (
+    agent: string,
+    workspace: string | null,
+    newSession: boolean,
+    name?: string,
+  ) => invoke<string>("ai_start", { agent, workspace, newSession, name: name ?? null }),
   /** Same, but streams the first-run flavor build into the progress modal. */
   launchAgent: (
     launchId: string,
     agent: string,
     workspace: string | null,
     newSession: boolean,
-  ) => invoke<void>("launch_agent", { launchId, agent, workspace, newSession }),
+    name?: string,
+  ) =>
+    invoke<void>("launch_agent", {
+      launchId,
+      agent,
+      workspace,
+      newSession,
+      name: name ?? null,
+    }),
   /** The argv that starts the agent's TUI in a sandbox. */
   aiShellCommand: (agent: string, machineId: string) =>
     invoke<string[]>("ai_shell_command", { agent, machineId }),

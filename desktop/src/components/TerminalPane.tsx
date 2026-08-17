@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { api, onTermData, onTermExit } from "../lib/api";
 import { HOST_MACHINE } from "../state/atoms";
@@ -74,6 +76,14 @@ export default function TerminalPane({
       });
       fit = new FitAddon();
       term.loadAddon(fit);
+      // URLs a guest prints (a dev server, a login link an agent needs you to
+      // open) become clickable and open in the *host's* browser — the guest
+      // has none, so without this they have to be copied out by hand.
+      term.loadAddon(
+        new WebLinksAddon((_event, uri) => {
+          openUrl(uri).catch(() => {});
+        }),
+      );
       term.open(hostRef.current);
       fit.fit();
 

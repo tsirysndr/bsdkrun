@@ -4,6 +4,8 @@
 //! boot lives in [`crate::commands::boot`] — the same split the flavor and
 //! docker commands use.
 
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 
 use crate::ai::{self, Agent};
@@ -49,19 +51,27 @@ pub(crate) fn cmd_sessions(json: bool) -> Result<()> {
         println!("No agent sandboxes. Start one with `bsdkrun claude`.");
         return Ok(());
     }
-    println!(
-        "{:<14}  {:<24}  {:<10}  {:<9}  {}",
-        "ID", "SANDBOX", "AGENT", "STATE", "WORKSPACE"
-    );
-    for s in sessions {
-        println!(
-            "{:<14}  {:<24}  {:<10}  {:<9}  {}",
-            s.id,
-            super::truncate(&s.name, 24),
-            s.agent,
-            if s.running { "running" } else { "stopped" },
-            s.workspace.as_deref().unwrap_or("—")
-        );
+    // Grouped by project, because that is how they are worked on: several
+    // sessions against one codebase belong together, whatever they are named.
+    let mut projects: BTreeMap<String, Vec<&ai::Session>> = BTreeMap::new();
+    for s in &sessions {
+        projects
+            .entry(s.project.clone().unwrap_or_else(|| "(no project)".into()))
+            .or_default()
+            .push(s);
+    }
+    for (project, rows) in &projects {
+        println!("{project}");
+        for s in rows {
+            println!(
+                "  {:<14}  {:<22}  {:<10}  {:<9}  {}",
+                s.id,
+                super::truncate(s.label.as_deref().unwrap_or(&s.name), 22),
+                s.agent,
+                if s.running { "running" } else { "stopped" },
+                s.workspace.as_deref().unwrap_or("—")
+            );
+        }
     }
     Ok(())
 }

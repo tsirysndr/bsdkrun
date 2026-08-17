@@ -238,6 +238,8 @@ pub struct AiStartOpts {
     pub new: bool,
     /// A name for this session, shown in listings and the desktop's switcher.
     pub name: Option<String>,
+    /// The project to group it under. Defaults to the shared folder's name.
+    pub project: Option<String>,
 }
 
 impl AiStartOpts {
@@ -253,6 +255,7 @@ impl AiStartOpts {
                 cwd: false,
                 new: self.new,
                 name: self.name.clone(),
+                project: self.project.clone(),
                 detach: true,
             }),
         })

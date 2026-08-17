@@ -105,6 +105,10 @@ export interface AiSession {
   running: boolean;
   /** The directory shared into it, on the engine's host. */
   workspace?: string | null;
+  /** A user-given name for the session. */
+  label?: string | null;
+  /** The project it groups under; defaults to the shared folder's name. */
+  project?: string | null;
   created_at: string;
 }
 

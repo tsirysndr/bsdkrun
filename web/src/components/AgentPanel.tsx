@@ -10,6 +10,7 @@ import {
 } from "@heroui/react";
 import {
   IconArrowsMaximize,
+  IconLayoutList,
   IconArrowsMinimize,
   IconChevronDown,
   IconFolder,
@@ -26,10 +27,11 @@ import {
   agentSessionAtom,
   agentWorkspaceAtom,
 } from "../state/atoms";
-import { useAiAgents, useStartAgent } from "../lib/queries";
+import { useAiAgents, useAttachAgentSession, useStartAgent } from "../lib/queries";
 import { useToast } from "../state/toast";
 import { pickWorkspace } from "../lib/api";
 import TerminalPane from "./TerminalPane";
+import AgentSessionPicker from "./AgentSessionPicker";
 
 const MIN_W = 340;
 
@@ -54,6 +56,8 @@ export default function AgentPanel() {
   const session = useAtomValue(agentSessionAtom);
   const { data: agents = [] } = useAiAgents(open);
   const startAgent = useStartAgent();
+  const attachSession = useAttachAgentSession();
+  const [pickerOpen, setPickerOpen] = useState(false);
   const toast = useToast();
 
   const agent = agents.find((a) => a.id === agentId);
@@ -62,10 +66,10 @@ export default function AgentPanel() {
   const [starting, setStarting] = useState(false);
 
   const start = useCallback(
-    async (opts?: { newSession?: boolean }) => {
+    async (opts?: { newSession?: boolean; name?: string }) => {
       setStarting(true);
       try {
-        await startAgent(agentId, workspace, opts?.newSession ?? false);
+        await startAgent(agentId, workspace, opts?.newSession ?? false, opts?.name);
       } catch (e) {
         toast("error", "Could not start the agent", String(e));
       } finally {
@@ -197,13 +201,30 @@ export default function AgentPanel() {
 
         <div className="flex-1" />
 
+        <Tooltip content="Switch session" placement="bottom">
+          <Button
+            isIconOnly
+            size="sm"
+            variant="light"
+            onPress={() => setPickerOpen(true)}
+          >
+            <IconLayoutList size={16} />
+          </Button>
+        </Tooltip>
         <Tooltip content="New session" placement="bottom">
           <Button
             isIconOnly
             size="sm"
             variant="light"
             isDisabled={starting}
-            onPress={() => start({ newSession: true })}
+            onPress={() => {
+              // Naming is optional: an empty answer (or cancel) still starts a
+              // session, because being made to name a thing before you know
+              // what it is for is worse than an unnamed one.
+              const name = window.prompt("Name this session (optional)", "");
+              if (name === null) return;
+              start({ newSession: true, name: name.trim() || undefined });
+            }}
           >
             <IconPlus size={16} />
           </Button>
@@ -259,6 +280,16 @@ export default function AgentPanel() {
           />
         )}
       </div>
+
+      <AgentSessionPicker
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        onPick={(s) => {
+          attachSession(s).catch((e) =>
+            toast("error", "Could not open that session", String(e)),
+          );
+        }}
+      />
     </div>
   );
 }

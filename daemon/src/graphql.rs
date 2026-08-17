@@ -279,6 +279,9 @@ pub struct AiSession {
     pub workspace: Option<String>,
     /// A user-given name for this session, when one was set.
     pub label: Option<String>,
+    /// The project it belongs to — several sessions on one codebase group
+    /// under it. Defaults to the shared folder's name.
+    pub project: Option<String>,
     pub created_at: String,
 }
 
@@ -291,6 +294,7 @@ impl From<ops::AiSession> for AiSession {
             running: s.running,
             workspace: s.workspace,
             label: s.label,
+            project: s.project,
             created_at: s.created_at,
         }
     }
@@ -665,6 +669,8 @@ pub struct AiStartInput {
     pub new: bool,
     /// A name for this session, shown in listings and the desktop's switcher.
     pub name: Option<String>,
+    /// The project to group it under. Defaults to the shared folder's name.
+    pub project: Option<String>,
 }
 
 /// Starting the Docker engine VM. Every field is optional: the zero value is
@@ -1136,6 +1142,7 @@ impl Mutation {
             workspace: input.workspace,
             new: input.new,
             name: input.name,
+            project: input.project,
         };
         api(ctx)?.ops.ai_start(&opts).await.map_err(gql_err)
     }

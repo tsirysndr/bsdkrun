@@ -533,10 +533,18 @@ export const api = {
     agent: string,
     workspace: string | null,
     newSession: boolean,
+    name?: string,
   ): Promise<string> => {
     const d = await gql<{ aiStart: string }>(
       `mutation($i:AiStartInput!){ aiStart(input:$i) }`,
-      { i: { agent, workspace: orNull(workspace ?? undefined), new: newSession } },
+      {
+        i: {
+          agent,
+          workspace: orNull(workspace ?? undefined),
+          new: newSession,
+          name: orNull(name),
+        },
+      },
     );
     return d.aiStart;
   },
@@ -551,8 +559,9 @@ export const api = {
     agent: string,
     workspace: string | null,
     newSession: boolean,
+    name?: string,
   ): Promise<void> => {
-    await api.aiStart(agent, workspace, newSession);
+    await api.aiStart(agent, workspace, newSession, name);
   },
 
   /** The argv that starts the agent's TUI in a sandbox. */

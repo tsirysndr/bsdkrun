@@ -324,7 +324,12 @@ export function useStartAgent() {
   const setLaunch = useSetAtom(launchStateAtom);
 
   return useCallback(
-    async (agent: string, workspace: string | null, newSession: boolean) => {
+    async (
+      agent: string,
+      workspace: string | null,
+      newSession: boolean,
+      name?: string,
+    ) => {
       setSelected(agent);
       setOpen(true);
 
@@ -336,8 +341,8 @@ export function useStartAgent() {
       const label = info?.label ?? agent;
 
       const machineId = info?.installed
-        ? await api.aiStart(agent, workspace, newSession)
-        : await streamInstall(setLaunch, label, agent, workspace, newSession);
+        ? await api.aiStart(agent, workspace, newSession, name)
+        : await streamInstall(setLaunch, label, agent, workspace, newSession, name);
 
       const command = await api.aiShellCommand(agent, machineId);
       setSession({
@@ -365,6 +370,7 @@ function streamInstall(
   agent: string,
   workspace: string | null,
   newSession: boolean,
+  name?: string,
 ): Promise<string> {
   const launchId = `agent-${agent}-${Date.now()}`;
   setLaunch({
@@ -387,10 +393,65 @@ function streamInstall(
     }).then((u) => {
       unlisten = u;
     });
-    api.launchAgent(launchId, agent, workspace, newSession).catch((e) => {
+    api.launchAgent(launchId, agent, workspace, newSession, name).catch((e) => {
       unlisten?.();
       reject(e);
     });
+  });
+}
+
+/**
+ * Attach the panel to an existing sandbox.
+ *
+ * A session is a machine, so this only has to fetch the agent's argv and point
+ * the terminal at it — no boot, and nothing to wait for.
+ */
+export function useAttachAgentSession() {
+  const setSession = useSetAtom(agentSessionAtom);
+  const setOpen = useSetAtom(agentPanelOpenAtom);
+  const setSelected = useSetAtom(agentSelectedAtom);
+  return useCallback(
+    async (session: { id: string; agent: string }) => {
+      const command = await api.aiShellCommand(session.agent, session.id);
+      setSelected(session.agent);
+      setOpen(true);
+      setSession({
+        key: `${session.id}-${Date.now()}`,
+        agent: session.agent,
+        machineId: session.id,
+        command,
+      });
+    },
+    [setSession, setOpen, setSelected],
+  );
+}
+
+/** Stop one sandbox. It is a machine, so this is the ordinary machine stop. */
+export function useStopAgentSession() {
+  const qc = useQueryClient();
+  const setSession = useSetAtom(agentSessionAtom);
+  return useMutation({
+    mutationFn: (id: string) => api.stopMachine(id),
+    onSuccess: (_r, id) => {
+      // The panel is showing a dead terminal if this was the live session.
+      setSession((s) => (s?.machineId === id ? null : s));
+      qc.invalidateQueries({ queryKey: ["ai"] });
+      qc.invalidateQueries({ queryKey: qk.machines });
+    },
+  });
+}
+
+/** Delete one sandbox and its state. Its agent's saved login is untouched. */
+export function useDeleteAgentSession() {
+  const qc = useQueryClient();
+  const setSession = useSetAtom(agentSessionAtom);
+  return useMutation({
+    mutationFn: (id: string) => api.removeMachine(id, true),
+    onSuccess: (_r, id) => {
+      setSession((s) => (s?.machineId === id ? null : s));
+      qc.invalidateQueries({ queryKey: ["ai"] });
+      qc.invalidateQueries({ queryKey: qk.machines });
+    },
   });
 }
 

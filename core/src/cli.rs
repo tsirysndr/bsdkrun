@@ -564,6 +564,11 @@ pub struct AiRunArgs {
     #[arg(long, value_name = "NAME")]
     pub name: Option<String>,
 
+    /// Group this session under a project. Defaults to the shared folder's
+    /// name, so sessions on one codebase group together on their own.
+    #[arg(long, value_name = "PROJECT")]
+    pub project: Option<String>,
+
     /// Start it in the background and print its id, instead of attaching.
     #[arg(short = 'd', long)]
     pub detach: bool,
@@ -609,6 +614,11 @@ pub struct AiStartArgs {
     #[arg(long, value_name = "NAME")]
     pub name: Option<String>,
 
+    /// Group this session under a project. Defaults to the shared folder's
+    /// name, so sessions on one codebase group together on their own.
+    #[arg(long, value_name = "PROJECT")]
+    pub project: Option<String>,
+
     /// Start it in the background and print its id, instead of attaching.
     #[arg(short = 'd', long)]
     pub detach: bool,
@@ -626,6 +636,7 @@ impl AiRunArgs {
             no_workspace: self.no_workspace,
             new: self.new,
             name: self.name,
+            project: self.project,
             detach: self.detach,
         }
     }

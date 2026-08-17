@@ -456,6 +456,8 @@ message AiSession {
   string created_at = 6;
   // A user-given name for this session.
   optional string label = 7;
+  // The project it belongs to; defaults to the shared folder's name.
+  optional string project = 8;
 }
 
 message AiAgentsRequest {}
@@ -483,6 +485,8 @@ message AiStartRequest {
   bool new = 5;
   // A name for this session, shown in listings and the desktop's switcher.
   optional string name = 6;
+  // The project to group it under; defaults to the shared folder's name.
+  optional string project = 7;
 }
 
 message AiStartResponse {

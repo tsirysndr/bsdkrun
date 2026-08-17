@@ -258,9 +258,14 @@ async fn ai_start(
     agent: String,
     workspace: Option<String>,
     new_session: bool,
+    name: Option<String>,
 ) -> Result<String, BkError> {
     let bin = state.binary()?;
     let mut args: Vec<String> = vec!["ai".into(), "start".into(), agent, "-d".into()];
+    if let Some(n) = name.filter(|n| !n.trim().is_empty()) {
+        args.push("--name".into());
+        args.push(n);
+    }
     match workspace.filter(|w| !w.is_empty()) {
         Some(w) => {
             args.push("--workspace".into());
@@ -296,9 +301,14 @@ async fn launch_agent(
     agent: String,
     workspace: Option<String>,
     new_session: bool,
+    name: Option<String>,
 ) -> Result<(), String> {
     let bin = state.binary().map_err(|e| e.to_string())?;
     let mut args: Vec<String> = vec!["ai".into(), "start".into(), agent, "-d".into()];
+    if let Some(n) = name.filter(|n| !n.trim().is_empty()) {
+        args.push("--name".into());
+        args.push(n);
+    }
     match workspace.filter(|w| !w.is_empty()) {
         Some(w) => {
             args.push("--workspace".into());

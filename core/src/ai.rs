@@ -188,6 +188,9 @@ pub struct Session {
     pub workspace: Option<String>,
     /// A user-given name for this session, when one was set.
     pub label: Option<String>,
+    /// The project this session belongs to — several sessions on one codebase
+    /// group under it. Defaults to the shared folder's name.
+    pub project: Option<String>,
     pub created_at: String,
 }
 
@@ -249,6 +252,7 @@ pub fn sessions() -> Result<Vec<Session>> {
             running: m.status == "running" && m.pid.map(db::pid_alive).unwrap_or(false),
             workspace: workspace_of(&vdir),
             label: label_of(&vdir),
+            project: project_of(&vdir),
             id: m.id,
             name: name.to_string(),
             agent,
@@ -325,6 +329,7 @@ fn slug(label: &str) -> String {
 const WORKSPACE_FILE: &str = "ai-workspace";
 const AGENT_FILE: &str = "ai-agent";
 const LABEL_FILE: &str = "ai-label";
+const PROJECT_FILE: &str = "ai-project";
 
 /// Record which agent a sandbox runs.
 pub fn record_agent(vdir: &Path, agent: &str) {
@@ -351,6 +356,42 @@ pub fn record_label(vdir: &Path, label: Option<&str>) {
 
 pub fn label_of(vdir: &Path) -> Option<String> {
     read_trimmed(vdir.join(LABEL_FILE))
+}
+
+/// Record which project a sandbox belongs to, so several sessions on one
+/// codebase group together in listings and in the panel's switcher.
+pub fn record_project(vdir: &Path, project: Option<&str>) {
+    let f = vdir.join(PROJECT_FILE);
+    match project.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => {
+            let _ = std::fs::write(&f, p.as_bytes());
+        }
+        None => {
+            let _ = std::fs::remove_file(&f);
+        }
+    }
+}
+
+pub fn project_of(vdir: &Path) -> Option<String> {
+    read_trimmed(vdir.join(PROJECT_FILE))
+}
+
+/// The project a session belongs to: what was asked for, else the shared
+/// folder's name.
+///
+/// Defaulting to the workspace is what makes grouping useful without anyone
+/// having to think about it — two sessions on `~/code/api` are two views of
+/// the same work, whatever they are called.
+pub fn resolve_project(explicit: Option<&str>, workspace: Option<&Path>) -> Option<String> {
+    explicit
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            workspace
+                .and_then(|w| w.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+        })
 }
 
 fn read_trimmed(path: PathBuf) -> Option<String> {

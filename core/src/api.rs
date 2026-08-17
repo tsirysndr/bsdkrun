@@ -23,6 +23,11 @@ use crate::{db, fetch, flavors, net};
 
 // The write side. These live beside the subcommands that print their results,
 // and are re-exported here so a caller has one place to look.
+/// AI agent sandboxes. As with docker, the engine's types are already the wire
+/// shapes, so nothing is re-declared here.
+pub use crate::ai::{
+    agents as ai_agents, sessions as ai_sessions, AgentInfo as AiAgent, Session as AiSession,
+};
 pub use crate::commands::flavor::{add_flavor, remove_flavor};
 pub use crate::commands::guest::{guest_os_kind, interactive_term, is_bsd};
 pub use crate::commands::machines::{commit, remove_machine, stop, update};
@@ -31,6 +36,7 @@ pub use crate::commands::snapshot::{
     rollback as rollback_snapshot, Restored,
 };
 pub use crate::commands::volumes::remove_volume;
+
 /// Docker compatibility. The engine's types are already the wire shapes (they
 /// are what `--json` prints), so nothing is re-declared here.
 pub use crate::docker::{

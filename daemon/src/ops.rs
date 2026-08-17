@@ -15,10 +15,10 @@
 
 use bsdkrun_core::api;
 use bsdkrun_core::cli::{
-    BranchArgs, BsdArgs, Command as CoreCommand, DockerArgs, DockerCmd, DockerStartArgs, ExecArgs,
-    FetchArgs, FlavorAddArgs, FlavorArgs, FlavorCmd, FlavorPrebuildArgs, FlavorRunArgs, IdArgs,
-    LinuxArgs, LogsArgs, NanosArgs, NetConfig, OsvArgs, RunConfig, Solo5Args, SshArgs, SystemdArgs,
-    TailscaleArgs, UnikraftArgs, VmConfig,
+    AiArgs, AiCmd, AiStartArgs, BranchArgs, BsdArgs, Command as CoreCommand, DockerArgs, DockerCmd,
+    DockerStartArgs, ExecArgs, FetchArgs, FlavorAddArgs, FlavorArgs, FlavorCmd, FlavorPrebuildArgs,
+    FlavorRunArgs, IdArgs, LinuxArgs, LogsArgs, NanosArgs, NetConfig, OsvArgs, RunConfig,
+    Solo5Args, SshArgs, SystemdArgs, TailscaleArgs, UnikraftArgs, VmConfig,
 };
 use bsdkrun_core::net::PortForward;
 
@@ -28,7 +28,8 @@ use crate::supervisor::Supervisor;
 /// The domain types are the engine's own — the shapes it already used for
 /// `--json` — so nothing is re-declared or re-parsed here.
 pub use bsdkrun_core::api::{
-    DockerContainer, DockerStatus, Flavor, Image, Machine, Network, Snapshot, Version, Volume,
+    AiAgent, AiSession, DockerContainer, DockerStatus, Flavor, Image, Machine, Network, Snapshot,
+    Version, Volume,
 };
 
 // ---------------------------------------------------------------------------
@@ -218,6 +219,39 @@ impl BranchOpts {
             mem: self.mem,
             ports: self.ports.iter().filter_map(|p| p.parse().ok()).collect(),
             no_ports: self.no_ports,
+        })
+    }
+}
+
+/// Starting an AI agent sandbox. Detached like every other boot here: the
+/// caller opens a shell into the machine to reach the agent's TUI.
+#[derive(Debug, Default, Clone)]
+pub struct AiStartOpts {
+    /// Agent id (`claude`, `codex`, …).
+    pub agent: String,
+    pub cpus: Option<u32>,
+    pub mem: Option<u32>,
+    /// A directory **on the engine's host** to share, at the same path. A
+    /// remote client's own paths do not exist here.
+    pub workspace: Option<String>,
+    /// Boot a second sandbox rather than reusing the running one.
+    pub new: bool,
+}
+
+impl AiStartOpts {
+    pub fn to_command(&self) -> CoreCommand {
+        CoreCommand::Ai(AiArgs {
+            cmd: AiCmd::Start(AiStartArgs {
+                agent: self.agent.clone(),
+                vm: vm_config(self.cpus, self.mem),
+                workspace: self.workspace.clone(),
+                // A daemon never shares its own working directory: it is not
+                // the caller's, and doing so silently would be a surprise.
+                no_workspace: self.workspace.is_none(),
+                cwd: false,
+                new: self.new,
+                detach: true,
+            }),
         })
     }
 }
@@ -734,6 +768,89 @@ impl Ops {
         let id = id.to_string();
         let cpus = cpus.map(|c| c.min(255) as u8);
         as_result(blocking("updating a machine", move || api::update(&id, cpus, mem)).await)
+    }
+
+    // -- ai agents --------------------------------------------------------------
+    //
+    // A sandbox is a machine, and the terminal into it is the existing
+    // `openShell` protocol — so there is no new streaming surface here, only
+    // the lifecycle and the registry.
+
+    pub async fn ai_agents(&self) -> OpResult<Vec<AiAgent>> {
+        blocking("listing agents", api::ai_agents).await
+    }
+
+    pub async fn ai_sessions(&self) -> OpResult<Vec<AiSession>> {
+        blocking("listing agent sandboxes", api::ai_sessions).await
+    }
+
+    /// Start (or reuse) a sandbox, returning its machine id. Booting, so it
+    /// goes through a supervisor.
+    ///
+    /// Always detached: the caller opens a shell into the returned machine to
+    /// get the agent's TUI, which is what the desktop and web panels do.
+    pub async fn ai_start(&self, opts: &AiStartOpts) -> OpResult<String> {
+        if bsdkrun_core::ai::find(&opts.agent).is_none() {
+            return Err(OpError::InvalidArgument(format!(
+                "unknown agent {:?}",
+                opts.agent
+            )));
+        }
+        Ok(self.supervisor.detached(&opts.to_command()).await?)
+    }
+
+    pub async fn ai_stop(&self, agent: &str) -> OpResult<CommandResult> {
+        let agent = agent.to_string();
+        as_result(
+            blocking("stopping agent sandboxes", move || {
+                let a = bsdkrun_core::ai::require(&agent)?;
+                let mut stopped = Vec::new();
+                for s in bsdkrun_core::ai::sessions_for(a.id)?
+                    .into_iter()
+                    .filter(|s| s.running)
+                {
+                    stopped.push(api::stop(&s.id)?);
+                }
+                Ok(stopped.join("\n"))
+            })
+            .await,
+        )
+    }
+
+    pub async fn ai_remove(&self, agent: &str, keep_home: bool) -> OpResult<CommandResult> {
+        let agent = agent.to_string();
+        as_result(
+            blocking("removing agent sandboxes", move || {
+                let a = bsdkrun_core::ai::require(&agent)?;
+                let mut removed = Vec::new();
+                for s in bsdkrun_core::ai::sessions_for(a.id)? {
+                    removed.push(api::remove_machine(&s.id, true)?);
+                }
+                if !keep_home {
+                    // Absent is the common case (the agent was never launched).
+                    let _ = api::remove_volume(&bsdkrun_core::ai::home_volume(a.id), true);
+                }
+                Ok(removed.join("\n"))
+            })
+            .await,
+        )
+    }
+
+    /// The argv that opens an agent's TUI — what a client passes to
+    /// `openShell` after `ai_start`.
+    ///
+    /// Built here rather than in the client so the wrapper (the skills symlink,
+    /// the `cd` into the workspace, the `exec`) has exactly one definition.
+    pub async fn ai_shell_command(&self, agent: &str, machine_id: &str) -> OpResult<Vec<String>> {
+        let (agent, machine_id) = (agent.to_string(), machine_id.to_string());
+        blocking("building the agent command", move || {
+            let a = bsdkrun_core::ai::require(&agent)?;
+            let workspace = bsdkrun_core::api::find_machine(&machine_id)?
+                .and_then(|m| m.state_dir)
+                .and_then(|d| bsdkrun_core::ai::workspace_of(std::path::Path::new(&d)));
+            Ok(bsdkrun_core::ai::tui_argv(a, workspace.as_deref()))
+        })
+        .await
     }
 
     // -- docker ---------------------------------------------------------------

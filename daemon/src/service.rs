@@ -171,6 +171,32 @@ impl From<ops::Flavor> for Flavor {
     }
 }
 
+impl From<ops::AiAgent> for AiAgent {
+    fn from(a: ops::AiAgent) -> Self {
+        AiAgent {
+            id: a.id,
+            label: a.label,
+            flavor: a.flavor,
+            description: a.description,
+            installed: a.installed,
+            running: a.running,
+        }
+    }
+}
+
+impl From<ops::AiSession> for AiSession {
+    fn from(s: ops::AiSession) -> Self {
+        AiSession {
+            id: s.id,
+            name: s.name,
+            agent: s.agent,
+            running: s.running,
+            workspace: s.workspace,
+            created_at: s.created_at,
+        }
+    }
+}
+
 impl From<ops::DockerStatus> for DockerStatus {
     fn from(s: ops::DockerStatus) -> Self {
         DockerStatus {
@@ -576,6 +602,72 @@ impl Bsdkrun for BsdkrunService {
         Ok(Response::new(
             self.ops.sync_network(&req.into_inner().network).await?,
         ))
+    }
+
+    // -- ai agents --------------------------------------------------------------
+
+    async fn ai_agents(
+        &self,
+        _: Request<AiAgentsRequest>,
+    ) -> Result<Response<AiAgentsResponse>, Status> {
+        let agents = self.ops.ai_agents().await?;
+        Ok(Response::new(AiAgentsResponse {
+            agents: agents.into_iter().map(Into::into).collect(),
+        }))
+    }
+
+    async fn ai_sessions(
+        &self,
+        _: Request<AiSessionsRequest>,
+    ) -> Result<Response<AiSessionsResponse>, Status> {
+        let sessions = self.ops.ai_sessions().await?;
+        Ok(Response::new(AiSessionsResponse {
+            sessions: sessions.into_iter().map(Into::into).collect(),
+        }))
+    }
+
+    async fn ai_start(
+        &self,
+        req: Request<AiStartRequest>,
+    ) -> Result<Response<AiStartResponse>, Status> {
+        let r = req.into_inner();
+        let opts = ops::AiStartOpts {
+            agent: r.agent,
+            cpus: r.cpus,
+            mem: r.mem,
+            workspace: r.workspace,
+            new: r.new,
+        };
+        let machine_id = self.ops.ai_start(&opts).await?;
+        Ok(Response::new(AiStartResponse { machine_id }))
+    }
+
+    async fn ai_stop(
+        &self,
+        req: Request<AiStopRequest>,
+    ) -> Result<Response<CommandResult>, Status> {
+        Ok(Response::new(
+            self.ops.ai_stop(&req.into_inner().agent).await?,
+        ))
+    }
+
+    async fn ai_remove(
+        &self,
+        req: Request<AiRemoveRequest>,
+    ) -> Result<Response<CommandResult>, Status> {
+        let r = req.into_inner();
+        Ok(Response::new(
+            self.ops.ai_remove(&r.agent, r.keep_home).await?,
+        ))
+    }
+
+    async fn ai_shell_command(
+        &self,
+        req: Request<AiShellCommandRequest>,
+    ) -> Result<Response<AiShellCommandResponse>, Status> {
+        let r = req.into_inner();
+        let command = self.ops.ai_shell_command(&r.agent, &r.machine_id).await?;
+        Ok(Response::new(AiShellCommandResponse { command }))
     }
 
     // -- docker ---------------------------------------------------------------

@@ -425,6 +425,88 @@ message ListFlavorsResponse {
 }
 
 // ---------------------------------------------------------------------------
+// AI agent sandboxes
+//
+// A coding agent (Claude Code, Codex, ...) in a disposable microVM. A sandbox
+// is a machine, and the terminal into it is the existing OpenShell RPC — so
+// only the registry and the lifecycle live here.
+// ---------------------------------------------------------------------------
+
+message AiAgent {
+  // Stable id — what AiStart takes, and the CLI alias (`bsdkrun claude`).
+  string id = 1;
+  string label = 2;
+  // The catalog flavor that installs it.
+  string flavor = 3;
+  string description = 4;
+  // Its flavor is provisioned, so a sandbox boots in a second. False means the
+  // first launch builds it — minutes, with streamed output.
+  bool installed = 5;
+  // How many sandboxes of this agent are running.
+  int64 running = 6;
+}
+
+message AiSession {
+  string id = 1;
+  string name = 2;
+  string agent = 3;
+  bool running = 4;
+  // The directory shared into it, on the engine's host.
+  optional string workspace = 5;
+  string created_at = 6;
+}
+
+message AiAgentsRequest {}
+
+message AiAgentsResponse {
+  repeated AiAgent agents = 1;
+}
+
+message AiSessionsRequest {}
+
+message AiSessionsResponse {
+  repeated AiSession sessions = 1;
+}
+
+message AiStartRequest {
+  // Agent id (`claude`, `codex`, `gemini`, ...).
+  string agent = 1;
+  optional uint32 cpus = 2;
+  optional uint32 mem = 3;
+  // A directory **on the engine's host** to share, at the same path. A remote
+  // client's own paths do not exist there.
+  optional string workspace = 4;
+  // Boot a second sandbox instead of reusing the running one. The saved login
+  // is shared between them.
+  bool new = 5;
+}
+
+message AiStartResponse {
+  // The sandbox's machine id. Open a terminal with OpenShell + the argv from
+  // AiShellCommand.
+  string machine_id = 1;
+}
+
+message AiStopRequest {
+  string agent = 1;
+}
+
+message AiRemoveRequest {
+  string agent = 1;
+  // Keep the volume holding the agent's login.
+  bool keep_home = 2;
+}
+
+message AiShellCommandRequest {
+  string agent = 1;
+  string machine_id = 2;
+}
+
+message AiShellCommandResponse {
+  repeated string command = 1;
+}
+
+// ---------------------------------------------------------------------------
 // Docker compatibility
 //
 // One `docker:dind` microVM (always named `bsdkrun-docker`) whose API is
@@ -692,6 +774,15 @@ service Bsdkrun {
   rpc AddFlavor(AddFlavorRequest) returns (CommandResult);
   rpc RemoveFlavors(RemoveFlavorsRequest) returns (CommandResult);
   rpc BuildFlavor(BuildFlavorRequest) returns (stream OutputChunk);
+
+  // -- ai agents --------------------------------------------------------------
+  rpc AiAgents(AiAgentsRequest) returns (AiAgentsResponse);
+  rpc AiSessions(AiSessionsRequest) returns (AiSessionsResponse);
+  rpc AiStart(AiStartRequest) returns (AiStartResponse);
+  rpc AiStop(AiStopRequest) returns (CommandResult);
+  rpc AiRemove(AiRemoveRequest) returns (CommandResult);
+  // The argv that starts the agent's TUI — pass it to OpenShell.
+  rpc AiShellCommand(AiShellCommandRequest) returns (AiShellCommandResponse);
 
   // -- docker ---------------------------------------------------------------
   // `GetDockerStatus`, not `DockerStatus`: protobuf puts RPCs and messages in

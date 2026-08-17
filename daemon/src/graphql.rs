@@ -238,6 +238,61 @@ impl From<ops::Flavor> for Flavor {
     }
 }
 
+/// A coding agent bsdkrun can sandbox.
+#[derive(SimpleObject)]
+pub struct AiAgent {
+    /// Stable id — what `aiStart` takes, and the CLI alias (`bsdkrun claude`).
+    pub id: String,
+    pub label: String,
+    /// The catalog flavor that installs it.
+    pub flavor: String,
+    pub description: String,
+    /// Its flavor is provisioned, so a sandbox boots in a second. False means
+    /// the first launch builds it — minutes, with streamed output.
+    pub installed: bool,
+    /// How many sandboxes of this agent are running.
+    pub running: i32,
+}
+
+impl From<ops::AiAgent> for AiAgent {
+    fn from(a: ops::AiAgent) -> Self {
+        AiAgent {
+            id: a.id,
+            label: a.label,
+            flavor: a.flavor,
+            description: a.description,
+            installed: a.installed,
+            running: a.running as i32,
+        }
+    }
+}
+
+/// One agent sandbox. It is a machine, so `machines`, `logs` and `openShell`
+/// all work on `id` unchanged.
+#[derive(SimpleObject)]
+pub struct AiSession {
+    pub id: String,
+    pub name: String,
+    pub agent: String,
+    pub running: bool,
+    /// The directory shared into it, on the engine's host.
+    pub workspace: Option<String>,
+    pub created_at: String,
+}
+
+impl From<ops::AiSession> for AiSession {
+    fn from(s: ops::AiSession) -> Self {
+        AiSession {
+            id: s.id,
+            name: s.name,
+            agent: s.agent,
+            running: s.running,
+            workspace: s.workspace,
+            created_at: s.created_at,
+        }
+    }
+}
+
 /// The Docker engine VM: whether it is up, and how to reach it.
 #[derive(SimpleObject)]
 pub struct DockerStatus {
@@ -591,6 +646,22 @@ pub struct RunUnikraftInput {
     pub mounts: Vec<String>,
 }
 
+/// Starting an AI agent sandbox.
+#[derive(InputObject)]
+pub struct AiStartInput {
+    /// Agent id (`claude`, `codex`, `gemini`, …).
+    pub agent: String,
+    pub cpus: Option<u32>,
+    pub mem: Option<u32>,
+    /// A directory **on the engine's host** to share with the agent, at the
+    /// same path. A remote client's own paths do not exist there.
+    pub workspace: Option<String>,
+    /// Boot a second sandbox instead of reusing the running one. The agent's
+    /// saved login is shared between them.
+    #[graphql(default)]
+    pub new: bool,
+}
+
 /// Starting the Docker engine VM. Every field is optional: the zero value is
 /// what `bsdkrun docker start` with no flags does.
 #[derive(InputObject, Default)]
@@ -826,6 +897,45 @@ impl Query {
             .collect())
     }
 
+    /// The coding agents bsdkrun can sandbox, and whether each is installed.
+    async fn ai_agents(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<AiAgent>> {
+        Ok(api(ctx)?
+            .ops
+            .ai_agents()
+            .await
+            .map_err(gql_err)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    /// Agent sandboxes, newest first.
+    async fn ai_sessions(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<AiSession>> {
+        Ok(api(ctx)?
+            .ops
+            .ai_sessions()
+            .await
+            .map_err(gql_err)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    /// The argv that starts an agent's TUI in a sandbox — pass it to
+    /// `openShell` after `aiStart` to get the terminal.
+    async fn ai_shell_command(
+        &self,
+        ctx: &Context<'_>,
+        agent: String,
+        machine_id: String,
+    ) -> async_graphql::Result<Vec<String>> {
+        api(ctx)?
+            .ops
+            .ai_shell_command(&agent, &machine_id)
+            .await
+            .map_err(gql_err)
+    }
+
     /// The Docker engine VM's status — is it up, and where is its socket?
     async fn docker_status(&self, ctx: &Context<'_>) -> async_graphql::Result<DockerStatus> {
         Ok(api(ctx)?.ops.docker_status().await.map_err(gql_err)?.into())
@@ -997,6 +1107,52 @@ impl Mutation {
         Ok(api(ctx)?
             .ops
             .update_machine(&id, cpus, mem)
+            .await
+            .map_err(gql_err)?
+            .into())
+    }
+
+    // -- ai agents --------------------------------------------------------------
+
+    /// Start (or reuse) an agent sandbox, returning its machine id.
+    ///
+    /// Open a terminal into it with `openShell(machineId, command:
+    /// aiShellCommand(...))`. Reuses the agent's running sandbox unless
+    /// `new` — the saved login is shared either way.
+    async fn ai_start(
+        &self,
+        ctx: &Context<'_>,
+        input: AiStartInput,
+    ) -> async_graphql::Result<String> {
+        let opts = ops::AiStartOpts {
+            agent: input.agent,
+            cpus: input.cpus,
+            mem: input.mem,
+            workspace: input.workspace,
+            new: input.new,
+        };
+        api(ctx)?.ops.ai_start(&opts).await.map_err(gql_err)
+    }
+
+    /// Stop an agent's sandboxes. Its saved login survives.
+    async fn ai_stop(
+        &self,
+        ctx: &Context<'_>,
+        agent: String,
+    ) -> async_graphql::Result<CommandResult> {
+        Ok(api(ctx)?.ops.ai_stop(&agent).await.map_err(gql_err)?.into())
+    }
+
+    /// Remove an agent's sandboxes, and unless `keepHome` its saved login too.
+    async fn ai_remove(
+        &self,
+        ctx: &Context<'_>,
+        agent: String,
+        #[graphql(default)] keep_home: bool,
+    ) -> async_graphql::Result<CommandResult> {
+        Ok(api(ctx)?
+            .ops
+            .ai_remove(&agent, keep_home)
             .await
             .map_err(gql_err)?
             .into())

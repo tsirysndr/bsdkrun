@@ -487,6 +487,8 @@ message AiStartRequest {
   optional string name = 6;
   // The project to group it under; defaults to the shared folder's name.
   optional string project = 7;
+  // Clone this git repository into the sandbox and start the agent in it.
+  optional string repo = 8;
 }
 
 message AiStartResponse {

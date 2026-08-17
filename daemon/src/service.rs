@@ -641,6 +641,7 @@ impl Bsdkrun for BsdkrunService {
             new: r.new,
             name: r.name,
             project: r.project,
+            repo: r.repo,
         };
         let machine_id = self.ops.ai_start(&opts).await?;
         Ok(Response::new(AiStartResponse { machine_id }))

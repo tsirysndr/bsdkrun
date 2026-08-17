@@ -534,6 +534,7 @@ export const api = {
     workspace: string | null,
     newSession: boolean,
     name?: string,
+    repo?: string,
   ): Promise<string> => {
     const d = await gql<{ aiStart: string }>(
       `mutation($i:AiStartInput!){ aiStart(input:$i) }`,
@@ -543,6 +544,7 @@ export const api = {
           workspace: orNull(workspace ?? undefined),
           new: newSession,
           name: orNull(name),
+          repo: orNull(repo),
         },
       },
     );
@@ -560,8 +562,9 @@ export const api = {
     workspace: string | null,
     newSession: boolean,
     name?: string,
+    repo?: string,
   ): Promise<void> => {
-    await api.aiStart(agent, workspace, newSession, name);
+    await api.aiStart(agent, workspace, newSession, name, repo);
   },
 
   /** The argv that starts the agent's TUI in a sandbox. */
@@ -1053,20 +1056,15 @@ export const onFlavorDone = (cb: (p: FlavorDone) => void) =>
   listen<FlavorDone>("flavor://done", cb);
 /** Native menus are a desktop-shell feature; nothing emits this on the web. */
 /**
- * Ask for a folder to share with an agent.
- *
- * A browser cannot open a native directory picker that yields a *path*, and
- * the path has to exist on the daemon's host anyway — which is not this
- * machine when the daemon is remote. So this asks for the path directly, and
- * says whose filesystem it means.
+ * A browser cannot open a directory picker that yields a *path*, and the path
+ * has to exist on the daemon's host anyway — which is not this machine when
+ * the daemon is remote. The panel asks for it in a modal instead.
  */
+export const HAS_NATIVE_FOLDER_PICKER = false;
+
+/** Never called in this build; see `HAS_NATIVE_FOLDER_PICKER`. */
 export async function pickWorkspace(): Promise<string | null> {
-  const answer = window.prompt(
-    "Folder to share with the agent.\n\nThis path is on the machine running bsdkrund, not on this computer.",
-    "",
-  );
-  const trimmed = answer?.trim();
-  return trimmed ? trimmed : null;
+  return null;
 }
 
 export const onMenuAction = (_cb: (action: string) => void): Promise<UnlistenFn> =>

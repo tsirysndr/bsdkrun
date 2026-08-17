@@ -66,7 +66,15 @@ export const api = {
     workspace: string | null,
     newSession: boolean,
     name?: string,
-  ) => invoke<string>("ai_start", { agent, workspace, newSession, name: name ?? null }),
+    repo?: string,
+  ) =>
+    invoke<string>("ai_start", {
+      agent,
+      workspace,
+      newSession,
+      name: name ?? null,
+      repo: repo ?? null,
+    }),
   /** Same, but streams the first-run flavor build into the progress modal. */
   launchAgent: (
     launchId: string,
@@ -74,6 +82,7 @@ export const api = {
     workspace: string | null,
     newSession: boolean,
     name?: string,
+    repo?: string,
   ) =>
     invoke<void>("launch_agent", {
       launchId,
@@ -81,6 +90,7 @@ export const api = {
       workspace,
       newSession,
       name: name ?? null,
+      repo: repo ?? null,
     }),
   /** The argv that starts the agent's TUI in a sandbox. */
   aiShellCommand: (agent: string, machineId: string) =>
@@ -200,6 +210,9 @@ export const onFlavorLog = (cb: (p: FlavorLog) => void): Promise<UnlistenFn> =>
   listen<FlavorLog>("flavor://log", (e) => cb(e.payload));
 export const onFlavorDone = (cb: (p: FlavorDone) => void): Promise<UnlistenFn> =>
   listen<FlavorDone>("flavor://done", (e) => cb(e.payload));
+/** This build can open a native directory picker (see `pickWorkspace`). */
+export const HAS_NATIVE_FOLDER_PICKER = true;
+
 /**
  * Ask the user for a folder to share with an agent. `null` when cancelled —
  * distinct from `""`, which would mean "share nothing".

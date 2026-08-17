@@ -2661,7 +2661,7 @@ fn boot_ai_sandbox(
     ai::record_label(&vdir, args.name.as_deref());
     ai::record_project(
         &vdir,
-        ai::resolve_project(args.project.as_deref(), workspace).as_deref(),
+        ai::resolve_project(args.project.as_deref(), workspace, args.repo.as_deref()).as_deref(),
     );
 
     info!(agent = agent.id, sandbox = %name, "booting the agent sandbox");
@@ -2675,7 +2675,7 @@ fn boot_ai_sandbox(
         // what makes a second session cheap. What persists is the home volume
         // mounted below, holding the agent's login.
         volume: None,
-        mounts: ai::mounts(agent, workspace)?,
+        mounts: ai::mounts(agent, workspace, !args.no_ssh)?,
         attach_disk: vec![],
         entrypoint: None,
         env: vec![format!("HOME={}", ai::GUEST_HOME)],
@@ -2691,10 +2691,18 @@ fn boot_ai_sandbox(
             cpus: args.vm.cpus,
             mem: args.vm.mem,
         },
-        repo: None,
+        repo: args.repo.clone(),
         command: vec![],
     };
-    boot_linux_from(largs, Some(built), &[])?;
+    // The clone runs as the post-boot command, not from `largs.repo` — that
+    // field only records the request; `boot_linux` is what turns it into argv,
+    // and this path calls `boot_linux_from` directly.
+    let clone = args
+        .repo
+        .as_deref()
+        .and_then(repo_clone_argv)
+        .unwrap_or_default();
+    boot_linux_from(largs, Some(built), &clone)?;
     Ok(machine_id)
 }
 

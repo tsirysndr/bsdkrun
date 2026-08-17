@@ -13,6 +13,7 @@ import {
   IconLayoutList,
   IconArrowsMinimize,
   IconChevronDown,
+  IconBrandGit,
   IconFolder,
   IconFolderOff,
   IconPlus,
@@ -29,9 +30,10 @@ import {
 } from "../state/atoms";
 import { useAiAgents, useAttachAgentSession, useStartAgent } from "../lib/queries";
 import { useToast } from "../state/toast";
-import { pickWorkspace } from "../lib/api";
+import { HAS_NATIVE_FOLDER_PICKER, pickWorkspace } from "../lib/api";
 import TerminalPane from "./TerminalPane";
 import AgentSessionPicker from "./AgentSessionPicker";
+import AgentPromptModal from "./AgentPromptModal";
 
 const MIN_W = 340;
 
@@ -58,6 +60,9 @@ export default function AgentPanel() {
   const startAgent = useStartAgent();
   const attachSession = useAttachAgentSession();
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [prompt, setPrompt] = useState<"repo" | "name" | "workspace" | null>(
+    null,
+  );
   const toast = useToast();
 
   const agent = agents.find((a) => a.id === agentId);
@@ -66,10 +71,16 @@ export default function AgentPanel() {
   const [starting, setStarting] = useState(false);
 
   const start = useCallback(
-    async (opts?: { newSession?: boolean; name?: string }) => {
+    async (opts?: { newSession?: boolean; name?: string; repo?: string }) => {
       setStarting(true);
       try {
-        await startAgent(agentId, workspace, opts?.newSession ?? false, opts?.name);
+        await startAgent(
+          agentId,
+          workspace,
+          opts?.newSession ?? false,
+          opts?.name,
+          opts?.repo,
+        );
       } catch (e) {
         toast("error", "Could not start the agent", String(e));
       } finally {
@@ -79,13 +90,24 @@ export default function AgentPanel() {
     [agentId, workspace, startAgent, toast],
   );
 
+  /** Apply a chosen folder: a different folder is a different sandbox. */
+  const useFolder = async (dir: string) => {
+    setWorkspace(dir);
+    // Restart so the agent actually sees it, rather than leaving a stale mount
+    // behind the same prompt.
+    if (session) await startAgent(agentId, dir, true);
+  };
+
   const chooseFolder = async () => {
+    // Native dialog where there is one; otherwise the same modal the rest of
+    // the panel uses, since a browser cannot hand back a filesystem path.
+    if (!HAS_NATIVE_FOLDER_PICKER) {
+      setPrompt("workspace");
+      return;
+    }
     const dir = await pickWorkspace();
     if (dir === null) return; // cancelled
-    setWorkspace(dir);
-    // A different folder is a different sandbox: restart so the agent actually
-    // sees it, rather than leaving a stale mount behind the same prompt.
-    if (session) await startAgent(agentId, dir, true);
+    await useFolder(dir);
   };
 
   // Drag the left edge to resize.
@@ -201,6 +223,17 @@ export default function AgentPanel() {
 
         <div className="flex-1" />
 
+        <Tooltip content="Clone a git repo into a new sandbox" placement="bottom">
+          <Button
+            isIconOnly
+            size="sm"
+            variant="light"
+            isDisabled={starting}
+            onPress={() => setPrompt("repo")}
+          >
+            <IconBrandGit size={16} />
+          </Button>
+        </Tooltip>
         <Tooltip content="Switch session" placement="bottom">
           <Button
             isIconOnly
@@ -217,14 +250,7 @@ export default function AgentPanel() {
             size="sm"
             variant="light"
             isDisabled={starting}
-            onPress={() => {
-              // Naming is optional: an empty answer (or cancel) still starts a
-              // session, because being made to name a thing before you know
-              // what it is for is worse than an unnamed one.
-              const name = window.prompt("Name this session (optional)", "");
-              if (name === null) return;
-              start({ newSession: true, name: name.trim() || undefined });
-            }}
+            onPress={() => setPrompt("name")}
           >
             <IconPlus size={16} />
           </Button>
@@ -280,6 +306,44 @@ export default function AgentPanel() {
           />
         )}
       </div>
+
+      <AgentPromptModal
+        open={prompt === "workspace"}
+        title="Share a folder"
+        placeholder="/srv/code/my-project"
+        hint="A path on the machine running the engine — not on this computer."
+        icon={IconFolder}
+        submitLabel="↵ share"
+        onClose={() => setPrompt(null)}
+        onSubmit={(dir) => {
+          useFolder(dir).catch((e) =>
+            toast("error", "Could not share that folder", String(e)),
+          );
+        }}
+      />
+
+      <AgentPromptModal
+        open={prompt === "repo"}
+        title="Clone a repository"
+        placeholder="https://github.com/owner/repo.git"
+        hint="Cloned inside the sandbox — no access to your filesystem needed."
+        icon={IconBrandGit}
+        submitLabel="↵ clone & start"
+        onClose={() => setPrompt(null)}
+        onSubmit={(repo) => start({ newSession: true, repo })}
+      />
+
+      <AgentPromptModal
+        open={prompt === "name"}
+        title="Name this session"
+        placeholder="refactor-auth"
+        hint="Optional — press ↵ with an empty name to start one anyway."
+        icon={IconPlus}
+        submitLabel="↵ start session"
+        allowEmpty
+        onClose={() => setPrompt(null)}
+        onSubmit={(name) => start({ newSession: true, name: name || undefined })}
+      />
 
       <AgentSessionPicker
         open={pickerOpen}

@@ -259,12 +259,17 @@ async fn ai_start(
     workspace: Option<String>,
     new_session: bool,
     name: Option<String>,
+    repo: Option<String>,
 ) -> Result<String, BkError> {
     let bin = state.binary()?;
     let mut args: Vec<String> = vec!["ai".into(), "start".into(), agent, "-d".into()];
     if let Some(n) = name.filter(|n| !n.trim().is_empty()) {
         args.push("--name".into());
         args.push(n);
+    }
+    if let Some(r) = repo.filter(|r| !r.trim().is_empty()) {
+        args.push("--repo".into());
+        args.push(r);
     }
     match workspace.filter(|w| !w.is_empty()) {
         Some(w) => {
@@ -302,12 +307,17 @@ async fn launch_agent(
     workspace: Option<String>,
     new_session: bool,
     name: Option<String>,
+    repo: Option<String>,
 ) -> Result<(), String> {
     let bin = state.binary().map_err(|e| e.to_string())?;
     let mut args: Vec<String> = vec!["ai".into(), "start".into(), agent, "-d".into()];
     if let Some(n) = name.filter(|n| !n.trim().is_empty()) {
         args.push("--name".into());
         args.push(n);
+    }
+    if let Some(r) = repo.filter(|r| !r.trim().is_empty()) {
+        args.push("--repo".into());
+        args.push(r);
     }
     match workspace.filter(|w| !w.is_empty()) {
         Some(w) => {

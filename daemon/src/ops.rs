@@ -240,6 +240,10 @@ pub struct AiStartOpts {
     pub name: Option<String>,
     /// The project to group it under. Defaults to the shared folder's name.
     pub project: Option<String>,
+    /// Clone this git repository into the sandbox and start the agent in it.
+    /// Needs no access to the caller's filesystem, which makes it the natural
+    /// way to hand a remote engine a codebase.
+    pub repo: Option<String>,
 }
 
 impl AiStartOpts {
@@ -256,6 +260,10 @@ impl AiStartOpts {
                 new: self.new,
                 name: self.name.clone(),
                 project: self.project.clone(),
+                repo: self.repo.clone(),
+                // A daemon-started sandbox gets the *engine host's* keys, and
+                // only because they are the ones its git would use anyway.
+                no_ssh: false,
                 detach: true,
             }),
         })

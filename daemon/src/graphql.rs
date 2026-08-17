@@ -671,6 +671,8 @@ pub struct AiStartInput {
     pub name: Option<String>,
     /// The project to group it under. Defaults to the shared folder's name.
     pub project: Option<String>,
+    /// Clone this git repository into the sandbox and start the agent in it.
+    pub repo: Option<String>,
 }
 
 /// Starting the Docker engine VM. Every field is optional: the zero value is
@@ -1143,6 +1145,7 @@ impl Mutation {
             new: input.new,
             name: input.name,
             project: input.project,
+            repo: input.repo,
         };
         api(ctx)?.ops.ai_start(&opts).await.map_err(gql_err)
     }

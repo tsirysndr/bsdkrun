@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Modal, ModalContent, Input, Tooltip } from "@heroui/react";
+import { Modal, ModalContent, Kbd, Tooltip } from "@heroui/react";
 import { useAtomValue } from "jotai";
 import {
   IconFolder,
@@ -141,32 +141,36 @@ export default function AgentSessionPicker({
     <Modal
       isOpen={open}
       onClose={onClose}
-      size="lg"
-      backdrop="blur"
       hideCloseButton
+      // Deliberately identical chrome to the command palette: same backdrop,
+      // same placement, same borderless input. Two search modals that look
+      // different read as two different features.
+      backdrop="opaque"
+      size="xl"
+      placement="top"
       shouldBlockScroll={false}
-      classNames={{ base: "border border-white/10 bg-content1" }}
+      classNames={{
+        base: "border border-white/10 bg-content1/95 mt-[12vh]",
+        body: "p-0",
+      }}
     >
       <ModalContent>
         <div onKeyDown={onKeyDown}>
-          <div className="border-b border-white/10 p-2">
-            <Input
+          <div className="flex items-center gap-3 border-b border-white/10 px-4 py-3">
+            <IconSearch size={18} className="text-foreground-400" />
+            <input
               autoFocus
-              size="sm"
-              variant="bordered"
-              placeholder="Search sessions and projects…"
               value={query}
-              onValueChange={setQuery}
-              startContent={
-                <IconSearch size={16} className="text-foreground-400" />
-              }
-              classNames={{ inputWrapper: "border-white/10" }}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search sessions and projects…"
+              className="flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-foreground-500"
             />
+            <Kbd className="bg-content2/60 text-foreground-400">esc</Kbd>
           </div>
 
-          <div ref={listRef} className="max-h-[52vh] overflow-auto p-1.5">
+          <div ref={listRef} className="max-h-[52vh] overflow-auto p-2">
             {pickable.length === 0 ? (
-              <p className="px-3 py-6 text-center text-xs text-foreground-500">
+              <p className="px-3 py-8 text-center text-sm text-foreground-500">
                 {sessions.length === 0
                   ? "No sessions yet. Start one from the panel."
                   : "Nothing matches that."}
@@ -179,7 +183,7 @@ export default function AgentSessionPicker({
                     return (
                       <div
                         key={`h-${row.project}-${i}`}
-                        className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-foreground-600"
+                        className="px-3 py-1 text-[11px] font-medium uppercase tracking-wider text-foreground-600"
                       >
                         {row.project}
                       </div>

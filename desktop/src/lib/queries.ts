@@ -329,6 +329,7 @@ export function useStartAgent() {
       workspace: string | null,
       newSession: boolean,
       name?: string,
+      repo?: string,
     ) => {
       setSelected(agent);
       setOpen(true);
@@ -341,8 +342,16 @@ export function useStartAgent() {
       const label = info?.label ?? agent;
 
       const machineId = info?.installed
-        ? await api.aiStart(agent, workspace, newSession, name)
-        : await streamInstall(setLaunch, label, agent, workspace, newSession, name);
+        ? await api.aiStart(agent, workspace, newSession, name, repo)
+        : await streamInstall(
+            setLaunch,
+            label,
+            agent,
+            workspace,
+            newSession,
+            name,
+            repo,
+          );
 
       const command = await api.aiShellCommand(agent, machineId);
       setSession({
@@ -371,6 +380,7 @@ function streamInstall(
   workspace: string | null,
   newSession: boolean,
   name?: string,
+  repo?: string,
 ): Promise<string> {
   const launchId = `agent-${agent}-${Date.now()}`;
   setLaunch({
@@ -393,7 +403,7 @@ function streamInstall(
     }).then((u) => {
       unlisten = u;
     });
-    api.launchAgent(launchId, agent, workspace, newSession, name).catch((e) => {
+    api.launchAgent(launchId, agent, workspace, newSession, name, repo).catch((e) => {
       unlisten?.();
       reject(e);
     });

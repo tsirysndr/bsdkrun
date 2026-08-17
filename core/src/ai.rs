@@ -42,6 +42,36 @@ pub fn home_volume(agent: &str) -> String {
 /// recognisable from the host.
 pub const GUEST_HOME: &str = "/root";
 
+/// The host's git identity, for the sandbox to commit with.
+///
+/// Read from the host's git config rather than guessed: an agent that commits
+/// as `root@bsdkrun` produces history someone has to rewrite later.
+pub fn git_identity() -> (Option<String>, Option<String>) {
+    let get = |key: &str| {
+        std::process::Command::new("git")
+            .args(["config", "--get", key])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    (get("user.name"), get("user.email"))
+}
+
+/// The host's `~/.ssh`, when it has one.
+///
+/// Mounted **read-only** into a sandbox so `git push` over SSH works with the
+/// keys you already use. Read-only stops an agent rewriting your config or
+/// authorized_keys; it does *not* stop it reading a private key, so this is a
+/// deliberate trade — `--no-ssh` opts out, and a sandbox without it can still
+/// clone over HTTPS.
+pub fn host_ssh_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").filter(|h| !h.is_empty())?;
+    let dir = PathBuf::from(home).join(".ssh");
+    dir.is_dir().then_some(dir)
+}
+
 /// The host directory holding skills shared by every agent, and the guest path
 /// it is mounted at.
 ///
@@ -377,12 +407,16 @@ pub fn project_of(vdir: &Path) -> Option<String> {
 }
 
 /// The project a session belongs to: what was asked for, else the shared
-/// folder's name.
+/// folder's name, else the cloned repository's.
 ///
-/// Defaulting to the workspace is what makes grouping useful without anyone
-/// having to think about it — two sessions on `~/code/api` are two views of
-/// the same work, whatever they are called.
-pub fn resolve_project(explicit: Option<&str>, workspace: Option<&Path>) -> Option<String> {
+/// Defaulting this way is what makes grouping useful without anyone having to
+/// think about it — two sessions on `~/code/api`, or two clones of the same
+/// repo, are two views of the same work whatever they are called.
+pub fn resolve_project(
+    explicit: Option<&str>,
+    workspace: Option<&Path>,
+    repo: Option<&str>,
+) -> Option<String> {
     explicit
         .map(str::trim)
         .filter(|p| !p.is_empty())
@@ -392,6 +426,18 @@ pub fn resolve_project(explicit: Option<&str>, workspace: Option<&Path>) -> Opti
                 .and_then(|w| w.file_name())
                 .map(|n| n.to_string_lossy().into_owned())
         })
+        .or_else(|| repo.map(repo_project_name).filter(|n| !n.is_empty()))
+}
+
+/// `https://github.com/owner/repo.git` → `repo`.
+fn repo_project_name(url: &str) -> String {
+    url.trim()
+        .trim_end_matches('/')
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(".git")
+        .to_string()
 }
 
 fn read_trimmed(path: PathBuf) -> Option<String> {
@@ -455,10 +501,16 @@ pub fn home_dir(agent: &str) -> Result<PathBuf> {
 /// Order matters: the home mount has to come before the skills mount nested
 /// inside it, or virtio-fs mounts the parent over the child and the shared
 /// store disappears.
-pub fn mounts(agent: &Agent, workspace: Option<&Path>) -> Result<Vec<String>> {
+pub fn mounts(agent: &Agent, workspace: Option<&Path>, ssh: bool) -> Result<Vec<String>> {
     let mut specs = vec![format!("{}:{GUEST_HOME}", home_dir(agent.id)?.display())];
     if let Some(skills) = host_skills_dir() {
         specs.push(format!("{}:{GUEST_HOME}/{SKILLS_DIR}", skills.display()));
+    }
+    if ssh {
+        if let Some(ssh_dir) = host_ssh_dir() {
+            // Read-only: see `host_ssh_dir` for what that does and does not buy.
+            specs.push(format!("{}:{GUEST_HOME}/.ssh:ro", ssh_dir.display()));
+        }
     }
     if let Some(w) = workspace {
         // Sharing $HOME itself would defeat the sandbox *and* collide with the
@@ -509,6 +561,35 @@ pub fn docker_start_script() -> String {
         .to_string()
 }
 
+/// Write the host's git identity into the sandbox, idempotently.
+///
+/// In the wrapper rather than at provisioning time because the home volume is
+/// shared across an agent's sessions and the host's identity can change —
+/// re-stating it each start costs nothing and cannot drift.
+pub fn git_identity_script() -> String {
+    let (name, email) = git_identity();
+    let mut parts = Vec::new();
+    if let Some(name) = name {
+        parts.push(format!(
+            "git config --global user.name {} 2>/dev/null || true",
+            shell_quote(&name)
+        ));
+    }
+    if let Some(email) = email {
+        parts.push(format!(
+            "git config --global user.email {} 2>/dev/null || true",
+            shell_quote(&email)
+        ));
+    }
+    if parts.is_empty() {
+        return "true".to_string();
+    }
+    // Trust the shared workspace: git refuses to operate in a directory owned
+    // by another uid, which is exactly what a host mount looks like in here.
+    parts.push("git config --global --add safe.directory '*' 2>/dev/null || true".to_string());
+    parts.join("; ")
+}
+
 /// The argv that opens an agent's TUI in its sandbox.
 ///
 /// Wrapped in a shell so the session can `cd` into the shared workspace and
@@ -516,9 +597,13 @@ pub fn docker_start_script() -> String {
 /// so quitting the agent ends the session rather than dropping to a shell the
 /// user did not ask for.
 pub fn tui_argv(agent: &Agent, workspace: Option<&str>) -> Vec<String> {
+    // Prefer the shared folder; otherwise fall back to whatever `--repo`
+    // cloned, which the boot path records in /etc/bsdkrun-cwd. Without the
+    // fallback an agent given a repository would start in `$HOME` and have to
+    // be told where its own checkout is.
     let cd = match workspace {
         Some(w) => format!("cd {} 2>/dev/null || true; ", shell_quote(w)),
-        None => String::new(),
+        None => "cd \"$(cat /etc/bsdkrun-cwd 2>/dev/null)\" 2>/dev/null || true; ".to_string(),
     };
     let cmd = agent
         .command
@@ -532,11 +617,14 @@ pub fn tui_argv(agent: &Agent, workspace: Option<&str>) -> Vec<String> {
         format!(
             "export HOME={home}; export TERM=${{TERM:-xterm-256color}}; \
              export PATH=\"$HOME/.local/bin:/usr/local/bin:$PATH\"; \
-             {skills}; {docker}; {cd}\
+             [ -d /nix/var/nix/profiles/default/bin ] && \
+             export PATH=\"$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:$PATH\"; \
+             {skills}; {git}; {docker}; {cd}\
              if command -v {probe} >/dev/null 2>&1; then exec {cmd}; else \
              echo \"[bsdkrun] {label} is not installed in this sandbox\"; exec bash; fi",
             home = GUEST_HOME,
             skills = skills_link_script(agent),
+            git = git_identity_script(),
             docker = docker_start_script(),
             probe = shell_quote(agent.command[0]),
             label = agent.label,
@@ -610,6 +698,27 @@ mod tests {
     }
 
     #[test]
+    fn project_falls_back_to_the_repo_name() {
+        assert_eq!(
+            resolve_project(None, None, Some("https://github.com/owner/api.git")).as_deref(),
+            Some("api")
+        );
+        assert_eq!(
+            resolve_project(None, None, Some("git@github.com:owner/api")).as_deref(),
+            Some("api")
+        );
+        // An explicit project and a shared folder both win over the repo.
+        assert_eq!(
+            resolve_project(Some("mine"), None, Some("https://x/y.git")).as_deref(),
+            Some("mine")
+        );
+        assert_eq!(
+            resolve_project(None, Some(Path::new("/code/web")), Some("https://x/y.git")).as_deref(),
+            Some("web")
+        );
+    }
+
+    #[test]
     fn tui_argv_cds_into_the_workspace_and_links_skills() {
         let claude = find("claude").unwrap();
         let argv = tui_argv(claude, Some("/Users/me/my app"));
@@ -627,7 +736,7 @@ mod tests {
     #[test]
     fn mounts_share_home_skills_and_the_workspace_in_that_order() {
         let claude = find("claude").unwrap();
-        let m = mounts(claude, Some(Path::new("/tmp/project"))).unwrap();
+        let m = mounts(claude, Some(Path::new("/tmp/project")), false).unwrap();
         // The home mount must precede the skills mount nested inside it.
         let home = m.iter().position(|s| s.ends_with(GUEST_HOME)).unwrap();
         let skills = m.iter().position(|s| s.contains(SKILLS_DIR)).unwrap();
@@ -639,7 +748,7 @@ mod tests {
     fn sharing_the_whole_home_directory_is_refused() {
         let claude = find("claude").unwrap();
         let home = std::env::var("HOME").unwrap();
-        assert!(mounts(claude, Some(Path::new(&home))).is_err());
+        assert!(mounts(claude, Some(Path::new(&home)), false).is_err());
     }
 
     #[test]

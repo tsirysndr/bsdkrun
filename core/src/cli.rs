@@ -569,6 +569,22 @@ pub struct AiRunArgs {
     #[arg(long, value_name = "PROJECT")]
     pub project: Option<String>,
 
+    /// Do not share the host's `~/.ssh`.
+    ///
+    /// It is shared read-only by default so `git push` works with the keys you
+    /// already use. An agent can *read* a private key through it, so a sandbox
+    /// you do not fully trust should opt out and clone over HTTPS.
+    #[arg(long)]
+    pub no_ssh: bool,
+
+    /// Clone a git repository into the sandbox and start the agent in it.
+    ///
+    /// The clone happens *inside* the sandbox, so it needs no access to your
+    /// filesystem — which makes it the natural way to give an agent a codebase
+    /// when the engine is remote.
+    #[arg(long, value_name = "URL")]
+    pub repo: Option<String>,
+
     /// Start it in the background and print its id, instead of attaching.
     #[arg(short = 'd', long)]
     pub detach: bool,
@@ -619,6 +635,22 @@ pub struct AiStartArgs {
     #[arg(long, value_name = "PROJECT")]
     pub project: Option<String>,
 
+    /// Do not share the host's `~/.ssh`.
+    ///
+    /// It is shared read-only by default so `git push` works with the keys you
+    /// already use. An agent can *read* a private key through it, so a sandbox
+    /// you do not fully trust should opt out and clone over HTTPS.
+    #[arg(long)]
+    pub no_ssh: bool,
+
+    /// Clone a git repository into the sandbox and start the agent in it.
+    ///
+    /// The clone happens *inside* the sandbox, so it needs no access to your
+    /// filesystem — which makes it the natural way to give an agent a codebase
+    /// when the engine is remote.
+    #[arg(long, value_name = "URL")]
+    pub repo: Option<String>,
+
     /// Start it in the background and print its id, instead of attaching.
     #[arg(short = 'd', long)]
     pub detach: bool,
@@ -637,6 +669,8 @@ impl AiRunArgs {
             new: self.new,
             name: self.name,
             project: self.project,
+            repo: self.repo,
+            no_ssh: self.no_ssh,
             detach: self.detach,
         }
     }

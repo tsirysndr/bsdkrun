@@ -73,6 +73,20 @@ macro_rules! docker_engine {
     };
 }
 
+/// Determinate Nix, for an agent that needs a toolchain the sandbox lacks.
+///
+/// `--init none` because the guest has no systemd for the daemon to hook
+/// into; single-user mode is what works here and is what an agent running as
+/// root wants anyway. `|| true` keeps a sandbox usable if the installer
+/// cannot run — the agent itself is already installed by then.
+macro_rules! nix_engine {
+    () => {
+        "command -v nix >/dev/null 2>&1 || \
+         (curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix \
+          | sh -s -- install linux --no-confirm --init none) || true"
+    };
+}
+
 /// `pip!["uv"]` → cache-less pip install.
 macro_rules! pip {
     ($($pkg:literal),+ $(,)?) => {
@@ -297,6 +311,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
                 apt!["git", "ripgrep"],
                 npm!["@anthropic-ai/claude-code"],
                 docker_engine!(),
+                nix_engine!(),
             ],
         },
         CatalogFlavor {
@@ -307,7 +322,12 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             ports: NONE,
             env: NONE,
             nix: NONE,
-            provision: provision![apt!["git"], npm!["@openai/codex"], docker_engine!(),],
+            provision: provision![
+                apt!["git"],
+                npm!["@openai/codex"],
+                docker_engine!(),
+                nix_engine!(),
+            ],
         },
         CatalogFlavor {
             name: "gemini",
@@ -321,6 +341,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
                 apt!["git", "ripgrep"],
                 npm!["@google/gemini-cli"],
                 docker_engine!(),
+                nix_engine!(),
             ],
         },
         CatalogFlavor {
@@ -331,7 +352,12 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             ports: NONE,
             env: NONE,
             nix: NONE,
-            provision: provision![apt!["git"], npm!["@kilocode/cli"], docker_engine!(),],
+            provision: provision![
+                apt!["git"],
+                npm!["@kilocode/cli"],
+                docker_engine!(),
+                nix_engine!(),
+            ],
         },
         CatalogFlavor {
             name: "qwen",
@@ -341,7 +367,12 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             ports: NONE,
             env: NONE,
             nix: NONE,
-            provision: provision![apt!["git"], npm!["@qwen-code/qwen-code"], docker_engine!(),],
+            provision: provision![
+                apt!["git"],
+                npm!["@qwen-code/qwen-code"],
+                docker_engine!(),
+                nix_engine!(),
+            ],
         },
         CatalogFlavor {
             name: "opencode",
@@ -358,6 +389,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
                     " || curl -fsSL https://opencode.ai/install | bash"
                 ),
                 docker_engine!(),
+                nix_engine!(),
             ],
         },
         CatalogFlavor {
@@ -372,6 +404,7 @@ pub fn catalog() -> &'static [CatalogFlavor] {
                 apt!["git", "curl"],
                 npm!["@charmland/crush"],
                 docker_engine!(),
+                nix_engine!(),
             ],
         },
         CatalogFlavor {
@@ -382,7 +415,12 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             ports: NONE,
             env: NONE,
             nix: NONE,
-            provision: provision![apt!["git"], npm!["@github/copilot"], docker_engine!(),],
+            provision: provision![
+                apt!["git"],
+                npm!["@github/copilot"],
+                docker_engine!(),
+                nix_engine!(),
+            ],
         },
         // These two are *assistants*, not TUI coding agents: they run as
         // services and talk over messaging channels, so they are flavors to

@@ -13,7 +13,7 @@ Run an OCI image (Docker Hub / any registry) as a Linux machine.
 - `<IMAGE>` — OCI ref, e.g. `alpine`, `alpine:3.20`, `ghcr.io/owner/name:tag`.
 - `[CMD]...` — command to run instead of the image's default (everything after `--`).
 - `--kernel <PATH>` — boot a specific ELF vmlinux / raw arm64 Image (overrides `--kernel-version`).
-- `--kernel-version <VER>` — vmlinux-builder release to download+boot (default `7.1.8`).
+- `--kernel-version <VER>` — vmlinux-builder release to download+boot (default `7.2`).
 - `-d, --detach` — background + print id.
 - `--initramfs` — load whole rootfs into RAM instead of virtio-fs (for kernels lacking CONFIG_VIRTIO_FS).
 - `-v, --volume <NAME>` — persist rootfs to a named volume (CoW-clones the image first; reuse to keep changes).

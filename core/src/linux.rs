@@ -23,7 +23,7 @@ use crate::oci::{self, ImageConfig};
 
 /// Where the prebuilt aarch64 kernels are published, and the default release.
 const KERNEL_RELEASE_BASE: &str = "https://github.com/tsirysndr/vmlinux-builder/releases/download";
-pub const DEFAULT_KERNEL_VERSION: &str = "7.1.8";
+pub const DEFAULT_KERNEL_VERSION: &str = "7.2";
 
 /// Asset filename for a given vmlinux-builder release + host arch.
 fn kernel_file(version: &str, arch: crate::host::Arch) -> String {

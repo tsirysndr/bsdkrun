@@ -512,7 +512,7 @@ How it works:
 - **Kernel** — a prebuilt aarch64 `vmlinux` is downloaded from
   [vmlinux-builder](https://github.com/tsirysndr/vmlinux-builder) and cached. libkrun's aarch64
   loader needs the raw `Image` format, so bsdkrun flattens the ELF to an `Image` (in pure Rust — no
-  binutils) and caches that too. Pick a release with `--kernel-version` (default `7.1.8`), or point
+  binutils) and caches that too. Pick a release with `--kernel-version` (default `7.2`), or point
   at your own kernel with `--kernel /path` (ELF or raw `Image`).
 - **Rootfs** — the OCI image is pulled straight from the registry (no Docker daemon; just `curl` +
   `tar`) and its layers are extracted, applying whiteouts. The result is **cached, content-addressed

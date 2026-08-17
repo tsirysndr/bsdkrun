@@ -191,6 +191,17 @@ pub fn dispatch(cmd: Command) -> Result<()> {
             AiCmd::Stop(a) => commands::ai::cmd_stop(&a.agent),
             AiCmd::Rm(a) => commands::ai::cmd_rm(&a.agent, a.keep_home),
             AiCmd::ShellCommand(a) => commands::ai::cmd_shell_command(&a.agent, &a.machine),
+            AiCmd::Upload(a) => commands::ai::cmd_upload(
+                &a.what,
+                &a.agent,
+                a.dir.as_deref(),
+                a.name.as_deref(),
+                a.all,
+                a.json,
+            ),
+            AiCmd::Receive(a) => {
+                commands::ai::cmd_receive(&a.what, &a.agent, a.name.as_deref(), a.json)
+            }
         },
         // The per-agent aliases: `bsdkrun claude` is `ai start claude --cwd`.
         Command::Claude(a) => commands::boot::cmd_ai_start(a.into_start("claude")),

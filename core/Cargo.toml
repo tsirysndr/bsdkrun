@@ -60,6 +60,10 @@ tokio = { version = "1", features = ["rt", "time"] }
 flate2 = "1"
 zstd = "0.13"
 tar = "0.4"
+# gitignore matching for `bsdkrun ai upload`. ripgrep's implementation rather
+# than a hand-rolled one: negation, `**`, anchoring and directory-only patterns
+# are each a way to upload a file the project said not to.
+ignore = "0.4"
 # SigV4 for the S3 cache backend. Pure Rust and no async runtime, so the
 # "all HTTP goes through curl" rule in oci.rs still holds — we sign, curl sends.
 sha2 = "0.10"

@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use anyhow::Result;
 
-use crate::ai::{self, Agent};
+use crate::ai::{self, upload, Agent};
 use crate::db;
 
 /// `bsdkrun ai agents` — the agents, and whether each one is ready to boot.
@@ -154,4 +154,99 @@ pub fn running_machine(agent: &str) -> Result<Option<db::MachineRow>> {
         return Ok(None);
     };
     Ok(db::Db::open()?.find_machine(&session.id).ok())
+}
+
+/// `bsdkrun ai upload` — send local files to a sandbox on the engine's host.
+///
+/// The CLI talks to a local engine, so here both ends are the same machine and
+/// this is a copy rather than a transfer. It exists at this layer anyway
+/// because the daemon's mutation and the desktop's uploader call the same
+/// [`ai::upload`] functions — one definition of what lands where, and one set
+/// of refusals guarding it.
+pub(crate) fn cmd_upload(
+    what: &str,
+    agent: &str,
+    dir: Option<&str>,
+    name: Option<&str>,
+    all: bool,
+    json: bool,
+) -> Result<()> {
+    let kind = upload::Kind::parse(what)?;
+    let agent = ai::require(agent)?;
+
+    let source = kind.local_source(dir.map(std::path::Path::new))?;
+    if !source.is_dir() {
+        anyhow::bail!(
+            "{} does not exist — there is nothing to upload",
+            source.display()
+        );
+    }
+
+    let packed = upload::pack(&source, all)?;
+    // The name has to be settled before the upload, not after: it decides the
+    // destination directory, and re-deriving it on the far side from a tar
+    // would be a second, silently different answer.
+    let name = name
+        .map(|n| n.to_string())
+        .or_else(|| source.file_name().map(|n| n.to_string_lossy().into_owned()));
+    let dest = upload::receive(kind, agent.id, name.as_deref(), &packed.bytes)?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "kind": kind.as_str(),
+                "agent": agent.id,
+                "path": dest.display().to_string(),
+                "files": packed.files,
+                "bytes": packed.size,
+                "skipped": packed.skipped,
+            })
+        );
+        return Ok(());
+    }
+
+    println!("uploaded {} file(s) to {}", packed.files, dest.display());
+    if !all {
+        // Said out loud because the alternative is discovering a missing file
+        // inside the sandbox, where the reason is not visible.
+        println!("honouring .gitignore and .dockerignore (pass --all to send everything)");
+    }
+    if !packed.skipped.is_empty() {
+        println!("also skipped build output: {}", packed.skipped.join(", "));
+    }
+    if kind == upload::Kind::Workspace {
+        // Without this the upload is inert: nothing mounts a directory just
+        // because it exists.
+        println!(
+            "\nstart a sandbox on it with:\n  bsdkrun ai start --agent {} --workspace {}",
+            agent.id,
+            dest.display()
+        );
+    }
+    Ok(())
+}
+
+/// `bsdkrun ai __receive` — the engine side, reading a tar from stdin.
+///
+/// Hidden, and deliberately dumb: it chooses nothing. The kind decides the
+/// destination ([`upload::destination`]), so a caller on the far end of a
+/// socket cannot name a path on this host.
+pub(crate) fn cmd_receive(what: &str, agent: &str, name: Option<&str>, json: bool) -> Result<()> {
+    let kind = upload::Kind::parse(what)?;
+    let agent = ai::require(agent)?;
+    let bytes = upload::read_all(std::io::stdin().lock())?;
+    if bytes.is_empty() {
+        anyhow::bail!("no upload on stdin");
+    }
+    let dest = upload::receive(kind, agent.id, name, &bytes)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "path": dest.display().to_string() })
+        );
+    } else {
+        println!("{}", dest.display());
+    }
+    Ok(())
 }

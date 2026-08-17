@@ -25,6 +25,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{db, flavors};
 
+/// Getting local files onto a sandbox that lives on someone else's machine.
+///
+/// Every path in this module resolves on the *engine's* host, which is the
+/// whole problem when the engine is a VPS: skills, keys and the project are on
+/// the laptop. `upload` carries them across.
+pub mod upload;
+
 /// Machine-name prefix for every agent sandbox: `bsdkrun-ai-claude-<n>`.
 ///
 /// A prefix rather than a fixed name (as the Docker VM uses) because sessions

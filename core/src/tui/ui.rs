@@ -31,7 +31,10 @@ pub fn render(f: &mut Frame, app: &App) {
     .areas(area);
 
     render_header(f, app, header);
-    render_panels(f, app, body);
+    match app.tab {
+        super::Tab::Dashboard => render_panels(f, app, body),
+        super::Tab::Ci => render_ci(f, app, body),
+    }
     render_status_line(f, app, status);
 
     // Modals, one at a time, over everything.
@@ -52,11 +55,26 @@ pub fn render(f: &mut Frame, app: &App) {
 
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
     let up = app.snap.machines.iter().filter(|m| m.running).count();
+    let tab = |label: &str, active: bool| {
+        Span::styled(
+            format!(" {label} "),
+            if active {
+                Style::default()
+                    .fg(TEAL)
+                    .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+            } else {
+                Style::default().fg(MUTED)
+            },
+        )
+    };
     let line = Line::from(vec![
         Span::styled(
             " bsdkrun ",
             Style::default().fg(TEAL).add_modifier(Modifier::BOLD),
         ),
+        tab("1 Dashboard", app.tab == super::Tab::Dashboard),
+        tab("2 CI/CD", app.tab == super::Tab::Ci),
+        Span::raw("  "),
         Span::styled(
             format!(
                 "· {} machines ({} up) · {} images · {} volumes · {} networks",
@@ -318,6 +336,127 @@ fn render_ai(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     render_rows(f, app, Panel::Ai, area, rows);
+}
+
+/// The CI/CD tab: workflows on the left, the latest run's step timeline on
+/// the right — the same two halves as the desktop app's CI screen, rendered
+/// from the same LogLine stream.
+fn render_ci(f: &mut Frame, app: &App, area: Rect) {
+    use super::ci::{RunStatus, StepStatus};
+
+    let [left, right] =
+        Layout::horizontal([Constraint::Length(34), Constraint::Min(20)]).areas(area);
+
+    // Workflows.
+    let block = Block::bordered()
+        .title(" Workflows (⏎ run · x cancel) ")
+        .border_style(Style::default().fg(TEAL));
+    let inner = block.inner(left);
+    f.render_widget(block, left);
+    let mut lines: Vec<Line> = Vec::new();
+    if !app.ci.note.is_empty() {
+        lines.push(Line::from(Span::styled(
+            app.ci.note.clone(),
+            Style::default().fg(MUTED),
+        )));
+    }
+    for (i, w) in app.ci.workflows.iter().enumerate() {
+        let sel = i == app.ci.sel;
+        let mut spans = vec![
+            Span::styled(if sel { "▌ " } else { "  " }, Style::default().fg(TEAL)),
+            Span::styled(
+                if w.matches { "● " } else { "○ " },
+                Style::default().fg(if w.matches { GREEN } else { MUTED }),
+            ),
+            Span::raw(format!("{:<18}", crate::commands::truncate(&w.name, 18))),
+            Span::styled(w.engine.clone(), Style::default().fg(MUTED)),
+        ];
+        if sel {
+            spans = spans
+                .into_iter()
+                .map(|sp| {
+                    let style = sp.style.add_modifier(Modifier::BOLD);
+                    sp.style(style)
+                })
+                .collect();
+        }
+        lines.push(Line::from(spans));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+
+    // The latest run.
+    let (title, border) = match app.ci.current_run() {
+        None => (" Run ".to_string(), MUTED),
+        Some(r) => match r.status {
+            RunStatus::Running => (format!(" Run · {} · live ", r.workflow), TEAL),
+            RunStatus::Success => (format!(" Run · {} · passed ", r.workflow), GREEN),
+            RunStatus::Failed => (format!(" Run · {} · failed ", r.workflow), RED),
+            RunStatus::Cancelled => (format!(" Run · {} · cancelled ", r.workflow), MUTED),
+        },
+    };
+    let block = Block::bordered()
+        .title(title)
+        .border_style(Style::default().fg(border));
+    let inner = block.inner(right);
+    f.render_widget(block, right);
+
+    let Some(run) = app.ci.current_run() else {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "select a workflow and press ⏎ — it boots a microVM and streams here",
+                Style::default().fg(MUTED),
+            ))),
+            inner,
+        );
+        return;
+    };
+
+    // Steps, then the open (or last) step's tail in the remaining space.
+    let mut lines: Vec<Line> = Vec::new();
+    for step in &run.steps {
+        let (glyph, color) = match step.status {
+            StepStatus::Running => ("… ", TEAL),
+            StepStatus::Ok => ("✓ ", GREEN),
+            StepStatus::Failed => ("✗ ", RED),
+        };
+        let dur = step
+            .duration
+            .map(|d| format!("  {:.1}s", d.as_secs_f64()))
+            .unwrap_or_default();
+        lines.push(Line::from(vec![
+            Span::styled(glyph, Style::default().fg(color)),
+            Span::raw(step.name.clone()),
+            Span::styled(
+                if step.system { "  [setup]" } else { "" }.to_string(),
+                Style::default().fg(MUTED),
+            ),
+            Span::styled(dur, Style::default().fg(MUTED)),
+        ]));
+    }
+    // The tail: whatever the focused step printed last, bounded to the space
+    // left after the step list.
+    if let Some(step) = run
+        .steps
+        .iter()
+        .rev()
+        .find(|s| s.status != StepStatus::Ok)
+        .or(run.steps.last())
+    {
+        let room = (inner.height as usize).saturating_sub(lines.len() + 1);
+        if room > 0 && !step.lines.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "─".repeat(inner.width as usize),
+                Style::default().fg(MUTED),
+            )));
+            for l in step.lines.iter().rev().take(room).rev() {
+                lines.push(Line::from(Span::styled(
+                    l.clone(),
+                    Style::default().fg(MUTED),
+                )));
+            }
+        }
+    }
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 /// The persistent bottom status line: selection context on the left, the last
@@ -613,9 +752,13 @@ fn render_help(f: &mut Frame, area: Rect) {
     };
     let lines = vec![
         section("Global"),
+        key("1 / 2", "Dashboard / CI-CD tab"),
         key("Tab / S-Tab", "next / previous panel"),
         key("j k ↑ ↓", "move selection (g/G first/last)"),
         key("/", "fuzzy search across everything"),
+        section("CI/CD tab"),
+        key("⏎", "run the selected workflow in a microVM"),
+        key("x", "cancel the live run"),
         key("?", "this help"),
         key("r", "refresh now"),
         key("q / Ctrl-C", "quit"),

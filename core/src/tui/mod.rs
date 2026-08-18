@@ -15,6 +15,7 @@
 //! full `linux …` argv from the New-machine wizard) and lets the next snapshot
 //! pick up the result.
 
+pub mod ci;
 pub mod logs;
 pub mod search;
 pub mod ui;
@@ -66,6 +67,15 @@ pub enum Msg {
     Snapshot(Box<Snapshot>),
     /// An action finished; show its outcome on the status line.
     Done(Result<String, String>),
+}
+
+/// Top-level tabs. The dashboard is the original panel grid; CI/CD gets a
+/// screen of its own — workflows plus a live step timeline want more room
+/// than a seventh grid cell could give them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Dashboard,
+    Ci,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +181,8 @@ pub struct App {
     pub snap: Snapshot,
     pub focus: Panel,
     pub sel: [usize; 6],
+    pub tab: Tab,
+    pub ci: ci::CiTab,
     /// Status line: outcome of the last action.
     pub message: String,
     /// A worker action in flight, shown as a spinner label.
@@ -205,6 +217,8 @@ impl App {
             snap: Snapshot::default(),
             focus: Panel::Machines,
             sel: [0; 6],
+            tab: Tab::Dashboard,
+            ci: ci::CiTab::new(),
             message: String::new(),
             busy: None,
             frame: 0,
@@ -286,6 +300,7 @@ impl App {
         if let Some(log) = &mut self.log {
             changed |= log.drain();
         }
+        changed |= self.ci.drain();
         changed
     }
 
@@ -437,6 +452,41 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> Outcome {
 
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
+        // Tabs before anything panel-shaped: 1/2 are unclaimed at top level,
+        // and every other binding below is meaningless on the CI tab.
+        KeyCode::Char('1') => app.tab = Tab::Dashboard,
+        KeyCode::Char('2') => app.tab = Tab::Ci,
+        _ if app.tab == Tab::Ci => {
+            match key.code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app.ci.sel = (app.ci.sel + 1).min(app.ci.workflows.len().saturating_sub(1));
+                }
+                KeyCode::Up | KeyCode::Char('k') => app.ci.sel = app.ci.sel.saturating_sub(1),
+                KeyCode::Enter => match app.ci.start_selected() {
+                    Ok(()) => {
+                        app.message = format!(
+                            "running {}…",
+                            app.ci
+                                .workflows
+                                .get(app.ci.sel)
+                                .map(|w| w.name.as_str())
+                                .unwrap_or("workflow")
+                        )
+                    }
+                    Err(e) => app.message = e,
+                },
+                KeyCode::Char('x') => {
+                    app.message = if app.ci.cancel() {
+                        "run cancelled".into()
+                    } else {
+                        "no live run to cancel".into()
+                    };
+                }
+                KeyCode::Char('?') => app.help = true,
+                _ => {}
+            }
+            return Outcome::Handled;
+        }
         KeyCode::Tab => app.focus = app.focus.next(),
         KeyCode::BackTab => app.focus = app.focus.prev(),
         KeyCode::Down | KeyCode::Char('j') => app.move_sel(1),

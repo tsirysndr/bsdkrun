@@ -33,7 +33,7 @@ struct CiBinary;
 const BINARY_NAME: &str = "bsdkrun-ci";
 
 /// Extract the embedded binary (if any), returning the path to it.
-fn ci_binary() -> Result<std::path::PathBuf> {
+pub(crate) fn ci_binary() -> Result<std::path::PathBuf> {
     let embedded = CiBinary::get(BINARY_NAME).filter(|f| !f.data.is_empty());
     let Some(embedded) = embedded else {
         bail!(

@@ -57,7 +57,10 @@ jobs:
           if [ -n "${{ inputs.flavors }}" ]; then
             names="${{ inputs.flavors }}"
           else
-            names=$(ls flavors)
+            # `_base` is the shared cache seed, not a flavor: nothing
+            # launches it and publishing it would offer an image that is
+            # half an agent sandbox.
+            names=$(ls flavors | grep -v '^_')
           fi
           # A name with no generated Dockerfile is a typo, not a flavor.
           for n in $names; do
@@ -94,9 +97,39 @@ jobs:
           cargo test -p bsdkrun-core --no-default-features \
             --test flavor_dockerfiles -- --nocapture
 
+  # Every agent sandbox starts with the same four layers: `FROM node:24` and
+  # then gh, Docker and Nix. Built once here and written to a shared cache
+  # scope, they cost minutes once instead of minutes ten times over — the
+  # per-flavor scopes below cannot do this on their own, because a scope is
+  # only read by the job that owns it.
+  #
+  # `flavors/_base/Dockerfile` is generated from the same constants the flavor
+  # Dockerfiles are, and a test asserts it is a prefix of each of them: a base
+  # that drifts by one character still builds, still goes green, and silently
+  # caches nothing.
+  base:
+    name: shared agent base
+    needs: [check-generated]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Not pushed: this exists only to populate the build cache.
+      - name: Build the shared base
+        uses: docker/build-push-action@v6
+        with:
+          context: flavors/_base
+          platforms: ${{ inputs.platforms }}
+          push: false
+          cache-from: type=gha,scope=flavor-base
+          cache-to: type=gha,scope=flavor-base,mode=max
+
   publish:
     name: ${{ matrix.flavor }}
-    needs: [plan, check-generated]
+    needs: [plan, check-generated, base]
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -126,9 +159,16 @@ jobs:
           tags: |
             ghcr.io/tsirysndr/bsdkrun-flavor-${{ matrix.flavor }}:latest
             ghcr.io/tsirysndr/bsdkrun-flavor-${{ matrix.flavor }}:${{ github.sha }}
-          # A cache per flavor: these installs are the slow part, and a rerun
-          # after one flavor fails should not rebuild the others from scratch.
-          cache-from: type=gha,scope=flavor-${{ matrix.flavor }}
+          # Two sources, in order: this flavor's own scope (its agent install
+          # and apt line, which nothing else shares), then the shared base
+          # every agent sandbox begins with.
+          #
+          # Written to the per-flavor scope only. Ten jobs writing one shared
+          # scope concurrently would race to overwrite each other's manifest,
+          # and the `base` job has already put the shared layers there.
+          cache-from: |
+            type=gha,scope=flavor-${{ matrix.flavor }}
+            type=gha,scope=flavor-base
           cache-to: type=gha,scope=flavor-${{ matrix.flavor }},mode=max
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}

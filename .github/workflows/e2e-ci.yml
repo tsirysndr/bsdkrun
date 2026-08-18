@@ -11,6 +11,10 @@ name: e2e (bsdkrun ci / KVM)
 #     the pinned nixos/nix image + `nix profile add`, which this then covers
 #     instead. Either path must end in the same passing tests.
 #
+# It then runs the seven foreign-platform examples (github, gitlab,
+# woodpecker, drone, circleci, buildkite, travis) — each config auto-detected
+# and translated into a microVM run.
+#
 # Following the e2e conventions: the job asserts on the output the guest
 # actually produced (`3 pass` from bun) — a step's conclusion alone proves
 # nothing. Both example steps ran strict from their first green run
@@ -28,8 +32,7 @@ on:
       - "ci/**"
       - "core/**"
       - "agent/**"
-      - "examples/ci-bun-ubuntu/**"
-      - "examples/ci-bun-nixery/**"
+      - "examples/ci-*/**"
       - ".github/workflows/e2e-ci.yml"
 
 permissions:
@@ -186,6 +189,31 @@ jobs:
           grep -q "3 pass" /tmp/ci-nixery.log
           grep -q "test.yml passed" /tmp/ci-nixery.log
           test "$rc" -eq 0
+
+      # The seven platform examples: each asserts its identity env, the
+      # clone, and prints <platform>-example-ok — grepped here, because a
+      # step's conclusion proves nothing. All failures are collected before
+      # judging so one broken platform does not hide the others.
+      - name: e2e — foreign platforms (github, gitlab, woodpecker, drone, circleci, buildkite, travis)
+        continue-on-error: true # flip to false after the first green run on x86_64
+        run: |
+          set -eux
+          failed=""
+          for p in github gitlab woodpecker drone circleci buildkite travis; do
+            d=$(mktemp -d)
+            cp -r "examples/ci-$p/." "$d"
+            git -C "$d" init -q
+            git -C "$d" add -A
+            git -C "$d" -c user.email=ci@e2e -c user.name=e2e commit -qm init
+            set +e
+            timeout 900 ./target/release/bsdkrun ci run --plain -w "$d" 2>&1 | tee "/tmp/ci-$p.log"
+            rc=${PIPESTATUS[0]}
+            set -e
+            if ! grep -q "$p-example-ok" "/tmp/ci-$p.log" || [ "$rc" -ne 0 ]; then
+              failed="$failed $p"
+            fi
+          done
+          test -z "$failed" || { echo "FAILED:$failed"; exit 1; }
 
       # A cancelled/timed-out run can leave a VM behind; say what the host
       # state was either way so a red run is diagnosable from the log alone.

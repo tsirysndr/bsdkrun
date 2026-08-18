@@ -1,0 +1,5 @@
+language: minimal
+script:
+  - test "$TRAVIS" = "true"
+  - test -f hello.txt
+  - echo "travis-example-ok"

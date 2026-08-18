@@ -1,0 +1,7 @@
+steps:
+  - name: test
+    image: alpine:3.20
+    commands:
+      - test "$CI" = "woodpecker"
+      - test -f hello.txt
+      - echo "woodpecker-example-ok"

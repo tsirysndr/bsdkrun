@@ -36,6 +36,12 @@ command, from every SDK, from every screen — with tracing to match.
 - **CI/CD screens everywhere.** The desktop and web apps gained a CI/CD view
   (workflow list, live step timeline, run history, log search/export), and
   the terminal dashboard gained tabs with a CI/CD tab of its own.
+- **Foreign CI platforms run locally.** `bsdkrun ci` now translates and runs
+  GitHub Actions (plus Forgejo/Gitea), GitLab CI, Woodpecker, Drone,
+  CircleCI, Buildkite and Travis configs in microVMs — auto-detected from
+  their well-known files, or forced with `--platform`. Jobs translate
+  (images, env, ordering, platform identity variables); what cannot
+  translate becomes a visible skip, and non-Linux jobs are skipped outright.
 - **Secrets for CI runs.** `--secret KEY[=VALUE]`, `--secrets-file`, and an
   auto-loaded (gitignored) `.tangled/secrets.env` inject environment variables
   into every step; values — and their base64 encodings — are masked as `***`

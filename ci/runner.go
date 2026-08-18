@@ -144,6 +144,16 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 		}
 	}()
 
+	// Workflow commands are written against bash, and every image the
+	// tangled path plans carries it — but a foreign platform's image may be
+	// bash-less (alpine). GitLab's own runner falls back to sh there; so
+	// does this, decided once per VM.
+	shell := "bash"
+	if res, err := sbx.exec([]string{"sh", "-c", "command -v bash >/dev/null 2>&1"}, nil, nil, nil); err != nil || res.ExitCode != 0 {
+		shell = "sh"
+		logf(opts, "  (no bash in this image — steps run under sh)\n")
+	}
+
 	// The workspace and home exist before any step runs; every step then
 	// starts from the workspace, like spindle's container workdir.
 	if res, err := sbx.exec([]string{"mkdir", "-p", workspaceDir, homeDir}, nil, nil, nil); err != nil {
@@ -195,7 +205,7 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 			sOut = prefixed(opts)
 			sErr = prefixed(opts)
 		}
-		res, runErr := sbx.exec([]string{"bash", "-lc", script}, env, sOut, sErr)
+		res, runErr := sbx.exec([]string{shell, "-lc", script}, env, sOut, sErr)
 
 		code := 0
 		if res != nil {

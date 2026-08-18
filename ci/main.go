@@ -21,6 +21,8 @@ import (
 
 	"golang.org/x/term"
 	"tangled.org/core/workflow"
+
+	"github.com/tsirysndr/bsdkrun/ci/platforms"
 )
 
 func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
@@ -98,6 +100,12 @@ Run flags:
   --json                             spindle log-line JSON on stdout
   --plain                            plain line output even on a terminal
                                      (the default when stdout is not a tty)
+  --platform <name>                  run a foreign CI config locally:
+                                     github (also forgejo/gitea), gitlab,
+                                     woodpecker, drone, circleci, buildkite,
+                                     travis — detected automatically when the
+                                     repository has no .tangled/workflows;
+                                     linux jobs only
   --secret KEY=VALUE | KEY           inject a secret env var into every step
                                      (bare KEY reads the host environment);
                                      values are masked as *** in all output
@@ -121,7 +129,7 @@ func permute(args []string) []string {
 		"--event": true, "--branch": true, "--input": true, "--workspace": true,
 		"-w": true, "--cpus": true, "--mem": true, "--bind": true,
 		"-f": true, "--file": true, "--nixery": true, "--otlp": true,
-		"--secret": true, "--secrets-file": true,
+		"--secret": true, "--secrets-file": true, "--platform": true,
 	}
 	var flags, rest []string
 	for i := 0; i < len(args); i++ {
@@ -156,6 +164,7 @@ func cmdRun(args []string) error {
 	keep := fs.Bool("keep", false, "")
 	jsonOut := fs.Bool("json", false, "")
 	plain := fs.Bool("plain", false, "")
+	platformFlag := fs.String("platform", "auto", "")
 	nixery := fs.String("nixery", "", "")
 	otlp := fs.String("otlp", "", "")
 	var inputs, files, secretFlags, secretFiles repeatable
@@ -200,6 +209,45 @@ func cmdRun(args []string) error {
 		return err
 	}
 	pipelineID := fmt.Sprintf("at://did:local/%s/local-%s", "sh.tangled.pipeline", repo.Sha[:12])
+
+	// Which world is this? Native tangled workflows win unless --platform
+	// points elsewhere; without them, the well-known files of the supported
+	// platforms are probed in registry order.
+	native := dirHasTangled(repo.WorkflowRoot())
+	if *platformFlag != "auto" && *platformFlag != "tangled" {
+		native = false
+	}
+	if !native && len(files) == 0 {
+		plat, err := platforms.Detect(repo.WorkflowRoot(), *platformFlag)
+		if err != nil {
+			return err
+		}
+		if plat != nil {
+			secrets, err := collectSecrets(repo.WorkflowRoot(), secretFlags, secretFiles)
+			if err != nil {
+				return err
+			}
+			opts := runOpts{
+				Cpus:    *cpus,
+				Mem:     *mem,
+				Keep:    *keep,
+				Source:  repo.Root,
+				JSON:    *jsonOut,
+				Out:     os.Stdout,
+				Secrets: secrets,
+				Masker:  newMasker(secrets),
+			}
+			plans, err := foreignPlans(plat, repo, names)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "platform: %s (%d job(s))\n", plat.Name, len(plans))
+			return runPlans(plans, opts, *jsonOut, *plain)
+		}
+		if *platformFlag != "auto" && *platformFlag != "tangled" {
+			return fmt.Errorf("--platform %s: no config found in %s", *platformFlag, repo.WorkflowRoot())
+		}
+	}
 
 	// Explicit files bypass discovery *and* matching: naming a file is the
 	// selection, the same way spindle's manual dispatch skips constraints.
@@ -269,15 +317,18 @@ func cmdRun(args []string) error {
 		}
 		plans = append(plans, plan)
 	}
+	return runPlans(plans, opts, *jsonOut, *plain)
+}
 
-	// An interactive terminal gets the live renderer; --json, --plain and
-	// anything piped get lines. The renderer consumes the same LogLine stream
-	// --json prints, so the two views can never tell a different story.
-	if !*jsonOut && !*plain && term.IsTerminal(int(os.Stdout.Fd())) {
+// runPlans executes plans through the renderer the output mode calls for.
+// An interactive terminal gets the live TUI; --json, --plain and anything
+// piped get lines. The TUI consumes the same LogLine stream --json prints,
+// so the two views can never tell a different story.
+func runPlans(plans []*Plan, opts runOpts, jsonOut, plain bool) error {
+	if !jsonOut && !plain && term.IsTerminal(int(os.Stdout.Fd())) {
 		_, err := runPlansTUI(plans, opts)
 		return err
 	}
-
 	failed := 0
 	for _, plan := range plans {
 		if _, err := runPlan(plan, opts); err != nil {
@@ -288,9 +339,15 @@ func cmdRun(args []string) error {
 		logf(opts, "✓ %s passed\n\n", plan.Name)
 	}
 	if failed > 0 {
-		return fmt.Errorf("%d of %d workflow(s) failed", failed, len(selected))
+		return fmt.Errorf("%d of %d workflow(s) failed", failed, len(plans))
 	}
 	return nil
+}
+
+// dirHasTangled reports whether root carries native workflows.
+func dirHasTangled(root string) bool {
+	entries, err := os.ReadDir(filepath.Join(root, workflow.WorkflowDir))
+	return err == nil && len(entries) > 0
 }
 
 func nameMatches(name string, wanted []string) bool {
@@ -322,6 +379,44 @@ func cmdLs(args []string) error {
 	if err != nil {
 		return err
 	}
+	// No native workflows? List what the detected foreign platform would run.
+	if !dirHasTangled(repo.WorkflowRoot()) {
+		plat, derr := platforms.Detect(repo.WorkflowRoot(), "auto")
+		if derr == nil && plat != nil {
+			jobs, jerr := plat.Load(repo.WorkflowRoot(), platformRepo(repo))
+			if jerr != nil {
+				return jerr
+			}
+			type frow struct {
+				Name     string `json:"name"`
+				Platform string `json:"platform"`
+				Runnable bool   `json:"runnable"`
+				Skip     string `json:"skip,omitempty"`
+			}
+			var rows []frow
+			for _, j := range jobs {
+				rows = append(rows, frow{
+					Name: j.Name, Platform: plat.Name,
+					Runnable: j.SkipReason == "", Skip: j.SkipReason,
+				})
+			}
+			if *jsonOut {
+				b, _ := json.Marshal(rows)
+				fmt.Println(string(b))
+				return nil
+			}
+			fmt.Printf("%-28s  %-10s  %s\n", "JOB", "PLATFORM", "RUNNABLE")
+			for _, r := range rows {
+				state := "yes"
+				if !r.Runnable {
+					state = "no — " + r.Skip
+				}
+				fmt.Printf("%-28s  %-10s  %s\n", r.Name, r.Platform, state)
+			}
+			return nil
+		}
+	}
+
 	wfs, err := loadWorkflows(repo.WorkflowRoot())
 	if err != nil {
 		return err

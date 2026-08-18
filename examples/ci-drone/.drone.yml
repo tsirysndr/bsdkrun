@@ -1,0 +1,10 @@
+kind: pipeline
+type: docker
+name: default
+steps:
+  - name: test
+    image: alpine:3.20
+    commands:
+      - test "$DRONE" = "true"
+      - test -f hello.txt
+      - echo "drone-example-ok"

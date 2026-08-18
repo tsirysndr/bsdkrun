@@ -103,6 +103,44 @@ selects them directly and skips `when:` matching — naming *is* the selection.
 Identity fields a local checkout does not have (knot, DIDs) are filled with
 recognizable placeholders (`localhost`, `did:local:…`) rather than left empty.
 
+## Foreign platforms
+
+`bsdkrun ci` also runs the configs of the major CI platforms locally, in the
+same microVMs. When a repository has no `.tangled/workflows`, the well-known
+files are probed automatically; `--platform` forces one:
+
+| Platform     | Config                                                                | Example                                        |
+| ------------ | --------------------------------------------------------------------- | ---------------------------------------------- |
+| `github`     | `.github/workflows/*.yml` (Forgejo and Gitea Actions directories too) | [`examples/ci-github`](../examples/ci-github)         |
+| `gitlab`     | `.gitlab-ci.yml`                                                      | [`examples/ci-gitlab`](../examples/ci-gitlab)         |
+| `woodpecker` | `.woodpecker/*.yml` or `.woodpecker.yml`                              | [`examples/ci-woodpecker`](../examples/ci-woodpecker) |
+| `drone`      | `.drone.yml` (multi-document files included)                          | [`examples/ci-drone`](../examples/ci-drone)           |
+| `circleci`   | `.circleci/config.yml`                                                | [`examples/ci-circleci`](../examples/ci-circleci)     |
+| `buildkite`  | `.buildkite/pipeline.yml`                                             | [`examples/ci-buildkite`](../examples/ci-buildkite)   |
+| `travis`     | `.travis.yml`                                                         | [`examples/ci-travis`](../examples/ci-travis)         |
+
+```sh
+bsdkrun ci ls                       # what was detected, and which jobs run
+bsdkrun ci run                      # every runnable job, in dependency order
+bsdkrun ci run build test           # just these jobs
+bsdkrun ci run --platform gitlab    # force a platform when several coexist
+```
+
+Each platform's *jobs* translate — image (or `ubuntu:24.04` when none),
+environment, script steps, `needs`/`requires`/stage ordering — plus the
+platform's identity env (`GITHUB_SHA`, `CI_PROJECT_DIR`, `DRONE_COMMIT_SHA`,
+…) pointed at the runner's own workspace. Secrets, the TUI, tracing and the
+log stream all work the same as for native workflows.
+
+What deliberately does not translate is announced rather than faked:
+`uses:` actions (except `actions/checkout`, which the clone genuinely
+covers), plugins, orbs, human gates and cross-pipeline triggers become
+visible skipped steps in the timeline; matrix strategies run once and say
+so; **jobs that ask for windows or macos are skipped** — a Linux microVM
+cannot become another OS, and a green checkmark on a lie helps nobody.
+Images without bash (alpine) run their steps under `sh`, exactly as
+GitLab's own runner would.
+
 ## Secrets
 
 Spindle injects a repository's vault secrets as environment variables into

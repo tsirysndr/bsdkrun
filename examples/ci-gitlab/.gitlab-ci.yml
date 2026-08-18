@@ -1,0 +1,6 @@
+image: alpine:3.20
+test:
+  script:
+    - test "$GITLAB_CI" = "true"
+    - test -f hello.txt
+    - echo "gitlab-example-ok"

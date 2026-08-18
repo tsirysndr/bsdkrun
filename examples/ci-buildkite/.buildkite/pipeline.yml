@@ -1,0 +1,6 @@
+steps:
+  - label: test
+    command: |
+      test "$BUILDKITE" = "true"
+      test -f hello.txt
+      echo "buildkite-example-ok"

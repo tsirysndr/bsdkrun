@@ -4,6 +4,8 @@
 
 # bsdkrun ci
 
+[![e2e (bsdkrun ci / KVM)](https://github.com/tsirysndr/bsdkrun/actions/workflows/e2e-ci.yml/badge.svg)](https://github.com/tsirysndr/bsdkrun/actions/workflows/e2e-ci.yml)
+
 Run [tangled](https://tangled.org) spindle CI workflows in bsdkrun microVMs —
 locally, from one command, with nothing installed but bsdkrun itself.
 

@@ -383,7 +383,11 @@ fn render_repo_picker(f: &mut Frame, app: &App, p: &super::ci::RepoPicker, area:
             Style::default().fg(MUTED),
         ));
     } else {
-        let color = if p.input_is_url() { VIOLET } else { Color::Reset };
+        let color = if p.input_is_url() {
+            VIOLET
+        } else {
+            Color::Reset
+        };
         input.push(Span::styled(p.input.clone(), Style::default().fg(color)));
         input.push(Span::styled("▏", Style::default().fg(TEAL)));
     }
@@ -460,7 +464,10 @@ fn render_ci(f: &mut Frame, app: &App, area: Rect) {
             .unwrap_or_else(|| repo.display().to_string());
         lines.push(Line::from(vec![
             Span::styled(" ", Style::default()),
-            Span::styled(name, Style::default().fg(VIOLET).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                name,
+                Style::default().fg(VIOLET).add_modifier(Modifier::BOLD),
+            ),
         ]));
     }
     if !app.ci.note.is_empty() {

@@ -189,6 +189,14 @@ export default function CommandPalette() {
         run: nav("flavors"),
       },
       {
+        id: "nav-cicd",
+        title: "Go to CI/CD",
+        section: "Navigate",
+        icon: IconRocket,
+        keywords: "ci cd pipeline workflow spindle tangled build test run steps",
+        run: nav("cicd"),
+      },
+      {
         id: "nav-networks",
         title: "Go to Networks",
         section: "Navigate",

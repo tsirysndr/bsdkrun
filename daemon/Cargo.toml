@@ -52,7 +52,9 @@ tonic-prost-build = "0.14"
 #
 # Optional as well, so the desktop app's client-only build (`default-features =
 # false`) pulls in none of it.
-bsdkrun-core = { path = "../core", default-features = false, optional = true }
+# `ci` so the daemon can describe (and its supervisor run) `bsdkrun ci` — the
+# web UI's CI screen streams runs through the same launch pipeline as flavors.
+bsdkrun-core = { path = "../core", default-features = false, features = ["ci"], optional = true }
 tonic = { version = "0.14", features = ["router", "transport", "tls-ring", "tls-native-roots", "gzip"] }
 tonic-prost = "0.14"
 tonic-health = { version = "0.14", optional = true }

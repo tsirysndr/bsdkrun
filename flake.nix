@@ -171,7 +171,10 @@
             ];
           };
           modRoot = "ci";
-          vendorHash = "sha256-gq5COxojM1ZO0XFOhevU/UCoufA5MYIeun4AwZA/7FI=";
+          # buildGoModule's fixed-output tree differs from a plain `go mod vendor`
+          # hash, so the reliable procedure is nix's own: build once, copy the
+          # "got:" hash from the mismatch error.
+          vendorHash = "sha256-VKyDthjs5eFpSXW6ckVkCqGI89L/eYbTuUJJSk3xE74=";
 
           env.CGO_ENABLED = "0";
           ldflags = [ "-s" "-w" ];

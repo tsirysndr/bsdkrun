@@ -367,6 +367,96 @@ async fn resume_agent(
     Ok(())
 }
 
+/// The CI workflows in a repository, and whether each matches an event.
+#[tauri::command]
+async fn ci_workflows(
+    state: State<'_, AppState>,
+    dir: String,
+    event: String,
+) -> Result<Vec<bsdkrun::CiWorkflow>, BkError> {
+    let bin = state.binary()?;
+    bsdkrun::ci_workflows(&bin, &dir, &event).await
+}
+
+/// Run CI workflows, streaming spindle LogLine JSON through the launch
+/// events (`flavor://log` / `flavor://done`) the progress plumbing already
+/// carries — the CI screen parses each line into its step UI.
+#[tauri::command]
+async fn ci_run(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    launch_id: String,
+    dir: String,
+    names: Vec<String>,
+    event: String,
+) -> Result<(), String> {
+    let bin = state.binary().map_err(|e| e.to_string())?;
+    let mut args: Vec<String> = vec![
+        "ci".into(),
+        "run".into(),
+        "--json".into(),
+        "-w".into(),
+        dir,
+        "--event".into(),
+        event,
+    ];
+    args.extend(names);
+    stream_bsdkrun(app, bin, args, launch_id, false, "the CI run timed out");
+    Ok(())
+}
+
+/// Clone (or update) a repository for the CI screen, host-side, into
+/// `<state>/ci-checkouts/<name>`. Returns the checkout path — which is then a
+/// perfectly ordinary `dir` for `ci_run`.
+#[tauri::command]
+async fn ci_clone(url: String) -> Result<String, String> {
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return Err("a repository URL is required".into());
+    }
+    let name = url
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .rsplit('/')
+        .next()
+        .unwrap_or("repo")
+        .to_string();
+    // The CLI's own state layout (`~/.local/state/bsdkrun`), so checkouts sit
+    // beside everything else bsdkrun keeps and `prune` can learn about them.
+    let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
+    let base = std::path::PathBuf::from(home)
+        .join(".local")
+        .join("state")
+        .join("bsdkrun")
+        .join("ci-checkouts");
+    std::fs::create_dir_all(&base).map_err(|e| e.to_string())?;
+    let dest = base.join(&name);
+
+    let output = if dest.join(".git").exists() {
+        // An existing checkout is updated rather than re-cloned: CI runs HEAD,
+        // so a fast-forward pull is all a re-trigger needs.
+        tokio::process::Command::new("git")
+            .args(["-C"])
+            .arg(&dest)
+            .args(["pull", "--ff-only"])
+            .output()
+            .await
+    } else {
+        tokio::process::Command::new("git")
+            .arg("clone")
+            .arg(&url)
+            .arg(&dest)
+            .output()
+            .await
+    }
+    .map_err(|e| format!("running git: {e}"))?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(dest.display().to_string())
+}
+
 /// The argv that starts an agent's TUI in a sandbox, for `term_open`.
 #[tauri::command]
 async fn ai_shell_command(
@@ -1588,6 +1678,9 @@ pub fn run() {
             stop_machine,
             restart_machine,
             resume_agent,
+            ci_workflows,
+            ci_run,
+            ci_clone,
             remove_machine,
             remove_image,
             remove_volume,

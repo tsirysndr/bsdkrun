@@ -599,6 +599,38 @@ export const api = {
     );
   },
 
+  /** The CI workflows in a repository, and whether each matches an event. */
+  ciWorkflows: async (dir: string, event: string) => {
+    const d = await gql<{ ciWorkflows: string }>(
+      `query($d:String!,$e:String!){ ciWorkflows(dir:$d, event:$e) }`,
+      { d: dir, e: event },
+    );
+    // The daemon passes the tool's own JSON through rather than re-declaring
+    // its shape in the schema.
+    return JSON.parse(d.ciWorkflows || "[]") as import("./types").CiWorkflowInfo[];
+  },
+  /** Run CI workflows, streaming spindle LogLine JSON via flavor:// events. */
+  ciRun: async (
+    launchId: string,
+    dir: string,
+    names: string[],
+    event: string,
+  ): Promise<void> => {
+    streamLaunch(
+      launchId,
+      "runCi",
+      `subscription($d:String!,$n:[String!]!,$e:String!){ runCi(dir:$d, names:$n, event:$e){ line machineId error } }`,
+      { d: dir, n: names, e: event },
+    );
+  },
+  /** Clone (or update) a repository on the engine's host for CI. */
+  ciClone: async (url: string) => {
+    const d = await gql<{ ciClone: string }>(
+      `mutation($u:String!){ ciClone(url:$u) }`,
+      { u: url },
+    );
+    return d.ciClone;
+  },
   /** Resume one stopped sandbox, streaming its boot. */
   resumeAgent: async (launchId: string, machine: string): Promise<void> => {
     streamLaunch(

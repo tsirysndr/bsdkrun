@@ -92,6 +92,14 @@ export const api = {
       name: name ?? null,
       repo: repo ?? null,
     }),
+  /** The CI workflows in a repository, and whether each matches an event. */
+  ciWorkflows: (dir: string, event: string) =>
+    invoke<import("./types").CiWorkflowInfo[]>("ci_workflows", { dir, event }),
+  /** Run CI workflows, streaming spindle LogLine JSON via flavor:// events. */
+  ciRun: (launchId: string, dir: string, names: string[], event: string) =>
+    invoke<void>("ci_run", { launchId, dir, names, event }),
+  /** Clone (or update) a repository for CI; returns the checkout path. */
+  ciClone: (url: string) => invoke<string>("ci_clone", { url }),
   /** Resume one stopped sandbox, streaming its boot. */
   resumeAgent: (launchId: string, machine: string) =>
     invoke<void>("resume_agent", { launchId, machine }),

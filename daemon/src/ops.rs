@@ -1330,6 +1330,91 @@ impl Ops {
         })
     }
 
+    /// `bsdkrun ci run --json …` as a streaming command for the CI screen.
+    /// The tool's own argv surface, passed through — the daemon adds nothing
+    /// the CLI does not have.
+    pub fn ci_run_command(&self, dir: &str, names: &[String], event: &str) -> CoreCommand {
+        let mut args: Vec<String> = vec![
+            "run".into(),
+            "--json".into(),
+            "-w".into(),
+            dir.to_string(),
+            "--event".into(),
+            event.to_string(),
+        ];
+        args.extend(names.iter().cloned());
+        CoreCommand::Ci(bsdkrun_core::cli::CiArgs { args })
+    }
+
+    /// `bsdkrun ci ls -w <dir> --json`, for listing workflows.
+    pub async fn ci_workflows(&self, dir: &str, event: &str) -> Result<String, OpError> {
+        let cmd = CoreCommand::Ci(bsdkrun_core::cli::CiArgs {
+            args: vec![
+                "ls".into(),
+                "-w".into(),
+                dir.to_string(),
+                "--event".into(),
+                event.to_string(),
+                "--json".into(),
+            ],
+        });
+        let argv = self.supervisor.argv(&cmd).map_err(OpError::from)?;
+        let out = self.supervisor.output(&argv).await.map_err(OpError::from)?;
+        if out.exit_code != 0 {
+            return Err(OpError::Failed(out.stderr));
+        }
+        Ok(out.stdout.trim().to_string())
+    }
+
+    /// Clone (or fast-forward) a repository on the engine's host for CI runs.
+    ///
+    /// Host-side `git`, into the CLI's own state layout — the returned path is
+    /// then an ordinary `dir` for `ci_run_command`, and it lives where the
+    /// engine's other state lives.
+    pub async fn ci_clone(&self, url: &str) -> Result<String, OpError> {
+        let url = url.trim();
+        if url.is_empty() {
+            return Err(OpError::Failed("a repository URL is required".into()));
+        }
+        let name = url
+            .trim_end_matches('/')
+            .trim_end_matches(".git")
+            .rsplit('/')
+            .next()
+            .unwrap_or("repo")
+            .to_string();
+        let home =
+            std::env::var_os("HOME").ok_or_else(|| OpError::Failed("HOME is not set".into()))?;
+        let base = std::path::PathBuf::from(home)
+            .join(".local/state/bsdkrun/ci-checkouts");
+        std::fs::create_dir_all(&base).map_err(|e| OpError::Failed(e.to_string()))?;
+        let dest = base.join(&name);
+
+        let output = if dest.join(".git").exists() {
+            tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(&dest)
+                .args(["pull", "--ff-only"])
+                .output()
+                .await
+        } else {
+            tokio::process::Command::new("git")
+                .arg("clone")
+                .arg(url)
+                .arg(&dest)
+                .output()
+                .await
+        }
+        .map_err(|e| OpError::Failed(format!("running git: {e}")))?;
+
+        if !output.status.success() {
+            return Err(OpError::Failed(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+        Ok(dest.display().to_string())
+    }
+
     pub fn build_flavor_command(
         &self,
         name: &str,

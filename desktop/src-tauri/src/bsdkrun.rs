@@ -463,6 +463,20 @@ pub async fn ai_sessions(bin: &Target) -> Result<Vec<AiSession>, BkError> {
     serde_json::from_str(&out).map_err(|e| BkError::Parse(e.to_string()))
 }
 
+/// One CI workflow, as `bsdkrun ci ls --json` reports it.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CiWorkflow {
+    pub name: String,
+    pub engine: String,
+    pub matches: bool,
+}
+
+/// The workflows in a repository, and whether each matches `event`.
+pub async fn ci_workflows(bin: &Target, dir: &str, event: &str) -> Result<Vec<CiWorkflow>, BkError> {
+    let out = run(bin, &["ci", "ls", "-w", dir, "--event", event, "--json"]).await?;
+    serde_json::from_str(out.trim()).map_err(|e| BkError::Parse(e.to_string()))
+}
+
 /// The Docker engine VM's status (mirrors `bsdkrun docker status --json`).
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DockerStatus {

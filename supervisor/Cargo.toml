@@ -13,7 +13,7 @@ path = "src/main.rs"
 # links libkrun, so that `bsdkrund` does not have to. `solo5` too — the daemon
 # can *describe* a solo5 boot without the feature, but this is the process
 # that has to carry the embedded tender to actually run one.
-bsdkrun-core = { path = "../core", features = ["solo5"] }
+bsdkrun-core = { path = "../core", features = ["solo5", "ci"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"

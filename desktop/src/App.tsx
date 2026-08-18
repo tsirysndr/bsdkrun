@@ -9,6 +9,7 @@ import ImagesView from "./components/ImagesView";
 import VolumesView from "./components/VolumesView";
 import SnapshotsView from "./components/SnapshotsView";
 import ContainersView from "./components/ContainersView";
+import CicdView from "./components/CicdView";
 import AgentPanel from "./components/AgentPanel";
 import FlavorsView from "./components/FlavorsView";
 import NetworksView from "./components/NetworksView";
@@ -48,6 +49,7 @@ export default function App() {
             {view === "containers" && <ContainersView />}
             {view === "snapshots" && <SnapshotsView />}
             {view === "flavors" && <FlavorsView />}
+            {view === "cicd" && <CicdView />}
             {view === "networks" && <NetworksView />}
           </div>
           <AgentPanel />

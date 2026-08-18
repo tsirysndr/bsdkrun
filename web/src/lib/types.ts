@@ -277,4 +277,42 @@ export type ViewKey =
   | "containers"
   | "snapshots"
   | "flavors"
+  | "cicd"
   | "networks";
+
+/** One workflow, as `bsdkrun ci ls --json` reports it. */
+export interface CiWorkflowInfo {
+  name: string;
+  engine: string;
+  matches: boolean;
+}
+
+/** A line of step output in a CI run. */
+export interface CiLogLine {
+  content: string;
+  stream: string;
+}
+
+/** One step of a CI run, reconstructed from the spindle LogLine stream. */
+export interface CiStep {
+  id: number;
+  name: string;
+  system: boolean;
+  status: "running" | "ok" | "failed";
+  lines: CiLogLine[];
+  startedAt?: number;
+  durationMs?: number;
+}
+
+/** One CI run, kept client-side as viewing history. */
+export interface CiRun {
+  id: string;
+  dir: string;
+  names: string[];
+  event: string;
+  status: "running" | "success" | "failed";
+  startedAt: number;
+  finishedAt?: number;
+  error?: string;
+  steps: CiStep[];
+}

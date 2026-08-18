@@ -1,4 +1,5 @@
 import { atom } from "jotai";
+import { atomWithStorage } from "jotai/utils";
 import type { ViewKey } from "../lib/types";
 
 // UI-only state. Server data (machines / images / volumes / probe / settings)
@@ -187,3 +188,17 @@ export interface LaunchState {
   autoClose?: boolean;
 }
 export const launchStateAtom = atom<LaunchState | null>(null);
+
+// ---- CI/CD ----------------------------------------------------------------
+
+/** The repository the CI screen runs against. Persisted: picking it again on
+ * every launch would make the screen feel like it forgot you. */
+export const ciRepoAtom = atomWithStorage<string>("bsdkrun-ci-repo", "");
+
+/** Recent CI runs, client-side only — a viewing history, not a system of
+ * record; the engine deliberately stays stateless about them. Capped in the
+ * view so localStorage stays sane. */
+export const ciRunsAtom = atomWithStorage<import("../lib/types").CiRun[]>(
+  "bsdkrun-ci-runs",
+  [],
+);

@@ -954,6 +954,18 @@ impl Query {
 
     /// The argv that starts an agent's TUI in a sandbox — pass it to
     /// `openShell` after `aiStart` to get the terminal.
+    /// The CI workflows in a repository on the engine's host, and whether
+    /// each matches the given event — `bsdkrun ci ls --json`, passed through
+    /// as its own JSON so this schema does not re-declare the tool's shape.
+    async fn ci_workflows(
+        &self,
+        ctx: &Context<'_>,
+        dir: String,
+        #[graphql(default = "manual")] event: String,
+    ) -> async_graphql::Result<String> {
+        api(ctx)?.ops.ci_workflows(&dir, &event).await.map_err(gql_err)
+    }
+
     async fn ai_shell_command(
         &self,
         ctx: &Context<'_>,
@@ -1157,6 +1169,12 @@ impl Mutation {
     ) -> async_graphql::Result<String> {
         let opts: ops::AiStartOpts = input.into();
         api(ctx)?.ops.ai_start(&opts).await.map_err(gql_err)
+    }
+
+    /// Clone (or fast-forward) a repository on the engine's host for the CI
+    /// screen. Returns the checkout path — an ordinary `dir` for `runCi`.
+    async fn ci_clone(&self, ctx: &Context<'_>, url: String) -> async_graphql::Result<String> {
+        api(ctx)?.ops.ci_clone(&url).await.map_err(gql_err)
     }
 
     /// Stop an agent's sandboxes. Its saved login survives.
@@ -1914,6 +1932,20 @@ impl Subscription_ {
         let api = api(ctx)?;
         let opts: ops::AiStartOpts = input.into();
         Ok(launch_stream(api.ops.clone(), opts.to_command()))
+    }
+
+    /// Run CI workflows in microVMs, streaming spindle LogLine JSON — one
+    /// line per event, which the CI screen parses into its step UI.
+    async fn run_ci(
+        &self,
+        ctx: &Context<'_>,
+        dir: String,
+        #[graphql(default)] names: Vec<String>,
+        #[graphql(default = "manual")] event: String,
+    ) -> async_graphql::Result<impl Stream<Item = LaunchEvent>> {
+        let api = api(ctx)?;
+        let cmd = api.ops.ci_run_command(&dir, &names, &event);
+        Ok(launch_stream(api.ops.clone(), cmd))
     }
 
     /// Resume one stopped sandbox by id, streaming its boot.

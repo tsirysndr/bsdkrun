@@ -1,5 +1,6 @@
 import { useAtom } from "jotai";
 import {
+  IconRocket,
   IconServer2,
   IconStack2,
   IconDatabase,
@@ -46,7 +47,8 @@ const ITEMS: {
   { key: "containers", label: "Containers", icon: IconBrandDocker, hint: "⌘4" },
   { key: "snapshots", label: "Snapshots", icon: IconCamera, hint: "⌘5" },
   { key: "flavors", label: "Flavors", icon: IconApps, hint: "⌘6" },
-  { key: "networks", label: "Networks", icon: IconNetwork, hint: "⌘7" },
+  { key: "cicd", label: "CI/CD", icon: IconRocket, hint: "⌘8" },
+  { key: "networks", label: "Networks", icon: IconNetwork, hint: "⌘9" },
 ];
 
 export default function Sidebar() {
@@ -74,6 +76,8 @@ export default function Sidebar() {
     // Running containers, like the machines badge counts running machines.
     containers: containers.filter((c) => c.state === "running").length,
     snapshots: snapshots.length,
+    // No badge: run history is client-side; a count would just be noise.
+    cicd: 0,
     // Only badge user-created flavors (snapshots + flavors.toml), not the
     // static catalog — otherwise it'd always show a large constant.
     flavors: flavors.filter((f) => f.source !== "catalog").length,

@@ -10,9 +10,9 @@ import (
 // else in the container ecosystem.
 func TestDefaultsToDockerHub(t *testing.T) {
 	cases := map[string]string{
-		"you/app:v1":               "index.docker.io/you/app:v1",
-		"app:v1":                   "index.docker.io/library/app:v1",
-		"ghcr.io/you/app:v1":       "ghcr.io/you/app:v1",
+		"you/app:v1":                      "index.docker.io/you/app:v1",
+		"app:v1":                          "index.docker.io/library/app:v1",
+		"ghcr.io/you/app:v1":              "ghcr.io/you/app:v1",
 		"registry.example.com/team/app:1": "registry.example.com/team/app:1",
 	}
 	for in, want := range cases {

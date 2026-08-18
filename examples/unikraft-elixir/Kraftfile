@@ -12,7 +12,13 @@ name: elixir
 # `erlexec` would have exported (below); the BEAM needs nothing else beyond
 # what running any dynamically linked runtime needs.
 unikraft:
-  version: staging
+  # Pinned, not `staging`: staging is a moving branch, and upstream commit
+  # 3898a16e36 (2026-08-12, "Handle _SC_CLK_TCK in sysconf()") broke the build
+  # against its own headers. This SHA is that commit's parent — the last state
+  # CI was green against. Bump deliberately, with a passing build, never by
+  # letting a branch move underneath us.
+  source: https://github.com/unikraft/unikraft.git
+  version: ecf0fa174c5d87ff74c45be6da1b3bb83e0708a6
   kconfig:
     # libkrun's aarch64 console is a PL011 (see ../unikraft-helloworld).
     CONFIG_LIBPL011: 'y'
@@ -192,7 +198,7 @@ libraries:
       CONFIG_APPELFLOADER_AUTOGEN_REPLACEEXIST: 'y'
   lwip:
     source: https://github.com/unikraft/lib-lwip.git
-    version: staging
+    version: ec55ae17618feeb57c8c10109bcf5c42723e8e95
     kconfig:
       CONFIG_LWIP_LOOPIF: 'y'
       CONFIG_LWIP_UKNETDEV: 'y'

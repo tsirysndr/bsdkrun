@@ -105,15 +105,37 @@ https://cli.github.com/packages stable main\" \
 
 /// Determinate Nix, for an agent that needs a toolchain the sandbox lacks.
 ///
-/// `--init none` because the guest has no systemd for the daemon to hook
-/// into; single-user mode is what works here and is what an agent running as
-/// root wants anyway. `|| true` keeps a sandbox usable if the installer
-/// cannot run — the agent itself is already installed by then.
+/// Three flags, each load-bearing:
+///
+/// - `--init none` — there is no systemd for the daemon to hook into, in a
+///   container or in one of these guests. Single-user mode is what works, and
+///   what an agent running as root wants anyway.
+/// - `--extra-conf "sandbox = false"` — Nix's build sandbox needs mount and
+///   user namespaces that `docker build` does not grant, so without this the
+///   install dies at `setup_default_profile` while building an empty profile:
+///   *"while setting up the build environment"*. This is what the installer's
+///   own Docker instructions say to pass. Nothing is lost by it here: the
+///   isolation these builds rely on is the container, and later the microVM.
+/// - `--no-confirm` — no tty in a build.
+///
+/// The symlink is the other half. The installer puts `nix` on `PATH` through
+/// `/etc/profile.d`, which only a *login* shell reads — and the sandbox's
+/// wrapper is not one, so `nix` would be installed and still "not found".
+///
+/// **No `|| true`.** It used to end with one, and that is precisely how the
+/// missing `sandbox = false` went unnoticed: the installer failed, the step
+/// still reported success, and the published image simply had no `nix` in it —
+/// discovered only when someone ran `nix` in a sandbox. A broken install is
+/// now a failed build, which is where the error is still readable.
+///
+/// The leading `command -v nix` is a skip-if-present guard, not error
+/// suppression: it keeps a rebuild over a warm layer cheap.
 macro_rules! nix_engine {
     () => {
         "command -v nix >/dev/null 2>&1 || \
-         (curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix \
-          | sh -s -- install linux --no-confirm --init none) || true"
+         ((curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix \
+           | sh -s -- install linux --extra-conf 'sandbox = false' --init none --no-confirm) && \
+          ln -sf /nix/var/nix/profiles/default/bin/nix /usr/local/bin/nix)"
     };
 }
 

@@ -14,7 +14,7 @@ RUN command -v gh >/dev/null 2>&1 || (command -v apk >/dev/null 2>&1 && apk add 
 
 RUN command -v dockerd >/dev/null 2>&1 || (curl -fsSL https://get.docker.com | sh) || true
 
-RUN command -v nix >/dev/null 2>&1 || (curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux --no-confirm --init none) || true
+RUN command -v nix >/dev/null 2>&1 || ((curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux --extra-conf 'sandbox = false' --init none --no-confirm) && ln -sf /nix/var/nix/profiles/default/bin/nix /usr/local/bin/nix)
 
 RUN apt-get update && apt-get install -y git curl
 

@@ -24,6 +24,15 @@ const queryClient = new QueryClient({
  */
 function ThemedRoot() {
   const theme = useAtomValue(themeAtom);
+  // On the DOCUMENT root, not just <main>: HeroUI portals its modals,
+  // dropdowns, popovers and tooltips onto document.body, which sits outside
+  // <main> — with the class only there, every overlay kept the old theme.
+  React.useEffect(() => {
+    const root = document.documentElement;
+    root.classList.remove("dark", "night-rider");
+    root.classList.add(theme);
+    return () => root.classList.remove(theme);
+  }, [theme]);
   return (
     <main className={`${theme} text-foreground bg-background`}>
       <App />

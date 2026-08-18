@@ -98,7 +98,7 @@ export default function Sidebar() {
               className={`group flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition ${
                 active
                   ? "bg-primary/15 text-foreground shadow-[inset_0_0_0_1px] shadow-primary/25"
-                  : "text-foreground-500 hover:bg-default-100/70 hover:text-foreground-300"
+                  : "text-foreground-500 hover:bg-default-100/70 hover:text-foreground"
               }`}
             >
               <Icon
@@ -137,7 +137,7 @@ export default function Sidebar() {
             onClick={() =>
               setTheme(theme === "night-rider" ? "dark" : "night-rider")
             }
-            className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-foreground-500 transition hover:bg-default-100/70 hover:text-foreground-300"
+            className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-foreground-500 transition hover:bg-default-100/70 hover:text-foreground"
           >
             <IconMoon size={18} className="text-foreground-400" />
             <span className="font-medium">Appearance</span>
@@ -146,7 +146,7 @@ export default function Sidebar() {
         <Tooltip content="Keyboard shortcuts (?)" placement="right">
           <button
             onClick={() => setShortcutsOpen(true)}
-            className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-foreground-500 transition hover:bg-default-100/70 hover:text-foreground-300"
+            className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-foreground-500 transition hover:bg-default-100/70 hover:text-foreground"
           >
             <IconKeyboard size={18} className="text-foreground-400" />
             <span className="font-medium">Shortcuts</span>
@@ -154,7 +154,7 @@ export default function Sidebar() {
         </Tooltip>
         <button
           onClick={() => setSettingsOpen(true)}
-          className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-foreground-500 transition hover:bg-default-100/70 hover:text-foreground-300"
+          className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-foreground-500 transition hover:bg-default-100/70 hover:text-foreground"
         >
           <IconSettings size={18} className="text-foreground-400" />
           <span className="font-medium">Settings</span>

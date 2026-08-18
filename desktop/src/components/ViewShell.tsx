@@ -1,4 +1,4 @@
-import { Input } from "@heroui/react";
+import { Input, Kbd } from "@heroui/react";
 import { useAtom } from "jotai";
 import { IconSearch } from "@tabler/icons-react";
 import type { ReactNode } from "react";
@@ -35,6 +35,9 @@ export function ViewShell({
           value={filter}
           onValueChange={setFilter}
           placeholder={searchPlaceholder || "Filter…"}
+          endContent={
+            <Kbd className="bg-default-100 text-foreground-500">f</Kbd>
+          }
           startContent={<IconSearch size={16} className="text-foreground-400" />}
           className="max-w-64"
           classNames={{ inputWrapper: "bg-content2/60 border border-white/10" }}

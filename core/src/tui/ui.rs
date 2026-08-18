@@ -12,11 +12,15 @@ use crate::api;
 
 use super::{display_name, App, Panel};
 
-const TEAL: Color = Color::Rgb(0, 232, 198);
-const VIOLET: Color = Color::Rgb(130, 100, 255);
-const MUTED: Color = Color::Rgb(140, 150, 160);
-const GREEN: Color = Color::Rgb(80, 220, 120);
-const RED: Color = Color::Rgb(255, 100, 100);
+// The Night Rider palette (trustfall/vscode-night-rider) at its neon end,
+// matching the desktop app's default theme: electric cyan for chrome, the
+// theme's signature neon magenta for emphasis (its most-used token color),
+// its own muted lavender, and teal/pink for good/bad.
+const TEAL: Color = Color::Rgb(0x71, 0xE4, 0xFE);
+const VIOLET: Color = Color::Rgb(0xE5, 0x91, 0xFF);
+const MUTED: Color = Color::Rgb(0x69, 0x62, 0x92);
+const GREEN: Color = Color::Rgb(0x55, 0xF0, 0xD7);
+const RED: Color = Color::Rgb(0xFF, 0x70, 0x9D);
 const YELLOW: Color = Color::Rgb(240, 200, 80);
 
 const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];

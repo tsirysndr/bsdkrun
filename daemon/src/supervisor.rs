@@ -34,6 +34,10 @@ use tonic::Status;
 
 use crate::pb::{output_chunk, CommandResult, OutputChunk};
 
+/// Receiving end of a spawned command's output: stdout/stderr frames, then
+/// one `exit_code` frame (or a Status when the child failed).
+pub type OutputStream = mpsc::Receiver<Result<OutputChunk, Status>>;
+
 /// The binary this daemon hands boot-shaped work to. Shipped beside it.
 pub const SUPERVISOR_BIN: &str = "bsdkrun-supervisor";
 
@@ -226,20 +230,14 @@ impl Supervisor {
 
     /// Run a command and stream its output as it appears, ending with one
     /// `exit_code` frame.
-    pub fn stream(
-        &self,
-        args: &[String],
-    ) -> Result<mpsc::Receiver<Result<OutputChunk, Status>>, Status> {
+    pub fn stream(&self, args: &[String]) -> Result<OutputStream, Status> {
         Ok(self.stream_with_pid(args)?.0)
     }
 
     /// `stream`, but also handing back the child's pid — the handle a caller
     /// needs to cancel the work (CI runs), since dropping the receiver only
     /// stops listening, never the child.
-    pub fn stream_with_pid(
-        &self,
-        args: &[String],
-    ) -> Result<(mpsc::Receiver<Result<OutputChunk, Status>>, Option<u32>), Status> {
+    pub fn stream_with_pid(&self, args: &[String]) -> Result<(OutputStream, Option<u32>), Status> {
         let (tx, rx) = mpsc::channel(CHANNEL_DEPTH);
         let mut cmd = self.command(args)?;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -279,10 +277,7 @@ impl Supervisor {
     }
 
     /// Run a command with stdin attached, for a non-tty interactive session.
-    pub fn spawn_piped(
-        &self,
-        args: &[String],
-    ) -> Result<(PipedSession, mpsc::Receiver<Result<OutputChunk, Status>>), Status> {
+    pub fn spawn_piped(&self, args: &[String]) -> Result<(PipedSession, OutputStream), Status> {
         let mut cmd = self.command(args)?;
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())

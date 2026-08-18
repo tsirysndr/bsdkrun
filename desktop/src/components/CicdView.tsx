@@ -76,6 +76,7 @@ export default function CicdView() {
   );
   const [runs, setRuns] = useAtom(ciRunsAtom);
   const [repoQuery, setRepoQuery] = useState("");
+  const [repoSearchOpen, setRepoSearchOpen] = useState(false);
   const [visibleRuns, setVisibleRuns] = useState(RUNS_PAGE);
   const [event, setEvent] = useState("manual");
   const [workflows, setWorkflows] = useState<CiWorkflowInfo[]>([]);
@@ -246,16 +247,36 @@ export default function CicdView() {
           </Select>
           {recents.filter((r) => r !== repo).length > 0 && (
             <div className="mt-2">
-              <span className="text-[10px] font-medium uppercase tracking-wider text-foreground-500">
-                Recent
-              </span>
-              {recents.length > 3 && (
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-medium uppercase tracking-wider text-foreground-500">
+                  Recent
+                </span>
+                <Tooltip content="Search recent repositories" placement="top">
+                  <button
+                    onClick={() =>
+                      setRepoSearchOpen((v) => {
+                        if (v) setRepoQuery("");
+                        return !v;
+                      })
+                    }
+                    className={`rounded p-0.5 transition ${
+                      repoSearchOpen
+                        ? "bg-white/10 text-foreground"
+                        : "text-foreground-500 hover:bg-white/10 hover:text-foreground"
+                    }`}
+                  >
+                    <IconSearch size={12} />
+                  </button>
+                </Tooltip>
+              </div>
+              {repoSearchOpen && (
                 <Input
                   size="sm"
                   variant="bordered"
+                  autoFocus
                   className="mt-1"
                   classNames={{ input: "text-[11px]" }}
-                  placeholder="Search repos…"
+                  placeholder="Search local dirs & cloned repos…"
                   startContent={
                     <IconSearch size={12} className="text-foreground-500" />
                   }

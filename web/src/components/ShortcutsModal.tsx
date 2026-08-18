@@ -91,7 +91,7 @@ export default function ShortcutsModal() {
         <ModalBody className="grid grid-cols-1 gap-x-8 gap-y-5 pb-6 sm:grid-cols-2 lg:grid-cols-3">
           {GROUPS.map((g) => (
             <div key={g.title} className="break-inside-avoid">
-              <div className="mb-2.5 border-b border-white/10 pb-1.5 text-[11px] font-medium uppercase tracking-wider text-foreground-500">
+              <div className="mb-2.5 border-b border-white/10 pb-1.5 text-[11px] font-medium uppercase tracking-wider text-foreground-600">
                 {g.title}
               </div>
               <div className="flex flex-col">
@@ -100,7 +100,7 @@ export default function ShortcutsModal() {
                     key={label + keys.join()}
                     className="flex items-center justify-between gap-4 rounded-md px-1.5 py-1.5 transition-colors hover:bg-white/5"
                   >
-                    <span className="text-[13px] font-light leading-snug text-foreground-400">
+                    <span className="text-[13px] leading-snug text-foreground-600">
                       {label}
                     </span>
                     <span className="flex shrink-0 items-center gap-1">

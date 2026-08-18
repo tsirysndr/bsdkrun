@@ -13,9 +13,9 @@ name: e2e (bsdkrun ci / KVM)
 #
 # Following the e2e conventions: the job asserts on the output the guest
 # actually produced (`3 pass` from bun) — a step's conclusion alone proves
-# nothing. The example steps start `continue-on-error: true` because x86_64 is
-# not yet known to work (both examples are verified on arm64/HVF); flip each
-# to false the first time it passes so a later regression is caught.
+# nothing. Both example steps ran strict from their first green run
+# (2026-08-18): x86_64/KVM passed on the first attempt, so a failure here is a
+# regression, not an unestablished target.
 #
 # x86_64 only: GitHub's arm64 runners do not expose /dev/kvm.
 
@@ -147,7 +147,6 @@ jobs:
       # CI runs the repository's HEAD commit, so each example gets its own
       # little git repo first — same procedure its README documents.
       - name: e2e — ci-bun-ubuntu (image ubuntu:24.04, no nixery)
-        continue-on-error: true # flip to false after the first green run on x86_64
         run: |
           set -eux
           d=$(mktemp -d)
@@ -168,7 +167,6 @@ jobs:
           test "$rc" -eq 0
 
       - name: e2e — ci-bun-nixery (dependencies via nixery, or the nix fallback)
-        continue-on-error: true # flip to false after the first green run on x86_64
         run: |
           set -eux
           d=$(mktemp -d)

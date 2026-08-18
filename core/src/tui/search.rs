@@ -99,6 +99,25 @@ impl SearchModal {
                 display: format!("network  {}  {}", n.name, n.subnet),
             });
         }
+        for (i, sn) in app.snap.disk_snapshots.iter().enumerate() {
+            self.entries.push(Entry {
+                panel: Panel::Snapshots,
+                index: i,
+                display: format!("snapshot  {}  {}  {}", sn.name, sn.machine_name, sn.kind),
+            });
+        }
+        for (i, a) in app.snap.ai.iter().enumerate() {
+            self.entries.push(Entry {
+                panel: Panel::Ai,
+                index: i,
+                display: format!(
+                    "ai  {}  {}  {}",
+                    a.label.as_deref().unwrap_or(&a.name),
+                    a.agent,
+                    a.project.as_deref().unwrap_or("")
+                ),
+            });
+        }
         self.primed = true;
     }
 
@@ -164,6 +183,17 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Char('p') if ctrl => modal.sel = modal.sel.saturating_sub(1),
         KeyCode::Backspace => {
             modal.query.pop();
+            modal.rescore();
+        }
+        // fzf's line-editing defaults: ^U clears, ^W deletes the last word.
+        KeyCode::Char('u') if ctrl => {
+            modal.query.clear();
+            modal.rescore();
+        }
+        KeyCode::Char('w') if ctrl => {
+            let trimmed = modal.query.trim_end();
+            let cut = trimmed.rfind(' ').map(|i| i + 1).unwrap_or(0);
+            modal.query.truncate(cut);
             modal.rescore();
         }
         KeyCode::Char(c) if !ctrl => {

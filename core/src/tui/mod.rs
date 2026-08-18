@@ -1,6 +1,6 @@
-//! The `bsdkrun tui` dashboard: machines, images, volumes and networks as live
-//! panels, with the machine lifecycle (start/stop/shell/new/settings/logs)
-//! driven from the keyboard.
+//! The `bsdkrun tui` dashboard: machines, images, volumes, networks, disk
+//! snapshots and AI sandboxes as live panels, with the machine lifecycle
+//! (start/stop/shell/new/settings/logs) driven from the keyboard.
 //!
 //! Threading: the UI thread only draws and routes keys. A single worker thread
 //! owns every blocking call — `api::list_*` snapshots on a tick, and actions
@@ -34,6 +34,11 @@ pub struct Snapshot {
     pub images: Vec<api::Image>,
     pub volumes: Vec<api::Volume>,
     pub networks: Vec<api::Network>,
+    /// Disk snapshots (`bsdkrun snapshots`) — not to be confused with this
+    /// struct, which is a snapshot of the *dashboard's* data.
+    pub disk_snapshots: Vec<api::Snapshot>,
+    /// AI agent sandboxes, grouped nowhere: the TUI is a flat list.
+    pub ai: Vec<crate::ai::Session>,
     pub domains: Option<DomainsInfo>,
 }
 
@@ -69,14 +74,18 @@ pub enum Panel {
     Images,
     Volumes,
     Networks,
+    Snapshots,
+    Ai,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 4] = [
+    pub const ALL: [Panel; 6] = [
         Panel::Machines,
         Panel::Images,
         Panel::Volumes,
         Panel::Networks,
+        Panel::Snapshots,
+        Panel::Ai,
     ];
 
     pub fn title(self) -> &'static str {
@@ -85,6 +94,8 @@ impl Panel {
             Panel::Images => "Images",
             Panel::Volumes => "Volumes",
             Panel::Networks => "Networks",
+            Panel::Snapshots => "Snapshots",
+            Panel::Ai => "AI Sandboxes",
         }
     }
 
@@ -159,7 +170,7 @@ pub struct SettingsModal {
 pub struct App {
     pub snap: Snapshot,
     pub focus: Panel,
-    pub sel: [usize; 4],
+    pub sel: [usize; 6],
     /// Status line: outcome of the last action.
     pub message: String,
     /// A worker action in flight, shown as a spinner label.
@@ -193,7 +204,7 @@ impl App {
         App {
             snap: Snapshot::default(),
             focus: Panel::Machines,
-            sel: [0; 4],
+            sel: [0; 6],
             message: String::new(),
             busy: None,
             frame: 0,
@@ -215,6 +226,8 @@ impl App {
             Panel::Images => self.snap.images.len(),
             Panel::Volumes => self.snap.volumes.len(),
             Panel::Networks => self.snap.networks.len(),
+            Panel::Snapshots => self.snap.disk_snapshots.len(),
+            Panel::Ai => self.snap.ai.len(),
         }
     }
 
@@ -351,6 +364,8 @@ fn snapshot() -> Snapshot {
     .unwrap_or(None);
     Snapshot {
         machines: api::list_machines(true).unwrap_or_default(),
+        disk_snapshots: api::list_snapshots(None).unwrap_or_default(),
+        ai: crate::ai::sessions().unwrap_or_default(),
         images: api::list_images().unwrap_or_default(),
         volumes: api::list_volumes().unwrap_or_default(),
         networks: api::list_networks().unwrap_or_default(),

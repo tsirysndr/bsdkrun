@@ -75,31 +75,39 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
 fn render_panels(f: &mut Frame, app: &App, area: Rect) {
     if area.width < 100 {
         // Narrow terminal: a vertical stack.
-        let [m, i, v, n] = Layout::vertical([
-            Constraint::Percentage(40),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
+        let [m, i, v, n, s, a] = Layout::vertical([
+            Constraint::Percentage(30),
+            Constraint::Percentage(14),
+            Constraint::Percentage(14),
+            Constraint::Percentage(14),
+            Constraint::Percentage(14),
+            Constraint::Percentage(14),
         ])
         .areas(area);
         render_machines(f, app, m);
         render_images(f, app, i);
         render_volumes(f, app, v);
         render_networks(f, app, n);
+        render_snapshots(f, app, s);
+        render_ai(f, app, a);
     } else {
         // Machines get the top; the other three share the bottom row.
         let [top, bottom] =
             Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(area);
         render_machines(f, app, top);
-        let [i, v, n] = Layout::horizontal([
-            Constraint::Percentage(40),
-            Constraint::Percentage(30),
-            Constraint::Percentage(30),
+        let [i, v, n, s, a] = Layout::horizontal([
+            Constraint::Percentage(24),
+            Constraint::Percentage(19),
+            Constraint::Percentage(19),
+            Constraint::Percentage(19),
+            Constraint::Percentage(19),
         ])
         .areas(bottom);
         render_images(f, app, i);
         render_volumes(f, app, v);
         render_networks(f, app, n);
+        render_snapshots(f, app, s);
+        render_ai(f, app, a);
     }
 }
 
@@ -259,6 +267,57 @@ fn render_networks(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     render_rows(f, app, Panel::Networks, area, rows);
+}
+
+fn render_snapshots(f: &mut Frame, app: &App, area: Rect) {
+    let rows = app
+        .snap
+        .disk_snapshots
+        .iter()
+        .map(|s| {
+            Line::from(vec![
+                Span::raw(format!("{:<18}", crate::commands::truncate(&s.name, 18))),
+                Span::styled(
+                    format!(
+                        "  {} · {}",
+                        crate::commands::truncate(
+                            if s.machine_name.is_empty() {
+                                &s.machine_id
+                            } else {
+                                &s.machine_name
+                            },
+                            14
+                        ),
+                        s.kind
+                    ),
+                    Style::default().fg(MUTED),
+                ),
+            ])
+        })
+        .collect();
+    render_rows(f, app, Panel::Snapshots, area, rows);
+}
+
+fn render_ai(f: &mut Frame, app: &App, area: Rect) {
+    let rows = app
+        .snap
+        .ai
+        .iter()
+        .map(|s| {
+            Line::from(vec![
+                Span::styled(
+                    if s.running { "● " } else { "○ " },
+                    Style::default().fg(if s.running { GREEN } else { MUTED }),
+                ),
+                Span::raw(format!(
+                    "{:<14}",
+                    crate::commands::truncate(s.label.as_deref().unwrap_or(&s.name), 14)
+                )),
+                Span::styled(format!("  {}", s.agent), Style::default().fg(MUTED)),
+            ])
+        })
+        .collect();
+    render_rows(f, app, Panel::Ai, area, rows);
 }
 
 /// The persistent bottom status line: selection context on the left, the last
@@ -473,11 +532,19 @@ fn render_search(f: &mut Frame, s: &super::search::SearchModal, area: Rect) {
     f.render_widget(block, rect);
     let [input, list] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
 
+    // fzf's chrome, faithfully: the prompt on the left, the live match
+    // counter on the right — the counter is what tells you a query went from
+    // narrowing to over-narrowing without reading the list.
+    let counter = format!("{}/{}", s.hits.len(), s.entries.len());
+    let pad =
+        (input.width as usize).saturating_sub(2 + s.query.chars().count() + 1 + counter.len() + 1);
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("/ ", Style::default().fg(TEAL)),
             Span::raw(s.query.clone()),
             Span::styled("█", Style::default().fg(TEAL)),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(counter, Style::default().fg(MUTED)),
         ])),
         input,
     );
@@ -488,12 +555,24 @@ fn render_search(f: &mut Frame, s: &super::search::SearchModal, area: Rect) {
     for (row, hit) in s.hits.iter().enumerate().skip(offset).take(visible) {
         let entry = &s.entries[hit.entry];
         let mut spans = Vec::new();
+        // fzf's pointer column: the selected row gets a bar, everything else
+        // an aligning space — steadier to scan than a full-line reverse.
+        spans.push(if row == s.sel {
+            Span::styled("▌ ", Style::default().fg(TEAL))
+        } else {
+            Span::raw("  ")
+        });
+        // The leading word is the entry's kind ("machine", "snapshot", …);
+        // colored as a tag so mixed results scan by type at a glance.
+        let kind_len = entry.display.find("  ").unwrap_or(0);
         for (ci, ch) in entry.display.chars().enumerate() {
             let matched = hit.indices.contains(&(ci as u32));
             spans.push(Span::styled(
                 ch.to_string(),
                 if matched {
                     Style::default().fg(VIOLET).add_modifier(Modifier::BOLD)
+                } else if ci < kind_len {
+                    Style::default().fg(TEAL)
                 } else {
                     Style::default()
                 },
@@ -501,7 +580,7 @@ fn render_search(f: &mut Frame, s: &super::search::SearchModal, area: Rect) {
         }
         let mut line = Line::from(spans);
         if row == s.sel {
-            line = line.style(Style::default().add_modifier(Modifier::REVERSED));
+            line = line.style(Style::default().add_modifier(Modifier::BOLD));
         }
         lines.push(line);
     }

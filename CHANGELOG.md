@@ -16,10 +16,30 @@ shipped alongside it.
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
-## [Unreleased]
+## [0.11.0] — 2026-08-18
+
+The CI release: tangled spindle workflows running in microVMs — from one
+command, from every SDK, from every screen — with tracing to match.
 
 ### Added
 
+- **`bsdkrun ci` — a local CI runner for [tangled](https://tangled.org)
+  spindle workflows.** It runs a repository's `.tangled/workflows/*.yml` in
+  real microVMs: the schema and `when:` matching are tangled's own Go package
+  (imported, not transcribed), the environment, layout and log format are
+  spindle's, and a manual run executes HEAD — never the dirty working tree.
+  `dependencies:` become a nixery image; `bsdkrun ci serve` accepts spindle's
+  `sh.tangled.pipeline` records over HTTP as the server half.
+- **Workflows as code in every SDK.** All nine SDKs gained a CI builder:
+  `yaml()` renders spindle-compatible YAML, `save(repo)` commits it to
+  `.tangled/workflows/`, `run()` executes it in a microVM immediately.
+- **CI/CD screens everywhere.** The desktop and web apps gained a CI/CD view
+  (workflow list, live step timeline, run history, log search/export), and
+  the terminal dashboard gained tabs with a CI/CD tab of its own.
+- **OpenTelemetry tracing.** One trace per run, one span per step, always
+  recorded into the engine's SQLite (`ci traces`, `ci spans`, the daemon's
+  `ciTraces`/`ciTraceSpans`, the UIs' live Trace waterfall) and exported live
+  over OTLP/HTTP when `--otlp` / `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
 - **`bsdkrun ci run` renders a live TUI on a terminal** (Bubble Tea): one row
   per step with realtime durations in seconds-with-milliseconds, a spinner on
   the running step and a dimmed tail of its output, failures keeping their
@@ -68,6 +88,24 @@ shipped alongside it.
 - The CI clone step marks the source mount `safe.directory` (modern git refuses
   a repository owned by another uid, which a virtio-fs mount always is).
 - `bsdkrun ci --help` prints the usage text instead of `run`'s flag dump.
+
+### SDKs
+
+| SDK        | Version |
+| ---------- | ------- |
+| typescript | 0.7.0   |
+| python     | 0.6.0   |
+| ruby       | 0.6.0   |
+| elixir     | 0.6.0   |
+| clojure    | 0.5.0   |
+| rust       | 0.4.0   |
+| go         | 0.4.0   |
+| gleam      | 1.6.0   |
+| scala      | 0.3.0   |
+
+All nine gained the CI workflow builder; the Go SDK also gained streaming VM
+creation (`CreateStreaming`). The Scala, Clojure and Elixir README install
+snippets now name current versions.
 
 ## [0.10.0] — 2026-08-18
 

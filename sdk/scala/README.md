@@ -16,7 +16,7 @@ drops into a codebase already committed to cats-effect, ZIO, or neither.
 ## Install
 
 ```scala
-libraryDependencies += "io.github.tsirysndr" %% "bsdkrun" % "0.1.0"
+libraryDependencies += "io.github.tsirysndr" %% "bsdkrun" % "0.3.0"
 ```
 
 Needs Java 11+ at runtime. The SDK finds the `bsdkrun` binary via

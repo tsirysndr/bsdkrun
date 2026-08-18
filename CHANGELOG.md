@@ -16,6 +16,43 @@ shipped alongside it.
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [Unreleased]
+
+### Added
+
+- **`bsdkrun ci` runs plain OCI images.** A workflow `image:` that reads as a
+  reference (`ubuntu:24.04`, `ghcr.io/org/img`) boots that image directly — no
+  nixery, no nix machinery; the runner only ensures git is present for the
+  clone. Two runnable examples cover both strategies (`examples/ci-bun-ubuntu`,
+  `examples/ci-bun-nixery`), and an e2e workflow runs them on CI.
+- **CI runs can be stopped from every surface.** The TUI already had `x`; the
+  desktop and web CI screens gain a Stop button (new `launch_cancel` command /
+  `ciCancel` GraphQL mutation).
+- **TUI repo picker.** `o` on the CI/CD tab opens a modal to browse for a git
+  checkout or paste a URL to clone — into the same `ci-checkouts` layout the
+  daemon uses, so all frontends share one checkout per repository.
+- CI screens: ANSI colors render in logs (instead of leaking escape codes),
+  search matches highlight in the text, the recent-runs list scrolls and pages,
+  recents are searchable, and trace spans glow in fixed neon on both themes.
+- Long image references everywhere render one-line, ellipsized, with the full
+  reference in a tooltip.
+
+### Fixed
+
+- **A CI boot now waits for the guest agent** before the first step; a cached
+  image booted fast enough to hit "the guest agent accepted the connection but
+  sent no output".
+- **The nixos/nix fallback image works again**: it ships `/etc/nix/nix.conf` as
+  a symlink into the read-only store, which virtio-fs refuses to append to even
+  for guest root. The nix-config step replaces it with a writable copy first.
+- **Registry outages no longer kill runs whose image is already cached.** The
+  resolver remembers which digest each reference last resolved to and boots the
+  last successfully pulled copy when the registry answers 5xx; manifest fetches
+  also retry 5xx before giving up.
+- The CI clone step marks the source mount `safe.directory` (modern git refuses
+  a repository owned by another uid, which a virtio-fs mount always is).
+- `bsdkrun ci --help` prints the usage text instead of `run`'s flag dump.
+
 ## [0.10.0] — 2026-08-18
 
 The AI-sandbox release: coding agents in disposable microVMs, a Docker engine

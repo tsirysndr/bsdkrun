@@ -33,6 +33,10 @@ func main() {
 	cmd := "run"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		cmd, args = args[0], args[1:]
+	} else if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
+		// A bare `--help` is a help request, not run's flag — without this it
+		// falls into run's FlagSet and prints the flag dump instead.
+		cmd = "help"
 	}
 
 	var err error

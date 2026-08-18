@@ -1,0 +1,199 @@
+name: e2e (bsdkrun ci / KVM)
+
+# Runs the two bun CI examples end to end under KVM: `bsdkrun ci run` boots a
+# microVM per workflow, clones the example's HEAD into it and runs `bun test`.
+# Between them the two examples cover both image strategies:
+#
+#   - ci-bun-ubuntu  — `image: ubuntu:24.04`: a plain OCI image, the runner
+#     installs git via apt, the workflow installs bun itself.
+#   - ci-bun-nixery  — `dependencies: [bun]`: the toolchain arrives in a
+#     nixery.dev image; if nixery times out building it, the run falls back to
+#     the pinned nixos/nix image + `nix profile add`, which this then covers
+#     instead. Either path must end in the same passing tests.
+#
+# Following the e2e conventions: the job asserts on the output the guest
+# actually produced (`3 pass` from bun) — a step's conclusion alone proves
+# nothing. The example steps start `continue-on-error: true` because x86_64 is
+# not yet known to work (both examples are verified on arm64/HVF); flip each
+# to false the first time it passes so a later regression is caught.
+#
+# x86_64 only: GitHub's arm64 runners do not expose /dev/kvm.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - "main"
+    paths:
+      - "ci/**"
+      - "core/**"
+      - "agent/**"
+      - "examples/ci-bun-ubuntu/**"
+      - "examples/ci-bun-nixery/**"
+      - ".github/workflows/e2e-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  ci-examples:
+    name: x86_64
+    runs-on: ubuntu-latest # x86_64; has /dev/kvm
+    timeout-minutes: 60 # first nixery build or the nix fallback can be slow
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Enable KVM
+        run: |
+          set -eux
+          test -e /dev/kvm || { echo "no /dev/kvm on this runner"; exit 1; }
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 0666 /dev/kvm
+          ls -l /dev/kvm
+
+      - name: Install build deps (incl. libkrun/libkrunfw build requirements)
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl ca-certificates xz-utils python3 \
+            python3-pyelftools pkg-config patchelf patch cpio kmod rsync zstd \
+            flex bison bc libelf-dev libssl-dev \
+            clang libclang-dev llvm-dev musl-tools libseccomp-dev
+
+      # The guests download packages (apt, bun.sh, cache.nixos.org), so they
+      # need the user-mode network.
+      - name: Install gvproxy (user-mode networking)
+        run: |
+          set -eux
+          sudo curl -fL -o /usr/local/bin/gvproxy \
+            https://github.com/containers/gvisor-tap-vsock/releases/latest/download/gvproxy-linux-amd64
+          sudo chmod +x /usr/local/bin/gvproxy
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+
+      # `bsdkrun ci` is a Go binary embedded by core/build.rs — without Go on
+      # PATH the build merely warns and the binary under test has no ci at all.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ci/go.mod
+
+      # Same cache the other KVM workflows use; the kernel compile is ~15-20
+      # min on a miss. Restore/save split so a failed build never poisons it.
+      - name: Restore libkrun build
+        id: libkrun-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v16
+
+      - name: Build libkrun (cache miss)
+        if: steps.libkrun-cache.outputs.cache-hit != 'true'
+        run: |
+          set -eux
+          git clone --depth 1 -b v5.5.0 https://github.com/containers/libkrunfw
+          ( cd libkrunfw && make -j"$(nproc)" && sudo make install )
+          git clone --depth 1 -b feat/pvh-boot https://github.com/tsirysndr/libkrun
+          ( cd libkrun && make -j"$(nproc)" BLK=1 NET=1 )
+
+      - name: Save libkrun build
+        if: steps.libkrun-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            libkrunfw
+            libkrun
+          key: libkrun-build-x86_64-pvh-v16
+
+      - name: Install libkrun
+        run: |
+          set -eux
+          ( cd libkrunfw && sudo make install )
+          ( cd libkrun && sudo make install BLK=1 NET=1 )
+          echo "PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo /usr/local/lib64 | sudo tee /etc/ld.so.conf.d/libkrun.conf
+          sudo ldconfig
+
+      - name: Build bsdkrun
+        run: |
+          set -eux
+          cargo build --release
+          # The embedded ci runner must actually be in there — a Go toolchain
+          # hiccup degrades the build to a warning, and every step below would
+          # then test nothing.
+          ./target/release/bsdkrun ci --help 2>&1 | grep -qi "workflow"
+
+      - name: Build guest agent (static musl)
+        run: |
+          set -eux
+          ( cd agent && cargo build --release --target x86_64-unknown-linux-musl )
+          echo "BSDKRUN_AGENT_LINUX=$PWD/agent/target/x86_64-unknown-linux-musl/release/bsdkrun-agent" >> "$GITHUB_ENV"
+
+      - name: bsdkrun kvm — host readiness check
+        run: |
+          set -eux
+          ./target/release/bsdkrun kvm --json | grep -q '"ok": true'
+
+      # CI runs the repository's HEAD commit, so each example gets its own
+      # little git repo first — same procedure its README documents.
+      - name: e2e — ci-bun-ubuntu (image ubuntu:24.04, no nixery)
+        continue-on-error: true # flip to false after the first green run on x86_64
+        run: |
+          set -eux
+          d=$(mktemp -d)
+          cp -r examples/ci-bun-ubuntu/. "$d"
+          git -C "$d" init -q
+          git -C "$d" add -A
+          git -C "$d" -c user.email=ci@e2e -c user.name=e2e commit -qm init
+
+          set +e
+          timeout 1500 ./target/release/bsdkrun ci run -w "$d" test 2>&1 | tee /tmp/ci-ubuntu.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "exit=$rc"
+          # The output the guest actually produced, not the conclusion: all
+          # three bun tests passed and the workflow closed green.
+          grep -q "3 pass" /tmp/ci-ubuntu.log
+          grep -q "test.yml passed" /tmp/ci-ubuntu.log
+          test "$rc" -eq 0
+
+      - name: e2e — ci-bun-nixery (dependencies via nixery, or the nix fallback)
+        continue-on-error: true # flip to false after the first green run on x86_64
+        run: |
+          set -eux
+          d=$(mktemp -d)
+          cp -r examples/ci-bun-nixery/. "$d"
+          git -C "$d" init -q
+          git -C "$d" add -A
+          git -C "$d" -c user.email=ci@e2e -c user.name=e2e commit -qm init
+
+          set +e
+          timeout 2400 ./target/release/bsdkrun ci run -w "$d" test 2>&1 | tee /tmp/ci-nixery.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "exit=$rc"
+          if grep -q "falling back" /tmp/ci-nixery.log; then
+            echo "NOTE: nixery timed out — this run exercised the nixos/nix fallback path"
+          fi
+          grep -q "3 pass" /tmp/ci-nixery.log
+          grep -q "test.yml passed" /tmp/ci-nixery.log
+          test "$rc" -eq 0
+
+      # A cancelled/timed-out run can leave a VM behind; say what the host
+      # state was either way so a red run is diagnosable from the log alone.
+      - name: Host state after the runs
+        if: always()
+        run: |
+          ./target/release/bsdkrun ps || true
+          ./target/release/bsdkrun ps 2>/dev/null | awk 'NR>1 {print $1}' \
+            | xargs -r -n1 ./target/release/bsdkrun rm -f || true

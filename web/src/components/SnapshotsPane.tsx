@@ -183,9 +183,9 @@ export default function SnapshotsPane({ machine }: { machine: Machine }) {
         title="Restore this snapshot?"
         body={
           <>
-            <span className="font-mono text-foreground-300">{label}</span> goes back to
+            <span className="font-mono text-foreground-400">{label}</span> goes back to
             the state saved in{" "}
-            <span className="font-mono text-foreground-300">{toRestore?.name}</span>
+            <span className="font-mono text-foreground-400">{toRestore?.name}</span>
             {machine.running ? ". It is stopped first" : ""}. Whatever it holds now is
             saved as a new snapshot, so this is undoable.
           </>
@@ -201,7 +201,7 @@ export default function SnapshotsPane({ machine }: { machine: Machine }) {
         body={
           <>
             This deletes the saved state{" "}
-            <span className="font-mono text-foreground-300">{toRemove?.name}</span>.
+            <span className="font-mono text-foreground-400">{toRemove?.name}</span>.
             Machines already branched from it are unaffected.
           </>
         }

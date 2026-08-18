@@ -14,7 +14,7 @@ function Output({ text }: { text: string }) {
   const ui = useUiTheme();
   if (!text) return null;
   return (
-    <pre className={`mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 ${ui.surface} p-3 font-mono text-[13px] leading-relaxed text-foreground-300`}>
+    <pre className={`mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 ${ui.surface} p-3 font-mono text-[13px] leading-relaxed text-foreground-400`}>
       {text}
     </pre>
   );

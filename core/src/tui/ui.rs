@@ -58,6 +58,8 @@ pub fn render(f: &mut Frame, app: &App) {
             .border_style(Style::default().fg(GREEN));
         f.render_widget(block, outer);
         term.render(f, inner);
+    } else if let Some(p) = app.ci.picker.as_ref().filter(|_| app.tab == super::Tab::Ci) {
+        render_repo_picker(f, app, p, area);
     } else if let Some(log) = &app.log {
         render_log(f, app, log, area);
     } else if let Some(w) = &app.wizard {
@@ -361,6 +363,83 @@ fn render_ai(f: &mut Frame, app: &App, area: Rect) {
 /// The CI/CD tab: workflows on the left, the latest run's step timeline on
 /// the right — the same two halves as the desktop app's CI screen, rendered
 /// from the same LogLine stream.
+/// The CI tab's "open repository" modal: a filter/URL input on top, the
+/// directory listing below. Typing filters; pasting a git URL and pressing ⏎
+/// clones it into the shared ci-checkouts layout instead.
+fn render_repo_picker(f: &mut Frame, app: &App, p: &super::ci::RepoPicker, area: Rect) {
+    let height = (area.height.saturating_sub(4)).min(20).max(8);
+    let rect = centered(area, area.width.saturating_sub(10).min(74), height);
+    f.render_widget(Clear, rect);
+    let block = modal_block("open repository");
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let mut lines: Vec<Line> = Vec::new();
+    // Input line: prompt, text, block cursor.
+    let mut input = vec![Span::styled("❯ ", Style::default().fg(TEAL))];
+    if p.input.is_empty() {
+        input.push(Span::styled(
+            "type to filter · paste a git URL to clone",
+            Style::default().fg(MUTED),
+        ));
+    } else {
+        let color = if p.input_is_url() { VIOLET } else { Color::Reset };
+        input.push(Span::styled(p.input.clone(), Style::default().fg(color)));
+        input.push(Span::styled("▏", Style::default().fg(TEAL)));
+    }
+    lines.push(Line::from(input));
+    lines.push(Line::from(Span::styled(
+        format!(" {}", p.cwd.display()),
+        Style::default().fg(MUTED),
+    )));
+
+    if let Some(busy) = &p.busy {
+        lines.push(Line::from(Span::styled(
+            format!("{} {busy}", SPINNER[app.frame % SPINNER.len()]),
+            Style::default().fg(YELLOW),
+        )));
+    }
+    if !p.error.is_empty() {
+        lines.push(Line::from(Span::styled(
+            p.error.clone(),
+            Style::default().fg(RED),
+        )));
+    }
+
+    let room = (inner.height as usize).saturating_sub(lines.len());
+    let filtered = p.filtered();
+    for (row, &idx) in filtered.iter().enumerate().take(room) {
+        let e = &p.entries[idx];
+        let sel = row == p.sel;
+        let (glyph, color) = if e.is_git {
+            ("● ", GREEN)
+        } else {
+            ("▸ ", MUTED)
+        };
+        let name_style = if sel {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(if sel { "▌ " } else { "  " }, Style::default().fg(TEAL)),
+            Span::styled(glyph, Style::default().fg(color)),
+            Span::styled(e.name.clone(), name_style),
+            Span::styled(
+                if e.is_git { "" } else { "  ⏎ browse" }.to_string(),
+                Style::default().fg(MUTED),
+            ),
+        ]));
+    }
+    if filtered.is_empty() && p.busy.is_none() {
+        lines.push(Line::from(Span::styled(
+            "  no matching directories here",
+            Style::default().fg(MUTED),
+        )));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 fn render_ci(f: &mut Frame, app: &App, area: Rect) {
     use super::ci::{RunStatus, StepStatus};
 
@@ -369,11 +448,21 @@ fn render_ci(f: &mut Frame, app: &App, area: Rect) {
 
     // Workflows.
     let block = Block::bordered()
-        .title(" Workflows (⏎ run · x cancel) ")
+        .title(" Workflows (⏎ run · o repo) ")
         .border_style(Style::default().fg(TEAL));
     let inner = block.inner(left);
     f.render_widget(block, left);
     let mut lines: Vec<Line> = Vec::new();
+    if let Some(repo) = &app.ci.repo {
+        let name = repo
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| repo.display().to_string());
+        lines.push(Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled(name, Style::default().fg(VIOLET).add_modifier(Modifier::BOLD)),
+        ]));
+    }
     if !app.ci.note.is_empty() {
         lines.push(Line::from(Span::styled(
             app.ci.note.clone(),
@@ -499,6 +588,8 @@ fn render_status_line(f: &mut Frame, app: &App, area: Rect) {
         ("CONFIRM", RED)
     } else if app.wizard.is_some() || app.settings.is_some() {
         ("EDIT", YELLOW)
+    } else if app.tab == super::Tab::Ci && app.ci.picker.is_some() {
+        ("PICK", VIOLET)
     } else if app.tab == super::Tab::Ci {
         ("CI/CD", TEAL)
     } else {
@@ -528,8 +619,10 @@ fn render_status_line(f: &mut Frame, app: &App, area: Rect) {
         "⏎ jump  C-u clear  esc close"
     } else if app.confirm.is_some() {
         "y confirm  n cancel"
+    } else if app.tab == super::Tab::Ci && app.ci.picker.is_some() {
+        "⏎ open/clone  ← up dir  ↑↓ move  esc close"
     } else if app.tab == super::Tab::Ci {
-        "⏎ run  x cancel  j/k move  1 dashboard  ? help"
+        "⏎ run  o repo  x cancel  j/k move  ? help"
     } else {
         match app.focus {
             Panel::Machines => "⏎ info  e shell  l logs  s start  x stop  d rm  n new  / search",
@@ -860,6 +953,7 @@ fn render_help(f: &mut Frame, area: Rect) {
         key("/", "fuzzy search across everything"),
         section("CI/CD tab"),
         key("⏎", "run the selected workflow in a microVM"),
+        key("o", "open a repository (browse dirs or clone a git URL)"),
         key("x", "cancel the live run"),
         key("?", "this help"),
         key("r", "refresh now"),

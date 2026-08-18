@@ -1,0 +1,16 @@
+# Bun tests with the toolchain coming from nixery: `dependencies:` become an
+# image built server-side from nixpkgs, so there is no install step at all.
+# The first run waits for nixery to build the image; after that it is cached.
+# If nixery times out, the runner falls back to the pinned nixos/nix image
+# and installs the same dependencies with `nix profile add`.
+when:
+  - event: ["push", "manual"]
+
+engine: microvm
+
+dependencies:
+  - bun
+
+steps:
+  - name: bun test
+    command: bun test

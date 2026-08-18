@@ -275,7 +275,7 @@ export default function SnapshotsView() {
         body={
           <>
             This deletes the saved state{" "}
-            <span className="font-mono text-foreground-300">{toRemove?.name}</span>.
+            <span className="font-mono text-foreground-400">{toRemove?.name}</span>.
             Machines already branched from it are unaffected.
           </>
         }
@@ -290,11 +290,11 @@ export default function SnapshotsView() {
         title="Restore this snapshot?"
         body={
           <>
-            <span className="font-mono text-foreground-300">
+            <span className="font-mono text-foreground-400">
               {toRestore?.machine_name || shortId(toRestore?.machine_id ?? "")}
             </span>{" "}
             goes back to the state saved in{" "}
-            <span className="font-mono text-foreground-300">{toRestore?.name}</span>.
+            <span className="font-mono text-foreground-400">{toRestore?.name}</span>.
             It is stopped first, and whatever it holds now is saved as a new snapshot so
             this is undoable.
           </>

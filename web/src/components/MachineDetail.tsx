@@ -50,18 +50,33 @@ import TerminalPane from "./TerminalPane";
 import LogsPane from "./LogsPane";
 import SetupPane from "./SetupPane";
 import type { Machine } from "../lib/types";
+import ImageRef from "./ImageRef";
 
 const EMPTY: string[] = [];
 
-function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function Row({
+  label,
+  value,
+  mono,
+  ellipsize,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  ellipsize?: boolean;
+}) {
   const toast = useToast();
   return (
     <div className="flex items-start justify-between gap-4 border-b border-white/5 py-2.5">
       <span className="text-xs text-foreground-500">{label}</span>
       <span
-        className={`group flex items-center gap-2 text-right text-sm text-foreground-300 ${mono ? "font-mono text-xs" : ""}`}
+        className={`group flex items-center gap-2 text-right text-sm text-foreground-400 ${mono ? "font-mono text-xs" : ""}`}
       >
-        <span className="break-all">{value}</span>
+        {ellipsize ? (
+          <ImageRef value={value} className="max-w-[280px]" />
+        ) : (
+          <span className="break-all">{value}</span>
+        )}
         <button
           className="opacity-0 transition group-hover:opacity-100"
           onClick={() => {
@@ -81,7 +96,7 @@ function Inspect({ m }: { m: Machine }) {
     <div className="px-1">
       <Row label="Name" value={m.name || "—"} />
       <Row label="ID" value={m.id} mono />
-      <Row label="Image" value={m.image || "—"} />
+      <Row label="Image" value={m.image || "—"} ellipsize />
       <Row label="Guest" value={kindColor(m.kind, m.image).label} />
       <Row label="Command" value={m.command || "—"} mono />
       <Row label="Status" value={m.running ? "Running" : exitLabel(m.exit_code)} />
@@ -90,14 +105,6 @@ function Inspect({ m }: { m: Machine }) {
       <Row label="Memory" value={m.mem != null ? `${m.mem} MiB` : "—"} />
       <Row label="Volume" value={m.volume || "—"} />
       <Row
-        label="Ports"
-        value={
-          m.ports.length
-            ? m.ports.map((p) => `${p.bind}:${p.host}->${p.guest}/tcp`).join(", ")
-            : "—"
-        }
-      />
-      <Row
         label="Network"
         value={
           m.network
@@ -105,6 +112,16 @@ function Inspect({ m }: { m: Machine }) {
               ? `${m.network} (${m.net_ip})`
               : m.network
             : "— (isolated)"
+        }
+      />
+      <Row
+        label="Ports"
+        value={
+          m.ports.length > 0
+            ? m.ports
+                .map((p) => `${p.bind}:${p.host}->${p.guest}/tcp`)
+                .join(", ")
+            : "—"
         }
       />
       {m.origin && <Row label="Branched from" value={m.origin} />}
@@ -459,7 +476,7 @@ export default function MachineDetail() {
       body={
         <>
           This deletes machine{" "}
-          <span className="font-mono text-foreground-300">
+          <span className="font-mono text-foreground-400">
             {m && shortId(m.id)}
           </span>{" "}
           and its state. This cannot be undone.

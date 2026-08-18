@@ -12,7 +12,7 @@ bsdkrun ci serve          # accept spindle pipeline records over HTTP
 This directory is the tool itself: a Go binary compiled by `core/build.rs` and
 embedded into `bsdkrun` exactly as `pack/` is. **An end user never needs Go** —
 `bsdkrun ci` extracts and executes it, and the tool drives VMs through the
-bsdkrun Go SDK, pointed back at the very binary that launched it
+bsdkrun CLI itself, pointed back at the very binary that launched it
 (`$BSDKRUN_BIN`).
 
 ## Why this exists
@@ -50,7 +50,12 @@ For each matching workflow:
    with; containers get that from the runtime). Both dependency spellings are
    accepted: the plain list (`engine: microvm`) and the registry map
    (`engine: nixery`). Custom registries (`github:owner/repo/rev`) install via
-   `nix profile add` inside the VM.
+   `nix profile add` inside the VM. An `image:` that reads as an OCI reference
+   (`ubuntu:24.04`, `ghcr.io/org/img`) boots that image directly instead — no
+   nixery, no nix; the runner only ensures git is present for the clone. If
+   nixery cannot serve the image (its server-side build can outlast the
+   gateway timeout on big dependency sets), the run falls back to the pinned
+   `nixos/nix` image and installs the dependencies with `nix profile add`.
 2. **VM.** bsdkrun boots the image as a microVM (2 CPUs / 2048 MiB by default;
    `--cpus`, `--mem`). The repository is mounted **read-only** at
    `/tangled/source` — a CI step cannot write to the checkout that triggered it.
@@ -62,6 +67,18 @@ For each matching workflow:
 4. **Steps**, serially, each from the workspace, with workflow + step
    environment applied. First failure stops the workflow; the VM is destroyed
    unless `--keep`, which leaves it for `bsdkrun shell <id>`.
+
+## Examples
+
+Two runnable copies of the same bun test suite, one per image strategy:
+
+- [`examples/ci-bun-ubuntu`](../examples/ci-bun-ubuntu) — `image: ubuntu:24.04`,
+  a plain Ubuntu microVM; the workflow installs bun itself, no nixery involved.
+- [`examples/ci-bun-nixery`](../examples/ci-bun-nixery) — `dependencies: [bun]`,
+  the toolchain arrives in a nixery image and the workflow is a single step.
+
+Each README shows the copy-out-and-run procedure (CI runs the HEAD commit, so
+the example needs its own git repository).
 
 ## Triggers
 
@@ -139,5 +156,7 @@ PATH (see `core/build.rs::ensure_ci_binary`); without Go, bsdkrun builds
 normally and `bsdkrun ci` explains what is missing. Under nix, the flake's
 `ciBin` derivation builds it and `preBuild` drops it into `core/src/ci-bin/`.
 
-The module `replace`s the Go SDK to `../sdk/go`, so SDK changes rebuild the CI
-tool — and the two can never disagree about how a VM is driven.
+The tool drives VMs with its own thin CLI driver (`driver.go`), not the Go
+SDK: a module `replace` to `../sdk/go` looked right but froze the SDK inside
+nix's fixed-output vendor step, shipping stale code that go.sum could not see
+change. The CLI flags it drives are the same public surface every SDK uses.

@@ -21,6 +21,7 @@ import { useInfiniteRows } from "../hooks/useInfiniteRows";
 import { useListNavigation } from "../hooks/useListNavigation";
 import { useToast } from "../state/toast";
 import type { Image } from "../lib/types";
+import ImageRef from "./ImageRef";
 
 /** Guess a run kind from a fetched-image reference (freebsd-15.1 / netbsd-…). */
 function refKind(ref: string): "linux" | "freebsd" | "netbsd" {
@@ -123,9 +124,10 @@ export default function ImagesView() {
               }
             >
               <TableCell>
-                <span className="text-sm font-medium text-foreground">
-                  {im.reference}
-                </span>
+                <ImageRef
+                  value={im.reference}
+                  className="max-w-[420px] text-sm font-medium text-foreground"
+                />
               </TableCell>
               <TableCell>
                 <span className="font-mono text-[11px] text-foreground-500">
@@ -202,9 +204,10 @@ export default function ImagesView() {
         body={
           <>
             This deletes{" "}
-            <span className="font-mono text-foreground-300">
-              {removeTarget?.reference}
-            </span>{" "}
+            <ImageRef
+              value={removeTarget?.reference}
+              className="inline-block max-w-full align-bottom font-mono text-foreground-400"
+            />{" "}
             and its extracted rootfs. Running it again re-pulls it.
           </>
         }

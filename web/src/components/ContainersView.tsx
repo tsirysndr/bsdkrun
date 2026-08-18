@@ -34,6 +34,7 @@ import { TableSkeleton } from "./Skeletons";
 import { useInfiniteRows } from "../hooks/useInfiniteRows";
 import ContainerLogsModal from "./ContainerLogsModal";
 import type { DockerContainer, DockerStatus } from "../lib/types";
+import ImageRef from "./ImageRef";
 
 /**
  * Docker containers, running in bsdkrun's engine VM.
@@ -158,9 +159,10 @@ export default function ContainersView() {
                     </div>
                   </TableCell>
                   <TableCell>
-                    <span className="font-mono text-[11px] text-foreground-400">
-                      {clip(c.image, 28)}
-                    </span>
+                    <ImageRef
+                      value={c.image}
+                      className="max-w-[240px] font-mono text-[11px] text-foreground-400"
+                    />
                   </TableCell>
                   <TableCell>
                     <span
@@ -277,7 +279,7 @@ export default function ContainersView() {
         body={
           <>
             This removes{" "}
-            <span className="font-mono text-foreground-300">
+            <span className="font-mono text-foreground-400">
               {toRemove?.name || toRemove?.id}
             </span>{" "}
             and its writable layer. Volumes it declared go too.
@@ -298,9 +300,6 @@ export default function ContainersView() {
 }
 
 /** Trim a long image ref for the table, keeping the tag visible. */
-function clip(s: string, n: number): string {
-  return s.length <= n ? s : `${s.slice(0, n - 1)}…`;
-}
 
 /**
  * A published port, as a link. The whole point of the engine's port publisher

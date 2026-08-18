@@ -619,9 +619,17 @@ export const api = {
     streamLaunch(
       launchId,
       "runCi",
-      `subscription($d:String!,$n:[String!]!,$e:String!){ runCi(dir:$d, names:$n, event:$e){ line machineId error } }`,
-      { d: dir, n: names, e: event },
+      `subscription($d:String!,$n:[String!]!,$e:String!,$r:String!){ runCi(dir:$d, names:$n, event:$e, runId:$r){ line machineId error } }`,
+      { d: dir, n: names, e: event, r: launchId },
     );
+  },
+  /** Kill the CI run started with this launch id. */
+  ciCancel: async (launchId: string) => {
+    const d = await gql<{ ciCancel: boolean }>(
+      `mutation($r:String!){ ciCancel(runId:$r) }`,
+      { r: launchId },
+    );
+    return d.ciCancel;
   },
   /** Clone (or update) a repository on the engine's host for CI. */
   ciClone: async (url: string) => {

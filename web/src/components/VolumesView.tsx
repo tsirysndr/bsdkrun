@@ -184,7 +184,7 @@ export default function VolumesView() {
         body={
           <>
             This permanently deletes the data in volume{" "}
-            <span className="font-mono text-foreground-300">{target?.name}</span>
+            <span className="font-mono text-foreground-400">{target?.name}</span>
             . This cannot be undone.
           </>
         }

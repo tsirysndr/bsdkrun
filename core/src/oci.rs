@@ -46,6 +46,46 @@ const MANIFEST_ACCEPT: &str = "application/vnd.oci.image.index.v1+json, \
      application/vnd.oci.image.manifest.v1+json, \
      application/vnd.docker.distribution.manifest.v2+json";
 
+/// The file remembering which config digest `reference` last resolved to —
+/// the lookup key for booting from cache when the registry is unreachable.
+fn ref_memo_path(reference: &str) -> Option<std::path::PathBuf> {
+    let dir = crate::fetch::oci_cache_dir().ok()?.join("refs");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join(reference.replace(['/', ':', '@'], "_")))
+}
+
+/// Best-effort: record the resolve so a later registry outage can reuse it.
+fn remember_ref(reference: &str, config_digest: &str) {
+    if let Some(p) = ref_memo_path(reference) {
+        let _ = std::fs::write(p, config_digest);
+    }
+}
+
+/// The last successfully pulled image for `reference`, if its extracted
+/// rootfs is still complete in the cache.
+fn stale_cached(reference: &str) -> Option<Image> {
+    let digest = std::fs::read_to_string(ref_memo_path(reference)?).ok()?;
+    let digest = digest.trim().to_string();
+    let dir = crate::fetch::oci_cache_dir()
+        .ok()?
+        .join(digest_to_dirname(&digest));
+    let rootfs = dir.join("rootfs");
+    let config_path = dir.join("config.json");
+    // The completion marker matters: a half-extracted rootfs boots into a
+    // kernel panic, and this path skips the layer-list comparison a live
+    // manifest would allow.
+    if !rootfs.exists() || cached_layers(&dir).is_none() {
+        return None;
+    }
+    let cfg = std::fs::read(&config_path).ok()?;
+    Some(Image {
+        rootfs,
+        config: parse_config(&serde_json::from_slice(&cfg).ok()?).ok()?,
+        digest,
+        size: 0,
+    })
+}
+
 /// Pull `reference` (e.g. `alpine`, `alpine:3.20`, `docker.io/library/nginx`,
 /// `ghcr.io/owner/name:tag`) for linux/arm64 and return its extracted rootfs +
 /// config. The extracted rootfs is cached under the bsdkrun cache by the image's
@@ -54,19 +94,39 @@ pub fn pull(reference: &str) -> Result<Image> {
     let r = Ref::parse(reference)?;
     info!(registry = %r.endpoint, repo = %r.repository, reference = %r.reference, "resolving OCI image");
 
-    let token = get_token(&r)?;
-
     // Resolve the reference to a concrete image manifest for the host arch.
+    // When the registry is unreachable (nixery's server-side build can outlast
+    // its gateway timeout again after its cache expires), fall back to the
+    // digest this same reference resolved to last time: for a tagged CI image
+    // a stale rootfs boots, and a 504 does not.
     let oci_arch = crate::host::Arch::current()?.oci();
-    let manifest = get_manifest(&r, &r.reference, &token)?;
-    let image_manifest = if is_index(&manifest) {
-        let digest = select_platform(&manifest, oci_arch).with_context(|| {
-            format!("{reference} has no linux/{oci_arch} image in its manifest index")
-        })?;
-        info!(%digest, arch = oci_arch, "selected manifest");
-        get_manifest(&r, &digest, &token)?
-    } else {
-        manifest
+    let resolved = (|| -> Result<(Option<String>, Value)> {
+        let token = get_token(&r)?;
+        let manifest = get_manifest(&r, &r.reference, &token)?;
+        let image_manifest = if is_index(&manifest) {
+            let digest = select_platform(&manifest, oci_arch).with_context(|| {
+                format!("{reference} has no linux/{oci_arch} image in its manifest index")
+            })?;
+            info!(%digest, arch = oci_arch, "selected manifest");
+            get_manifest(&r, &digest, &token)?
+        } else {
+            manifest
+        };
+        Ok((token, image_manifest))
+    })();
+    let (token, image_manifest) = match resolved {
+        Ok(v) => v,
+        Err(e) => match stale_cached(reference) {
+            Some(img) => {
+                warn!(
+                    error = %e,
+                    digest = %img.digest,
+                    "registry unavailable — using the last successfully pulled copy"
+                );
+                return Ok(img);
+            }
+            None => return Err(e),
+        },
     };
 
     let config_digest = image_manifest["config"]["digest"]
@@ -99,6 +159,7 @@ pub fn pull(reference: &str) -> Result<Image> {
     let dir = crate::fetch::oci_cache_dir()?.join(digest_to_dirname(&config_digest));
     let rootfs = dir.join("rootfs");
     let config_path = dir.join("config.json");
+    remember_ref(reference, &config_digest);
     if rootfs.exists() && config_path.exists() {
         if cached_layers(&dir).as_deref() == Some(layer_digests.as_slice()) {
             info!(path = %rootfs.display(), "using cached rootfs");

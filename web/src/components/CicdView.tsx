@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtom } from "jotai";
 import {
   Button,
   Chip,
+  Input,
   Select,
   SelectItem,
   Spinner,
@@ -18,7 +19,9 @@ import {
   IconDownload,
   IconFolder,
   IconPlayerPlayFilled,
+  IconPlayerStopFilled,
   IconRocket,
+  IconSearch,
   IconTerminal2,
   IconX,
 } from "@tabler/icons-react";
@@ -55,7 +58,8 @@ const EVENTS = [
 
 /** How many runs history keeps, and how many log lines per step. Both caps
  * exist because this persists to localStorage, which is small and slow. */
-const MAX_RUNS = 20;
+const MAX_RUNS = 200;
+const RUNS_PAGE = 20;
 const MAX_LINES = 500;
 
 export default function CicdView() {
@@ -71,6 +75,8 @@ export default function CicdView() {
     [setRepoRaw, setRecents],
   );
   const [runs, setRuns] = useAtom(ciRunsAtom);
+  const [repoQuery, setRepoQuery] = useState("");
+  const [visibleRuns, setVisibleRuns] = useState(RUNS_PAGE);
   const [event, setEvent] = useState("manual");
   const [workflows, setWorkflows] = useState<CiWorkflowInfo[]>([]);
   const [wfError, setWfError] = useState<string | null>(null);
@@ -172,6 +178,18 @@ export default function CicdView() {
     }
   };
 
+  const cancelRun = async (r: CiRun) => {
+    try {
+      const killed = await api.ciCancel(r.id);
+      setRuns((rs) =>
+        rs.map((x) => (x.id === r.id ? finishRun(x, "cancelled") : x)),
+      );
+      if (!killed) toast("info", "The run had already finished");
+    } catch (e) {
+      toast("error", "Cancel failed", String(e));
+    }
+  };
+
   const run = runs.find((r) => r.id === selectedRun) ?? runs[0] ?? null;
   const repoName = repo ? repo.split("/").filter(Boolean).pop() : null;
 
@@ -180,10 +198,14 @@ export default function CicdView() {
       {/* Left: repository + workflows + history */}
       <div className="flex w-80 shrink-0 flex-col border-r border-white/10">
         <div className="border-b border-white/10 p-3">
-          <div className="mb-2 flex items-center gap-2">
+          <div className="mb-1 flex items-center gap-2">
             <IconRocket size={16} className="text-primary" />
             <span className="text-sm font-medium">CI/CD</span>
           </div>
+          <p className="mb-2 text-[10px] leading-snug text-foreground-500">
+            Runs your repository's tangled workflows
+            (.tangled/workflows) locally, in microVMs.
+          </p>
           <div className="flex items-center gap-1.5">
             <Button
               size="sm"
@@ -227,9 +249,30 @@ export default function CicdView() {
               <span className="text-[10px] font-medium uppercase tracking-wider text-foreground-500">
                 Recent
               </span>
+              {recents.length > 3 && (
+                <Input
+                  size="sm"
+                  variant="bordered"
+                  className="mt-1"
+                  classNames={{ input: "text-[11px]" }}
+                  placeholder="Search repos…"
+                  startContent={
+                    <IconSearch size={12} className="text-foreground-500" />
+                  }
+                  value={repoQuery}
+                  onValueChange={setRepoQuery}
+                  isClearable
+                  onClear={() => setRepoQuery("")}
+                />
+              )}
               {recents
                 .filter((r) => r !== repo)
-                .slice(0, 5)
+                .filter(
+                  (r) =>
+                    !repoQuery.trim() ||
+                    r.toLowerCase().includes(repoQuery.trim().toLowerCase()),
+                )
+                .slice(0, repoQuery.trim() ? 10 : 5)
                 .map((r) => (
                   <button
                     key={r}
@@ -298,7 +341,18 @@ export default function CicdView() {
           )}
         </div>
 
-        <div className="min-h-0 flex-1 overflow-auto p-3">
+        <div
+          className="min-h-0 flex-1 overflow-auto p-3"
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            if (
+              visibleRuns < runs.length &&
+              el.scrollTop + el.clientHeight >= el.scrollHeight - 40
+            ) {
+              setVisibleRuns((v) => v + RUNS_PAGE);
+            }
+          }}
+        >
           <span className="text-[11px] font-medium uppercase tracking-wider text-foreground-500">
             Recent runs
           </span>
@@ -307,7 +361,7 @@ export default function CicdView() {
               Nothing yet — trigger a workflow.
             </p>
           ) : (
-            runs.map((r) => (
+            runs.slice(0, visibleRuns).map((r) => (
               <div
                 key={r.id}
                 onClick={() => setSelectedRun(r.id)}
@@ -322,6 +376,19 @@ export default function CicdView() {
                   <span className="min-w-0 flex-1 truncate text-xs">
                     {r.names.length ? r.names.join(", ") : "all matching"}
                   </span>
+                  {r.status === "running" && (
+                    <Tooltip content="Stop this run" placement="top">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void cancelRun(r);
+                        }}
+                        className="rounded p-0.5 text-foreground-400 hover:bg-white/10 hover:text-danger"
+                      >
+                        <IconPlayerStopFilled size={12} />
+                      </button>
+                    </Tooltip>
+                  )}
                   <span className="shrink-0 text-[10px] text-foreground-600">
                     {ago(new Date(r.startedAt).toISOString())}
                   </span>
@@ -343,10 +410,10 @@ export default function CicdView() {
         {!run ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-foreground-500">
             <IconRocket size={28} />
-            <p className="text-sm">Run a workflow to see its steps here.</p>
+            <p className="text-sm">Run a tangled workflow to see its steps here.</p>
           </div>
         ) : (
-          <RunDetail run={run} />
+          <RunDetail run={run} onCancel={() => void cancelRun(run)} />
         )}
       </div>
 
@@ -402,10 +469,20 @@ function runToText(run: CiRun): string {
   return out.join("\n");
 }
 
-function RunDetail({ run }: { run: CiRun }) {
+function RunDetail({ run, onCancel }: { run: CiRun; onCancel: () => void }) {
   const [query, setQuery] = useState("");
   const [matchIdx, setMatchIdx] = useState(0);
+  const [view, setView] = useState<"steps" | "trace">("steps");
   const toast = useToast();
+
+  // The trace bars grow in real time; stream events already re-render, but a
+  // silent long step (a compile, say) would freeze its bar without a tick.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (run.status !== "running" || view !== "trace") return;
+    const t = setInterval(() => forceTick((n) => n + 1), 250);
+    return () => clearInterval(t);
+  }, [run.status, view]);
 
   // Every matching line across every step, in order — ↑/↓ walks this list,
   // auto-expanding whichever step the active match lives in.
@@ -458,6 +535,18 @@ function RunDetail({ run }: { run: CiRun }) {
             {run.dir} · {run.event} · {new Date(run.startedAt).toLocaleString()}
           </p>
         </div>
+        {run.status === "running" && (
+          <Button
+            size="sm"
+            variant="flat"
+            color="danger"
+            className="h-7 px-2 text-[11px]"
+            startContent={<IconPlayerStopFilled size={12} />}
+            onPress={onCancel}
+          >
+            Stop
+          </Button>
+        )}
         <Chip
           size="sm"
           variant="flat"
@@ -474,6 +563,21 @@ function RunDetail({ run }: { run: CiRun }) {
       </div>
 
       <div className="mb-3 flex items-center gap-2">
+        <div className="flex shrink-0 overflow-hidden rounded-lg border border-default-200">
+          {(["steps", "trace"] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={`px-2.5 py-1 text-[11px] capitalize transition ${
+                view === v
+                  ? "bg-primary/20 text-primary"
+                  : "text-foreground-500 hover:bg-default-100/70"
+              }`}
+            >
+              {v}
+            </button>
+          ))}
+        </div>
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -514,49 +618,233 @@ function RunDetail({ run }: { run: CiRun }) {
         </p>
       )}
 
-      <div className="relative">
-        {/* The timeline spine — what makes a list of steps read as a run. */}
-        <div className="absolute bottom-4 left-[13px] top-4 w-px bg-white/10" />
-        {run.steps.map((s, si) => (
-          <StepCard
-            key={s.id}
-            step={s}
-            query={query.trim().toLowerCase()}
-            activeLine={active?.step === si ? active.line : null}
-          />
-        ))}
-        {run.steps.length === 0 && run.status === "running" && (
-          <div className="flex items-center gap-2 py-2 pl-8 text-xs text-foreground-500">
-            <Spinner size="sm" /> booting the VM…
-          </div>
-        )}
-      </div>
+      {view === "trace" ? (
+        <TraceView run={run} />
+      ) : (
+        <div className="relative">
+          {/* The timeline spine — what makes a list of steps read as a run. */}
+          <div className="absolute bottom-4 left-[13px] top-4 w-px bg-white/10" />
+          {run.steps.map((s, si) => (
+            <StepCard
+              key={s.id}
+              step={s}
+              query={query.trim().toLowerCase()}
+              activeLine={active?.step === si ? active.line : null}
+            />
+          ))}
+          {run.steps.length === 0 && run.status === "running" && (
+            <div className="flex items-center gap-2 py-2 pl-8 text-xs text-foreground-500">
+              <Spinner size="sm" /> booting the VM…
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-/** http(s) URLs in a line become links; everything else is plain text. */
-function Linkified({ text }: { text: string }) {
-  const parts = text.split(/(https?:\/\/[^\s"'`<>()[\]{}]+)/g);
+/**
+ * The dagger-inspired trace view: every step as a horizontal span on one
+ * shared timeline, growing in real time while the run is live. The same data
+ * the OTel exporter sends a collector, rendered without one.
+ */
+function TraceView({ run }: { run: CiRun }) {
+  const t0 = run.steps[0]?.startedAt ?? run.startedAt;
+  const tEnd = run.finishedAt ?? Date.now();
+  const total = Math.max(tEnd - t0, 1);
+
+  const fmt = (ms: number) =>
+    ms >= 60_000
+      ? `${Math.floor(ms / 60_000)}m${Math.round((ms % 60_000) / 1000)}s`
+      : ms >= 1000
+        ? `${(ms / 1000).toFixed(1)}s`
+        : `${Math.round(ms)}ms`;
+
+  // Gridlines at sensible intervals so durations read without arithmetic.
+  const tickEvery = total > 120_000 ? 30_000 : total > 30_000 ? 10_000 : total > 6000 ? 2000 : 500;
+  const ticks: number[] = [];
+  for (let t = tickEvery; t < total; t += tickEvery) ticks.push(t);
+
+  return (
+    <div className="select-text">
+      <div className="mb-1 flex justify-between text-[10px] text-foreground-500">
+        <span>0</span>
+        <span>{fmt(total)}</span>
+      </div>
+      <div className="relative rounded-xl border border-white/10 bg-content1/40 p-2">
+        {ticks.map((t) => (
+          <div
+            key={t}
+            className="absolute bottom-0 top-0 w-px bg-white/5"
+            style={{ left: `${(t / total) * 100}%` }}
+          />
+        ))}
+        {run.steps.map((s) => {
+          const start = (s.startedAt ?? t0) - t0;
+          const dur =
+            s.durationMs ?? (s.status === "running" ? Date.now() - (s.startedAt ?? t0) : 0);
+          const left = (start / total) * 100;
+          const width = Math.max((dur / total) * 100, 0.75);
+          // Explicit neon values rather than theme tokens: the waterfall
+          // should glow the same on dark and night-rider alike.
+          const color =
+            s.status === "failed"
+              ? "bg-[#ff709d]/60 border-[#ff709d] shadow-[0_0_8px_rgba(255,112,157,0.6)]"
+              : s.status === "running"
+                ? "bg-[#71e4fe]/50 border-[#71e4fe] shadow-[0_0_10px_rgba(113,228,254,0.6)] animate-pulse"
+                : s.system
+                  ? "bg-[#e591ff]/35 border-[#e591ff]/70 shadow-[0_0_6px_rgba(229,145,255,0.35)]"
+                  : "bg-[#55f0d7]/55 border-[#55f0d7] shadow-[0_0_8px_rgba(85,240,215,0.55)]";
+          return (
+            <div key={s.id} className="relative flex h-7 items-center">
+              <div
+                className={`absolute h-4 rounded border ${color}`}
+                style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }}
+                title={`${s.name} — ${fmt(dur)}`}
+              />
+              <span
+                className="relative z-10 max-w-[45%] truncate pl-1 text-[11px] text-foreground"
+                style={{ marginLeft: `${Math.min(left, 55)}%` }}
+              >
+                {s.name}
+                <span className="ml-1.5 text-[10px] text-foreground-500">{fmt(dur)}</span>
+              </span>
+            </div>
+          );
+        })}
+        {run.steps.length === 0 && (
+          <p className="py-4 text-center text-xs text-foreground-500">
+            spans appear as steps start
+          </p>
+        )}
+      </div>
+      <p className="mt-1.5 text-[10px] text-foreground-500">
+        Live spans — the same data exported to OpenTelemetry with
+        <code className="mx-1 rounded bg-default-100 px-1">--otlp</code>
+        or OTEL_EXPORTER_OTLP_ENDPOINT.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * One log line, rendered rather than dumped: ANSI SGR codes become styled
+ * spans (tools emit color even when piped — leaking `[2m…[0m` as text is a
+ * rendering bug, and stripping them wastes information), URLs become links,
+ * and the active search query highlights inside the text itself.
+ */
+const ANSI_FG: Record<number, string> = {
+  30: "text-foreground-500",
+  31: "text-red-400",
+  32: "text-green-400",
+  33: "text-yellow-300",
+  34: "text-blue-400",
+  35: "text-fuchsia-400",
+  36: "text-cyan-400",
+  37: "text-foreground",
+  90: "text-foreground-500",
+  91: "text-red-300",
+  92: "text-green-300",
+  93: "text-yellow-200",
+  94: "text-blue-300",
+  95: "text-fuchsia-300",
+  96: "text-cyan-300",
+  97: "text-foreground",
+};
+
+interface AnsiSeg {
+  text: string;
+  cls: string;
+}
+
+function parseAnsi(line: string): AnsiSeg[] {
+  const segs: AnsiSeg[] = [];
+  let fg = "";
+  let mods: string[] = [];
+  let buf = "";
+  const flush = () => {
+    if (buf) segs.push({ text: buf, cls: [fg, ...mods].filter(Boolean).join(" ") });
+    buf = "";
+  };
+  // eslint-disable-next-line no-control-regex
+  const re = /\x1b\[([0-9;]*)m/g;
+  let last = 0;
+  for (const m of line.matchAll(re)) {
+    buf += line.slice(last, m.index);
+    last = (m.index ?? 0) + m[0].length;
+    flush();
+    for (const code of (m[1] || "0").split(";").map(Number)) {
+      if (code === 0) {
+        fg = "";
+        mods = [];
+      } else if (code === 1) mods = [...new Set([...mods, "font-semibold"])];
+      else if (code === 2) mods = [...new Set([...mods, "opacity-60"])];
+      else if (code === 3) mods = [...new Set([...mods, "italic"])];
+      else if (ANSI_FG[code]) fg = ANSI_FG[code];
+      else if (code === 39) fg = "";
+      else if (code >= 22 && code <= 24) mods = [];
+    }
+  }
+  buf += line.slice(last);
+  flush();
+  return segs.length ? segs : [{ text: line, cls: "" }];
+}
+
+/** Wrap query matches in <mark> within plain text. */
+function highlighted(text: string, query: string, keyBase: string) {
+  if (!query) return [<span key={keyBase}>{text}</span>];
+  const out: React.ReactNode[] = [];
+  const lower = text.toLowerCase();
+  let i = 0;
+  let n = 0;
+  while (i < text.length) {
+    const at = lower.indexOf(query, i);
+    if (at < 0) {
+      out.push(<span key={`${keyBase}-${n++}`}>{text.slice(i)}</span>);
+      break;
+    }
+    if (at > i) out.push(<span key={`${keyBase}-${n++}`}>{text.slice(i, at)}</span>);
+    out.push(
+      <mark
+        key={`${keyBase}-${n++}`}
+        className="rounded-sm bg-warning/40 px-0.5 text-inherit"
+      >
+        {text.slice(at, at + query.length)}
+      </mark>,
+    );
+    i = at + query.length;
+  }
+  return out;
+}
+
+function AnsiLine({ text, query }: { text: string; query: string }) {
+  const segs = parseAnsi(text);
   return (
     <>
-      {parts.map((p, i) =>
-        /^https?:\/\//.test(p) ? (
-          <a
-            key={i}
-            href={p}
-            onClick={(e) => {
-              e.preventDefault();
-              window.open(p, "_blank", "noopener,noreferrer");
-            }}
-            className="cursor-pointer text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
-          >
-            {p}
-          </a>
-        ) : (
-          <span key={i}>{p}</span>
-        ),
-      )}
+      {segs.map((seg, si) => {
+        const parts = seg.text.split(/(https?:\/\/[^\s"'`<>()[\]{}]+)/g);
+        return (
+          <span key={si} className={seg.cls}>
+            {parts.map((p, pi) =>
+              /^https?:\/\//.test(p) ? (
+                <a
+                  key={pi}
+                  href={p}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    window.open(p, "_blank", "noopener,noreferrer");
+                  }}
+                  className="cursor-pointer text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+                >
+                  {p}
+                </a>
+              ) : (
+                highlighted(p, query, `${si}-${pi}`)
+              ),
+            )}
+          </span>
+        );
+      })}
     </>
   );
 }
@@ -637,7 +925,7 @@ function StepCard({
         {expanded && (
           <div
             ref={logRef}
-            className="max-h-72 select-text overflow-auto border-t border-white/10 px-3 py-2 font-mono text-[12px] leading-[1.6] text-foreground"
+            className="max-h-72 select-text overflow-auto border-t border-white/10 px-3 py-2 font-mono text-[13px] leading-[1.65] text-foreground"
           >
             {step.lines.length === 0 ? (
               <span className="flex items-center gap-2 text-foreground-500">
@@ -661,7 +949,7 @@ function StepCard({
                           : ""
                     }`}
                   >
-                    <Linkified text={l.content} />
+                    <AnsiLine text={l.content} query={query} />
                   </div>
                 );
               })

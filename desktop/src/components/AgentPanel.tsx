@@ -448,7 +448,7 @@ function Idle({
           <p className="mt-1 text-xs text-foreground-500">
             Runs in a sandbox VM. It sees{" "}
             {workspace ? (
-              <span className="text-foreground-300">{basename(workspace)}</span>
+              <span className="text-foreground-400">{basename(workspace)}</span>
             ) : (
               "no folder"
             )}

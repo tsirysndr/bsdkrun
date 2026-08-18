@@ -150,7 +150,7 @@ export default function TopBar() {
 
       <button
         onClick={() => setPalette(true)}
-        className="no-drag group flex h-8 items-center gap-2 rounded-lg border border-white/10 bg-content2/60 px-2.5 text-xs text-foreground-500 transition hover:border-white/20 hover:text-foreground-300"
+        className="no-drag group flex h-8 items-center gap-2 rounded-lg border border-white/10 bg-content2/60 px-2.5 text-xs text-foreground-500 transition hover:border-white/20 hover:text-foreground-400"
       >
         <IconSearch size={14} />
         <span>Search or run a command</span>

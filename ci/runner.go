@@ -1,9 +1,10 @@
 package main
 
-// Executing a plan: one microVM per workflow, booted through the bsdkrun Go
-// SDK. The SDK shells out to the `bsdkrun` binary — the very one that
-// extracted and exec'd this tool, handed back via $BSDKRUN_BIN — so a local
-// run needs nothing installed beyond bsdkrun itself.
+// Executing a plan: one microVM per workflow, driven through the inlined
+// bsdkrun driver (driver.go — see there for why the Go SDK was removed). The
+// driver shells out to the `bsdkrun` binary that extracted and exec'd this
+// tool, handed back via $BSDKRUN_BIN, so a local run needs nothing installed
+// beyond bsdkrun itself.
 //
 // One VM per *workflow*, not per step, matching spindle: steps share a
 // filesystem (the clone lands once, build output persists between steps) and
@@ -15,8 +16,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	bsdkrun "github.com/tsirysndr/bsdkrun/sdk/go"
 )
 
 // runOpts is what the CLI layer decides; the runner just obeys.
@@ -48,17 +47,20 @@ type stepResult struct {
 func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 	logf(opts, "workflow %s\n  image %s\n", plan.Name, plan.Image)
 
-	create := bsdkrun.Linux(plan.Image).
-		Name(vmName(plan.Name)).
-		Cpus(opts.Cpus).
-		Mem(opts.Mem).
-		// The guest runs steps, not a service: idle init is all it needs.
-		Command("sleep", "infinity")
+	// One trace per run, one span per step, exported live when a collector
+	// is configured (--otlp / $OTEL_EXPORTER_OTLP_ENDPOINT). A nil trace is
+	// tracing off; every call below tolerates it.
+	trace := NewTrace(plan.Name, opts.Source)
+	defer func() { trace.Finish(err) }()
+
+	// Read-only mount is the point: a CI step must not be able to write to
+	// the checkout that triggered it. The guest runs steps, not a service, so
+	// idle init is all it needs.
+	var mounts []string
 	if opts.Source != "" {
-		// Read-only is the point: a CI step must not be able to write to the
-		// checkout that triggered it.
-		create = create.Mount(opts.Source + ":" + sourceMount + ":ro")
+		mounts = append(mounts, opts.Source+":"+sourceMount+":ro")
 	}
+	name := vmName(plan.Name)
 
 	// The boot is a step like any other, and a *streamed* one: an image pull
 	// can take minutes (nixery builds large dependency sets server-side and
@@ -67,6 +69,7 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 	bootStep := Step{Name: "Boot VM", System: true, Command: "bsdkrun linux " + plan.Image}
 	bootStart := time.Now()
 	emitControl(opts, 0, bootStep, "start")
+	bootSpan := trace.StartSpan("Boot VM", map[string]string{"image": plan.Image})
 	var bootOut, bootErr io.Writer
 	if opts.JSON {
 		bootOut = &lineEmitter{out: opts.Out, stepID: 0, stream: "stdout"}
@@ -75,17 +78,45 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 		bootOut = prefixed(opts.Out)
 		bootErr = prefixed(opts.Out)
 	}
-	sbx, err := create.CreateStreaming(bootOut, bootErr)
+	sbx, err := createVM(plan.Image, name, opts.Cpus, opts.Mem, mounts,
+		[]string{"sleep", "infinity"}, bootOut, bootErr)
+	if err != nil && len(plan.NixpkgsDeps) > 0 && plan.Image != fallbackImage {
+		// nixery could not produce the image (it builds server-side, and a
+		// big closure outlives its gateway timeout however patiently the
+		// pull retries). Same environment, different road: the pinned nix
+		// base image plus `nix profile add` — announced, because a fallback
+		// nobody sees looks like magic or a bug depending on the day.
+		note := fmt.Sprintf(
+			"image pull failed (%v) — falling back to %s + nix profile add",
+			err, fallbackImage,
+		)
+		if opts.JSON {
+			emitData(opts, 0, note, "stderr")
+		} else {
+			logf(opts, "  %s\n", note)
+		}
+		plan.ToFallback()
+		sbx, err = createVM(plan.Image, name+"-fb", opts.Cpus, opts.Mem, mounts,
+			[]string{"sleep", "infinity"}, bootOut, bootErr)
+	}
 	bootRes := stepResult{
 		Name:     bootStep.Name,
 		System:   true,
 		Duration: time.Since(bootStart).Round(time.Millisecond),
 	}
+	bootSpan.End(err)
 	if err != nil {
 		bootRes.ExitCode = 1
 		results = append(results, bootRes)
 		emitControl(opts, 0, bootStep, "end")
 		return results, fmt.Errorf("booting the %s VM (image %s): %w", plan.Name, plan.Image, err)
+	}
+	// The boot step is not done until the guest can actually run something.
+	if err := sbx.waitReady(60 * time.Second); err != nil {
+		bootRes.ExitCode = 1
+		results = append(results, bootRes)
+		emitControl(opts, 0, bootStep, "end")
+		return results, fmt.Errorf("booting the %s VM: %w", plan.Name, err)
 	}
 	results = append(results, bootRes)
 	emitControl(opts, 0, bootStep, "end")
@@ -96,38 +127,45 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 				sbx.ID, sbx.ID, sbx.ID)
 			return
 		}
-		if rmErr := sbx.Remove(true); rmErr != nil {
+		if rmErr := sbx.remove(); rmErr != nil {
 			logf(opts, "warning: could not remove VM %s: %v\n", sbx.ID, rmErr)
 		}
 	}()
 
 	// The workspace and home exist before any step runs; every step then
 	// starts from the workspace, like spindle's container workdir.
-	if _, err := sbx.Command("mkdir").Args("-p", workspaceDir, homeDir).Check().Run(); err != nil {
+	if res, err := sbx.exec([]string{"mkdir", "-p", workspaceDir, homeDir}, nil, nil, nil); err != nil {
 		return nil, fmt.Errorf("preparing %s: %w", workspaceDir, err)
+	} else if res.ExitCode != 0 {
+		return nil, fmt.Errorf("preparing %s: %s", workspaceDir, strings.TrimSpace(res.Stderr))
 	}
 
 	for i, step := range plan.Steps {
 		idx := i + 1
 		start := time.Now()
 		emitControl(opts, idx, step, "start")
+		span := trace.StartSpan(step.Name, map[string]string{
+			"step.system": fmt.Sprintf("%t", step.System),
+		})
 
 		// `bash -lc` rather than sh: bash is in every image this plans
 		// (spindle appends it to the dependency set), and workflow commands
 		// are written against it. `cd` per step because exec sessions do not
 		// share a cwd.
 		script := "cd " + workspaceDir + " && {\n" + step.Command + "\n}"
-		cmd := sbx.Command("bash").Args("-lc", script)
+		env := map[string]string{}
 		for k, v := range plan.Env {
-			cmd = cmd.Env(k, v)
+			env[k] = v
 		}
 		for k, v := range step.Env {
-			cmd = cmd.Env(k, v)
+			env[k] = v
 		}
+		var sOut, sErr io.Writer
 		if !opts.JSON {
-			cmd = cmd.Stdout(prefixed(opts.Out)).Stderr(prefixed(opts.Out))
+			sOut = prefixed(opts.Out)
+			sErr = prefixed(opts.Out)
 		}
-		res, runErr := cmd.Run()
+		res, runErr := sbx.exec([]string{"bash", "-lc", script}, env, sOut, sErr)
 
 		code := 0
 		if res != nil {
@@ -146,11 +184,15 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 		emitControl(opts, idx, step, "end")
 
 		if runErr != nil {
+			span.End(runErr)
 			return results, fmt.Errorf("step %q could not run: %w", step.Name, runErr)
 		}
 		if code != 0 {
-			return results, fmt.Errorf("step %q failed with exit code %d", step.Name, code)
+			stepErr := fmt.Errorf("step %q failed with exit code %d", step.Name, code)
+			span.End(stepErr)
+			return results, stepErr
 		}
+		span.End(nil)
 		logf(opts, "  ✓ %s (%s)\n", step.Name, results[len(results)-1].Duration)
 	}
 	return results, nil

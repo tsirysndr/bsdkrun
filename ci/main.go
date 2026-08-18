@@ -74,6 +74,10 @@ Run flags:
   --cpus N, --mem MIB                VM size (default 2 cpus, 2048 MiB)
   --keep                             keep the VM after a failure
   --json                             spindle log-line JSON on stdout
+  --nixery <host>                    a self-hosted nixery instead of nixery.dev
+  --otlp <url>                       export OpenTelemetry spans (or set
+                                     OTEL_EXPORTER_OTLP_ENDPOINT); one span
+                                     per step, sent live as each ends
 
 A manual run executes the repository's HEAD commit — never the dirty working
 tree. Commit first; CI that quietly tested uncommitted changes would pass
@@ -86,7 +90,7 @@ func permute(args []string) []string {
 	flagsWithValue := map[string]bool{
 		"--event": true, "--branch": true, "--input": true, "--workspace": true,
 		"-w": true, "--cpus": true, "--mem": true, "--bind": true,
-		"-f": true, "--file": true,
+		"-f": true, "--file": true, "--nixery": true, "--otlp": true,
 	}
 	var flags, rest []string
 	for i := 0; i < len(args); i++ {
@@ -120,6 +124,8 @@ func cmdRun(args []string) error {
 	mem := fs.Int("mem", 2048, "")
 	keep := fs.Bool("keep", false, "")
 	jsonOut := fs.Bool("json", false, "")
+	nixery := fs.String("nixery", "", "")
+	otlp := fs.String("otlp", "", "")
 	var inputs, files repeatable
 	fs.Var(&inputs, "input", "")
 	fs.Var(&files, "file", "")
@@ -128,6 +134,8 @@ func cmdRun(args []string) error {
 		return err
 	}
 	names := fs.Args()
+	nixeryOverride = *nixery
+	otlpOverride = *otlp
 
 	repo, err := inspectRepo(*workspace)
 	if err != nil {

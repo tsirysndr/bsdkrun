@@ -71,6 +71,10 @@ fn apply_env(s: &Settings) {
 struct AppState {
     settings: Mutex<Settings>,
     sys: Mutex<sysinfo::System>,
+    /// Live launches by launch id → child pid, so a CI run (or any streamed
+    /// launch) can be cancelled from the UI. Local children only; a remote
+    /// engine's child lives on the daemon's host and is cancelled there.
+    launches: Mutex<std::collections::HashMap<String, u32>>,
 }
 
 impl Default for AppState {
@@ -78,6 +82,7 @@ impl Default for AppState {
         Self {
             settings: Mutex::new(Settings::default()),
             sys: Mutex::new(sysinfo::System::new()),
+            launches: Mutex::new(std::collections::HashMap::new()),
         }
     }
 }
@@ -403,6 +408,23 @@ async fn ci_run(
     args.extend(names);
     stream_bsdkrun(app, bin, args, launch_id, false, "the CI run timed out");
     Ok(())
+}
+
+/// Kill the launch started with this id (a CI run, from its Stop button).
+/// Returns whether one was still running. Local children only — a remote
+/// engine's runs are cancelled through the daemon's `ciCancel`.
+#[tauri::command]
+async fn launch_cancel(state: State<'_, AppState>, launch_id: String) -> Result<bool, String> {
+    let pid = state.launches.lock().unwrap().remove(&launch_id);
+    match pid {
+        Some(pid) => {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status();
+            Ok(true)
+        }
+        None => Ok(false),
+    }
 }
 
 /// Clone (or update) a repository for the CI screen, host-side, into
@@ -915,6 +937,10 @@ fn stream_bsdkrun(
                 return;
             }
         };
+        if let Some(pid) = child.id() {
+            let state = app.state::<AppState>();
+            state.launches.lock().unwrap().insert(launch_id.clone(), pid);
+        }
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
 
@@ -967,6 +993,11 @@ fn stream_bsdkrun(
         // A VM grandchild holds the pipes open, so the drain tasks never EOF.
         err_task.abort();
         out_task.abort();
+        app.state::<AppState>()
+            .launches
+            .lock()
+            .unwrap()
+            .remove(&launch_id);
 
         let id = id_slot.lock().unwrap().clone();
         let done = match status {
@@ -1680,6 +1711,7 @@ pub fn run() {
             resume_agent,
             ci_workflows,
             ci_run,
+            launch_cancel,
             ci_clone,
             remove_machine,
             remove_image,

@@ -40,6 +40,7 @@ import {
 import { selectedMachineAtom } from "../state/atoms";
 import { useToast } from "../state/toast";
 import type { Machine, Network } from "../lib/types";
+import ImageRef from "./ImageRef";
 
 const schema = z.object({
   name: z
@@ -148,7 +149,7 @@ function MemberRow({ m, onOpen }: { m: Machine; onOpen: () => void }) {
             {kc.label}
           </span>
         </div>
-        <div className="truncate font-mono text-[11px] text-foreground-500">{m.image}</div>
+        <ImageRef value={m.image} className="font-mono text-[11px] text-foreground-500" />
       </div>
       <span className="shrink-0 font-mono text-xs text-cyan-300/90">
         {m.net_ip || "—"}

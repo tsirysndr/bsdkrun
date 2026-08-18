@@ -230,21 +230,28 @@ impl Supervisor {
         &self,
         args: &[String],
     ) -> Result<mpsc::Receiver<Result<OutputChunk, Status>>, Status> {
+        Ok(self.stream_with_pid(args)?.0)
+    }
+
+    /// `stream`, but also handing back the child's pid — the handle a caller
+    /// needs to cancel the work (CI runs), since dropping the receiver only
+    /// stops listening, never the child.
+    pub fn stream_with_pid(
+        &self,
+        args: &[String],
+    ) -> Result<(mpsc::Receiver<Result<OutputChunk, Status>>, Option<u32>), Status> {
         let (tx, rx) = mpsc::channel(CHANNEL_DEPTH);
         let mut cmd = self.command(args)?;
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.kill_on_drop(true);
 
+        // Spawn here, not in the task: the pid must exist before this returns.
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| Status::internal(format!("spawning: {e}")))?;
+        let pid = child.id();
+
         tokio::spawn(async move {
-            let mut child = match cmd.spawn() {
-                Ok(c) => c,
-                Err(e) => {
-                    let _ = tx
-                        .send(Err(Status::internal(format!("spawning: {e}"))))
-                        .await;
-                    return;
-                }
-            };
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
             let out_tx = tx.clone();
@@ -268,7 +275,7 @@ impl Supervisor {
                 }))
                 .await;
         });
-        Ok(rx)
+        Ok((rx, pid))
     }
 
     /// Run a command with stdin attached, for a non-tty interactive session.

@@ -100,6 +100,8 @@ export const api = {
     invoke<void>("ci_run", { launchId, dir, names, event }),
   /** Clone (or update) a repository for CI; returns the checkout path. */
   ciClone: (url: string) => invoke<string>("ci_clone", { url }),
+  /** Kill the CI run started with this launch id. */
+  ciCancel: (launchId: string) => invoke<boolean>("launch_cancel", { launchId }),
   /** Resume one stopped sandbox, streaming its boot. */
   resumeAgent: (launchId: string, machine: string) =>
     invoke<void>("resume_agent", { launchId, machine }),

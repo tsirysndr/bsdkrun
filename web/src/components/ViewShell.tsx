@@ -66,7 +66,7 @@ export function EmptyState({
         <div className="mb-4 grid h-16 w-16 place-items-center rounded-2xl border border-white/10 bg-content2/50 text-foreground-400">
           {icon}
         </div>
-        <div className="text-base font-medium text-foreground-300">{title}</div>
+        <div className="text-base font-medium text-foreground-400">{title}</div>
         {hint && (
           <p className="mt-1.5 text-sm text-foreground-500">{hint}</p>
         )}

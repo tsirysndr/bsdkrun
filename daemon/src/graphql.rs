@@ -970,6 +970,29 @@ impl Query {
             .map_err(gql_err)
     }
 
+    /// Recorded CI traces (one root span per run), newest first — the local
+    /// SQLite half of the run's OpenTelemetry trace, passed through as JSON.
+    async fn ci_traces(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 50)] limit: i64,
+    ) -> async_graphql::Result<String> {
+        api(ctx)?.ops.ci_traces(limit).await.map_err(gql_err)
+    }
+
+    /// Every span of one recorded CI trace, in start order.
+    async fn ci_trace_spans(
+        &self,
+        ctx: &Context<'_>,
+        trace_id: String,
+    ) -> async_graphql::Result<String> {
+        api(ctx)?
+            .ops
+            .ci_trace_spans(trace_id)
+            .await
+            .map_err(gql_err)
+    }
+
     async fn ai_shell_command(
         &self,
         ctx: &Context<'_>,
@@ -1179,6 +1202,12 @@ impl Mutation {
     /// screen. Returns the checkout path — an ordinary `dir` for `runCi`.
     async fn ci_clone(&self, ctx: &Context<'_>, url: String) -> async_graphql::Result<String> {
         api(ctx)?.ops.ci_clone(&url).await.map_err(gql_err)
+    }
+
+    /// Kill the CI run started with this `runId`. Returns whether one was
+    /// still running.
+    async fn ci_cancel(&self, ctx: &Context<'_>, run_id: String) -> async_graphql::Result<bool> {
+        Ok(api(ctx)?.ops.ci_cancel(&run_id))
     }
 
     /// Stop an agent's sandboxes. Its saved login survives.
@@ -1946,10 +1975,21 @@ impl Subscription_ {
         dir: String,
         #[graphql(default)] names: Vec<String>,
         #[graphql(default = "manual")] event: String,
+        #[graphql(default)] run_id: String,
     ) -> async_graphql::Result<impl Stream<Item = LaunchEvent>> {
         let api = api(ctx)?;
         let cmd = api.ops.ci_run_command(&dir, &names, &event);
-        Ok(launch_stream(api.ops.clone(), cmd))
+        // Registered under the client's run id so `ciCancel` can kill it;
+        // unregistered when the stream ends either way.
+        let ops = api.ops.clone();
+        let rx = ops.ci_stream(&cmd, &run_id).map_err(gql_err)?;
+        Ok(async_stream::stream! {
+            let mut inner = std::pin::pin!(launch_stream_from(rx));
+            while let Some(ev) = inner.next().await {
+                yield ev;
+            }
+            ops.ci_unregister(&run_id);
+        })
     }
 
     /// Resume one stopped sandbox by id, streaming its boot.
@@ -2013,13 +2053,25 @@ impl Subscription_ {
 /// just more progress.
 fn launch_stream(ops: Ops, cmd: CoreCommand) -> impl Stream<Item = LaunchEvent> {
     async_stream::stream! {
-        let mut rx = match ops.stream(&cmd) {
+        let rx = match ops.stream(&cmd) {
             Ok(rx) => rx,
             Err(e) => {
                 yield LaunchEvent { line: None, machine_id: None, error: Some(e.to_string()) };
                 return;
             }
         };
+        let mut inner = std::pin::pin!(launch_stream_from(rx));
+        while let Some(ev) = inner.next().await {
+            yield ev;
+        }
+    }
+}
+
+/// The line-splitting half of `launch_stream`, over an already-open stream.
+fn launch_stream_from(
+    mut rx: tokio::sync::mpsc::Receiver<Result<crate::pb::OutputChunk, tonic::Status>>,
+) -> impl Stream<Item = LaunchEvent> {
+    async_stream::stream! {
         let mut machine_id: Option<String> = None;
         let mut stdout = String::new();
         let mut stderr = String::new();

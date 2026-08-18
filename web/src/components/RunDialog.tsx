@@ -716,7 +716,7 @@ export default function RunDialog() {
             <button
               type="button"
               onClick={() => setAdvanced((a) => !a)}
-              className="flex items-center gap-1 text-xs font-medium text-foreground-500 transition hover:text-foreground-300"
+              className="flex items-center gap-1 text-xs font-medium text-foreground-500 transition hover:text-foreground-400"
             >
               <IconChevronDown
                 size={14}

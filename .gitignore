@@ -68,3 +68,4 @@ zig-out/
 
 .clj-kondo
 .lsp
+/ci/ci

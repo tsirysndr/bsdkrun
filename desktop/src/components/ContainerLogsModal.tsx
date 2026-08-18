@@ -8,6 +8,7 @@ import {
 import { IconFileText, IconRefresh } from "@tabler/icons-react";
 import { api } from "../lib/api";
 import type { DockerContainer } from "../lib/types";
+import ImageRef from "./ImageRef";
 
 /**
  * One container's logs.
@@ -77,9 +78,10 @@ export default function ContainerLogsModal({
         <ModalHeader className="flex items-center gap-2 text-base">
           <IconFileText size={18} className="text-foreground-400" />
           <span className="truncate">{container?.name || container?.id}</span>
-          <span className="font-mono text-xs font-normal text-foreground-400">
-            {container?.image}
-          </span>
+          <ImageRef
+            value={container?.image}
+            className="font-mono text-xs font-normal text-foreground-400"
+          />
           <div className="flex-1" />
           {loading && (
             <IconRefresh size={14} className="animate-spin text-foreground-500" />

@@ -7,7 +7,6 @@ go 1.25.9
 replace github.com/tsirysndr/bsdkrun/sdk/go => ../sdk/go
 
 require (
-	github.com/tsirysndr/bsdkrun/sdk/go v0.0.0-00010101000000-000000000000
 	gopkg.in/yaml.v3 v3.0.1
 	tangled.org/core v1.16.1-alpha
 )

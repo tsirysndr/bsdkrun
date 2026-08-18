@@ -152,29 +152,22 @@
         };
 
         # ---- bsdkrun-ci: the CI runner ------------------------------------
-        # The Go half of `bsdkrun ci`, embedded like pack. Its module tree
-        # spans two directories — `ci/` plus the Go SDK it drives VMs with
-        # (a `replace ../sdk/go` directive) — so the source is a fileset of
-        # both, with modRoot pointing at the module.
+        # The Go half of `bsdkrun ci`, embedded like pack. Deliberately *no*
+        # `replace ../sdk/go` any more: a path replace lands in the vendor
+        # FOD at hash-pin time and freezes there, so SDK changes invisible to
+        # go.sum silently compiled against the old SDK (one real breakage:
+        # `CreateStreaming undefined` in CI while the method sat in the same
+        # commit). The runner inlines its thin driver instead — see
+        # ci/driver.go.
         #
-        # Regenerate vendorHash after a dependency change with:
-        #   cd ci && go mod vendor -o /tmp/v && nix hash path --sri /tmp/v
+        # On a dependency change the reliable vendorHash procedure is nix's
+        # own: build once, copy the "got:" hash from the mismatch error.
         ciBin = pkgs.buildGoModule {
           pname = "bsdkrun-ci";
           version = "0.1.0";
 
-          src = lib.fileset.toSource {
-            root = ./.;
-            fileset = lib.fileset.unions [
-              ./ci
-              ./sdk/go
-            ];
-          };
-          modRoot = "ci";
-          # buildGoModule's fixed-output tree differs from a plain `go mod vendor`
-          # hash, so the reliable procedure is nix's own: build once, copy the
-          # "got:" hash from the mismatch error.
-          vendorHash = "sha256-VKyDthjs5eFpSXW6ckVkCqGI89L/eYbTuUJJSk3xE74=";
+          src = ./ci;
+          vendorHash = "sha256-vTyD1ViJbTDQPmH35zaRYnolr2k4V1B2QhDWC/j0bcE=";
 
           env.CGO_ENABLED = "0";
           ldflags = [ "-s" "-w" ];

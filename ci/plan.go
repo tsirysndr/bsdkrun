@@ -81,6 +81,8 @@ type Plan struct {
 	Env   map[string]string
 	Steps []Step
 	Clone workflow.CloneOpts
+	// The nixpkgs dependency list, kept for the no-nixery fallback.
+	NixpkgsDeps []string
 }
 
 // loadWorkflows reads every workflow under `.tangled/workflows`, exactly
@@ -111,14 +113,51 @@ func loadWorkflows(root string) ([]workflow.Workflow, error) {
 	return wfs, nil
 }
 
-// nixeryHost is where dependency images come from. Overridable because a
-// self-hosted nixery is the difference between CI that works offline-ish
-// (a local cache) and CI that hits a public instance on every cold pull.
+// nixeryOverride is set by --nixery; it wins over the environment.
+var nixeryOverride string
+
+// nixeryHost is where dependency images come from. Overridable (--nixery or
+// $BSDKRUN_CI_NIXERY) because a self-hosted nixery is the difference between
+// CI that depends on a public instance and CI that does not.
 func nixeryHost() string {
+	if nixeryOverride != "" {
+		return nixeryOverride
+	}
 	if h := os.Getenv("BSDKRUN_CI_NIXERY"); h != "" {
 		return h
 	}
 	return "nixery.dev"
+}
+
+// fallbackImage boots when the nixery image cannot be pulled at all.
+//
+// nixery builds an image server-side on its first request, and a big closure
+// (a rust toolchain, say) takes *minutes* — far past its gateway timeout, so
+// even patient retries see 504 after 504. The same environment is reachable
+// without nixery: the official nix image (pinned, multi-arch, served by a
+// registry that does not build on demand) plus `nix profile add` for the
+// workflow's dependencies. Slower on the first run — nix substitutes from
+// cache.nixos.org — but it finishes, which is the property CI actually needs.
+const fallbackImage = "docker.io/nixos/nix:2.30.3"
+
+// fallbackDepsStep installs the nixpkgs dependencies the nixery image would
+// have carried. It runs after the clone (nixos/nix already ships git and a
+// mount(8), both verified) and before any user step.
+func fallbackDepsStep(deps []string) *Step {
+	if len(deps) == 0 {
+		return nil
+	}
+	pkgs := make([]string, 0, len(deps))
+	for _, d := range deps {
+		pkgs = append(pkgs, "nixpkgs#"+d)
+	}
+	return &Step{
+		Name:   "Install dependencies (nix fallback)",
+		System: true,
+		Command: "nix --extra-experimental-features 'nix-command flakes' " +
+			"profile add " + strings.Join(pkgs, " "),
+		Env: map[string]string{"NIX_NO_COLOR": "1"},
+	}
 }
 
 // workflowImage maps a dependency set to a nixery image reference, matching
@@ -172,6 +211,16 @@ func nixConfStep() Step {
 		Name:   "Configure Nix",
 		System: true,
 		Command: `mkdir -p /etc/nix
+chmod u+w /etc/nix 2>/dev/null || true
+# nixos/nix (the fallback image) ships /etc/nix/nix.conf read-only; appending
+# through virtio-fs passthrough is denied even for guest root, because the
+# host side enforces the file mode. Replace it with a writable copy first —
+# mv needs only the directory to be writable.
+if [ -e /etc/nix/nix.conf ] || [ -L /etc/nix/nix.conf ]; then
+  cp -L /etc/nix/nix.conf /etc/nix/nix.conf.new 2>/dev/null || : > /etc/nix/nix.conf.new
+  chmod u+w /etc/nix/nix.conf.new
+  mv -f /etc/nix/nix.conf.new /etc/nix/nix.conf
+fi
 echo 'extra-experimental-features = nix-command flakes' >> /etc/nix/nix.conf
 echo 'build-users-group = ' >> /etc/nix/nix.conf
 echo 'sandbox = false' >> /etc/nix/nix.conf
@@ -258,6 +307,10 @@ func localCloneStep(opts workflow.CloneOpts, sha string) Step {
 		System: true,
 		Command: strings.Join([]string{
 			"git init -q",
+			// git refuses a repository owned by another uid ("dubious ownership");
+			// the source mount is owned by the host user while the guest runs as
+			// root, so every modern git needs it marked safe first.
+			"git config --global --add safe.directory '*'",
 			"git remote add origin file://" + sourceMount,
 			strings.Join(fetch, " "),
 			"git checkout -q FETCH_HEAD",
@@ -282,6 +335,34 @@ func buildPlan(wf workflow.Workflow, tr *tangled.Pipeline_TriggerMetadata, pipel
 	env["HOME"] = homeDir
 
 	sha := env["TANGLED_COMMIT_SHA"]
+
+	// An `image:` that reads as an OCI reference ("ubuntu:24.04",
+	// "ghcr.io/org/img") boots that image directly — no nixery, no nix
+	// machinery. Bare words ("nixos", spindle's default) keep the nixery
+	// mapping, so existing workflows change nothing.
+	if img := strings.TrimSpace(s.Image); img != "" && isOCIRef(img) {
+		if len(s.Dependencies) > 0 {
+			return nil, fmt.Errorf(
+				"%s: image: %s and dependencies: cannot combine — dependencies come "+
+					"from nixery; install packages in a step instead", wf.Name, img)
+		}
+		steps := []Step{prepareStep(), ensureGitStep(), localCloneStep(wf.CloneOpts, sha)}
+		for _, us := range s.Steps {
+			name := us.Name
+			if name == "" {
+				name = firstLine(us.Command)
+			}
+			steps = append(steps, Step{Name: name, Command: us.Command, Env: us.Environment})
+		}
+		return &Plan{
+			Name:  wf.Name,
+			Image: img,
+			Env:   env,
+			Steps: steps,
+			Clone: wf.CloneOpts,
+		}, nil
+	}
+
 	steps := []Step{prepareStep(), nixConfStep(), localCloneStep(wf.CloneOpts, sha)}
 	if dep := customDepsStep(s.Dependencies); dep != nil {
 		steps = append(steps, *dep)
@@ -295,12 +376,58 @@ func buildPlan(wf workflow.Workflow, tr *tangled.Pipeline_TriggerMetadata, pipel
 	}
 
 	return &Plan{
-		Name:  wf.Name,
-		Image: workflowImage(s.Dependencies),
-		Env:   env,
-		Steps: steps,
-		Clone: wf.CloneOpts,
+		Name:        wf.Name,
+		Image:       workflowImage(s.Dependencies),
+		Env:         env,
+		Steps:       steps,
+		Clone:       wf.CloneOpts,
+		NixpkgsDeps: s.Dependencies["nixpkgs"],
 	}, nil
+}
+
+// isOCIRef distinguishes a pullable image reference from spindle's bare base
+// names: anything with a registry path or a tag is a reference.
+func isOCIRef(s string) bool {
+	return strings.ContainsAny(s, "/:")
+}
+
+// ensureGitStep makes the clone step viable on images that do not ship git
+// (ubuntu, debian, alpine bases). A no-op when git is already present; a
+// clear error when there is no known package manager to install it with.
+func ensureGitStep() Step {
+	return Step{
+		Name:   "Ensure git",
+		System: true,
+		Command: `command -v git >/dev/null 2>&1 && exit 0
+if command -v apt-get >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq && apt-get install -y -qq --no-install-recommends git ca-certificates
+elif command -v apk >/dev/null 2>&1; then
+  apk add --no-cache git
+elif command -v dnf >/dev/null 2>&1; then
+  dnf install -y git
+else
+  echo "this image has no git and no known package manager to install it" >&2
+  exit 1
+fi`,
+	}
+}
+
+// ToFallback rewrites the plan for the no-nixery path: the pinned nix base
+// image, with the nixpkgs dependencies installed by a system step inserted
+// after the clone (index 2: prepare, nix-conf, clone, …).
+func (p *Plan) ToFallback() {
+	p.Image = fallbackImage
+	if dep := fallbackDepsStep(p.NixpkgsDeps); dep != nil {
+		at := 3
+		if at > len(p.Steps) {
+			at = len(p.Steps)
+		}
+		steps := append([]Step{}, p.Steps[:at]...)
+		steps = append(steps, *dep)
+		steps = append(steps, p.Steps[at:]...)
+		p.Steps = steps
+	}
 }
 
 func firstLine(s string) string {

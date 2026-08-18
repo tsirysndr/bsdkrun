@@ -483,6 +483,39 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> Outcome {
         logs::handle_key(app, key);
         return Outcome::Handled;
     }
+    // The CI repo picker takes typed text, so it must claim keys before the
+    // global bindings — `q`, `1`, `2` in a filter must filter, not act.
+    if app.tab == Tab::Ci {
+        if let Some(picker) = &mut app.ci.picker {
+            match key.code {
+                KeyCode::Esc => app.ci.picker = None,
+                KeyCode::Enter => {
+                    if let Some(root) = picker.enter() {
+                        app.message = format!("repository: {}", root.display());
+                        app.ci.picker = None;
+                        app.ci.set_repo(root);
+                    }
+                }
+                KeyCode::Down => picker.move_sel(1),
+                KeyCode::Up => picker.move_sel(-1),
+                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    picker.move_sel(1)
+                }
+                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    picker.move_sel(-1)
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    picker.input.clear();
+                    picker.sel = 0;
+                }
+                KeyCode::Left => picker.up(),
+                KeyCode::Backspace => picker.backspace(),
+                KeyCode::Char(c) => picker.push_char(c),
+                _ => {}
+            }
+            return Outcome::Handled;
+        }
+    }
 
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
@@ -492,6 +525,7 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> Outcome {
         KeyCode::Char('2') => app.tab = Tab::Ci,
         _ if app.tab == Tab::Ci => {
             match key.code {
+                KeyCode::Char('o') => app.ci.open_picker(),
                 KeyCode::Down | KeyCode::Char('j') => {
                     app.ci.sel = (app.ci.sel + 1).min(app.ci.workflows.len().saturating_sub(1));
                 }

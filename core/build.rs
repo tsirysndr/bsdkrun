@@ -257,9 +257,6 @@ fn ensure_ci_binary() {
     println!("cargo:rerun-if-changed=../ci/go.mod");
     println!("cargo:rerun-if-changed=../ci/go.sum");
     watch_tree(&ci_src);
-    // The CI tool links the Go SDK from this same repository (a `replace`
-    // directive), so SDK edits must rebuild it too.
-    watch_tree(&Path::new(&manifest_dir).join("../sdk/go"));
 
     if Command::new("go").arg("version").output().is_err() {
         println!(

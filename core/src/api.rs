@@ -171,6 +171,21 @@ pub struct Snapshot {
 }
 
 /// Every snapshot, newest first; or one machine's when `machine` is given.
+/// CI trace roots (one per run), newest first.
+pub fn list_ci_traces(limit: i64) -> Result<Vec<db::CiSpanRow>> {
+    db::Db::open()?.list_ci_traces(limit)
+}
+
+/// Every span of one CI trace, in start order.
+pub fn list_ci_spans(trace_id: &str) -> Result<Vec<db::CiSpanRow>> {
+    db::Db::open()?.list_ci_spans(trace_id)
+}
+
+/// Record a CI run's spans (called by the embedded runner at run end).
+pub fn record_ci_spans(spans: &[db::CiSpanRow]) -> Result<()> {
+    db::Db::open()?.insert_ci_spans(spans)
+}
+
 pub fn list_snapshots(machine: Option<&str>) -> Result<Vec<Snapshot>> {
     Ok(crate::commands::snapshot::list(machine)?
         .iter()

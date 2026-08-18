@@ -131,6 +131,22 @@ pub struct MachineRow {
 
 /// A machine snapshot: a named CoW clone of one machine's disk state, plus what
 /// `branch` needs to boot a new machine from it.
+/// One CI span, exactly as recorded — the local half of the run's
+/// OpenTelemetry trace.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CiSpanRow {
+    pub trace_id: String,
+    pub span_id: String,
+    pub parent_id: Option<String>,
+    pub name: String,
+    pub workflow: String,
+    pub repo: String,
+    pub start_ns: i64,
+    pub end_ns: i64,
+    pub ok: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SnapshotRow {
     /// Short id, like a machine's (12 hex chars).
@@ -346,6 +362,28 @@ impl Db {
                     mem INTEGER NOT NULL DEFAULT 512,
                     ports TEXT,
                     created_at TEXT NOT NULL
+                )",
+            )
+            .execute(&self.pool)
+            .await?;
+            // CI trace spans: every `bsdkrun ci` run records its steps here —
+            // one row per span — so run history is queryable (CLI, daemon,
+            // UIs) without an external OpenTelemetry collector. When one IS
+            // configured, the same spans go there too; this table is the
+            // local truth either way.
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS ci_spans (
+                    trace_id TEXT NOT NULL,
+                    span_id TEXT NOT NULL,
+                    parent_id TEXT,
+                    name TEXT NOT NULL,
+                    workflow TEXT NOT NULL DEFAULT '',
+                    repo TEXT NOT NULL DEFAULT '',
+                    start_ns INTEGER NOT NULL,
+                    end_ns INTEGER NOT NULL,
+                    ok INTEGER NOT NULL DEFAULT 1,
+                    error TEXT,
+                    PRIMARY KEY (trace_id, span_id)
                 )",
             )
             .execute(&self.pool)
@@ -931,6 +969,68 @@ impl Db {
     }
 
     /// Every snapshot, newest first.
+    /// Insert one trace's spans (idempotent per (trace, span)).
+    pub fn insert_ci_spans(&self, spans: &[CiSpanRow]) -> Result<()> {
+        self.rt.block_on(async {
+            for sp in spans {
+                sqlx::query(
+                    "INSERT OR REPLACE INTO ci_spans
+                     (trace_id, span_id, parent_id, name, workflow, repo,
+                      start_ns, end_ns, ok, error)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(&sp.trace_id)
+                .bind(&sp.span_id)
+                .bind(&sp.parent_id)
+                .bind(&sp.name)
+                .bind(&sp.workflow)
+                .bind(&sp.repo)
+                .bind(sp.start_ns)
+                .bind(sp.end_ns)
+                .bind(sp.ok as i64)
+                .bind(&sp.error)
+                .execute(&self.pool)
+                .await?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Root spans (traces), newest first.
+    pub fn list_ci_traces(&self, limit: i64) -> Result<Vec<CiSpanRow>> {
+        self.rt
+            .block_on(async {
+                let rows = sqlx::query(
+                    "SELECT trace_id, span_id, parent_id, name, workflow, repo,
+                            start_ns, end_ns, ok, error
+                     FROM ci_spans WHERE parent_id IS NULL
+                     ORDER BY start_ns DESC LIMIT ?",
+                )
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(rows.iter().map(row_to_ci_span).collect())
+            })
+            .map_err(Into::into)
+    }
+
+    /// Every span of one trace, in start order.
+    pub fn list_ci_spans(&self, trace_id: &str) -> Result<Vec<CiSpanRow>> {
+        self.rt
+            .block_on(async {
+                let rows = sqlx::query(
+                    "SELECT trace_id, span_id, parent_id, name, workflow, repo,
+                            start_ns, end_ns, ok, error
+                     FROM ci_spans WHERE trace_id = ? ORDER BY start_ns",
+                )
+                .bind(trace_id)
+                .fetch_all(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(rows.iter().map(row_to_ci_span).collect())
+            })
+            .map_err(Into::into)
+    }
+
     pub fn list_snapshots(&self) -> Result<Vec<SnapshotRow>> {
         self.rt
             .block_on(async {
@@ -1227,6 +1327,22 @@ fn row_to_flavor(r: sqlx::sqlite::SqliteRow) -> FlavorRow {
 /// added in one place.
 const SNAPSHOT_COLS: &str = "SELECT id, name, machine_id, machine_name, kind, image, path, \
                              parent, description, cpus, mem, ports, created_at FROM snapshots";
+
+fn row_to_ci_span(r: &sqlx::sqlite::SqliteRow) -> CiSpanRow {
+    use sqlx::Row;
+    CiSpanRow {
+        trace_id: r.get("trace_id"),
+        span_id: r.get("span_id"),
+        parent_id: r.get("parent_id"),
+        name: r.get("name"),
+        workflow: r.get("workflow"),
+        repo: r.get("repo"),
+        start_ns: r.get("start_ns"),
+        end_ns: r.get("end_ns"),
+        ok: r.get::<i64, _>("ok") != 0,
+        error: r.get("error"),
+    }
+}
 
 fn row_to_snapshot(r: sqlx::sqlite::SqliteRow) -> SnapshotRow {
     SnapshotRow {

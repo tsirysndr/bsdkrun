@@ -437,7 +437,7 @@ export default function MachinesView() {
         body={
           <>
             This deletes machine{" "}
-            <span className="font-mono text-foreground-300">
+            <span className="font-mono text-foreground-400">
               {removeTarget && shortId(removeTarget.id)}
             </span>{" "}
             and its state (console log, disk clone). This cannot be undone.

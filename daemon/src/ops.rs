@@ -734,11 +734,17 @@ fn as_result(outcome: OpResult<String>) -> OpResult<CommandResult> {
 #[derive(Clone, Debug)]
 pub struct Ops {
     supervisor: Supervisor,
+    /// Live CI runs by the client-chosen run id — the pid is what `ci_cancel`
+    /// kills. Shared across clones; the daemon has one set of runs.
+    ci_runs: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, u32>>>,
 }
 
 impl Ops {
     pub fn new(supervisor: Supervisor) -> Self {
-        Self { supervisor }
+        Self {
+            supervisor,
+            ci_runs: Default::default(),
+        }
     }
 
     pub fn supervisor(&self) -> &Supervisor {
@@ -1295,6 +1301,42 @@ impl Ops {
         Ok(self.supervisor.stream(&argv)?)
     }
 
+    /// `stream`, registering the child under `run_id` so `ci_cancel` can kill
+    /// it. Call `ci_unregister` when the stream ends.
+    pub fn ci_stream(
+        &self,
+        cmd: &CoreCommand,
+        run_id: &str,
+    ) -> Result<tokio::sync::mpsc::Receiver<Result<crate::pb::OutputChunk, tonic::Status>>, OpError>
+    {
+        let argv = self.supervisor.argv(cmd)?;
+        let (rx, pid) = self.supervisor.stream_with_pid(&argv)?;
+        if let (Some(pid), false) = (pid, run_id.is_empty()) {
+            self.ci_runs.lock().unwrap().insert(run_id.to_string(), pid);
+        }
+        Ok(rx)
+    }
+
+    pub fn ci_unregister(&self, run_id: &str) {
+        self.ci_runs.lock().unwrap().remove(run_id);
+    }
+
+    /// Kill the CI run registered under `run_id`. Returns whether there was
+    /// one. SIGKILL: the runner has no graceful path worth waiting for, and
+    /// the VM it leaves behind is removed by name on the next run.
+    pub fn ci_cancel(&self, run_id: &str) -> bool {
+        let pid = self.ci_runs.lock().unwrap().remove(run_id);
+        match pid {
+            Some(pid) => {
+                let _ = std::process::Command::new("kill")
+                    .args(["-9", &pid.to_string()])
+                    .status();
+                true
+            }
+            None => false,
+        }
+    }
+
     // -- commands for the streaming operations --------------------------------
     //
     // These return a command rather than running it: the caller decides how to
@@ -1333,6 +1375,24 @@ impl Ops {
     /// `bsdkrun ci run --json …` as a streaming command for the CI screen.
     /// The tool's own argv surface, passed through — the daemon adds nothing
     /// the CLI does not have.
+    /// Recorded CI traces (root spans), newest first, as their own JSON.
+    pub async fn ci_traces(&self, limit: i64) -> OpResult<String> {
+        blocking("listing ci traces", move || {
+            let rows = api::list_ci_traces(limit)?;
+            Ok(serde_json::to_string(&rows)?)
+        })
+        .await
+    }
+
+    /// Every span of one recorded trace, in start order.
+    pub async fn ci_trace_spans(&self, trace_id: String) -> OpResult<String> {
+        blocking("listing ci spans", move || {
+            let rows = api::list_ci_spans(&trace_id)?;
+            Ok(serde_json::to_string(&rows)?)
+        })
+        .await
+    }
+
     pub fn ci_run_command(&self, dir: &str, names: &[String], event: &str) -> CoreCommand {
         let mut args: Vec<String> = vec![
             "run".into(),

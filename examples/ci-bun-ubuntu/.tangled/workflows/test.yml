@@ -1,0 +1,20 @@
+# Bun tests on a plain Ubuntu microVM — no nixery involved. An `image:` that
+# reads as an OCI reference boots that image directly; the runner only adds
+# git (apt, for the clone) before your steps run.
+when:
+  - event: ["push", "manual"]
+
+engine: microvm
+image: ubuntu:24.04
+
+steps:
+  - name: install bun
+    command: |
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates unzip
+      curl -fsSL https://bun.sh/install | bash
+      "$HOME/.bun/bin/bun" --version
+  - name: bun test
+    command: |
+      export PATH="$HOME/.bun/bin:$PATH"
+      bun test

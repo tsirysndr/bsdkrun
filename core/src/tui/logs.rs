@@ -116,7 +116,7 @@ fn push_line(lines: &mut VecDeque<String>, raw: &str) {
 /// Strip what a guest console emits that ratatui must not see: ANSI escape
 /// sequences (colors, cursor movement) and carriage-return overwrites, where
 /// the last CR-separated segment is the one the terminal would have kept.
-fn clean_line(raw: &str) -> String {
+pub(super) fn clean_line(raw: &str) -> String {
     let last = raw.rsplit('\r').next().unwrap_or(raw);
     let mut out = String::with_capacity(last.len());
     let mut chars = last.chars().peekable();

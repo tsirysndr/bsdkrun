@@ -36,6 +36,10 @@ command, from every SDK, from every screen — with tracing to match.
 - **CI/CD screens everywhere.** The desktop and web apps gained a CI/CD view
   (workflow list, live step timeline, run history, log search/export), and
   the terminal dashboard gained tabs with a CI/CD tab of its own.
+- **Secrets for CI runs.** `--secret KEY[=VALUE]`, `--secrets-file`, and an
+  auto-loaded (gitignored) `.tangled/secrets.env` inject environment variables
+  into every step; values — and their base64 encodings — are masked as `***`
+  in all output, following spindle's own masking semantics.
 - **OpenTelemetry tracing.** One trace per run, one span per step, always
   recorded into the engine's SQLite (`ci traces`, `ci spans`, the daemon's
   `ciTraces`/`ciTraceSpans`, the UIs' live Trace waterfall) and exported live

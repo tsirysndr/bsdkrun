@@ -103,6 +103,27 @@ selects them directly and skips `when:` matching — naming *is* the selection.
 Identity fields a local checkout does not have (knot, DIDs) are filled with
 recognizable placeholders (`localhost`, `did:local:…`) rather than left empty.
 
+## Secrets
+
+Spindle injects a repository's vault secrets as environment variables into
+every step. A local run has no vault, so the values come from you:
+
+```sh
+bsdkrun ci run --secret NPM_TOKEN            # value from the host environment
+bsdkrun ci run --secret API_KEY=xyz          # explicit value
+bsdkrun ci run --secrets-file .env.ci        # dotenv file (repeatable)
+```
+
+`.tangled/secrets.env` in the workflow root is loaded automatically when it
+exists — **gitignore it**: the clone step runs the committed tree, and a
+committed secrets file would ride into every guest.
+
+Secrets reach every step's environment (they beat the workflow's committed
+`environment:`, a step's own env stays most specific), and their values are
+masked as `***` in every output — human, `--json`, the TUI, the desktop and
+web screens — including their base64 encodings, so `echo "$TOKEN" | base64`
+leaks nothing either. Masking follows spindle's own SecretMask semantics.
+
 ## OpenTelemetry tracing
 
 Every run is a trace: one root span per workflow, one child span per step

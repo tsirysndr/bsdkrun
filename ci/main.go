@@ -98,6 +98,12 @@ Run flags:
   --json                             spindle log-line JSON on stdout
   --plain                            plain line output even on a terminal
                                      (the default when stdout is not a tty)
+  --secret KEY=VALUE | KEY           inject a secret env var into every step
+                                     (bare KEY reads the host environment);
+                                     values are masked as *** in all output
+  --secrets-file <path>              dotenv file of secrets (repeatable);
+                                     .tangled/secrets.env is loaded
+                                     automatically when present — gitignore it
   --nixery <host>                    a self-hosted nixery instead of nixery.dev
   --otlp <url>                       export OpenTelemetry spans (or set
                                      OTEL_EXPORTER_OTLP_ENDPOINT); one span
@@ -115,6 +121,7 @@ func permute(args []string) []string {
 		"--event": true, "--branch": true, "--input": true, "--workspace": true,
 		"-w": true, "--cpus": true, "--mem": true, "--bind": true,
 		"-f": true, "--file": true, "--nixery": true, "--otlp": true,
+		"--secret": true, "--secrets-file": true,
 	}
 	var flags, rest []string
 	for i := 0; i < len(args); i++ {
@@ -151,10 +158,12 @@ func cmdRun(args []string) error {
 	plain := fs.Bool("plain", false, "")
 	nixery := fs.String("nixery", "", "")
 	otlp := fs.String("otlp", "", "")
-	var inputs, files repeatable
+	var inputs, files, secretFlags, secretFiles repeatable
 	fs.Var(&inputs, "input", "")
 	fs.Var(&files, "file", "")
 	fs.Var(&files, "f", "")
+	fs.Var(&secretFlags, "secret", "")
+	fs.Var(&secretFiles, "secrets-file", "")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -236,13 +245,20 @@ func cmdRun(args []string) error {
 		return nil
 	}
 
+	secrets, err := collectSecrets(repo.WorkflowRoot(), secretFlags, secretFiles)
+	if err != nil {
+		return err
+	}
+
 	opts := runOpts{
-		Cpus:   *cpus,
-		Mem:    *mem,
-		Keep:   *keep,
-		Source: repo.Root,
-		JSON:   *jsonOut,
-		Out:    os.Stdout,
+		Cpus:    *cpus,
+		Mem:     *mem,
+		Keep:    *keep,
+		Source:  repo.Root,
+		JSON:    *jsonOut,
+		Out:     os.Stdout,
+		Secrets: secrets,
+		Masker:  newMasker(secrets),
 	}
 
 	plans := make([]*Plan, 0, len(selected))

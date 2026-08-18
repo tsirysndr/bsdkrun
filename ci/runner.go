@@ -30,6 +30,18 @@ type runOpts struct {
 	// Structured spindle-style log lines on stdout instead of human output.
 	JSON bool
 	Out  io.Writer
+	// Secret values to inject into every step, and the log masker built from
+	// them — every emitted line passes through mask() so a value (or its
+	// base64 encoding) never survives into any consumer's view.
+	Secrets map[string]string
+	Masker  *strings.Replacer
+}
+
+func (o runOpts) mask(sub string) string {
+	if o.Masker == nil {
+		return sub
+	}
+	return o.Masker.Replace(sub)
 }
 
 // stepResult is what one step came to, for the run report.
@@ -72,11 +84,11 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 	bootSpan := trace.StartSpan("Boot VM", map[string]string{"image": plan.Image})
 	var bootOut, bootErr io.Writer
 	if opts.JSON {
-		bootOut = &lineEmitter{out: opts.Out, stepID: 0, stream: "stdout"}
-		bootErr = &lineEmitter{out: opts.Out, stepID: 0, stream: "stderr"}
+		bootOut = &lineEmitter{opts: opts, stepID: 0, stream: "stdout"}
+		bootErr = &lineEmitter{opts: opts, stepID: 0, stream: "stderr"}
 	} else {
-		bootOut = prefixed(opts.Out)
-		bootErr = prefixed(opts.Out)
+		bootOut = prefixed(opts)
+		bootErr = prefixed(opts)
 	}
 	sbx, err := createVM(plan.Image, name, opts.Cpus, opts.Mem, mounts,
 		[]string{"sleep", "infinity"}, bootOut, bootErr)
@@ -137,7 +149,7 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 	if res, err := sbx.exec([]string{"mkdir", "-p", workspaceDir, homeDir}, nil, nil, nil); err != nil {
 		return nil, fmt.Errorf("preparing %s: %w", workspaceDir, err)
 	} else if res.ExitCode != 0 {
-		return nil, fmt.Errorf("preparing %s: %s", workspaceDir, strings.TrimSpace(res.Stderr))
+		return nil, fmt.Errorf("preparing %s: %s", workspaceDir, opts.mask(strings.TrimSpace(res.Stderr)))
 	}
 
 	for i, step := range plan.Steps {
@@ -163,6 +175,11 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 		for k, v := range plan.Env {
 			env[k] = v
 		}
+		// Secrets are run-time input, so they beat the committed workflow's
+		// environment; a step's own env stays the most specific thing.
+		for k, v := range opts.Secrets {
+			env[k] = v
+		}
 		for k, v := range step.Env {
 			env[k] = v
 		}
@@ -172,11 +189,11 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 		// hung for minutes and then dumped everything at once.
 		var sOut, sErr io.Writer
 		if opts.JSON {
-			sOut = &lineEmitter{out: opts.Out, stepID: idx, stream: "stdout"}
-			sErr = &lineEmitter{out: opts.Out, stepID: idx, stream: "stderr"}
+			sOut = &lineEmitter{opts: opts, stepID: idx, stream: "stdout"}
+			sErr = &lineEmitter{opts: opts, stepID: idx, stream: "stderr"}
 		} else {
-			sOut = prefixed(opts.Out)
-			sErr = prefixed(opts.Out)
+			sOut = prefixed(opts)
+			sErr = prefixed(opts)
 		}
 		res, runErr := sbx.exec([]string{"bash", "-lc", script}, env, sOut, sErr)
 
@@ -210,7 +227,7 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 // lineEmitter turns a raw output stream into per-line spindle data records —
 // what lets a boot's progress render in the same step UI as everything else.
 type lineEmitter struct {
-	out     io.Writer
+	opts    runOpts
 	stepID  int
 	stream  string
 	partial string
@@ -228,9 +245,9 @@ func (l *lineEmitter) Write(b []byte) (int, error) {
 		if line == "" {
 			continue
 		}
-		emitJSON(l.out, map[string]any{
+		emitJSON(l.opts.Out, map[string]any{
 			"kind":    "data",
-			"content": line,
+			"content": l.opts.mask(line),
 			"time":    time.Now().Format(time.RFC3339Nano),
 			"step_id": l.stepID,
 			"stream":  l.stream,
@@ -254,38 +271,31 @@ func vmName(workflow string) string {
 	return fmt.Sprintf("bsdkrun-ci-%s-%d", clean, time.Now().Unix()%100000)
 }
 
-// prefixed indents guest output so it reads as belonging to a step.
-func prefixed(w io.Writer) io.Writer {
-	return &prefixWriter{w: w, prefix: []byte("    ")}
+// prefixed indents guest output so it reads as belonging to a step, and
+// masks secrets per line. Line-buffered — the mask must see whole lines, or
+// a value split across two writes would slip through.
+func prefixed(opts runOpts) io.Writer {
+	return &prefixWriter{opts: opts, prefix: "    "}
 }
 
 type prefixWriter struct {
-	w       io.Writer
-	prefix  []byte
-	midline bool
+	opts    runOpts
+	prefix  string
+	partial string
 }
 
 func (p *prefixWriter) Write(b []byte) (int, error) {
-	total := len(b)
-	for len(b) > 0 {
-		if !p.midline {
-			if _, err := p.w.Write(p.prefix); err != nil {
-				return total - len(b), err
-			}
-			p.midline = true
-		}
-		i := strings.IndexByte(string(b), '\n')
+	p.partial += string(b)
+	for {
+		i := strings.IndexByte(p.partial, '\n')
 		if i < 0 {
-			_, err := p.w.Write(b)
-			return total, err
+			break
 		}
-		if _, err := p.w.Write(b[:i+1]); err != nil {
-			return total - len(b), err
-		}
-		b = b[i+1:]
-		p.midline = false
+		line := strings.TrimRight(p.partial[:i], "\r")
+		p.partial = p.partial[i+1:]
+		fmt.Fprintf(p.opts.Out, "%s%s\n", p.prefix, p.opts.mask(line))
 	}
-	return total, nil
+	return len(b), nil
 }
 
 func logf(opts runOpts, format string, args ...any) {
@@ -310,13 +320,15 @@ func emitControl(opts runOpts, idx int, step Step, status string) {
 		kind = 0
 	}
 	emitJSON(opts.Out, map[string]any{
-		"kind":         "control",
-		"content":      step.Name,
+		"kind": "control",
+		// Masked like everything else: a workflow that interpolates (or
+		// happens to contain) a secret's value must not replay it here.
+		"content":      opts.mask(step.Name),
 		"time":         time.Now().Format(time.RFC3339Nano),
 		"step_id":      idx,
 		"step_status":  status,
 		"step_kind":    kind,
-		"step_command": step.Command,
+		"step_command": opts.mask(step.Command),
 	})
 }
 
@@ -327,7 +339,7 @@ func emitData(opts runOpts, idx int, content, stream string) {
 	for _, line := range strings.Split(strings.TrimRight(content, "\n"), "\n") {
 		emitJSON(opts.Out, map[string]any{
 			"kind":    "data",
-			"content": line,
+			"content": opts.mask(line),
 			"time":    time.Now().Format(time.RFC3339Nano),
 			"step_id": idx,
 			"stream":  stream,

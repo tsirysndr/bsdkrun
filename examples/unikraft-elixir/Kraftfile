@@ -12,13 +12,14 @@ name: elixir
 # `erlexec` would have exported (below); the BEAM needs nothing else beyond
 # what running any dynamically linked runtime needs.
 unikraft:
-  # Pinned, not `staging`: staging is a moving branch, and upstream commit
-  # 3898a16e36 (2026-08-12, "Handle _SC_CLK_TCK in sysconf()") broke the build
-  # against its own headers. This SHA is that commit's parent — the last state
-  # CI was green against. Bump deliberately, with a passing build, never by
-  # letting a branch move underneath us.
-  source: https://github.com/unikraft/unikraft.git
-  version: ecf0fa174c5d87ff74c45be6da1b3bb83e0708a6
+  # Pinned via the tsirysndr forks' `bsdkrun-stable` branch, not upstream
+  # `staging`: staging is a moving branch, and upstream 3898a16e36 (2026-08-12,
+  # "Handle _SC_CLK_TCK in sysconf()") broke the build against its own headers.
+  # kraft resolves refs, not raw SHAs, so the pin is a branch we control —
+  # currently at ecf0fa174c5d, the breaking commit's parent. Bump by moving
+  # `bsdkrun-stable` on the forks, deliberately, with a passing build.
+  source: https://github.com/tsirysndr/unikraft.git
+  version: bsdkrun-stable
   kconfig:
     # libkrun's aarch64 console is a PL011 (see ../unikraft-helloworld).
     CONFIG_LIBPL011: 'y'
@@ -197,8 +198,8 @@ libraries:
       CONFIG_APPELFLOADER_AUTOGEN_ETCHOSTNAME: 'y'
       CONFIG_APPELFLOADER_AUTOGEN_REPLACEEXIST: 'y'
   lwip:
-    source: https://github.com/unikraft/lib-lwip.git
-    version: ec55ae17618feeb57c8c10109bcf5c42723e8e95
+    source: https://github.com/tsirysndr/lib-lwip.git
+    version: bsdkrun-stable
     kconfig:
       CONFIG_LWIP_LOOPIF: 'y'
       CONFIG_LWIP_UKNETDEV: 'y'

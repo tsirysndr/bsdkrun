@@ -9,13 +9,14 @@ name: wasmer
 # for why: upstream's `runtime: base:latest` is published for x86_64 only, and
 # app-elfloader itself is architecture-clean.
 unikraft:
-  # Pinned, not `staging`: staging is a moving branch, and upstream commit
-  # 3898a16e36 (2026-08-12, "Handle _SC_CLK_TCK in sysconf()") broke the build
-  # against its own headers. This SHA is that commit's parent — the last state
-  # CI was green against. Bump deliberately, with a passing build, never by
-  # letting a branch move underneath us.
-  source: https://github.com/unikraft/unikraft.git
-  version: ecf0fa174c5d87ff74c45be6da1b3bb83e0708a6
+  # Pinned via the tsirysndr forks' `bsdkrun-stable` branch, not upstream
+  # `staging`: staging is a moving branch, and upstream 3898a16e36 (2026-08-12,
+  # "Handle _SC_CLK_TCK in sysconf()") broke the build against its own headers.
+  # kraft resolves refs, not raw SHAs, so the pin is a branch we control —
+  # currently at ecf0fa174c5d, the breaking commit's parent. Bump by moving
+  # `bsdkrun-stable` on the forks, deliberately, with a passing build.
+  source: https://github.com/tsirysndr/unikraft.git
+  version: bsdkrun-stable
   kconfig:
     # libkrun's aarch64 console is a PL011 (see ../unikraft-helloworld).
     CONFIG_LIBPL011: 'y'
@@ -137,7 +138,11 @@ unikraft:
 libraries:
   app-elfloader:
     source: https://github.com/unikraft/app-elfloader.git
-    version: a6c9dc2b655572bee1f9657cbcc2d1eca8f6cb73
+    # The one ref here that still floats: kraft cannot resolve a raw SHA, no
+    # upstream tag exists at the commit we validated, and pushing a pin branch
+    # to the fork needs a workflow-scoped token this environment lacks. This
+    # repo changes rarely; if it breaks, pin it the way the others are pinned.
+    version: staging
     kconfig:
       # Implements arch_prctl(ARCH_SET_FS), which is how glibc installs the
       # thread pointer on x86_64. Without it startup dies with
@@ -159,8 +164,8 @@ libraries:
       CONFIG_APPELFLOADER_AUTOGEN_ETCHOSTNAME: 'y'
       CONFIG_APPELFLOADER_AUTOGEN_REPLACEEXIST: 'y'
   lwip:
-    source: https://github.com/unikraft/lib-lwip.git
-    version: ec55ae17618feeb57c8c10109bcf5c42723e8e95
+    source: https://github.com/tsirysndr/lib-lwip.git
+    version: bsdkrun-stable
     kconfig:
       CONFIG_LWIP_LOOPIF: 'y'
       CONFIG_LWIP_UKNETDEV: 'y'
@@ -182,8 +187,8 @@ libraries:
       CONFIG_LWIP_NUM_TCPLISTENERS: 64
       CONFIG_LWIP_ICMP: 'y'
   libelf:
-    source: https://github.com/unikraft/lib-libelf.git
-    version: c03d4ceb22a2b9e9799238f9c277a14284d313ad
+    source: https://github.com/tsirysndr/lib-libelf.git
+    version: bsdkrun-stable
 
 targets:
 - fc/arm64

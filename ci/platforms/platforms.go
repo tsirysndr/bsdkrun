@@ -1,6 +1,6 @@
 // Package platforms translates foreign CI configurations — GitHub Actions,
 // GitLab CI, Woodpecker, Drone, CircleCI, Buildkite, Semaphore, Jenkins
-// (declarative), Travis —
+// (declarative), Azure Pipelines, AWS CodeBuild, Tekton, Travis —
 // into a
 // platform-neutral job list the runner turns into microVM plans.
 //
@@ -89,6 +89,9 @@ func Registry() []Platform {
 		{Name: "buildkite", Detect: detectBuildkite, Load: loadBuildkite},
 		{Name: "semaphore", Detect: detectSemaphore, Load: loadSemaphore},
 		{Name: "jenkins", Detect: detectJenkins, Load: loadJenkins},
+		{Name: "azure", Detect: detectAzure, Load: loadAzure},
+		{Name: "codebuild", Detect: detectCodebuild, Load: loadCodebuild},
+		{Name: "tekton", Detect: detectTekton, Load: loadTekton},
 		{Name: "travis", Detect: detectTravis, Load: loadTravis},
 	}
 }
@@ -171,6 +174,22 @@ func Env(platform string, repo Repo) map[string]string {
 			"SEMAPHORE_GIT_BRANCH":   repo.branch(),
 			"SEMAPHORE_PROJECT_NAME": repo.Name,
 			"SEMAPHORE_GIT_DIR":      repo.Workspace,
+		}
+	case "azure":
+		return map[string]string{
+			"TF_BUILD":               "True",
+			"BUILD_SOURCEVERSION":    repo.Sha,
+			"BUILD_SOURCEBRANCHNAME": repo.branch(),
+			"BUILD_REPOSITORY_NAME":  repo.Name,
+			"BUILD_SOURCESDIRECTORY": repo.Workspace,
+		}
+	case "codebuild":
+		return map[string]string{
+			"CODEBUILD_CI":                      "true",
+			"CODEBUILD_BUILD_ID":                repo.Name + ":local",
+			"CODEBUILD_RESOLVED_SOURCE_VERSION": repo.Sha,
+			"CODEBUILD_SOURCE_VERSION":          repo.Sha,
+			"CODEBUILD_SRC_DIR":                 repo.Workspace,
 		}
 	case "jenkins":
 		return map[string]string{

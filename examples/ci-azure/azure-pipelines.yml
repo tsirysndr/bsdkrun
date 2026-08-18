@@ -1,0 +1,13 @@
+trigger: [main]
+pool:
+  vmImage: ubuntu-latest
+jobs:
+  - job: test
+    container: alpine:3.20
+    steps:
+      - checkout: self
+      - script: |
+          test "$TF_BUILD" = "True"
+          test -f hello.txt
+          echo "azure-example-ok"
+        displayName: test

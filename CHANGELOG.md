@@ -39,8 +39,9 @@ command, from every SDK, from every screen — with tracing to match.
 - **Foreign CI platforms run locally.** `bsdkrun ci` now translates and runs
   GitHub Actions (plus Forgejo/Gitea), GitLab CI, Woodpecker, Drone,
   CircleCI, Buildkite, Semaphore, Jenkins (declarative pipelines,
-  via a structural parser — scripted Groovy is refused, not mistranslated)
-  and Travis configs in microVMs — auto-detected from
+  via a structural parser — scripted Groovy is refused, not mistranslated),
+  Azure Pipelines, AWS CodeBuild (the runnable half of CodePipeline),
+  Tekton and Travis configs in microVMs — auto-detected from
   their well-known files, or forced with `--platform`. Jobs translate
   (images, env, ordering, platform identity variables); what cannot
   translate becomes a visible skip, and non-Linux jobs are skipped outright.

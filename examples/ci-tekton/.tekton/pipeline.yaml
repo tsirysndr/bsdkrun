@@ -1,0 +1,27 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: ci
+spec:
+  tasks:
+    - name: test
+      taskRef:
+        name: test-task
+      params:
+        - name: marker
+          value: hello.txt
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: test-task
+spec:
+  params:
+    - name: marker
+      default: missing.txt
+  steps:
+    - name: run
+      image: alpine:3.20
+      script: |
+        test -f $(params.marker)
+        echo "tekton-example-ok"

@@ -1,0 +1,11 @@
+version: 0.2
+env:
+  variables:
+    GREETING: from-buildspec
+phases:
+  build:
+    commands:
+      - test "$CODEBUILD_CI" = "true"
+      - test -f hello.txt
+      - echo "$GREETING"
+      - echo "codebuild-example-ok"

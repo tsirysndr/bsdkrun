@@ -119,6 +119,9 @@ files are probed automatically; `--platform` forces one:
 | `buildkite`  | `.buildkite/pipeline.yml`                                             | [`examples/ci-buildkite`](../examples/ci-buildkite)   |
 | `semaphore`  | `.semaphore/semaphore.yml`                                            | [`examples/ci-semaphore`](../examples/ci-semaphore)   |
 | `jenkins`    | `Jenkinsfile` (declarative pipelines only)                            | [`examples/ci-jenkins`](../examples/ci-jenkins)       |
+| `azure`      | `azure-pipelines.yml`                                                 | [`examples/ci-azure`](../examples/ci-azure)           |
+| `codebuild`  | `buildspec.yml` (see the CodePipeline note below)                     | [`examples/ci-codebuild`](../examples/ci-codebuild)   |
+| `tekton`     | `.tekton/*.yaml` (Task / Pipeline / PipelineRun manifests)            | [`examples/ci-tekton`](../examples/ci-tekton)         |
 | `travis`     | `.travis.yml`                                                         | [`examples/ci-travis`](../examples/ci-travis)         |
 
 ```sh
@@ -142,6 +145,14 @@ so; **jobs that ask for windows or macos are skipped** — a Linux microVM
 cannot become another OS, and a green checkmark on a lie helps nobody.
 Images without bash (alpine) run their steps under `sh`, exactly as
 GitLab's own runner would.
+
+AWS CodePipeline deserves a note: a CodePipeline definition is pure
+orchestration — its actions *reference* CodeBuild projects, Lambda functions
+and deploy providers, and contain no commands. What a laptop can truthfully
+run is the CodeBuild project's `buildspec.yml`, so that is what translates
+(phases in their fixed order); `parameter-store` and `secrets-manager`
+values live in AWS and are announced as unresolved rather than faked —
+inject them with `--secret` when a step needs them.
 
 Jenkins deserves its own footnote: only **declarative** Jenkinsfiles
 translate, parsed by a small structural tokenizer — not a Groovy

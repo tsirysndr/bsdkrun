@@ -496,3 +496,150 @@ node {
 		t.Fatalf("scripted pipeline must be refused clearly, got: %v", err)
 	}
 }
+
+func TestAzure(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "azure-pipelines.yml", `
+pool: {vmImage: ubuntu-latest}
+variables: {TOP: "1"}
+jobs:
+  - job: deploy
+    dependsOn: [build]
+    steps:
+      - script: echo deploy
+  - job: build
+    container: node:22
+    variables:
+      - name: JOB
+        value: "2"
+    steps:
+      - checkout: self
+      - script: npm ci
+        displayName: install
+      - bash: npm test
+      - pwsh: Write-Host hi
+      - task: PublishBuildArtifacts@1
+  - job: winjob
+    pool: {vmImage: windows-latest}
+    steps: [{script: echo hi}]
+`)
+	if !detectAzure(root) {
+		t.Fatal("azure not detected")
+	}
+	jobs, err := loadAzure(root, testRepo)
+	if err != nil || len(jobs) != 3 {
+		t.Fatalf("jobs: %+v, %v", jobs, err)
+	}
+	// build must precede deploy; the independent winjob may sit between.
+	pos := map[string]int{}
+	for i, j := range jobs {
+		pos[j.Name] = i
+	}
+	if pos["build"] > pos["deploy"] {
+		t.Fatalf("dependsOn order: %v", pos)
+	}
+	b := jobs[0]
+	if b.Image != "node:22" {
+		t.Fatalf("container: %q", b.Image)
+	}
+	if b.Env["TOP"] != "1" || b.Env["JOB"] != "2" {
+		t.Fatalf("variables: %v", b.Env)
+	}
+	// checkout no-op, script, bash, pwsh skip, task skip
+	if len(b.Steps) != 5 || b.Steps[1].Name != "install" {
+		t.Fatalf("steps: %+v", b.Steps)
+	}
+	if !strings.Contains(b.Steps[3].Command, "PowerShell") {
+		t.Fatalf("pwsh skip not visible: %+v", b.Steps[3])
+	}
+	for _, j := range jobs {
+		if j.Name == "winjob" && j.SkipReason == "" {
+			t.Fatal("windows pool not skipped")
+		}
+	}
+}
+
+func TestCodebuild(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "buildspec.yml", `
+version: 0.2
+env:
+  variables: {FOO: bar}
+  secrets-manager: {DB_PASS: "prod/db:password"}
+phases:
+  install:
+    runtime-versions: {nodejs: 20}
+    commands: [npm ci]
+  build:
+    commands:
+      - npm test
+`)
+	if !detectCodebuild(root) {
+		t.Fatal("codebuild not detected")
+	}
+	jobs, err := loadCodebuild(root, testRepo)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("jobs: %+v, %v", jobs, err)
+	}
+	j := jobs[0]
+	if j.Env["FOO"] != "bar" {
+		t.Fatalf("env: %v", j.Env)
+	}
+	// dropped-secrets note, install, build — fixed phase order.
+	if len(j.Steps) != 3 || j.Steps[1].Name != "install" || j.Steps[2].Name != "build" {
+		t.Fatalf("phases: %+v", j.Steps)
+	}
+	if !strings.Contains(j.Steps[0].Command, "DB_PASS") {
+		t.Fatalf("dropped aws-managed env not announced: %+v", j.Steps[0])
+	}
+}
+
+func TestTekton(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, ".tekton/pipeline.yaml", `
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata: {name: ci}
+spec:
+  tasks:
+    - name: test
+      runAfter: [build]
+      taskRef: {name: test-task}
+      params:
+        - {name: flags, value: "-v"}
+    - name: build
+      taskSpec:
+        steps:
+          - name: compile
+            image: golang:1.22
+            script: go build ./...
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata: {name: test-task}
+spec:
+  params:
+    - {name: flags, default: ""}
+    - {name: pkg, default: "./..."}
+  steps:
+    - name: run
+      image: golang:1.22
+      script: go test $(params.flags) $(params.pkg)
+`)
+	if !detectTekton(root) {
+		t.Fatal("tekton not detected")
+	}
+	jobs, err := loadTekton(root, testRepo)
+	if err != nil || len(jobs) != 2 {
+		t.Fatalf("jobs: %+v, %v", jobs, err)
+	}
+	if jobs[0].Name != "build" || jobs[1].Name != "test" {
+		t.Fatalf("runAfter order: %s, %s", jobs[0].Name, jobs[1].Name)
+	}
+	if jobs[1].Steps[0].Command != "go test -v ./..." {
+		t.Fatalf("param substitution: %q", jobs[1].Steps[0].Command)
+	}
+	if jobs[0].Image != "golang:1.22" {
+		t.Fatalf("image: %q", jobs[0].Image)
+	}
+}

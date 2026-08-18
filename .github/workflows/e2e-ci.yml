@@ -197,11 +197,11 @@ jobs:
       # judging so one broken platform does not hide the others.
       # Strict since its first green run (2026-08-18): all seven passed on
       # x86_64/KVM on the first attempt, so a failure here is a regression.
-      - name: e2e — foreign platforms (github, gitlab, woodpecker, drone, circleci, buildkite, semaphore, jenkins, travis)
+      - name: e2e — foreign platforms (all twelve platforms)
         run: |
           set -eux
           failed=""
-          for p in github gitlab woodpecker drone circleci buildkite semaphore jenkins travis; do
+          for p in github gitlab woodpecker drone circleci buildkite semaphore jenkins azure codebuild tekton travis; do
             d=$(mktemp -d)
             cp -r "examples/ci-$p/." "$d"
             git -C "$d" init -q

@@ -7,6 +7,7 @@ import {
   IconStack2,
   IconDatabase,
   IconApps,
+  IconMoon,
   IconRocket,
   IconPlus,
   IconRefresh,
@@ -34,6 +35,7 @@ import {
   settingsOpenAtom,
   snapshotTargetAtom,
   shortcutsOpenAtom,
+  themeAtom,
   viewAtom,
 } from "../state/atoms";
 import {
@@ -76,6 +78,7 @@ export default function CommandPalette() {
   const attachSession = useAttachAgentSession();
   const setAgentPanel = useSetAtom(agentPanelOpenAtom);
   const setView = useSetAtom(viewAtom);
+  const [theme, setTheme] = useAtom(themeAtom);
   const setRunOpen = useSetAtom(runOpenAtom);
   const setSettingsOpen = useSetAtom(settingsOpenAtom);
   const setShortcutsOpen = useSetAtom(shortcutsOpenAtom);
@@ -187,6 +190,17 @@ export default function CommandPalette() {
         icon: IconApps,
         keywords: "environments stacks catalog snapshots presets",
         run: nav("flavors"),
+      },
+      {
+        id: "theme-switch",
+        title: theme === "night-rider" ? "Switch to Classic Dark theme" : "Switch to Night Rider theme",
+        section: "Appearance",
+        icon: IconMoon,
+        keywords: "theme dark night rider colors appearance switch style",
+        run: () => {
+          setOpen(false);
+          setTheme(theme === "night-rider" ? "dark" : "night-rider");
+        },
       },
       {
         id: "nav-cicd",

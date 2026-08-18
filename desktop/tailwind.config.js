@@ -34,6 +34,43 @@ export default {
             focus: "#5b6cff",
           },
         },
+        // VSCode's "Night Rider" (trustfall/vscode-night-rider), mapped onto
+        // HeroUI's slots from the theme's own JSON — editor.background,
+        // sideBar/widget backgrounds, the token palette's purple/pink/blue —
+        // not eyeballed approximations. The default theme; "dark" (below)
+        // remains and is one palette-command away.
+        "night-rider": {
+          extend: "dark",
+          colors: {
+            background: "#1e1c3f",
+            foreground: "#C9CBDB",
+            content1: "#222246",
+            content2: "#2D2B55",
+            content3: "#38356A",
+            content4: "#454180",
+            primary: {
+              DEFAULT: "#A68AE1",
+              foreground: "#1e1c3f",
+            },
+            secondary: {
+              DEFAULT: "#e591ff",
+              foreground: "#1e1c3f",
+            },
+            success: {
+              DEFAULT: "#55F0D7",
+              foreground: "#171530",
+            },
+            warning: {
+              DEFAULT: "#FFDB7F",
+              foreground: "#171530",
+            },
+            danger: {
+              DEFAULT: "#FF709D",
+              foreground: "#1e1c3f",
+            },
+            focus: "#7EA7FB",
+          },
+        },
         dark: {
           colors: {
             background: "#0b0e14",

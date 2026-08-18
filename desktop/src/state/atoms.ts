@@ -202,3 +202,10 @@ export const ciRunsAtom = atomWithStorage<import("../lib/types").CiRun[]>(
   "bsdkrun-ci-runs",
   [],
 );
+
+/** The UI theme. "night-rider" (VSCode's Night Rider palette) is the default;
+ * "dark" is the original look. Both stay — switching is a palette command. */
+export const themeAtom = atomWithStorage<"night-rider" | "dark">(
+  "bsdkrun-theme",
+  "night-rider",
+);

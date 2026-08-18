@@ -15,7 +15,7 @@ type Provider struct{}
 func (Provider) Name() string { return "bun" }
 
 func (Provider) Detect(dir string) (string, bool) {
-	for _, m := range []string{"bun.lockb", "bun.lock"} {
+	for _, m := range []string{"bun.lockb", "bun.lock", "bunfig.toml"} {
 		if probe.Exists(dir, m) {
 			return m, true
 		}
@@ -24,7 +24,12 @@ func (Provider) Detect(dir string) (string, bool) {
 }
 
 func (Provider) Job(dir string) platforms.Job {
-	steps := []platforms.Step{step("bun install", "bun install")}
+	var steps []platforms.Step
+	// A bunfig.toml-only project (zero dependencies) has nothing to
+	// install, and `bun install` *fails* without a package.json.
+	if probe.Exists(dir, "package.json") {
+		steps = append(steps, step("bun install", "bun install"))
+	}
 	// `bun test` with nothing to run exits non-zero; only ask when tests
 	// exist or the project declares a test script.
 	switch {

@@ -15,5 +15,8 @@
     "allow-plugins": {
       "php-http/discovery": true
     }
+  },
+  "scripts": {
+    "test": "php -l public/index.php && php -l bootstrap/app.php"
   }
 }

@@ -9,5 +9,8 @@
   },
   "config": {
     "optimize-autoloader": true
+  },
+  "scripts": {
+    "test": "php -l public/index.php"
   }
 }

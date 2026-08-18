@@ -43,7 +43,7 @@ jobs:
   ci-examples:
     name: x86_64
     runs-on: ubuntu-latest # x86_64; has /dev/kvm
-    timeout-minutes: 60 # first nixery build or the nix fallback can be slow
+    timeout-minutes: 90 # the heavy detection set installs real dependency trees
     steps:
       - uses: actions/checkout@v4
         with:
@@ -231,13 +231,63 @@ jobs:
           git init -q && git add -A && git -c user.email=ci@e2e -c user.name=e2e commit -qm init
           cd -
           set +e
-          timeout 900 ./target/release/bsdkrun ci run --plain -w "$d" 2>&1 | tee /tmp/ci-detect.log
+          timeout 900 ./target/release/bsdkrun ci run --plain --dry-run \
+            --secret RAILWAY_TOKEN=e2e-dummy-token -w "$d" 2>&1 | tee /tmp/ci-detect.log
           rc=${PIPESTATUS[0]}
           set -e
           grep -q "detected go project (go.mod)" /tmp/ci-detect.log
           grep -q "ok  " /tmp/ci-detect.log
+          # Deploy detection keyed on the secret name, dry-run announcing
+          # the command instead of running it — and the token value masked.
+          grep -q "deploy: railway (RAILWAY_TOKEN detected) \[dry-run\]" /tmp/ci-detect.log
+          grep -q "\[dry-run\] would deploy to railway" /tmp/ci-detect.log
+          ! grep -q "e2e-dummy-token" /tmp/ci-detect.log
           grep -q "build passed" /tmp/ci-detect.log
           test "$rc" -eq 0
+
+      # The unikraft examples carry no CI config, so running `bsdkrun ci`
+      # against them exercises the whole detection path: project inferred,
+      # workflow generated, tests (added to the examples for exactly this)
+      # run before builds. The fast set is strict; the heavy set (big images,
+      # real dependency installs and compiles) establishes itself first.
+      - name: e2e — detection over unikraft examples (fast set)
+        run: |
+          set -eux
+          failed=""
+          for x in unikraft-go unikraft-bun unikraft-deno unikraft-expressjs; do
+            d=$(mktemp -d)
+            cp -r "examples/$x/." "$d"
+            git -C "$d" init -q
+            git -C "$d" add -A
+            git -C "$d" -c user.email=ci@e2e -c user.name=e2e commit -qm init
+            set +e
+            timeout 900 ./target/release/bsdkrun ci run --plain -w "$d" 2>&1 | tee "/tmp/det-$x.log"
+            rc=${PIPESTATUS[0]}
+            set -e
+            if ! grep -q "detected .* project" "/tmp/det-$x.log" || [ "$rc" -ne 0 ]; then
+              failed="$failed $x"
+            fi
+          done
+          test -z "$failed" || { echo "FAILED:$failed"; exit 1; }
+
+      - name: e2e — detection over unikraft examples (heavy set)
+        continue-on-error: true # flip to false after the first green run on x86_64
+        run: |
+          set -eux
+          failed=""
+          for x in unikraft-crystal unikraft-elixir unikraft-gleam unikraft-laravel unikraft-symfony unikraft-actix unikraft-clojure unikraft-dotnet unikraft-haskell; do
+            d=$(mktemp -d)
+            cp -r "examples/$x/." "$d"
+            git -C "$d" init -q
+            git -C "$d" add -A
+            git -C "$d" -c user.email=ci@e2e -c user.name=e2e commit -qm init
+            set +e
+            timeout 1800 ./target/release/bsdkrun ci run --plain -w "$d" 2>&1 | tail -40 | tee "/tmp/det-$x.log"
+            rc=${PIPESTATUS[0]}
+            set -e
+            [ "$rc" -eq 0 ] || failed="$failed $x"
+          done
+          test -z "$failed" || { echo "FAILED:$failed"; exit 1; }
 
       # A cancelled/timed-out run can leave a VM behind; say what the host
       # state was either way so a red run is diagnosable from the log alone.

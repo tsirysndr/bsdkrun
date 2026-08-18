@@ -130,6 +130,8 @@ export type {
 // one identifier. Within client.ts itself the unaliased name is used, since
 // that file never imports shell.ts's `CommandResult`.
 
+export { workflow, CIWorkflow } from "./ci.js";
+
 export { Client, normalizeUrl, URL_ENV, TOKEN_ENV } from "./client.js";
 export type {
   ShellSession,

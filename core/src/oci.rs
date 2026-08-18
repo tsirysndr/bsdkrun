@@ -752,10 +752,24 @@ fn remove_any(p: &Path) {
 /// drop in the generated init.
 pub fn write_rootfs_file(rootfs: &Path, rel: &str, contents: &[u8], mode: u32) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::PermissionsExt;
     let path = rootfs.join(rel);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
+        // Nix-built images (nixery.dev among them) ship directories mode
+        // 0555 — including `/` itself — so creating a file in the cloned
+        // rootfs fails with EACCES. The clone is this machine's private
+        // copy; making its directories writable changes nothing the guest
+        // can observe that matters, and the alternative is a boot that
+        // dies on `.bsdkrun-init` with a bare "Permission denied".
+        if let Ok(meta) = std::fs::metadata(parent) {
+            let mode = meta.permissions().mode();
+            if mode & 0o200 == 0 {
+                let _ =
+                    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(mode | 0o700));
+            }
+        }
     }
     let mut f = std::fs::OpenOptions::new()
         .create(true)

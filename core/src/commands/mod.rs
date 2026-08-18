@@ -14,6 +14,8 @@ pub mod ai;
 #[cfg(feature = "boot")]
 pub mod boot;
 pub mod cache;
+#[cfg(feature = "ci")]
+pub mod ci;
 pub mod cp;
 pub mod docker;
 pub mod doctor;

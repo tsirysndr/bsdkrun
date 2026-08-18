@@ -59,6 +59,7 @@ one CLI, no daemon required.
 - [Managing machines](#managing-machines)
 - [AI coding agents in sandboxes](#ai-coding-agents-in-sandboxes)
 - [Docker — replace Docker Desktop](#docker--replace-docker-desktop)
+- [CI — spindle workflows in microVMs](#ci--spindle-workflows-in-microvms)
 - [Snapshots, branches & restore](#snapshots-branches--restore)
 - [Flavors — preconfigured environments & snapshots](#flavors--preconfigured-environments--snapshots)
 - [Networking](#networking)
@@ -1251,6 +1252,45 @@ Every SDK exposes the same surface (`docker_status`, `docker_containers`,
 > API access is root-equivalent *inside the guest* — any local process can use
 > it, exactly as with colima and friends. The unix socket itself is `0600`. The
 > blast radius is the VM, not your host, but it is not a multi-user boundary.
+
+---
+
+## CI — spindle workflows in microVMs
+
+`bsdkrun ci` runs [tangled](https://tangled.org) spindle workflows — the
+`.tangled/workflows/*.yml` a knot runs on push — **locally, in real microVMs**,
+from one command:
+
+```sh
+bsdkrun ci run                  # every workflow matching a manual trigger
+bsdkrun ci run test             # just this one (naming skips `when:` matching)
+bsdkrun ci run --event push     # simulate a push of HEAD to the current branch
+bsdkrun ci ls                   # workflows, and whether each would match
+bsdkrun ci serve                # a spindle-compatible runner over HTTP
+```
+
+Each workflow gets its own VM, built from its `dependencies:` as a
+[nixery.dev](https://nixery.dev) image, with the repository's **HEAD commit**
+cloned in (never the dirty tree — commit first) and the full spindle
+environment (`CI=true`, `TANGLED_*`). The schema and `when:` matching are
+tangled's own Go package, imported rather than reimplemented, so a file that
+passes here is a file spindle runs the same way. `--keep` leaves a failed
+workflow's VM around for `bsdkrun shell`; `--json` emits spindle's LogLine
+stream.
+
+`bsdkrun ci serve` accepts `sh.tangled.pipeline` records over plain HTTP —
+the runner half of spindle, deployable on a server, with the rest (jetstream,
+XRPC, secrets) left to spindle or tack.
+
+Workflows can also be **defined in code** through any of the nine SDKs and run
+without a YAML file ever touching the repository:
+
+```go
+bsdkrun.Workflow("test").OnPush("main").Deps("go", "gcc").
+    Step("test", "go test ./...").Run()
+```
+
+See [`ci/README.md`](ci/README.md) for the full account.
 
 ---
 

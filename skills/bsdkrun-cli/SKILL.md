@@ -57,7 +57,26 @@ AI coding agents (sandboxed, one microVM each):
 - Per-agent `$HOME` volume (login persists), `~/.agents/skills` shared into **every**
   sandbox, host git identity + read-only `~/.ssh` injected, and git/Docker/Nix
   preinstalled. `--no-workspace` shares nothing; `--no-ssh` withholds the keys.
-- Paths resolve on the *engine's* host — for a remote daemon use `--repo`.
+- `bsdkrun ai resume <machine> [-d]` — bring ONE stopped sandbox back (keeps its
+  workspace/name/project) and wait for its guest agent; `ai start` would boot a second one.
+- `bsdkrun ai disk [ls --watch [SECS]]` — the shared Docker/Nix store disks (one running
+  holder at a time), per-sandbox usage, and host free space. `ai disk grow docker --size 200G`.
+- `bsdkrun ai upload [--what skills|ssh|git|workspace] [--agent A] [DIR]` — copy local
+  skills / keys / git identity / a project onto a REMOTE engine's sandbox ($HOME and
+  system dirs are refused; `.gitignore`/`.dockerignore` respected, `--all` overrides).
+- Paths resolve on the *engine's* host — for a remote daemon use `--repo` or `ai upload`.
+
+CI (tangled spindle workflows in microVMs):
+- `bsdkrun ci run [names...]` — run `.tangled/workflows/*.yml` locally: one microVM per
+  workflow (nixery.dev image from its `dependencies:`), clone of HEAD, steps streamed.
+  Flags: `--event push|pull_request|manual`, `-f FILE` (explicit file, skips matching),
+  `-w DIR`, `--input k=v`, `--keep` (keep the VM after a failure), `--json` (spindle
+  LogLine JSON). Runs the HEAD **commit**, never the dirty tree.
+- `bsdkrun ci ls [--event E]` — workflows and whether each matches that trigger.
+- `bsdkrun ci serve [--bind H:P]` — accept `sh.tangled.pipeline` records over HTTP and
+  run them (a spindle-compatible runner for a server).
+- Every SDK can define workflows in code (`workflow("test").on_push("main").step(...)`)
+  and `.run()` them — YAML is generated, never hand-written.
 
 Docker (a Docker engine in a microVM, driven by the host's own `docker` CLI):
 - `bsdkrun docker start [--cpus N] [--mem M] [--disk-size 60G] [--mount PATH]` — boot (or
@@ -107,7 +126,12 @@ Remote access (in-guest agent actions):
 - `bsdkrun agent update <id>` — refresh a stale baked-in guest agent.
 
 Disks, images, volumes:
+- `bsdkrun prune [--all] [--volumes] [--only KIND]... [-f] [--dry-run]` — reclaim disk:
+  stopped machines, unused images, orphaned rootfs trees. Asks with a summary first;
+  `--only orphan` is the selection that cannot cost anything. `--all` adds the OCI layer
+  cache; `--volumes` adds unused volumes.
 - `bsdkrun images [--json]` — list downloaded images.
+- `bsdkrun image rm <id>... [-f]` — remove dangling images (refused while a machine uses one).
 - `bsdkrun volume ls | rm <name>...` — manage persistent volumes.
 - `bsdkrun fetch [--os freebsd|netbsd] [--version V]` — download + prepare a BSD image.
 - `bsdkrun versions` — list downloadable BSD builds.

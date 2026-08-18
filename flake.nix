@@ -151,6 +151,39 @@
           doCheck = false;
         };
 
+        # ---- bsdkrun-ci: the CI runner ------------------------------------
+        # The Go half of `bsdkrun ci`, embedded like pack. Its module tree
+        # spans two directories — `ci/` plus the Go SDK it drives VMs with
+        # (a `replace ../sdk/go` directive) — so the source is a fileset of
+        # both, with modRoot pointing at the module.
+        #
+        # Regenerate vendorHash after a dependency change with:
+        #   cd ci && go mod vendor -o /tmp/v && nix hash path --sri /tmp/v
+        ciBin = pkgs.buildGoModule {
+          pname = "bsdkrun-ci";
+          version = "0.1.0";
+
+          src = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions [
+              ./ci
+              ./sdk/go
+            ];
+          };
+          modRoot = "ci";
+          vendorHash = "sha256-gq5COxojM1ZO0XFOhevU/UCoufA5MYIeun4AwZA/7FI=";
+
+          env.CGO_ENABLED = "0";
+          ldflags = [ "-s" "-w" ];
+
+          # The binary has to carry the name rust_embed looks for.
+          postInstall = ''
+            mv $out/bin/ci $out/bin/bsdkrun-ci 2>/dev/null || true
+          '';
+
+          doCheck = false;
+        };
+
         # ---- solo5-hvt: the Solo5 tender ----------------------------------
         # `bsdkrun solo5` runs MirageOS unikernels through this, and it is not
         # a libkrun guest: the tender drives Hypervisor.framework (macOS) or
@@ -365,6 +398,11 @@
             mkdir -p core/src/pack-bin
             cp ${packBin}/bin/bsdkrun-pack core/src/pack-bin/bsdkrun-pack
             chmod -R u+w core/src/pack-bin
+
+            # And for the CI runner, embedded the same way.
+            mkdir -p core/src/ci-bin
+            cp ${ciBin}/bin/bsdkrun-ci core/src/ci-bin/bsdkrun-ci
+            chmod -R u+w core/src/ci-bin
 
             # Same deal for the Solo5 tender: build.rs finds no
             # library/solo5 in the cleaned source, so it leaves this alone

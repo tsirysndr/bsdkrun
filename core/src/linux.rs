@@ -270,6 +270,7 @@ pub fn prepare_volume_root(
         std::fs::create_dir_all(volume_dir)
             .with_context(|| format!("creating {}", volume_dir.display()))?;
         crate::host::cow_copy(cached_rootfs, &root, true)?;
+        crate::host::unlock_rootfs_top(&root);
     }
     // Always refresh the bsdkrun-managed init + agent (never the user's data).
     oci::write_rootfs_file(
@@ -334,6 +335,7 @@ pub fn prepare_virtiofs_root(
         }
         // Copy-on-write clone (APFS clonefile / Linux reflink); plain-copy fallback.
         crate::host::cow_copy(cached_rootfs, &root, true)?;
+        crate::host::unlock_rootfs_top(&root);
     }
 
     // (Re)write our init + agent every boot (cheap; also picks up bsdkrun

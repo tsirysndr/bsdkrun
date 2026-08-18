@@ -27,6 +27,7 @@
 mod args;
 mod binary;
 pub mod cache;
+pub mod ci;
 mod client;
 mod error;
 mod filesystem;

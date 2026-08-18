@@ -18,6 +18,9 @@ fn main() {
     if std::env::var_os("CARGO_FEATURE_PACK").is_some() {
         ensure_pack_binary();
     }
+    if std::env::var_os("CARGO_FEATURE_CI").is_some() {
+        ensure_ci_binary();
+    }
     if std::env::var_os("CARGO_FEATURE_SOLO5").is_some() {
         ensure_solo5_tender();
     }
@@ -229,6 +232,62 @@ fn ensure_pack_binary() {
             }
         }
         Err(e) => println!("cargo:warning=failed to run `go build` for bsdkrun pack: {e}"),
+    }
+}
+
+/// Compile `ci/` (the Go half of `bsdkrun ci`) into `ci-bin/` for
+/// `rust_embed`, mirroring `ensure_pack_binary` — including its tolerance:
+/// no Go toolchain builds a bsdkrun without CI support rather than failing.
+///
+/// One real difference: `ci/` has network-fetched module dependencies
+/// (tangled.org/core), so a first build needs the network once; after that
+/// the Go module cache serves it.
+fn ensure_ci_binary() {
+    use std::path::Path;
+
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo");
+    let ci_src = Path::new(&manifest_dir).join("../ci");
+    let out_dir = Path::new(&manifest_dir).join("src/ci-bin");
+    let out_bin = out_dir.join("bsdkrun-ci");
+
+    if std::fs::create_dir_all(&out_dir).is_err() {
+        return;
+    }
+
+    println!("cargo:rerun-if-changed=../ci/go.mod");
+    println!("cargo:rerun-if-changed=../ci/go.sum");
+    watch_tree(&ci_src);
+    // The CI tool links the Go SDK from this same repository (a `replace`
+    // directive), so SDK edits must rebuild it too.
+    watch_tree(&Path::new(&manifest_dir).join("../sdk/go"));
+
+    if Command::new("go").arg("version").output().is_err() {
+        println!(
+            "cargo:warning=go toolchain not found on PATH; building bsdkrun without ci support              (install Go >= 1.25 and rebuild to enable `bsdkrun ci`)"
+        );
+        return;
+    }
+
+    let out = Command::new("go")
+        .current_dir(&ci_src)
+        .env("CGO_ENABLED", "0")
+        .args(["build", "-trimpath", "-ldflags", "-s -w", "-o"])
+        .arg(&out_bin)
+        .arg(".")
+        .output();
+
+    match out {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => {
+            println!(
+                "cargo:warning=`go build` for bsdkrun ci exited with {};                  keeping the previously embedded binary, if any",
+                o.status
+            );
+            for line in String::from_utf8_lossy(&o.stderr).lines() {
+                println!("cargo:warning=  go: {line}");
+            }
+        }
+        Err(e) => println!("cargo:warning=failed to run `go build` for bsdkrun ci: {e}"),
     }
 }
 

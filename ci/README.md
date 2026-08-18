@@ -1,0 +1,143 @@
+# bsdkrun ci
+
+Run [tangled](https://tangled.org) spindle CI workflows in bsdkrun microVMs —
+locally, from one command, with nothing installed but bsdkrun itself.
+
+```sh
+bsdkrun ci run            # run every workflow that matches (manual trigger)
+bsdkrun ci ls             # list workflows and whether they'd match
+bsdkrun ci serve          # accept spindle pipeline records over HTTP
+```
+
+This directory is the tool itself: a Go binary compiled by `core/build.rs` and
+embedded into `bsdkrun` exactly as `pack/` is. **An end user never needs Go** —
+`bsdkrun ci` extracts and executes it, and the tool drives VMs through the
+bsdkrun Go SDK, pointed back at the very binary that launched it
+(`$BSDKRUN_BIN`).
+
+## Why this exists
+
+Spindle runs a repository's `.tangled/workflows/*.yml` when a knot sees a push.
+That is the right place for CI to run — and the wrong place to *iterate* on it.
+The push-edit-push loop for debugging a workflow is miserable everywhere, and
+spindle's microvm engine only runs on Linux hosts with KVM.
+
+`bsdkrun ci` runs the same files, in real microVMs, on the machine in front of
+you. A workflow that passes here is a workflow spindle will run the same way,
+because the parts that could disagree are not reimplemented:
+
+- **The schema and `when:` matching are tangled's own Go package**
+  (`tangled.org/core/workflow`), imported, not transcribed. Glob semantics,
+  constraint defaults, pull-request action types — all upstream's code.
+- **The environment is spindle's**: `CI=true` and the full `TANGLED_*` set
+  (`TANGLED_COMMIT_SHA`, `TANGLED_REF`, `TANGLED_PR_TARGET_BRANCH`, manual
+  inputs as `TANGLED_INPUT_*`, …), derived the same way.
+- **The layout is spindle's**: steps run serially in one VM from
+  `/tangled/workspace`, `HOME=/tangled/home`, system steps (nix config, clone)
+  ahead of user steps.
+- **The log format is spindle's**: `--json` emits its LogLine records
+  (`kind: control|data`, `step_status`, streams), so anything that consumes a
+  spindle log stream consumes this.
+
+## What a run does
+
+For each matching workflow:
+
+1. **Image.** The `dependencies:` list becomes a [nixery.dev](https://nixery.dev)
+   image — `nixery.dev/[arm64/]<deps…>/bash/git/coreutils/util-linux/nix` — the
+   same mapping spindle's nixery engine uses (plus `util-linux`, because a
+   microVM mounts `/proc` and its shares itself and needs a `mount(8)` to do it
+   with; containers get that from the runtime). Both dependency spellings are
+   accepted: the plain list (`engine: microvm`) and the registry map
+   (`engine: nixery`). Custom registries (`github:owner/repo/rev`) install via
+   `nix profile add` inside the VM.
+2. **VM.** bsdkrun boots the image as a microVM (2 CPUs / 2048 MiB by default;
+   `--cpus`, `--mem`). The repository is mounted **read-only** at
+   `/tangled/source` — a CI step cannot write to the checkout that triggered it.
+3. **Clone.** The HEAD commit is fetched from that mount into
+   `/tangled/workspace` by SHA, honouring `clone:` options (depth, submodules,
+   tags, skip). **The dirty working tree never runs** — CI that quietly tested
+   uncommitted changes would pass locally and fail everywhere else. Commit
+   first.
+4. **Steps**, serially, each from the workspace, with workflow + step
+   environment applied. First failure stops the workflow; the VM is destroyed
+   unless `--keep`, which leaves it for `bsdkrun shell <id>`.
+
+## Triggers
+
+A spindle gets trigger metadata from a knot event; a local run synthesizes the
+same shape from the checkout:
+
+| Flag                       | Simulates                                                                    |
+| -------------------------- | ---------------------------------------------------------------------------- |
+| *(default)* `--event manual` | Manual dispatch of HEAD. Constraints are skipped, as spindle skips them.    |
+| `--event push`             | A push of `HEAD~1..HEAD` to the current branch; `paths:` matches those files. |
+| `--event pull_request`     | A PR from the current branch onto `--branch` (default branch otherwise).      |
+
+Naming workflows (`bsdkrun ci run test lint`) or passing files (`-f wf.yml`)
+selects them directly and skips `when:` matching — naming *is* the selection.
+
+Identity fields a local checkout does not have (knot, DIDs) are filled with
+recognizable placeholders (`localhost`, `did:local:…`) rather than left empty.
+
+## `bsdkrun ci serve`
+
+The server half: a runner that accepts spindle's own `sh.tangled.pipeline`
+records over HTTP and executes each workflow in a microVM.
+
+```sh
+bsdkrun ci serve --bind 0.0.0.0:8517
+curl -X POST localhost:8517/pipelines -d @pipeline.json   # → {"id":"run-1"}
+curl localhost:8517/pipelines/run-1                       # status + step results
+curl localhost:8517/pipelines/run-1/logs                  # spindle LogLine JSON
+```
+
+Deliberately the *runner seam*, not the whole spindle: jetstream ingestion,
+XRPC, secrets and AT-proto record publishing stay with spindle (or
+[tack](https://github.com/mitchellh/tack)). This serves the piece bsdkrun is
+uniquely placed to provide — executing a pipeline in real VMs — behind an
+interface small enough to point either of them at, or curl by hand. In serve
+mode the clone fetches from the knot URL in the record's trigger metadata.
+
+## Workflows from code
+
+Every bsdkrun SDK can define workflows as code and run them — the YAML is
+generated, byte-compatible with what spindle parses, and never has to be
+written by hand:
+
+```go
+// Go
+bsdkrun.Workflow("test").OnPush("main").Deps("go", "gcc").
+    Step("test", "go test ./...").Run()
+```
+
+```elixir
+# Elixir
+Bsdkrun.CI.workflow("test")
+|> Bsdkrun.CI.on_push("main")
+|> Bsdkrun.CI.deps(["elixir", "erlang"])
+|> Bsdkrun.CI.step("test", "mix test")
+|> Bsdkrun.CI.run()
+```
+
+`yaml()` renders the file, `save(repo)` commits it to `.tangled/workflows/` for
+spindle to run on push, and `run()` executes it immediately in a microVM
+without touching the repository. The same surface exists in TypeScript,
+Python, Rust, Ruby, Clojure, Gleam and Scala.
+
+## Environment
+
+| Variable            | Effect                                                                |
+| ------------------- | --------------------------------------------------------------------- |
+| `BSDKRUN_BIN`       | The bsdkrun binary the SDK drives (set automatically by `bsdkrun ci`). |
+| `BSDKRUN_CI_NIXERY` | A self-hosted nixery instance instead of `nixery.dev`.                 |
+
+## Building
+
+`cargo build` at the repo root compiles this automatically when Go ≥ 1.25 is on
+PATH (see `core/build.rs::ensure_ci_binary`); without Go, bsdkrun builds
+normally and `bsdkrun ci` explains what is missing. Under nix, the flake's
+`ciBin` derivation builds it and `preBuild` drops it into `core/src/ci-bin/`.
+
+The module `replace`s the Go SDK to `../sdk/go`, so SDK changes rebuild the CI
+tool — and the two can never disagree about how a VM is driven.

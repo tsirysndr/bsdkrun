@@ -16,7 +16,7 @@ Host-level operations live in the :mod:`bsdkrun.images`, :mod:`bsdkrun.volumes`,
 
 from __future__ import annotations
 
-from . import caches, images, networks, system, volumes
+from . import caches, ci, images, networks, system, volumes
 from .args import build_create_args
 from .binary import reset_binary_cache, resolve_binary, set_binary_path
 from .cache import Cache, CacheEntry, RestoreResult
@@ -65,6 +65,7 @@ __all__ = [
     "caches",
     # binary resolution
     "set_binary_path",
+    "ci",
     "resolve_binary",
     "reset_binary_cache",
     # low-level process helpers

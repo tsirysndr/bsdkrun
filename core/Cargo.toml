@@ -34,6 +34,11 @@ ui = ["dep:actix-web", "dep:rust-embed", "dep:mime_guess"]
 # build.rs and embedded here with rust-embed; off by default for the same
 # reason as `ui`.
 pack = ["dep:rust-embed"]
+# `bsdkrun ci` — run tangled spindle workflows in microVMs. The tool is a Go
+# binary (`ci/`) compiled by build.rs and embedded here, exactly as `pack` is;
+# Go because it imports tangled's own workflow package, so the schema cannot
+# drift from spindle's.
+ci = ["dep:rust-embed"]
 # `bsdkrun solo5` — run a Solo5 unikernel (MirageOS and friends). The tender
 # is a C program built from the pinned `library/solo5` submodule by build.rs
 # and embedded here with rust-embed, exactly like pack's Go binary. Off by

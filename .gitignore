@@ -20,6 +20,7 @@ node_modules/
 # `bsdkrun pack` Go binary, compiled by core/build.rs and embedded via
 # rust_embed — regenerated on every `cargo build` with `pack` enabled.
 /core/src/pack-bin/bsdkrun-pack
+/core/src/ci-bin/bsdkrun-ci
 # Stray local build output from `go build` inside pack/ (e.g. `go build .`
 # with no -o) — the real output always goes through core/build.rs above.
 /pack/pack

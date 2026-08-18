@@ -274,6 +274,11 @@ pub enum Command {
     /// `bsdkrun pack --help` for the real list.
     #[cfg(feature = "pack")]
     Pack(PackArgs),
+
+    /// Run tangled spindle CI workflows (`.tangled/workflows/*.yml`) in
+    /// microVMs — locally, manually, or as a server-deployed runner.
+    #[cfg(feature = "ci")]
+    Ci(CiArgs),
 }
 
 #[derive(Parser, Serialize, Deserialize)]
@@ -285,6 +290,18 @@ pub struct UiArgs {
     /// Do not open a browser.
     #[arg(long)]
     pub no_open: bool,
+}
+
+#[cfg(feature = "ci")]
+#[derive(Parser, Serialize, Deserialize)]
+// Same deal as PackArgs below: without this, clap intercepts `-h`/`--help`
+// and prints this struct's (empty) help instead of forwarding it.
+#[command(disable_help_flag = true)]
+pub struct CiArgs {
+    /// Forwarded verbatim to the `bsdkrun-ci` binary (`run`, `ls`, `serve`,
+    /// flags). Not parsed here — see `bsdkrun ci --help`.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub args: Vec<String>,
 }
 
 #[cfg(feature = "pack")]

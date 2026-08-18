@@ -195,6 +195,75 @@ The same as the aliases above, naming the agent explicitly.
 
 ---
 
+### Newer `ai` subcommands
+
+```
+bsdkrun ai resume <machine> [-d]        # bring ONE stopped sandbox back, wait for its agent
+bsdkrun ai disk [ls] [--watch [SECS]]   # shared Docker/Nix disks, usage, host free space
+bsdkrun ai disk grow docker --size 200G # raise a shared store's ceiling (never shrinks)
+bsdkrun ai upload [--what skills|ssh|git|workspace] [--agent A] [DIR] [--name N] [--all]
+```
+
+- `resume` exists because `ai start` reasons about an *agent* and would boot a second
+  sandbox; `bsdkrun start <id>` returns before the guest agent is up and a terminal
+  opened then fails with "accepted the connection but sent no output".
+- The shared disks are held by ONE running sandbox at a time (two guests writing one
+  ext4 image corrupts it); a second sandbox boots with an empty store and says so.
+  `BSDKRUN_AI_NO_SHARED_DISKS=1` disables them.
+- `upload` exists for remote engines: skills/keys/git identity/project live on the
+  laptop, not the VPS. `$HOME` and system directories are refused outright; project
+  uploads honour `.gitignore`/`.dockerignore` and cap at 256 MiB / 20k files.
+
+## CI (`bsdkrun ci`) — tangled spindle workflows in microVMs
+
+Runs `.tangled/workflows/*.yml` — the same files tangled's spindle runs — with one
+microVM per workflow. The workflow schema and `when:` matching are tangled's own
+code (the tool is Go and imports `tangled.org/core/workflow`), so a file spindle
+accepts is a file this accepts.
+
+```
+bsdkrun ci run [names...]        # run matching workflows (manual trigger by default)
+bsdkrun ci run test lint         # naming workflows selects them (skips `when` matching)
+bsdkrun ci run -f wf.yml         # an explicit file, from anywhere
+bsdkrun ci run --event push      # simulate a push (branch = current, sha = HEAD)
+bsdkrun ci run --event pull_request --branch main
+bsdkrun ci run --input k=v       # manual-trigger inputs (TANGLED_INPUT_K)
+bsdkrun ci run --keep            # keep the VM after a failure (bsdkrun shell <id>)
+bsdkrun ci run --json            # spindle LogLine JSON on stdout
+bsdkrun ci ls [--event E]        # workflows and whether each matches
+bsdkrun ci serve [--bind H:P]    # accept sh.tangled.pipeline records over HTTP
+```
+
+Behaviors:
+- Runs the repository's **HEAD commit**, never the dirty working tree — commit first.
+- The image is built from the workflow's `dependencies:` via nixery.dev
+  (`nixery.dev/[arm64/]<deps>/bash/git/coreutils/util-linux/nix`); both `engine:
+  nixery` (registry map) and `engine: microvm` (plain list) forms are accepted.
+  `BSDKRUN_CI_NIXERY` points at a self-hosted nixery.
+- Steps run serially in one VM, from `/tangled/workspace`, with `CI=true` and the
+  full `TANGLED_*` env set. System steps (nix config, clone) come first.
+- Custom-registry deps (`github:owner/repo/rev`) are installed with `nix profile add`.
+- `ci serve` is the runner seam only: POST a pipeline record to `/pipelines`, poll
+  `/pipelines/{id}`, read `/pipelines/{id}/logs` (spindle LogLine JSON). The clone
+  fetches from the knot URL in the record's trigger metadata.
+- Every SDK has a CI builder (`workflow("test").on_push("main").step(...).run()`)
+  that generates this YAML and runs it — code-defined workflows, no YAML by hand.
+
+## Prune (`bsdkrun prune`) — reclaim disk
+
+```
+bsdkrun prune                    # summary + [y/N] confirmation, then remove
+bsdkrun prune --dry-run          # report only
+bsdkrun prune -f                 # skip the prompt (required when stdin is not a tty)
+bsdkrun prune --only orphan      # only unreferenced rootfs trees (cannot cost anything)
+bsdkrun prune --only image       # only unused images
+bsdkrun prune --volumes          # also volumes no machine references
+bsdkrun prune --all              # also saved cache entries + the OCI layer cache
+```
+
+Defaults keep the OCI layer cache (it is what makes re-pulls cheap and it is already
+size-bounded) and volumes (the one thing holding non-redownloadable data).
+
 ## Docker (`bsdkrun docker`)
 
 A Docker engine in a microVM, with its API served on a host unix socket so the *host's*

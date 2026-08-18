@@ -251,6 +251,43 @@ pub fn cow_copy(src: &Path, dst: &Path, recursive: bool) -> Result<()> {
     plain_copy(src, dst, recursive)
 }
 
+/// Make a machine's cloned rootfs writable where a guest expects to write.
+///
+/// Nix-built images (nixery.dev among them) ship `/`, `/etc` and `/nix` as
+/// mode 0555, and libkrun's virtio-fs enforces the *host* file's permissions
+/// against the guest — where root is not the host owner, so the guest cannot
+/// even chmod its way out. A measured `chmod u+w /etc` from guest root
+/// returns EPERM while `mkdir /etc/nix` returns EACCES: the guest has no
+/// move, and only the host can grant one.
+///
+/// Top level plus `/nix/store` only, never recursive: the clone is this
+/// machine's private CoW copy, so nothing shared changes — but touching the
+/// metadata of every store path in a 50-layer image would take real time and
+/// dirty CoW blocks for no benefit. Store *entries* stay 0555, which is how
+/// nix itself keeps them.
+pub fn unlock_rootfs_top(root: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let add_uw = |p: &Path| {
+        if let Ok(meta) = std::fs::symlink_metadata(p) {
+            if meta.is_dir() && meta.permissions().mode() & 0o200 == 0 {
+                let mode = meta.permissions().mode() | 0o700;
+                let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode));
+            }
+        }
+    };
+    add_uw(root);
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for e in entries.flatten() {
+            add_uw(&e.path());
+        }
+    }
+    // `nix profile add` (CI custom dependencies) writes new store paths, so
+    // the store *directory* needs the write bit even though its entries keep
+    // theirs off.
+    add_uw(&root.join("nix/store"));
+    add_uw(&root.join("nix/var"));
+}
+
 /// Copy without attempting a CoW clone first. Use when the copy is *known* to
 /// cross filesystems (migrating onto the case-sensitive store, say): clonefile
 /// fails `EXDEV` there, and `cow_copy`'s fallback chain would print an alarming

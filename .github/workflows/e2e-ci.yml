@@ -194,8 +194,9 @@ jobs:
       # clone, and prints <platform>-example-ok — grepped here, because a
       # step's conclusion proves nothing. All failures are collected before
       # judging so one broken platform does not hide the others.
+      # Strict since its first green run (2026-08-18): all seven passed on
+      # x86_64/KVM on the first attempt, so a failure here is a regression.
       - name: e2e — foreign platforms (github, gitlab, woodpecker, drone, circleci, buildkite, travis)
-        continue-on-error: true # flip to false after the first green run on x86_64
         run: |
           set -eux
           failed=""

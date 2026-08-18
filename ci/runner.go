@@ -160,7 +160,13 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 
 	// The workspace and home exist before any step runs; every step then
 	// starts from the workspace, like spindle's container workdir.
-	if res, err := sbx.exec([]string{"mkdir", "-p", workspaceDir, homeDir}, nil, nil, nil); err != nil {
+	// chown after mkdir: the /tangled parent can arrive owned by the
+	// virtio-fs/init uid mapping rather than root, and stack (like modern
+	// git) refuses to work under a HOME "owned by someone else".
+	if res, err := sbx.exec([]string{"sh", "-c",
+		"mkdir -p " + workspaceDir + " " + homeDir +
+			" && chown 0:0 /tangled " + workspaceDir + " " + homeDir + " 2>/dev/null || true"},
+		nil, nil, nil); err != nil {
 		return nil, fmt.Errorf("preparing %s: %w", workspaceDir, err)
 	} else if res.ExitCode != 0 {
 		return nil, fmt.Errorf("preparing %s: %s", workspaceDir, opts.mask(strings.TrimSpace(res.Stderr)))

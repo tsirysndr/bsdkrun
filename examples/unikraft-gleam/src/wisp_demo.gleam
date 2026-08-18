@@ -31,7 +31,7 @@ pub fn main() -> Nil {
   process.sleep_forever()
 }
 
-fn handle_request(req: wisp.Request) -> wisp.Response {
+pub fn handle_request(req: wisp.Request) -> wisp.Response {
   case request.path_segments(req) {
     [] ->
       wisp.ok()

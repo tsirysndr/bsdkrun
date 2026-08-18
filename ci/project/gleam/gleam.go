@@ -30,7 +30,7 @@ func (Provider) Job(dir string) platforms.Job {
 	steps = append(steps, step("gleam build", "gleam build"))
 	// ghcr tags are version-pinned (no floating latest); pinned tags stay
 	// pullable forever, they just age.
-	return job("ghcr.io/gleam-lang/gleam:v1.6.3-erlang-alpine", steps...)
+	return job("ghcr.io/gleam-lang/gleam:v1.18.0-erlang-alpine", steps...)
 }
 
 func job(image string, steps ...platforms.Step) platforms.Job {

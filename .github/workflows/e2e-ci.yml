@@ -275,7 +275,7 @@ jobs:
         run: |
           set -eux
           failed=""
-          for x in unikraft-crystal unikraft-elixir unikraft-gleam unikraft-laravel unikraft-symfony unikraft-actix unikraft-clojure unikraft-dotnet unikraft-haskell; do
+          for x in unikraft-crystal unikraft-elixir unikraft-gleam unikraft-ruby unikraft-laravel unikraft-symfony unikraft-actix unikraft-clojure unikraft-dotnet unikraft-haskell; do
             d=$(mktemp -d)
             cp -r "examples/$x/." "$d"
             git -C "$d" init -q

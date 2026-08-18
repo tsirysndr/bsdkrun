@@ -10,7 +10,8 @@ describe "server" do
       output: Process::Redirect::Close, error: Process::Redirect::Close)
     begin
       response = nil
-      60.times do
+      # `crystal run` compiles first; a 2-core CI runner needs real time.
+      240.times do
         begin
           response = HTTP::Client.get("http://127.0.0.1:8080/")
           break

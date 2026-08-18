@@ -7,10 +7,22 @@ dependencies:
   - bytestring
   - network
 
+library:
+  source-dirs: src
+
 executables:
   server:
     main: Main.hs
     source-dirs: app
+    dependencies:
+      - server
     ghc-options:
       - -threaded
       - -O2
+
+tests:
+  server-test:
+    main: Spec.hs
+    source-dirs: test
+    dependencies:
+      - server

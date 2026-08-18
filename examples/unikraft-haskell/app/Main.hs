@@ -2,41 +2,18 @@
 --
 -- Raw sockets rather than warp: this example is about the toolchain
 -- reaching the guest, and a web server would bring a hundred transitive
--- dependencies with it.
+-- dependencies with it. The response itself lives in Lib, where the test
+-- suite can reach it.
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main (main) where
 
 import Control.Monad (forever)
-import Data.Version (showVersion)
 import qualified Data.ByteString.Char8 as B
+import Lib (port, response)
 import Network.Socket
 import Network.Socket.ByteString (recv, sendAll)
 import System.IO (hFlush, stdout)
-import System.Info (compilerVersion)
-
-port :: PortNumber
-port = 8080
-
-body :: B.ByteString
-body =
-  B.concat
-    [ "{\"message\": \"Hello from Haskell on Unikraft!\", \"ghc\": \""
-    , B.pack (showVersion compilerVersion)
-    , "\"}"
-    ]
-
-response :: B.ByteString
-response =
-  B.concat
-    [ "HTTP/1.1 200 OK\r\n"
-    , "Content-Type: application/json\r\n"
-    , "Content-Length: "
-    , B.pack (show (B.length body))
-    , "\r\n"
-    , "Connection: close\r\n\r\n"
-    , body
-    ]
 
 main :: IO ()
 main = do

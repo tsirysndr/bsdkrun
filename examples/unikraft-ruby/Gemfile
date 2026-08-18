@@ -1,0 +1,6 @@
+# For the tests only — the server itself is stdlib sockets, and the
+# unikernel build does not consult this file.
+source "https://rubygems.org"
+
+gem "minitest"
+gem "rake"

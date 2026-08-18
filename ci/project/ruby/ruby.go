@@ -22,7 +22,14 @@ func (Provider) Detect(dir string) (string, bool) {
 }
 
 func (Provider) Job(dir string) platforms.Job {
-	steps := []platforms.Step{step("bundle install", "bundle install")}
+	steps := []platforms.Step{
+		// ruby:slim ships no toolchain, and the gem ecosystem is full of
+		// native extensions (minitest 6 pulls prism); a compiler is table
+		// stakes, not an optimization.
+		step("install build tools",
+			"apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential"),
+		step("bundle install", "bundle install"),
+	}
 	switch {
 	case probe.Exists(dir, "spec"):
 		steps = append(steps, step("rspec", "bundle exec rspec"))

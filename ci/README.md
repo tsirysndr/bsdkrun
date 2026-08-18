@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="../.github/assets/ci.png" alt="bsdkrun Desktop CI/CD screen — a workflow run with per-step status, timings and live logs" width="900">
+</p>
+
 # bsdkrun ci
 
 Run [tangled](https://tangled.org) spindle CI workflows in bsdkrun microVMs —
@@ -14,10 +18,6 @@ embedded into `bsdkrun` exactly as `pack/` is. **An end user never needs Go** �
 `bsdkrun ci` extracts and executes it, and the tool drives VMs through the
 bsdkrun CLI itself, pointed back at the very binary that launched it
 (`$BSDKRUN_BIN`).
-
-<p align="center">
-  <img src="../.github/assets/ci.png" alt="bsdkrun Desktop CI/CD screen — a workflow run with per-step status, timings and live logs" width="900">
-</p>
 
 ## Why this exists
 

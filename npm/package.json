@@ -1,6 +1,6 @@
 {
   "name": "@bsdkrun/cli",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Firecracker-style microVM launcher for BSD, Linux (OCI), and unikernel guests, built on libkrun. Installs the prebuilt bsdkrun host binary for your platform.",
   "license": "MIT",
   "homepage": "https://github.com/tsirysndr/bsdkrun#readme",

@@ -83,6 +83,9 @@ type Plan struct {
 	Clone workflow.CloneOpts
 	// The nixpkgs dependency list, kept for the no-nixery fallback.
 	NixpkgsDeps []string
+	// Workdir is where user steps start; empty means the workspace root.
+	// Set when the workflows live in a subdirectory of the repository.
+	Workdir string
 }
 
 // loadWorkflows reads every workflow under `.tangled/workflows`, exactly
@@ -319,7 +322,14 @@ func localCloneStep(opts workflow.CloneOpts, sha string) Step {
 }
 
 // buildPlan resolves one matched workflow into an executable plan.
-func buildPlan(wf workflow.Workflow, tr *tangled.Pipeline_TriggerMetadata, pipelineID string) (*Plan, error) {
+func buildPlan(wf workflow.Workflow, tr *tangled.Pipeline_TriggerMetadata, pipelineID, subdir string) (*Plan, error) {
+	// User steps start from the directory whose workflows these are; system
+	// steps (prepare, clone) always run at the workspace root — the subdir
+	// does not even exist until the clone lands.
+	workdir := ""
+	if subdir != "" {
+		workdir = path.Join(workspaceDir, subdir)
+	}
 	var s spec
 	if err := yaml.Unmarshal([]byte(wf.Raw), &s); err != nil {
 		return nil, fmt.Errorf("%s: %w", wf.Name, err)
@@ -355,11 +365,12 @@ func buildPlan(wf workflow.Workflow, tr *tangled.Pipeline_TriggerMetadata, pipel
 			steps = append(steps, Step{Name: name, Command: us.Command, Env: us.Environment})
 		}
 		return &Plan{
-			Name:  wf.Name,
-			Image: img,
-			Env:   env,
-			Steps: steps,
-			Clone: wf.CloneOpts,
+			Name:    wf.Name,
+			Image:   img,
+			Env:     env,
+			Steps:   steps,
+			Clone:   wf.CloneOpts,
+			Workdir: workdir,
 		}, nil
 	}
 
@@ -382,6 +393,7 @@ func buildPlan(wf workflow.Workflow, tr *tangled.Pipeline_TriggerMetadata, pipel
 		Steps:       steps,
 		Clone:       wf.CloneOpts,
 		NixpkgsDeps: s.Dependencies["nixpkgs"],
+		Workdir:     workdir,
 	}, nil
 }
 

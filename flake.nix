@@ -167,7 +167,7 @@
           version = "0.1.0";
 
           src = ./ci;
-          vendorHash = "sha256-vTyD1ViJbTDQPmH35zaRYnolr2k4V1B2QhDWC/j0bcE=";
+          vendorHash = "sha256-CCAaLQQvZP1pi2G1PBoMiWwTJ6vqXo+lGa6Ng0rAZMc=";
 
           env.CGO_ENABLED = "0";
           ldflags = [ "-s" "-w" ];

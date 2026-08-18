@@ -132,6 +132,152 @@ pub(crate) fn cmd_ci(args: &[String]) -> Result<()> {
             }
             return Ok(());
         }
+        // Everything a CI run leaves on the host, reclaimed in one verb:
+        // its VMs (recognizable by the bsdkrun-ci- name prefix), the shared
+        // ci-checkouts clones, and — with --images — the cached rootfs of
+        // every nixery-built image, which is where the real gigabytes live.
+        // Summarize first, delete only on a yes: this can be tens of GiB of
+        // re-pullable-but-slow state, and a prune should never be a surprise.
+        Some("prune") => {
+            let force = args.iter().any(|a| a == "-f" || a == "--force");
+            let images = args.iter().any(|a| a == "--images");
+            let yes = force || args.iter().any(|a| a == "-y" || a == "--yes");
+
+            // Gather, without touching anything yet.
+            let mut vms: Vec<String> = Vec::new();
+            let mut running_kept = 0usize;
+            for m in crate::api::list_machines(true)? {
+                let name = m.name.as_deref().unwrap_or("");
+                if !name.starts_with("bsdkrun-ci-") {
+                    continue;
+                }
+                if m.running && !force {
+                    running_kept += 1;
+                    continue;
+                }
+                vms.push(m.id);
+            }
+
+            let checkouts = std::env::var_os("HOME").map(|h| {
+                std::path::PathBuf::from(h).join(".local/state/bsdkrun/ci-checkouts")
+            });
+            let checkouts_size = checkouts
+                .as_deref()
+                .filter(|p| p.is_dir())
+                .map(dir_size)
+                .unwrap_or(0);
+
+            // (memo file, image dir, size) per nixery reference; several refs
+            // can resolve to one digest, so dirs are deduplicated.
+            let mut image_targets: Vec<(std::path::PathBuf, std::path::PathBuf, u64)> = Vec::new();
+            let mut images_size = 0u64;
+            if images {
+                let cache = crate::fetch::oci_cache_dir()?;
+                let mut seen = std::collections::HashSet::new();
+                if let Ok(rd) = std::fs::read_dir(cache.join("refs")) {
+                    for entry in rd.flatten() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        // The memo file is named after the reference; nixery
+                        // images — the per-dependency-set builds only CI asks
+                        // for — are the ones safe to assume re-pullable.
+                        if !name.starts_with("nixery") {
+                            continue;
+                        }
+                        let Ok(digest) = std::fs::read_to_string(entry.path()) else {
+                            continue;
+                        };
+                        let dir = cache.join(crate::oci::digest_to_dirname(digest.trim()));
+                        let size = if dir.is_dir() && seen.insert(dir.clone()) {
+                            dir_size(&dir)
+                        } else {
+                            0
+                        };
+                        images_size += size;
+                        image_targets.push((entry.path(), dir, size));
+                    }
+                }
+            }
+
+            // The summary is the contract: nothing beyond it gets touched.
+            println!("bsdkrun ci prune would remove:");
+            println!("  CI VMs           {}", vms.len());
+            if running_kept > 0 {
+                println!(
+                    "                   ({running_kept} running kept — -f includes them)"
+                );
+            }
+            println!(
+                "  ci-checkouts     {}",
+                crate::oci::human_size(checkouts_size)
+            );
+            if images {
+                println!(
+                    "  cached images    {} nixery image(s), {}",
+                    image_targets.iter().filter(|(_, _, s)| *s > 0).count(),
+                    crate::oci::human_size(images_size)
+                );
+            } else {
+                println!("  cached images    kept (--images reclaims those too)");
+            }
+            if vms.is_empty() && checkouts_size == 0 && images_size == 0 {
+                println!("nothing to prune");
+                return Ok(());
+            }
+
+            if !yes {
+                print!("Proceed? [y/N] ");
+                std::io::Write::flush(&mut std::io::stdout())?;
+                let mut answer = String::new();
+                std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut answer)?;
+                let answer = answer.trim().to_ascii_lowercase();
+                if answer != "y" && answer != "yes" {
+                    println!("aborted — nothing removed");
+                    return Ok(());
+                }
+            }
+
+            let mut freed = images_size;
+            for id in &vms {
+                if let Err(e) = crate::commands::machines::remove_machine(id, true) {
+                    eprintln!("warning: could not remove {id}: {e}");
+                }
+            }
+            if let Some(dir) = checkouts.as_deref().filter(|p| p.is_dir()) {
+                remove_tree(dir).with_context(|| format!("removing {}", dir.display()))?;
+                freed += checkouts_size;
+            }
+            let mut removed_images = 0usize;
+            for (memo, dir, size) in &image_targets {
+                if dir.is_dir() {
+                    if let Err(e) = remove_tree(dir) {
+                        eprintln!("warning: could not remove {}: {e}", dir.display());
+                        continue;
+                    }
+                    if *size > 0 {
+                        removed_images += 1;
+                    }
+                }
+                // The memo only goes once its rootfs is really gone —
+                // otherwise the stale-cache fallback loses its index to a
+                // tree that still exists.
+                let _ = std::fs::remove_file(memo);
+            }
+            if images {
+                println!(
+                    "removed {} VM(s), {} image(s) — freed {}",
+                    vms.len(),
+                    removed_images,
+                    crate::oci::human_size(freed)
+                );
+            } else {
+                println!(
+                    "removed {} VM(s) — freed {}",
+                    vms.len(),
+                    crate::oci::human_size(freed)
+                );
+            }
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -184,4 +330,50 @@ fn chrono_ish(ns: i64) -> String {
     let mo = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if mo <= 2 { y + 1 } else { y };
     format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02}")
+}
+
+/// Recursive size of a directory tree; unreadable entries count as zero.
+fn dir_size(path: &std::path::Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    let mut total = 0;
+    for entry in rd.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            total += dir_size(&entry.path());
+        } else {
+            total += meta.len();
+        }
+    }
+    total
+}
+
+/// `remove_dir_all` that survives read-only directories: an extracted image
+/// rootfs carries the nix store's r-xr-xr-x trees, and unlinking needs a
+/// writable parent — so directories are made writable on the way down.
+fn remove_tree(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    fn make_writable(p: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = p.symlink_metadata() {
+            if meta.is_dir() {
+                let mode = meta.permissions().mode();
+                if mode & 0o700 != 0o700 {
+                    let _ = std::fs::set_permissions(
+                        p,
+                        std::fs::Permissions::from_mode(mode | 0o700),
+                    );
+                }
+                if let Ok(rd) = std::fs::read_dir(p) {
+                    for entry in rd.flatten() {
+                        make_writable(&entry.path());
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(unix)]
+    make_writable(path);
+    std::fs::remove_dir_all(path)
 }

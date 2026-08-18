@@ -118,7 +118,7 @@ mode the clone fetches from the knot URL in the record's trigger metadata.
 
 ## Workflows from code
 
-Every bsdkrun SDK can define workflows as code and run them — the YAML is
+Every [bsdkrun SDK](../sdk) can define workflows as code and run them — the YAML is
 generated, byte-compatible with what spindle parses, and never has to be
 written by hand:
 

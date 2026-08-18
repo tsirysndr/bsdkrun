@@ -120,7 +120,7 @@ func (s *server) execute(run *pipelineRun, tpl *tangled.Pipeline) {
 		wf, err := workflow.FromFile(twf.Name, []byte(twf.Raw))
 		if err == nil {
 			var plan *Plan
-			plan, err = buildPlan(wf, tpl.TriggerMetadata, "at://"+run.ID)
+			plan, err = buildPlan(wf, tpl.TriggerMetadata, "at://"+run.ID, "")
 			if err == nil {
 				// Swap the local clone for the remote one — the only step
 				// that differs between a local and a served run.

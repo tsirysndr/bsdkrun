@@ -35,6 +35,20 @@ type repoInfo struct {
 	Sha           string
 	Branch        string // empty on a detached HEAD
 	DefaultBranch string
+	// Subdir is set when the directory the user pointed at has its own
+	// `.tangled/workflows` inside a larger repository (a monorepo package,
+	// an example dir): workflows load from there and user steps run from
+	// that subdirectory of the clone, while every git operation — HEAD,
+	// the clone itself — still belongs to the repository root.
+	Subdir string
+}
+
+// WorkflowRoot is where `.tangled/workflows` is discovered.
+func (r *repoInfo) WorkflowRoot() string {
+	if r.Subdir != "" {
+		return filepath.Join(r.Root, r.Subdir)
+	}
+	return r.Root
 }
 
 func inspectRepo(dir string) (*repoInfo, error) {
@@ -62,12 +76,25 @@ func inspectRepo(dir string) (*repoInfo, error) {
 	if def == "" {
 		def = "main"
 	}
+	// The directory the user pointed at wins when it carries its own
+	// workflows: `bsdkrun ci` inside examples/foo of a monorepo means
+	// "run foo's CI", not "run whatever the repo root declares".
+	subdir := ""
+	if abs, err := filepath.Abs(dir); err == nil && abs != root {
+		if _, err := os.Stat(filepath.Join(abs, workflow.WorkflowDir)); err == nil {
+			if rel, err := filepath.Rel(root, abs); err == nil && !strings.HasPrefix(rel, "..") {
+				subdir = rel
+			}
+		}
+	}
+
 	return &repoInfo{
 		Root:          root,
 		Name:          filepath.Base(root),
 		Sha:           sha,
 		Branch:        branch,
 		DefaultBranch: def,
+		Subdir:        subdir,
 	}, nil
 }
 

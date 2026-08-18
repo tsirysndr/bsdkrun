@@ -20,6 +20,19 @@ shipped alongside it.
 
 ### Added
 
+- **`bsdkrun ci run` renders a live TUI on a terminal** (Bubble Tea): one row
+  per step with realtime durations in seconds-with-milliseconds, a spinner on
+  the running step and a dimmed tail of its output, failures keeping their
+  last lines on screen. `--plain` (or piping) keeps line output; the TUI
+  consumes the same spindle LogLine stream `--json` prints.
+- **`bsdkrun ci prune [--images]`** reclaims everything CI runs leave behind:
+  leftover `bsdkrun-ci-*` VMs, the shared ci-checkouts clones and — with
+  `--images` — the cached nixery image rootfs, after a summary and a y/N
+  confirmation (`-y`/`-f` skips it).
+- **`bsdkrun ci [path]`**, and monorepo awareness: a directory positional is
+  the workspace, and a directory carrying its own `.tangled/workflows` inside
+  a larger repository runs *its* workflows, with user steps starting from
+  that subdirectory of the clone.
 - **`bsdkrun ci` runs plain OCI images.** A workflow `image:` that reads as a
   reference (`ubuntu:24.04`, `ghcr.io/org/img`) boots that image directly — no
   nixery, no nix machinery; the runner only ensures git is present for the
@@ -49,6 +62,9 @@ shipped alongside it.
   resolver remembers which digest each reference last resolved to and boots the
   last successfully pulled copy when the registry answers 5xx; manifest fetches
   also retry 5xx before giving up.
+- **Steps stream their output in real time** in JSON mode — previously a
+  step's log arrived only when it exited, so a long `nix build` looked hung
+  in the desktop/web CI screens and then dumped everything at once.
 - The CI clone step marks the source mount `safe.directory` (modern git refuses
   a repository owned by another uid, which a virtio-fs mount always is).
 - `bsdkrun ci --help` prints the usage text instead of `run`'s flag dump.

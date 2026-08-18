@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"golang.org/x/term"
 	"tangled.org/core/workflow"
 )
 
@@ -32,7 +33,14 @@ func main() {
 	args := os.Args[1:]
 	cmd := "run"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		cmd, args = args[0], args[1:]
+		// `bsdkrun ci <dir>` reads as "run the workflows there", not as a
+		// subcommand — a path is never a verb, and making people type `run`
+		// before it helps nobody.
+		if st, err := os.Stat(args[0]); err == nil && st.IsDir() && !isCommand(args[0]) {
+			// keep args as-is; cmdRun treats the directory positional below
+		} else {
+			cmd, args = args[0], args[1:]
+		}
 	} else if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
 		// A bare `--help` is a help request, not run's flag — without this it
 		// falls into run's FlagSet and prints the flag dump instead.
@@ -60,11 +68,21 @@ func main() {
 	}
 }
 
+func isCommand(s string) bool {
+	switch s {
+	case "run", "ls", "serve", "help":
+		return true
+	}
+	return false
+}
+
 func usage() {
 	fmt.Print(`bsdkrun ci — run tangled spindle workflows in microVMs
 
 Usage:
-  bsdkrun ci run [names...]     run workflows (default: every one that matches)
+  bsdkrun ci [path] [names...]  run workflows (default: every one that matches;
+                                a directory positional is the workspace)
+  bsdkrun ci run [names...]     the same, spelled out
   bsdkrun ci ls                 list workflows and whether they match
   bsdkrun ci serve              accept sh.tangled.pipeline records over HTTP
 
@@ -78,6 +96,8 @@ Run flags:
   --cpus N, --mem MIB                VM size (default 2 cpus, 2048 MiB)
   --keep                             keep the VM after a failure
   --json                             spindle log-line JSON on stdout
+  --plain                            plain line output even on a terminal
+                                     (the default when stdout is not a tty)
   --nixery <host>                    a self-hosted nixery instead of nixery.dev
   --otlp <url>                       export OpenTelemetry spans (or set
                                      OTEL_EXPORTER_OTLP_ENDPOINT); one span
@@ -128,6 +148,7 @@ func cmdRun(args []string) error {
 	mem := fs.Int("mem", 2048, "")
 	keep := fs.Bool("keep", false, "")
 	jsonOut := fs.Bool("json", false, "")
+	plain := fs.Bool("plain", false, "")
 	nixery := fs.String("nixery", "", "")
 	otlp := fs.String("otlp", "", "")
 	var inputs, files repeatable
@@ -140,6 +161,18 @@ func cmdRun(args []string) error {
 	names := fs.Args()
 	nixeryOverride = *nixery
 	otlpOverride = *otlp
+
+	// A positional that is an existing directory is the workspace, the rest
+	// are workflow names: `bsdkrun ci examples/foo test` needs no -w.
+	kept := names[:0]
+	for _, n := range names {
+		if st, err := os.Stat(n); err == nil && st.IsDir() {
+			*workspace = n
+			continue
+		}
+		kept = append(kept, n)
+	}
+	names = kept
 
 	repo, err := inspectRepo(*workspace)
 	if err != nil {
@@ -175,7 +208,7 @@ func cmdRun(args []string) error {
 			selected = append(selected, wf)
 		}
 	} else {
-		wfs, err := loadWorkflows(repo.Root)
+		wfs, err := loadWorkflows(repo.WorkflowRoot())
 		if err != nil {
 			return err
 		}
@@ -212,18 +245,31 @@ func cmdRun(args []string) error {
 		Out:    os.Stdout,
 	}
 
-	failed := 0
+	plans := make([]*Plan, 0, len(selected))
 	for _, wf := range selected {
-		plan, err := buildPlan(wf, tr, pipelineID)
+		plan, err := buildPlan(wf, tr, pipelineID, repo.Subdir)
 		if err != nil {
 			return err
 		}
+		plans = append(plans, plan)
+	}
+
+	// An interactive terminal gets the live renderer; --json, --plain and
+	// anything piped get lines. The renderer consumes the same LogLine stream
+	// --json prints, so the two views can never tell a different story.
+	if !*jsonOut && !*plain && term.IsTerminal(int(os.Stdout.Fd())) {
+		_, err := runPlansTUI(plans, opts)
+		return err
+	}
+
+	failed := 0
+	for _, plan := range plans {
 		if _, err := runPlan(plan, opts); err != nil {
 			failed++
-			fmt.Fprintf(os.Stderr, "✗ %s: %v\n", wf.Name, err)
+			fmt.Fprintf(os.Stderr, "✗ %s: %v\n", plan.Name, err)
 			continue
 		}
-		logf(opts, "✓ %s passed\n\n", wf.Name)
+		logf(opts, "✓ %s passed\n\n", plan.Name)
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d of %d workflow(s) failed", failed, len(selected))
@@ -260,7 +306,7 @@ func cmdLs(args []string) error {
 	if err != nil {
 		return err
 	}
-	wfs, err := loadWorkflows(repo.Root)
+	wfs, err := loadWorkflows(repo.WorkflowRoot())
 	if err != nil {
 		return err
 	}

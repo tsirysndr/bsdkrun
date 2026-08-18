@@ -694,7 +694,7 @@ fn parse_config(json: &Value) -> Result<ImageConfig> {
 }
 
 /// `sha256:abcd…` -> `sha256-abcd…`, safe as a directory name.
-fn digest_to_dirname(digest: &str) -> String {
+pub(crate) fn digest_to_dirname(digest: &str) -> String {
     digest.replace(':', "-")
 }
 

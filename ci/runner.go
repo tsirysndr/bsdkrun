@@ -151,8 +151,14 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 		// `bash -lc` rather than sh: bash is in every image this plans
 		// (spindle appends it to the dependency set), and workflow commands
 		// are written against it. `cd` per step because exec sessions do not
-		// share a cwd.
-		script := "cd " + workspaceDir + " && {\n" + step.Command + "\n}"
+		// share a cwd. User steps start from the plan's workdir (a monorepo
+		// subdirectory when the workflows live in one); system steps always
+		// run at the workspace root, which exists before the clone does.
+		wd := workspaceDir
+		if !step.System && plan.Workdir != "" {
+			wd = plan.Workdir
+		}
+		script := "cd " + wd + " && {\n" + step.Command + "\n}"
 		env := map[string]string{}
 		for k, v := range plan.Env {
 			env[k] = v
@@ -160,8 +166,15 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 		for k, v := range step.Env {
 			env[k] = v
 		}
+		// Streamed in BOTH modes. JSON used to emit a step's output only
+		// after it exited, which froze every consumer of the stream (desktop,
+		// web, the TUI) for the length of a compile — a `nix build` looked
+		// hung for minutes and then dumped everything at once.
 		var sOut, sErr io.Writer
-		if !opts.JSON {
+		if opts.JSON {
+			sOut = &lineEmitter{out: opts.Out, stepID: idx, stream: "stdout"}
+			sErr = &lineEmitter{out: opts.Out, stepID: idx, stream: "stderr"}
+		} else {
 			sOut = prefixed(opts.Out)
 			sErr = prefixed(opts.Out)
 		}
@@ -177,10 +190,6 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 			ExitCode: code,
 			Duration: time.Since(start).Round(time.Millisecond),
 		})
-		if opts.JSON && res != nil {
-			emitData(opts, idx, res.Stdout, "stdout")
-			emitData(opts, idx, res.Stderr, "stderr")
-		}
 		emitControl(opts, idx, step, "end")
 
 		if runErr != nil {

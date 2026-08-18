@@ -367,7 +367,7 @@ fn render_ai(f: &mut Frame, app: &App, area: Rect) {
 /// directory listing below. Typing filters; pasting a git URL and pressing ⏎
 /// clones it into the shared ci-checkouts layout instead.
 fn render_repo_picker(f: &mut Frame, app: &App, p: &super::ci::RepoPicker, area: Rect) {
-    let height = (area.height.saturating_sub(4)).min(20).max(8);
+    let height = (area.height.saturating_sub(4)).clamp(8, 20);
     let rect = centered(area, area.width.saturating_sub(10).min(74), height);
     f.render_widget(Clear, rect);
     let block = modal_block("open repository");

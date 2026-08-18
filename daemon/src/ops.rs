@@ -1307,8 +1307,7 @@ impl Ops {
         &self,
         cmd: &CoreCommand,
         run_id: &str,
-    ) -> Result<tokio::sync::mpsc::Receiver<Result<crate::pb::OutputChunk, tonic::Status>>, OpError>
-    {
+    ) -> Result<crate::supervisor::OutputStream, OpError> {
         let argv = self.supervisor.argv(cmd)?;
         let (rx, pid) = self.supervisor.stream_with_pid(&argv)?;
         if let (Some(pid), false) = (pid, run_id.is_empty()) {

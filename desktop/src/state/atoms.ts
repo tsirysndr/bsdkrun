@@ -209,3 +209,8 @@ export const themeAtom = atomWithStorage<"night-rider" | "dark">(
   "bsdkrun-theme",
   "night-rider",
 );
+
+/** Repositories the CI screen has run against, most recent first. Persisted
+ * client-side (localStorage) like the run history, and surfaced both in the
+ * CI screen and as command-palette entries. */
+export const ciReposAtom = atomWithStorage<string[]>("bsdkrun-ci-repos", []);

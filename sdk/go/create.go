@@ -2,6 +2,7 @@ package bsdkrun
 
 import (
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 )
@@ -304,6 +305,35 @@ func (b *CreateBuilder) LogLevel(level int) *CreateBuilder {
 }
 
 // Create boots the microVM (detached) and returns a handle to it.
+// CreateStreaming is Create with the boot's own output — image pull
+// progress, layer extraction, the boot log — streamed line-by-line to the
+// given writers while it runs. The CI runner uses it so "booting the VM" is
+// a live log rather than a silence; anything long-running benefits the same
+// way.
+func (b *CreateBuilder) CreateStreaming(stdout, stderr io.Writer) (*Sandbox, error) {
+	args, err := BuildCreateArgs(b.spec)
+	if err != nil {
+		return nil, err
+	}
+	level := 1
+	if b.hasLogUser {
+		level = b.logLevel
+	}
+	res, err := Run(args, &RunOpts{LogLevel: level, Stdout: stdout, Stderr: stderr})
+	if err != nil {
+		return nil, err
+	}
+	if res.ExitCode != 0 {
+		return nil, &CommandFailedError{
+			ExitCode: res.ExitCode,
+			Stdout:   res.Stdout,
+			Stderr:   res.Stderr,
+			Command:  "bsdkrun create",
+		}
+	}
+	return sandboxFromCreate(res)
+}
+
 func (b *CreateBuilder) Create() (*Sandbox, error) {
 	args, err := BuildCreateArgs(b.spec)
 	if err != nil {
@@ -326,8 +356,13 @@ func (b *CreateBuilder) Create() (*Sandbox, error) {
 		}
 	}
 
-	// Detached runs print just the machine id on stdout; take the last line
-	// that looks like one, in case boot noise precedes it.
+	return sandboxFromCreate(res)
+}
+
+// sandboxFromCreate turns a successful `bsdkrun create` result into the
+// Sandbox handle: the machine id is the last id-shaped stdout line (boot
+// noise may precede it), the SSH port comes from stderr when forwarded.
+func sandboxFromCreate(res RawResult) (*Sandbox, error) {
 	var machineID string
 	for _, line := range strings.Split(res.Stdout, "\n") {
 		stripped := strings.TrimSpace(line)

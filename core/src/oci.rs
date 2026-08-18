@@ -527,11 +527,26 @@ fn auth_param(header: &str, key: &str) -> Option<String> {
 }
 
 fn get_manifest(r: &Ref, reference: &str, token: &Option<String>) -> Result<Value> {
-    let resp = curl_get(
-        &r.url(&format!("manifests/{reference}")),
-        Some(MANIFEST_ACCEPT),
-        token.as_deref(),
-    )?;
+    // Retried on 5xx with growing waits, for one registry in particular:
+    // nixery builds an image server-side on its first request, and a large
+    // dependency set (a CI toolchain, say) takes longer than its gateway
+    // timeout — the 504 arrives while the build keeps going, and the retry
+    // finds it cached. Bounded, because a registry that is actually down
+    // should fail in under two minutes, not spin forever.
+    let url = r.url(&format!("manifests/{reference}"));
+    let mut resp = curl_get(&url, Some(MANIFEST_ACCEPT), token.as_deref())?;
+    for (attempt, wait) in [15u64, 30, 45].iter().enumerate() {
+        if resp.code < 500 {
+            break;
+        }
+        eprintln!(
+            "  registry answered HTTP {} — likely still building the image;              retry {}/3 in {wait}s",
+            resp.code,
+            attempt + 1
+        );
+        std::thread::sleep(std::time::Duration::from_secs(*wait));
+        resp = curl_get(&url, Some(MANIFEST_ACCEPT), token.as_deref())?;
+    }
     if resp.code != 200 {
         bail!(
             "fetching manifest {reference} failed (HTTP {}): {}",

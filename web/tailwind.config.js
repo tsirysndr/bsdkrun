@@ -59,7 +59,23 @@ export default {
               800: "#A5A2CC",
               900: "#C9CBDB",
               DEFAULT: "#2D2B55",
-              foreground: "#C9CBDB",
+              foreground: {
+              // The scale inverts in dark themes (50 darkest → 900 lightest),
+              // and the inherited ramp's mid-steps — the ones muted text uses
+              // (`foreground-500/600`) — sat too dark against purple. Lifted
+              // so secondary text stays legible without shouting.
+              50: "#2D2B55",
+              100: "#38356A",
+              200: "#454180",
+              300: "#5D5988",
+              400: "#8481B5",
+              500: "#9B98C6",
+              600: "#A9A6D1",
+              700: "#B8B6DB",
+              800: "#C4C3E0",
+              900: "#DCDEF0",
+              DEFAULT: "#C9CBDB",
+            },
             },
 
             foreground: "#C9CBDB",

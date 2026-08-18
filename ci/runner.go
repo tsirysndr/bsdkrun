@@ -60,10 +60,36 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 		create = create.Mount(opts.Source + ":" + sourceMount + ":ro")
 	}
 
-	sbx, err := create.Create()
-	if err != nil {
-		return nil, fmt.Errorf("booting the %s VM (image %s): %w", plan.Name, plan.Image, err)
+	// The boot is a step like any other, and a *streamed* one: an image pull
+	// can take minutes (nixery builds large dependency sets server-side and
+	// may even 504 while it does — bsdkrun retries, and the retry notice
+	// belongs on screen, not in a void). Step id 0; user steps start at 1.
+	bootStep := Step{Name: "Boot VM", System: true, Command: "bsdkrun linux " + plan.Image}
+	bootStart := time.Now()
+	emitControl(opts, 0, bootStep, "start")
+	var bootOut, bootErr io.Writer
+	if opts.JSON {
+		bootOut = &lineEmitter{out: opts.Out, stepID: 0, stream: "stdout"}
+		bootErr = &lineEmitter{out: opts.Out, stepID: 0, stream: "stderr"}
+	} else {
+		bootOut = prefixed(opts.Out)
+		bootErr = prefixed(opts.Out)
 	}
+	sbx, err := create.CreateStreaming(bootOut, bootErr)
+	bootRes := stepResult{
+		Name:     bootStep.Name,
+		System:   true,
+		Duration: time.Since(bootStart).Round(time.Millisecond),
+	}
+	if err != nil {
+		bootRes.ExitCode = 1
+		results = append(results, bootRes)
+		emitControl(opts, 0, bootStep, "end")
+		return results, fmt.Errorf("booting the %s VM (image %s): %w", plan.Name, plan.Image, err)
+	}
+	results = append(results, bootRes)
+	emitControl(opts, 0, bootStep, "end")
+	logf(opts, "  ✓ %s (%s)\n", bootStep.Name, bootRes.Duration)
 	defer func() {
 		if err != nil && opts.Keep {
 			logf(opts, "keeping VM %s for inspection — `bsdkrun shell %s`, `bsdkrun rm -f %s`\n",
@@ -82,8 +108,9 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 	}
 
 	for i, step := range plan.Steps {
+		idx := i + 1
 		start := time.Now()
-		emitControl(opts, i, step, "start")
+		emitControl(opts, idx, step, "start")
 
 		// `bash -lc` rather than sh: bash is in every image this plans
 		// (spindle appends it to the dependency set), and workflow commands
@@ -113,10 +140,10 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 			Duration: time.Since(start).Round(time.Millisecond),
 		})
 		if opts.JSON && res != nil {
-			emitData(opts, i, res.Stdout, "stdout")
-			emitData(opts, i, res.Stderr, "stderr")
+			emitData(opts, idx, res.Stdout, "stdout")
+			emitData(opts, idx, res.Stderr, "stderr")
 		}
-		emitControl(opts, i, step, "end")
+		emitControl(opts, idx, step, "end")
 
 		if runErr != nil {
 			return results, fmt.Errorf("step %q could not run: %w", step.Name, runErr)
@@ -127,6 +154,38 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 		logf(opts, "  ✓ %s (%s)\n", step.Name, results[len(results)-1].Duration)
 	}
 	return results, nil
+}
+
+// lineEmitter turns a raw output stream into per-line spindle data records —
+// what lets a boot's progress render in the same step UI as everything else.
+type lineEmitter struct {
+	out     io.Writer
+	stepID  int
+	stream  string
+	partial string
+}
+
+func (l *lineEmitter) Write(b []byte) (int, error) {
+	l.partial += string(b)
+	for {
+		i := strings.IndexByte(l.partial, '\n')
+		if i < 0 {
+			break
+		}
+		line := strings.TrimRight(l.partial[:i], "\r")
+		l.partial = l.partial[i+1:]
+		if line == "" {
+			continue
+		}
+		emitJSON(l.out, map[string]any{
+			"kind":    "data",
+			"content": line,
+			"time":    time.Now().Format(time.RFC3339Nano),
+			"step_id": l.stepID,
+			"stream":  l.stream,
+		})
+	}
+	return len(b), nil
 }
 
 // vmName gives CI VMs a recognizable, prunable prefix.

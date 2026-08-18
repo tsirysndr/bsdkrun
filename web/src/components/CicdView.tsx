@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtom } from "jotai";
 import {
   Button,
@@ -14,6 +14,8 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconCircle,
+  IconCopy,
+  IconDownload,
   IconFolder,
   IconPlayerPlayFilled,
   IconRocket,
@@ -28,7 +30,7 @@ import {
   pickWorkspace,
 } from "../lib/api";
 import { useToast } from "../state/toast";
-import { ciRepoAtom, ciRunsAtom } from "../state/atoms";
+import { ciRepoAtom, ciReposAtom, ciRunsAtom } from "../state/atoms";
 import type { CiRun, CiStep, CiWorkflowInfo } from "../lib/types";
 import AgentPromptModal from "./AgentPromptModal";
 import { ago } from "../lib/format";
@@ -57,7 +59,17 @@ const MAX_RUNS = 20;
 const MAX_LINES = 500;
 
 export default function CicdView() {
-  const [repo, setRepo] = useAtom(ciRepoAtom);
+  const [repo, setRepoRaw] = useAtom(ciRepoAtom);
+  const [recents, setRecents] = useAtom(ciReposAtom);
+  // Every repo choice lands in the recents, deduped, newest first — that list
+  // is what the command palette offers as one-keystroke CI targets.
+  const setRepo = useCallback(
+    (dir: string) => {
+      setRepoRaw(dir);
+      if (dir) setRecents((rs) => [dir, ...rs.filter((r) => r !== dir)].slice(0, 10));
+    },
+    [setRepoRaw, setRecents],
+  );
   const [runs, setRuns] = useAtom(ciRunsAtom);
   const [event, setEvent] = useState("manual");
   const [workflows, setWorkflows] = useState<CiWorkflowInfo[]>([]);
@@ -210,6 +222,26 @@ export default function CicdView() {
               <SelectItem key={e.key}>{e.label}</SelectItem>
             ))}
           </Select>
+          {recents.filter((r) => r !== repo).length > 0 && (
+            <div className="mt-2">
+              <span className="text-[10px] font-medium uppercase tracking-wider text-foreground-500">
+                Recent
+              </span>
+              {recents
+                .filter((r) => r !== repo)
+                .slice(0, 5)
+                .map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => setRepo(r)}
+                    className="mt-0.5 block w-full truncate rounded px-1.5 py-0.5 text-left text-[11px] text-foreground-500 hover:bg-default-100/70 hover:text-foreground"
+                    title={r}
+                  >
+                    {r.split("/").filter(Boolean).pop()}
+                  </button>
+                ))}
+            </div>
+          )}
         </div>
 
         <div className="border-b border-white/10 p-3">
@@ -321,7 +353,7 @@ export default function CicdView() {
       <AgentPromptModal
         open={prompt === "clone"}
         title="Clone a repository for CI"
-        placeholder="https://github.com/owner/repo.git"
+        placeholder="https://tangled.org/@handle.dev/repo"
         icon={IconBrandGit}
         hint="Cloned on the engine's host; its workflows run from HEAD."
         submitLabel="↵ clone"
@@ -353,10 +385,70 @@ function StatusDot({ status }: { status: CiRun["status"] }) {
   );
 }
 
+/** The whole run as plain text, for export and copy. */
+function runToText(run: CiRun): string {
+  const out: string[] = [
+    `# ${run.names.length ? run.names.join(", ") : "all matching workflows"}`,
+    `# ${run.dir} · ${run.event} · ${new Date(run.startedAt).toISOString()} · ${run.status}`,
+    "",
+  ];
+  for (const s of run.steps) {
+    const mark = s.status === "ok" ? "✓" : s.status === "failed" ? "✗" : "…";
+    out.push(`${mark} ${s.name}${s.durationMs != null ? ` (${s.durationMs}ms)` : ""}`);
+    for (const l of s.lines) out.push(`    ${l.content}`);
+    out.push("");
+  }
+  if (run.error) out.push(`error: ${run.error}`);
+  return out.join("\n");
+}
+
 function RunDetail({ run }: { run: CiRun }) {
+  const [query, setQuery] = useState("");
+  const [matchIdx, setMatchIdx] = useState(0);
+  const toast = useToast();
+
+  // Every matching line across every step, in order — ↑/↓ walks this list,
+  // auto-expanding whichever step the active match lives in.
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [] as { step: number; line: number }[];
+    const out: { step: number; line: number }[] = [];
+    run.steps.forEach((s, si) =>
+      s.lines.forEach((l, li) => {
+        if (l.content.toLowerCase().includes(q)) out.push({ step: si, line: li });
+      }),
+    );
+    return out;
+  }, [run.steps, query]);
+  const active = matches.length ? matches[Math.min(matchIdx, matches.length - 1)] : null;
+
+  useEffect(() => setMatchIdx(0), [query]);
+  useEffect(() => {
+    const el = document.getElementById("ci-active-match");
+    el?.scrollIntoView({ block: "center" });
+  }, [active?.step, active?.line]);
+
+  const exportTxt = () => {
+    const name = `${run.names.join("-") || "ci-run"}-${new Date(run.startedAt)
+      .toISOString()
+      .replace(/[:.]/g, "-")}.txt`;
+    const blob = new Blob([runToText(run)], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const copyAll = async () => {
+    await navigator.clipboard?.writeText(runToText(run));
+    toast("success", "Run log copied");
+  };
+
   return (
     <div className="mx-auto max-w-3xl">
-      <div className="mb-4 flex items-center gap-3">
+      <div className="mb-2 flex items-center gap-3">
         <StatusDot status={run.status} />
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-base font-medium">
@@ -381,6 +473,41 @@ function RunDetail({ run }: { run: CiRun }) {
         </Chip>
       </div>
 
+      <div className="mb-3 flex items-center gap-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (!matches.length) return;
+            if (e.key === "Enter" || e.key === "ArrowDown") {
+              e.preventDefault();
+              setMatchIdx((i) => (i + 1) % matches.length);
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setMatchIdx((i) => (i + matches.length - 1) % matches.length);
+            }
+          }}
+          placeholder="Search logs… (↑/↓ next match)"
+          spellCheck={false}
+          className="h-7 flex-1 rounded-lg border border-default-200 bg-transparent px-2 text-xs text-foreground outline-none placeholder:text-foreground-500 focus:border-primary/60"
+        />
+        {query && (
+          <span className="shrink-0 text-[11px] text-foreground-500">
+            {matches.length ? `${Math.min(matchIdx + 1, matches.length)}/${matches.length}` : "0/0"}
+          </span>
+        )}
+        <Tooltip content="Export the full log as .txt" placement="top">
+          <Button isIconOnly size="sm" variant="flat" onPress={exportTxt}>
+            <IconDownload size={14} />
+          </Button>
+        </Tooltip>
+        <Tooltip content="Copy the full log" placement="top">
+          <Button isIconOnly size="sm" variant="flat" onPress={copyAll}>
+            <IconCopy size={14} />
+          </Button>
+        </Tooltip>
+      </div>
+
       {run.error && run.steps.every((s) => s.status !== "failed") && (
         <p className="mb-3 rounded-lg border border-danger/40 bg-danger/10 p-3 text-xs text-danger">
           {run.error}
@@ -390,8 +517,13 @@ function RunDetail({ run }: { run: CiRun }) {
       <div className="relative">
         {/* The timeline spine — what makes a list of steps read as a run. */}
         <div className="absolute bottom-4 left-[13px] top-4 w-px bg-white/10" />
-        {run.steps.map((s) => (
-          <StepCard key={s.id} step={s} />
+        {run.steps.map((s, si) => (
+          <StepCard
+            key={s.id}
+            step={s}
+            query={query.trim().toLowerCase()}
+            activeLine={active?.step === si ? active.line : null}
+          />
         ))}
         {run.steps.length === 0 && run.status === "running" && (
           <div className="flex items-center gap-2 py-2 pl-8 text-xs text-foreground-500">
@@ -403,10 +535,47 @@ function RunDetail({ run }: { run: CiRun }) {
   );
 }
 
-function StepCard({ step }: { step: CiStep }) {
-  // Failures open themselves: the log is the only place the reason lives.
+/** http(s) URLs in a line become links; everything else is plain text. */
+function Linkified({ text }: { text: string }) {
+  const parts = text.split(/(https?:\/\/[^\s"'`<>()[\]{}]+)/g);
+  return (
+    <>
+      {parts.map((p, i) =>
+        /^https?:\/\//.test(p) ? (
+          <a
+            key={i}
+            href={p}
+            onClick={(e) => {
+              e.preventDefault();
+              window.open(p, "_blank", "noopener,noreferrer");
+            }}
+            className="cursor-pointer text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+          >
+            {p}
+          </a>
+        ) : (
+          <span key={i}>{p}</span>
+        ),
+      )}
+    </>
+  );
+}
+
+function StepCard({
+  step,
+  query,
+  activeLine,
+}: {
+  step: CiStep;
+  query: string;
+  activeLine: number | null;
+}) {
+  // Failures open themselves: the log is the only place the reason lives —
+  // and so does a step holding the active search match.
   const [open, setOpen] = useState<boolean | null>(null);
-  const expanded = open ?? (step.status === "failed" || step.status === "running");
+  const expanded =
+    activeLine != null ||
+    (open ?? (step.status === "failed" || step.status === "running"));
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -468,23 +637,34 @@ function StepCard({ step }: { step: CiStep }) {
         {expanded && (
           <div
             ref={logRef}
-            className="max-h-72 overflow-auto border-t border-white/10 px-3 py-2 font-mono text-[12px] leading-[1.6] text-foreground"
+            className="max-h-72 select-text overflow-auto border-t border-white/10 px-3 py-2 font-mono text-[12px] leading-[1.6] text-foreground"
           >
             {step.lines.length === 0 ? (
               <span className="flex items-center gap-2 text-foreground-500">
                 <IconTerminal2 size={12} /> no output
               </span>
             ) : (
-              step.lines.map((l, i) => (
-                <div
-                  key={i}
-                  className={`whitespace-pre-wrap break-words ${
-                    l.stream === "stderr" ? "text-amber-200/90" : ""
-                  }`}
-                >
-                  {l.content}
-                </div>
-              ))
+              step.lines.map((l, i) => {
+                const isMatch = query && l.content.toLowerCase().includes(query);
+                const isActive = activeLine === i;
+                return (
+                  <div
+                    key={i}
+                    id={isActive ? "ci-active-match" : undefined}
+                    className={`whitespace-pre-wrap break-words ${
+                      l.stream === "stderr" ? "text-amber-200/90" : ""
+                    } ${
+                      isActive
+                        ? "rounded bg-primary/25"
+                        : isMatch
+                          ? "rounded bg-primary/10"
+                          : ""
+                    }`}
+                  >
+                    <Linkified text={l.content} />
+                  </div>
+                );
+              })
             )}
           </div>
         )}

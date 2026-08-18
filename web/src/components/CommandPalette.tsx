@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, ModalContent, Kbd } from "@heroui/react";
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
   IconSearch,
   IconServer2,
@@ -25,18 +25,20 @@ import {
 } from "@tabler/icons-react";
 import {
   agentPanelOpenAtom,
-  branchTargetAtom,
-  commitTargetAtom,
-  editResourcesAtom,
-  openTerminalAtom,
-  paletteOpenAtom,
-  runOpenAtom,
-  selectedMachineAtom,
-  settingsOpenAtom,
-  snapshotTargetAtom,
-  shortcutsOpenAtom,
-  themeAtom,
-  viewAtom,
+branchTargetAtom,
+ciRepoAtom,
+ciReposAtom,
+commitTargetAtom,
+editResourcesAtom,
+openTerminalAtom,
+paletteOpenAtom,
+runOpenAtom,
+selectedMachineAtom,
+settingsOpenAtom,
+shortcutsOpenAtom,
+snapshotTargetAtom,
+themeAtom,
+viewAtom,
 } from "../state/atoms";
 import {
   useAiAgents,
@@ -79,6 +81,8 @@ export default function CommandPalette() {
   const setAgentPanel = useSetAtom(agentPanelOpenAtom);
   const setView = useSetAtom(viewAtom);
   const [theme, setTheme] = useAtom(themeAtom);
+  const ciRepos = useAtomValue(ciReposAtom);
+  const setCiRepo = useSetAtom(ciRepoAtom);
   const setRunOpen = useSetAtom(runOpenAtom);
   const setSettingsOpen = useSetAtom(settingsOpenAtom);
   const setShortcutsOpen = useSetAtom(shortcutsOpenAtom);
@@ -202,6 +206,18 @@ export default function CommandPalette() {
           setTheme(theme === "night-rider" ? "dark" : "night-rider");
         },
       },
+      ...ciRepos.map((r: string) => ({
+        id: `ci-repo-${r}`,
+        title: `CI: ${r.split("/").filter(Boolean).pop()}`,
+        section: "CI/CD",
+        icon: IconRocket,
+        keywords: `ci cd run workflow pipeline repo ${r}`,
+        run: () => {
+          setOpen(false);
+          setCiRepo(r);
+          nav("cicd")();
+        },
+      })),
       {
         id: "nav-cicd",
         title: "Go to CI/CD",

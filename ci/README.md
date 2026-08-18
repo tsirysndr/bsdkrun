@@ -187,6 +187,26 @@ detected go project (go.mod) — no CI configuration found, workflow generated:
 Everything the generated workflow says is announced before anything boots —
 a workflow the operator has not read must be shown, not sprung.
 
+**Deploy detection**: the secrets say where a project ships. When the
+injected secrets include a known deploy token — `RAILWAY_TOKEN`,
+`FLY_API_TOKEN`, `CLOUDFLARE_API_TOKEN`, `VERCEL_TOKEN`,
+`NETLIFY_AUTH_TOKEN`, `DENO_DEPLOY_TOKEN`, `KOYEB_TOKEN`,
+`HEROKU_API_KEY` — the generated workflow gains a deploy step (first match
+wins; runners-up are announced). `--dry-run` makes the step announce the
+exact command instead of running it:
+
+```
+$ bsdkrun ci --dry-run --secret RAILWAY_TOKEN
+deploy: railway (RAILWAY_TOKEN detected) [dry-run]
+...
+  ▶ deploy (railway) [dry-run]
+    [dry-run] would deploy to railway (RAILWAY_TOKEN detected): railway up --detach
+```
+
+Detection keys on the secret's *name*, never its value, and only generated
+workflows gain the step — a committed CI config already says what it
+deploys.
+
 ## Secrets
 
 Spindle injects a repository's vault secrets as environment variables into

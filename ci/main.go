@@ -24,6 +24,7 @@ import (
 
 	"github.com/tsirysndr/bsdkrun/ci/platforms"
 	"github.com/tsirysndr/bsdkrun/ci/project"
+	"github.com/tsirysndr/bsdkrun/ci/project/deploy"
 )
 
 func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
@@ -101,6 +102,8 @@ Run flags:
   --json                             spindle log-line JSON on stdout
   --plain                            plain line output even on a terminal
                                      (the default when stdout is not a tty)
+  --dry-run                          a generated deploy step announces its
+                                     command instead of running it
   --detect                           ignore CI configs: detect the project
                                      (go, rust, nodejs, bun, deno, python,
                                      ruby, php, elixir, gleam, zig, clojure,
@@ -175,6 +178,7 @@ func cmdRun(args []string) error {
 	plain := fs.Bool("plain", false, "")
 	platformFlag := fs.String("platform", "auto", "")
 	detect := fs.Bool("detect", false, "")
+	dryRun := fs.Bool("dry-run", false, "")
 	nixery := fs.String("nixery", "", "")
 	otlp := fs.String("otlp", "", "")
 	var inputs, files, secretFlags, secretFiles repeatable
@@ -244,6 +248,19 @@ func cmdRun(args []string) error {
 				if err != nil {
 					return err
 				}
+				// The secrets say where this ships: a deploy step joins the
+				// generated workflow (and only the generated one — a
+				// committed config already says what it deploys).
+				secretNames := make([]string, 0, len(secrets))
+				for k := range secrets {
+					secretNames = append(secretNames, k)
+				}
+				target, alsoDetected := deploy.Detect(secretNames)
+				if target != nil {
+					last := len(proj.Jobs) - 1
+					proj.Jobs[last].Steps = append(proj.Jobs[last].Steps,
+						target.Step(*dryRun))
+				}
 				opts := runOpts{
 					Cpus:    *cpus,
 					Mem:     *mem,
@@ -279,6 +296,18 @@ func cmdRun(args []string) error {
 						}
 						n++
 						fmt.Fprintf(os.Stderr, "    %d. %s\n", n, st.Name)
+					}
+				}
+				if target != nil {
+					mode := ""
+					if *dryRun {
+						mode = " [dry-run]"
+					}
+					fmt.Fprintf(os.Stderr, "deploy: %s (%s detected)%s\n",
+						target.Platform, target.Secret, mode)
+					if len(alsoDetected) > 0 {
+						fmt.Fprintf(os.Stderr, "  (tokens for %s also present — first match wins)\n",
+							joinNames(alsoDetected))
 					}
 				}
 				return runPlans(plans, opts, *jsonOut, *plain)

@@ -30,6 +30,15 @@ shipped alongside it.
   Providers live one-per-package under `ci/project`, mirroring pack's
   structure.
 
+- **Deploy detection from secret names.** A generated workflow gains a
+  deploy step when the injected secrets name a target — RAILWAY_TOKEN,
+  FLY_API_TOKEN, CLOUDFLARE_API_TOKEN, VERCEL_TOKEN, NETLIFY_AUTH_TOKEN,
+  DENO_DEPLOY_TOKEN, KOYEB_TOKEN, HEROKU_API_KEY — first match wins,
+  runners-up are announced, and `--dry-run` makes the step announce the
+  exact command instead of running it. Generated workflows only: a
+  committed CI config already says what it deploys. One target per file
+  under `ci/project/deploy`.
+
 ### Fixed
 
 - **Steps no longer run login shells.** The guest agent already hands every

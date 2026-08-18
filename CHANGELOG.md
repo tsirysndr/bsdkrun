@@ -16,6 +16,38 @@ shipped alongside it.
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.11.1] — 2026-08-19
+
+CI grows outward: the major platforms' configs run locally, secrets reach
+every surface, and one example per platform holds it all to account on CI.
+
+### Added
+
+- **Foreign CI platforms run locally.** `bsdkrun ci` now translates and runs
+  GitHub Actions (plus Forgejo/Gitea), GitLab CI, Woodpecker, Drone,
+  CircleCI, Buildkite, Semaphore, Jenkins (declarative pipelines,
+  via a structural parser — scripted Groovy is refused, not mistranslated),
+  Azure Pipelines, AWS CodeBuild (the runnable half of CodePipeline),
+  Tekton and Travis configs in microVMs — auto-detected from
+  their well-known files, or forced with `--platform`. Jobs translate
+  (images, env, ordering, platform identity variables); what cannot
+  translate becomes a visible skip, and non-Linux jobs are skipped outright.
+- **Secrets for CI runs.** `--secret KEY[=VALUE]`, `--secrets-file`, and an
+  auto-loaded (gitignored) `.tangled/secrets.env` inject environment variables
+  into every step; values — and their base64 encodings — are masked as `***`
+  in all output, following spindle's own masking semantics.
+- **Secrets & env in the desktop/web CI screens.** A per-repository editor
+  (dotenv text, stored locally) injects into every step of that repo's runs
+  — native and foreign platforms alike. Values travel as environment
+  (`BSDKRUN_CI_SECRETS`), never argv; the daemon's `runCi` subscription
+  gained a `secrets` argument for the web app.
+- **Platform visibility everywhere.** The CI screens show a platform badge
+  next to the workflow list, `bsdkrun ci run` prints `workflow name
+  [gitlab]` (the TUI shows the same tag), and `ci ls --json` emits one
+  unified shape for native and foreign listings, `platform` included.
+- Twelve runnable examples, one per platform (`examples/ci-github` …
+  `ci-tekton`), each asserted end to end by the e2e sweep on x86_64/KVM.
+
 ## [0.11.0] — 2026-08-18
 
 The CI release: tangled spindle workflows running in microVMs — from one
@@ -36,19 +68,6 @@ command, from every SDK, from every screen — with tracing to match.
 - **CI/CD screens everywhere.** The desktop and web apps gained a CI/CD view
   (workflow list, live step timeline, run history, log search/export), and
   the terminal dashboard gained tabs with a CI/CD tab of its own.
-- **Foreign CI platforms run locally.** `bsdkrun ci` now translates and runs
-  GitHub Actions (plus Forgejo/Gitea), GitLab CI, Woodpecker, Drone,
-  CircleCI, Buildkite, Semaphore, Jenkins (declarative pipelines,
-  via a structural parser — scripted Groovy is refused, not mistranslated),
-  Azure Pipelines, AWS CodeBuild (the runnable half of CodePipeline),
-  Tekton and Travis configs in microVMs — auto-detected from
-  their well-known files, or forced with `--platform`. Jobs translate
-  (images, env, ordering, platform identity variables); what cannot
-  translate becomes a visible skip, and non-Linux jobs are skipped outright.
-- **Secrets for CI runs.** `--secret KEY[=VALUE]`, `--secrets-file`, and an
-  auto-loaded (gitignored) `.tangled/secrets.env` inject environment variables
-  into every step; values — and their base64 encodings — are masked as `***`
-  in all output, following spindle's own masking semantics.
 - **OpenTelemetry tracing.** One trace per run, one span per step, always
   recorded into the engine's SQLite (`ci traces`, `ci spans`, the daemon's
   `ciTraces`/`ciTraceSpans`, the UIs' live Trace waterfall) and exported live

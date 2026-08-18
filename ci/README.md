@@ -97,6 +97,40 @@ selects them directly and skips `when:` matching — naming *is* the selection.
 Identity fields a local checkout does not have (knot, DIDs) are filled with
 recognizable placeholders (`localhost`, `did:local:…`) rather than left empty.
 
+## OpenTelemetry tracing
+
+Every run is a trace: one root span per workflow, one child span per step
+(the boot included), each span carrying the workflow, repository and step
+attributes plus the error message when a step fails.
+
+Spans are **always recorded locally**, into the engine's SQLite — no
+collector required:
+
+```sh
+bsdkrun ci traces               # recent runs: trace id, workflow, status, duration
+bsdkrun ci spans <trace-id>     # that run's steps, with per-span timings
+```
+
+The daemon exposes the same history over GraphQL (`ciTraces`,
+`ciTraceSpans`), which is what the desktop/web CI screen's **Trace** view
+renders — a live waterfall that fills in span by span while the run is
+still going.
+
+To export to a real collector (Jaeger, Grafana Tempo, anything OTLP), point
+the standard variable — or the flag — at it:
+
+```sh
+bsdkrun ci run --otlp http://localhost:4318
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 bsdkrun ci run
+```
+
+Each span is POSTed to `/v1/traces` (OTLP/HTTP JSON) **the moment it ends**,
+so a collector's live view fills in step by step; the root span lands last
+and closes the trace. Export is fire-and-forget with a short timeout: a slow
+collector never slows the build it is observing, and a dead one never fails
+it. The encoder is hand-rolled — one file, no OpenTelemetry SDK dependency —
+because a CI runner needs exactly one shape of span.
+
 ## `bsdkrun ci serve`
 
 The server half: a runner that accepts spindle's own `sh.tangled.pipeline`
@@ -144,10 +178,11 @@ Python, Rust, Ruby, Clojure, Gleam and Scala.
 
 ## Environment
 
-| Variable            | Effect                                                                |
-| ------------------- | --------------------------------------------------------------------- |
-| `BSDKRUN_BIN`       | The bsdkrun binary the SDK drives (set automatically by `bsdkrun ci`). |
-| `BSDKRUN_CI_NIXERY` | A self-hosted nixery instance instead of `nixery.dev`.                 |
+| Variable                       | Effect                                                                 |
+| ------------------------------ | ---------------------------------------------------------------------- |
+| `BSDKRUN_BIN`                  | The bsdkrun binary the SDK drives (set automatically by `bsdkrun ci`). |
+| `BSDKRUN_CI_NIXERY`            | A self-hosted nixery instance instead of `nixery.dev`.                 |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`  | Export one OpenTelemetry span per step to this collector (see above).  |
 
 ## Building
 

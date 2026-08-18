@@ -274,3 +274,169 @@ pub(crate) fn cmd_receive(what: &str, agent: &str, name: Option<&str>, json: boo
     }
     Ok(())
 }
+
+/// `bsdkrun ai disk` — the shared stores, and what each sandbox occupies.
+#[allow(clippy::print_literal)]
+pub(crate) fn cmd_disk_ls(json: bool, watch: Option<u64>) -> Result<()> {
+    let Some(secs) = watch else {
+        return disk_report(json);
+    };
+    // Monitoring: reprint on an interval until interrupted. Cleared each time
+    // rather than scrolled, so the numbers stay in one place to watch.
+    let secs = secs.max(1);
+    loop {
+        print!("\x1b[2J\x1b[H");
+        disk_report(json)?;
+        println!("\nwatching every {secs}s — ctrl-c to stop");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+        std::thread::sleep(std::time::Duration::from_secs(secs));
+    }
+}
+
+#[allow(clippy::print_literal)]
+fn disk_report(json: bool) -> Result<()> {
+    // Quoted from the source of truth, so the help cannot drift from what a
+    // disk is actually created at.
+    let (docker_default, nix_default) = (
+        ai::disk::Shared::Docker.default_size(),
+        ai::disk::Shared::Nix.default_size(),
+    );
+    let shared = ai::disk::status()?;
+    let rows = ai::disk::usage()?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "shared": shared, "sandboxes": rows })
+        );
+        return Ok(());
+    }
+
+    println!("Shared stores");
+    println!(
+        "  {:<8}  {:<18}  {:<10}  {:<10}  {:<10}  {}",
+        "DISK", "MOUNT", "SIZE", "USED", "FREE", "HELD BY"
+    );
+    for d in &shared {
+        let or_dash = |n: u64| {
+            if d.exists {
+                crate::oci::human_size(n)
+            } else {
+                "—".into()
+            }
+        };
+        println!(
+            "  {:<8}  {:<18}  {:<10}  {:<10}  {:<10}  {}",
+            d.name,
+            d.guest_path,
+            or_dash(d.size),
+            or_dash(d.used),
+            // The effective figure, not the disk's own headroom: a sparse
+            // image cannot grow past what the host still has, and the ceiling
+            // is the number that misleads.
+            or_dash(d.effective_free),
+            d.held_by.as_deref().unwrap_or("—")
+        );
+    }
+
+    if let Some((free, total)) = ai::disk::host_free() {
+        let pct = free
+            .checked_mul(100)
+            .and_then(|n| n.checked_div(total))
+            .unwrap_or(0);
+        println!(
+            "\n  Host: {} free of {} ({pct}%).",
+            crate::oci::human_size(free),
+            crate::oci::human_size(total)
+        );
+        // Everything here is ultimately host-backed, so this is the number
+        // that runs out first — including inside a sparse disk that still
+        // reports terabytes of its own headroom.
+        if pct < 10 || free < 5 * 1024 * 1024 * 1024 {
+            // One println per line: a wrapped string literal carries this
+            // file's own indentation into the output, which is how the note
+            // below it came out ragged.
+            println!("  WARNING: the host is nearly full. Sandboxes write into this space —");
+            println!("  the rootfs and agent homes directly, and the shared disks as they fill.");
+            println!(
+                "  Reclaim with `bsdkrun ai rm <agent>`, or `docker system prune` in a sandbox."
+            );
+        }
+    }
+    // One println per line: a wrapped string literal carries this file's own
+    // indentation into the output, which is what made this note ragged.
+    println!();
+    println!("  Sizes are sparse: SIZE is the ceiling, USED is what it costs on this host,");
+    println!("  FREE is what it can still grow into — capped by the host, not the ceiling.");
+    println!("  Defaults: docker {docker_default}, nix {nix_default}.");
+    println!("  One running sandbox holds a disk at a time: two guests writing one ext4");
+    println!("  image corrupts it, so a second sandbox boots with an empty store instead.");
+    println!("  Grow one with `bsdkrun ai disk grow docker --size 200G`.");
+
+    if rows.is_empty() {
+        println!("\nNo agent sandboxes. Start one with `bsdkrun claude`.");
+        return Ok(());
+    }
+
+    println!("\nSandboxes");
+    println!(
+        "  {:<14}  {:<22}  {:<9}  {:<10}  {}",
+        "ID", "SANDBOX", "STATUS", "ROOTFS", "HOME"
+    );
+    for r in &rows {
+        println!(
+            "  {:<14}  {:<22}  {:<9}  {:<10}  {}",
+            r.id,
+            super::truncate(&r.name, 22),
+            if r.running { "running" } else { "stopped" },
+            crate::oci::human_size(r.rootfs),
+            crate::oci::human_size(r.home)
+        );
+    }
+
+    // The home volume is per agent, so summing the column would count one
+    // agent's login once per session it has.
+    let rootfs: u64 = rows.iter().map(|r| r.rootfs).sum();
+    let mut homes: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+    for r in &rows {
+        homes.insert(&r.agent, r.home);
+    }
+    println!();
+    println!(
+        "  {} sandbox(es): {} of rootfs, {} of agent homes.",
+        rows.len(),
+        crate::oci::human_size(rootfs),
+        crate::oci::human_size(homes.values().sum::<u64>())
+    );
+    println!("  Both are host directories shared into the guest: no size of their own to");
+    println!("  raise, and they grow into the host's free space above.");
+    Ok(())
+}
+
+/// `bsdkrun ai disk grow <docker|nix> --size N`.
+pub(crate) fn cmd_disk_grow(disk: &str, size: &str) -> Result<()> {
+    let what = ai::disk::Shared::parse(disk)?;
+    let existed = what.image()?.exists();
+    let path = ai::disk::ensure(what, size)?;
+    let now = path.metadata().map(|m| m.len()).unwrap_or(0);
+
+    println!(
+        "{} the shared {} disk: {} at {}",
+        if existed { "grew" } else { "created" },
+        what.as_str(),
+        crate::oci::human_size(now),
+        path.display()
+    );
+    println!("Sandboxes mount it at {}.", what.guest_path());
+
+    // virtio-blk fixes a device's size when the VM attaches it, so a running
+    // guest cannot see the growth and `resize2fs` inside it would resize to the
+    // *old* size. Say so rather than imply it took effect.
+    if let Some(id) = ai::disk::holder(what) {
+        println!(
+            "\n{id} is running and holds this disk. A virtio-blk device's size is fixed when\n\
+             the VM attaches it, so that guest still sees the old size. Restart it to pick\n\
+             this up:\n  bsdkrun stop {id} && bsdkrun ai resume {id}"
+        );
+    }
+    Ok(())
+}

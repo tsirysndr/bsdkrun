@@ -190,6 +190,10 @@ pub fn dispatch(cmd: Command) -> Result<()> {
             AiCmd::Ls(a) => commands::ai::cmd_sessions(a.json),
             AiCmd::Stop(a) => commands::ai::cmd_stop(&a.agent),
             AiCmd::Resume(a) => commands::boot::cmd_ai_resume(&a.machine, a.detach),
+            AiCmd::Disk(a) => match a.cmd {
+                AiDiskCmd::Ls(l) => commands::ai::cmd_disk_ls(l.json, l.watch),
+                AiDiskCmd::Grow(g) => commands::ai::cmd_disk_grow(&g.disk, &g.size),
+            },
             AiCmd::Rm(a) => commands::ai::cmd_rm(&a.agent, a.keep_home),
             AiCmd::ShellCommand(a) => commands::ai::cmd_shell_command(&a.agent, &a.machine),
             AiCmd::Upload(a) => commands::ai::cmd_upload(

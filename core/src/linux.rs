@@ -611,9 +611,24 @@ fn generate_init(
             // exits 0 for a blank device, which silently skipped the format and
             // left `mount` reporting a bare "Invalid argument".
             s.push_str(
-                "  if [ -z \"$(blkid \"$dev\" 2>/dev/null)\" ]; then \
-                 mkfs.ext4 -q -F \"$dev\" || echo \"[bsdkrun] could not format $dev\"; fi\n",
+                "  fresh=0\n  if [ -z \"$(blkid \"$dev\" 2>/dev/null)\" ]; then \
+                 mkfs.ext4 -q -F \"$dev\" && fresh=1 || echo \"[bsdkrun] could not format $dev\"; fi\n",
             );
+            // Seed a freshly formatted disk from whatever is already at the
+            // mount point. Mounting over a populated directory *hides* it, so
+            // a shared /nix disk would bury the Nix installed into the image at
+            // build time — leaving `nix` on PATH as a symlink into nothing.
+            // Copying first turns the disk into a superset instead.
+            s.push_str(&format!(
+                "  if [ \"$fresh\" = 1 ] && [ -n \"$(ls -A {g} 2>/dev/null)\" ]; then\n\
+                \x20   mkdir -p /run/bsdkrun-seed 2>/dev/null\n\
+                \x20   if mount -t ext4 \"$dev\" /run/bsdkrun-seed 2>/dev/null; then\n\
+                \x20     cp -a {g}/. /run/bsdkrun-seed/ 2>/dev/null || \
+                 echo '[bsdkrun] could not seed {g}'\n\
+                \x20     umount /run/bsdkrun-seed 2>/dev/null\n\
+                \x20   fi\n\
+                \x20 fi\n"
+            ));
         }
         let opt = if d.ro { " -o ro" } else { "" };
         // `-t ext4` explicitly: busybox mount does not probe the superblock,

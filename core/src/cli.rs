@@ -528,6 +528,8 @@ pub enum AiCmd {
     /// query answers from the same function, so there is one definition.
     #[command(name = "__shell-command", hide = true)]
     ShellCommand(AiShellCommandArgs),
+    /// Show what agent sandboxes are using on disk, and grow a data disk.
+    Disk(AiDiskArgs),
     /// Copy local files into a sandbox on a remote engine.
     ///
     /// Every other path here resolves on the machine running the engine, so
@@ -537,6 +539,48 @@ pub enum AiCmd {
     /// (internal) Receive an upload on the engine's host, as a tar on stdin.
     #[command(name = "__receive", hide = true)]
     Receive(AiReceiveArgs),
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct AiDiskArgs {
+    #[command(subcommand)]
+    pub cmd: AiDiskCmd,
+}
+
+#[derive(Subcommand, Serialize, Deserialize)]
+pub enum AiDiskCmd {
+    /// The shared stores and what each sandbox occupies.
+    Ls(AiDiskLsArgs),
+    /// Create or grow one of the shared stores.
+    ///
+    /// A sandbox has no root block device — its rootfs, home and workspace are
+    /// host directories bounded only by the host, with no size to raise. These
+    /// two disks are the exception: the Docker store and the Nix store, shared
+    /// so an image pulled in one session is still there in the next.
+    Grow(AiDiskGrowArgs),
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct AiDiskLsArgs {
+    #[arg(long)]
+    pub json: bool,
+
+    /// Reprint every N seconds instead of once, to watch space while an agent
+    /// works. Ctrl-C to stop.
+    #[arg(long, value_name = "SECONDS", num_args = 0..=1, default_missing_value = "5")]
+    pub watch: Option<u64>,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct AiDiskGrowArgs {
+    /// Which shared disk: `docker` or `nix`.
+    #[arg(value_name = "DISK")]
+    pub disk: String,
+
+    /// New size, e.g. `50G`. Never shrinks: a smaller number would cut a live
+    /// filesystem in half.
+    #[arg(long)]
+    pub size: String,
 }
 
 #[derive(Parser, Serialize, Deserialize)]

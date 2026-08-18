@@ -2759,6 +2759,27 @@ fn boot_ai_sandbox(
         ai::resolve_project(args.project.as_deref(), workspace, args.repo.as_deref()).as_deref(),
     );
 
+    // The Docker and Nix stores are shared between sandboxes, so an image
+    // pulled or a derivation realised in one session is still there in the
+    // next — and in another agent's sandbox. One running sandbox holds each
+    // disk at a time: two guests writing one ext4 image corrupts it, and the
+    // damage shows up much later as an unreadable store.
+    let (shared, busy) = ai::disk::claim_all(&machine_id);
+    for (what, holder) in &busy {
+        println!(
+            "The shared {} store is in use by {holder}; this sandbox starts with an empty one.",
+            what.as_str()
+        );
+    }
+    let attach_disk: Vec<DiskSpec> = shared
+        .iter()
+        .map(|(what, path)| DiskSpec {
+            path: path.clone(),
+            read_only: false,
+            mount: Some(what.guest_path().to_string()),
+        })
+        .collect();
+
     info!(agent = agent.id, sandbox = %name, "booting the agent sandbox");
     let largs = LinuxArgs {
         image: spec.image.clone(),
@@ -2771,7 +2792,7 @@ fn boot_ai_sandbox(
         // mounted below, holding the agent's login.
         volume: None,
         mounts: ai::mounts(agent, workspace, !args.no_ssh)?,
-        attach_disk: vec![],
+        attach_disk,
         entrypoint: None,
         env: vec![format!("HOME={}", ai::GUEST_HOME)],
         console: "hvc0".to_string(),

@@ -32,6 +32,9 @@ use crate::{db, flavors};
 /// the laptop. `upload` carries them across.
 pub mod upload;
 
+/// Where a sandbox's bytes are, and the one part with a size you can raise.
+pub mod disk;
+
 /// Machine-name prefix for every agent sandbox: `bsdkrun-ai-claude-<n>`.
 ///
 /// A prefix rather than a fixed name (as the Docker VM uses) because sessions

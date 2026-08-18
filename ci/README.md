@@ -162,6 +162,31 @@ scripted pipeline (`node { ... }`) is refused with a clear error rather
 than mistranslated, and `environment` values that are Groovy expressions
 (`credentials(...)`) are dropped rather than faked.
 
+## No config at all? Project detection
+
+When a repository has no CI configuration of any kind — and whenever
+`--detect` asks for it explicitly — `bsdkrun ci` reads the project itself
+and generates a workflow on the fly, the way `bsdkrun pack` detects what to
+build. One provider per language, specific markers first (bun's lockfile
+beats package.json; composer.json beats package.json), each choosing an
+official image and emitting install/test/build steps — **tests run before
+the build**, and a step that would fail vacuously (a test runner with no
+tests) is only generated when its subject exists.
+
+Detected today: go, rust, nodejs, bun, deno, python, ruby, php, elixir,
+gleam, zig, clojure, dotnet, crystal, haskell.
+
+```
+$ bsdkrun ci
+detected go project (go.mod) — no CI configuration found, workflow generated:
+  build · image golang:1.23-alpine
+    1. go test
+    2. go build
+```
+
+Everything the generated workflow says is announced before anything boots —
+a workflow the operator has not read must be shown, not sprung.
+
 ## Secrets
 
 Spindle injects a repository's vault secrets as environment variables into

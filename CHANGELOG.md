@@ -16,6 +16,28 @@ shipped alongside it.
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [Unreleased]
+
+### Added
+
+- **Project detection: CI with no config at all.** When a repository has no
+  recognizable CI configuration (or `--detect` forces it), `bsdkrun ci`
+  detects the project — go, rust, nodejs, bun, deno, python, ruby, php,
+  elixir, gleam, zig, clojure, dotnet, crystal, haskell — and generates and
+  runs a workflow on the fly, announcing the detected language, marker and
+  every step before anything boots. Tests run before the build, and steps
+  that would fail vacuously are only generated when their subject exists.
+  Providers live one-per-package under `ci/project`, mirroring pack's
+  structure.
+
+### Fixed
+
+- **Steps no longer run login shells.** The guest agent already hands every
+  exec the image's ENV (toolchain PATHs included), and `-l` made
+  /etc/profile *reset* PATH — golang:alpine's `go` vanished from steps
+  while plain execs saw it. The prepare step also republishes the exec
+  environment into /etc/profile.d for anyone shelling into a kept VM.
+
 ## [0.11.1] — 2026-08-19
 
 CI grows outward: the major platforms' configs run locally, secrets reach

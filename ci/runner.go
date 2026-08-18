@@ -174,12 +174,15 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 			"step.system": fmt.Sprintf("%t", step.System),
 		})
 
-		// `bash -lc` rather than sh: bash is in every image this plans
-		// (spindle appends it to the dependency set), and workflow commands
-		// are written against it. `cd` per step because exec sessions do not
-		// share a cwd. User steps start from the plan's workdir (a monorepo
-		// subdirectory when the workflows live in one); system steps always
-		// run at the workspace root, which exists before the clone does.
+		// `bash -c` rather than sh: workflow commands are written against
+		// bash wherever it exists. NOT a login shell, deliberately: the
+		// agent already hands every exec the image's ENV (the toolchain
+		// PATHs included), and `-l` made /etc/profile *reset* PATH —
+		// golang:alpine's go vanished from login shells while plain execs
+		// saw it. `cd` per step because exec sessions do not share a cwd.
+		// User steps start from the plan's workdir (a monorepo subdirectory
+		// when the workflows live in one); system steps always run at the
+		// workspace root, which exists before the clone does.
 		wd := workspaceDir
 		if !step.System && plan.Workdir != "" {
 			wd = plan.Workdir
@@ -209,7 +212,7 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 			sOut = prefixed(opts)
 			sErr = prefixed(opts)
 		}
-		res, runErr := sbx.exec([]string{shell, "-lc", script}, env, sOut, sErr)
+		res, runErr := sbx.exec([]string{shell, "-c", script}, env, sOut, sErr)
 
 		code := 0
 		if res != nil {

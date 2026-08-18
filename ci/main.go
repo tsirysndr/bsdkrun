@@ -23,6 +23,7 @@ import (
 	"tangled.org/core/workflow"
 
 	"github.com/tsirysndr/bsdkrun/ci/platforms"
+	"github.com/tsirysndr/bsdkrun/ci/project"
 )
 
 func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
@@ -100,6 +101,13 @@ Run flags:
   --json                             spindle log-line JSON on stdout
   --plain                            plain line output even on a terminal
                                      (the default when stdout is not a tty)
+  --detect                           ignore CI configs: detect the project
+                                     (go, rust, nodejs, bun, deno, python,
+                                     ruby, php, elixir, gleam, zig, clojure,
+                                     dotnet, crystal, haskell)
+                                     and generate + run a workflow for it.
+                                     This also happens automatically when a
+                                     repository has no CI config at all
   --platform <name>                  run a foreign CI config locally:
                                      github (also forgejo/gitea), gitlab,
                                      woodpecker, drone, circleci, buildkite,
@@ -166,6 +174,7 @@ func cmdRun(args []string) error {
 	jsonOut := fs.Bool("json", false, "")
 	plain := fs.Bool("plain", false, "")
 	platformFlag := fs.String("platform", "auto", "")
+	detect := fs.Bool("detect", false, "")
 	nixery := fs.String("nixery", "", "")
 	otlp := fs.String("otlp", "", "")
 	var inputs, files, secretFlags, secretFiles repeatable
@@ -215,13 +224,69 @@ func cmdRun(args []string) error {
 	// points elsewhere; without them, the well-known files of the supported
 	// platforms are probed in registry order.
 	native := dirHasTangled(repo.WorkflowRoot())
-	if *platformFlag != "auto" && *platformFlag != "tangled" {
+	if (*platformFlag != "auto" && *platformFlag != "tangled") || *detect {
 		native = false
 	}
 	if !native && len(files) == 0 {
-		plat, err := platforms.Detect(repo.WorkflowRoot(), *platformFlag)
-		if err != nil {
-			return err
+		var plat *platforms.Platform
+		if !*detect {
+			var derr error
+			plat, derr = platforms.Detect(repo.WorkflowRoot(), *platformFlag)
+			if derr != nil {
+				return derr
+			}
+		}
+		// Nothing recognizable (or --detect): read the project itself and
+		// generate a workflow on the fly — pack's detect step, for CI.
+		if plat == nil && (*detect || *platformFlag == "auto") {
+			if proj := project.Detect(repo.WorkflowRoot()); proj != nil {
+				secrets, err := collectSecrets(repo.WorkflowRoot(), secretFlags, secretFiles)
+				if err != nil {
+					return err
+				}
+				opts := runOpts{
+					Cpus:    *cpus,
+					Mem:     *mem,
+					Keep:    *keep,
+					Source:  repo.Root,
+					JSON:    *jsonOut,
+					Out:     os.Stdout,
+					Secrets: secrets,
+					Masker:  newMasker(secrets),
+				}
+				var plans []*Plan
+				for _, j := range proj.Jobs {
+					if len(names) > 0 && !nameMatches(j.Name, names) {
+						continue
+					}
+					plans = append(plans, foreignPlan(proj.Language, j, repo))
+				}
+				if len(plans) == 0 {
+					return fmt.Errorf("no generated job matches")
+				}
+				// Say exactly what was inferred before anything boots: the
+				// project, the marker that gave it away, and every step —
+				// a generated workflow the operator has not read must be
+				// shown, not sprung.
+				fmt.Fprintf(os.Stderr, "detected %s project (%s) — no CI configuration found, workflow generated:\n",
+					proj.Language, proj.Marker)
+				for _, plan := range plans {
+					fmt.Fprintf(os.Stderr, "  %s · image %s\n", plan.Name, plan.Image)
+					n := 0
+					for _, st := range plan.Steps {
+						if st.System {
+							continue
+						}
+						n++
+						fmt.Fprintf(os.Stderr, "    %d. %s\n", n, st.Name)
+					}
+				}
+				return runPlans(plans, opts, *jsonOut, *plain)
+			}
+			if *detect {
+				return fmt.Errorf("nothing detectable here — known project types: %s",
+					joinNames(project.Languages()))
+			}
 		}
 		if plat != nil {
 			secrets, err := collectSecrets(repo.WorkflowRoot(), secretFlags, secretFiles)
@@ -346,6 +411,17 @@ func runPlans(plans []*Plan, opts runOpts, jsonOut, plain bool) error {
 }
 
 // dirHasTangled reports whether root carries native workflows.
+func joinNames(names []string) string {
+	out := ""
+	for i, n := range names {
+		if i > 0 {
+			out += ", "
+		}
+		out += n
+	}
+	return out
+}
+
 func dirHasTangled(root string) bool {
 	entries, err := os.ReadDir(filepath.Join(root, workflow.WorkflowDir))
 	return err == nil && len(entries) > 0
@@ -383,6 +459,34 @@ func cmdLs(args []string) error {
 	// No native workflows? List what the detected foreign platform would run.
 	if !dirHasTangled(repo.WorkflowRoot()) {
 		plat, derr := platforms.Detect(repo.WorkflowRoot(), "auto")
+		if derr == nil && plat == nil {
+			if proj := project.Detect(repo.WorkflowRoot()); proj != nil {
+				if *jsonOut {
+					type drow struct {
+						Name     string `json:"name"`
+						Engine   string `json:"engine"`
+						Matches  bool   `json:"matches"`
+						Platform string `json:"platform"`
+					}
+					var rows []drow
+					for _, j := range proj.Jobs {
+						rows = append(rows, drow{Name: j.Name, Engine: "generated",
+							Matches: true, Platform: proj.Language})
+					}
+					b, _ := json.Marshal(rows)
+					fmt.Println(string(b))
+					return nil
+				}
+				fmt.Printf("detected %s project (%s) — workflow would be generated:\n",
+					proj.Language, proj.Marker)
+				for _, j := range proj.Jobs {
+					for _, st := range j.Steps {
+						fmt.Printf("  %s\n", st.Name)
+					}
+				}
+				return nil
+			}
+		}
 		if derr == nil && plat != nil {
 			jobs, jerr := plat.Load(repo.WorkflowRoot(), platformRepo(repo))
 			if jerr != nil {

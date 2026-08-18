@@ -217,6 +217,28 @@ jobs:
           done
           test -z "$failed" || { echo "FAILED:$failed"; exit 1; }
 
+      # No CI config at all: the runner must detect the project (a bare Go
+      # module here) and generate + run a workflow for it. Asserts the
+      # detection announcement and the test-before-build execution.
+      - name: e2e — project detection (no CI config)
+        run: |
+          set -eux
+          d=$(mktemp -d)
+          cd "$d"
+          printf 'module example.com/hello\n\ngo 1.22\n' > go.mod
+          printf 'package main\nfunc Add(a, b int) int { return a + b }\nfunc main() {}\n' > main.go
+          printf 'package main\nimport "testing"\nfunc TestAdd(t *testing.T) { if Add(1,2) != 3 { t.Fatal() } }\n' > main_test.go
+          git init -q && git add -A && git -c user.email=ci@e2e -c user.name=e2e commit -qm init
+          cd -
+          set +e
+          timeout 900 ./target/release/bsdkrun ci run --plain -w "$d" 2>&1 | tee /tmp/ci-detect.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          grep -q "detected go project (go.mod)" /tmp/ci-detect.log
+          grep -q "ok  " /tmp/ci-detect.log
+          grep -q "build passed" /tmp/ci-detect.log
+          test "$rc" -eq 0
+
       # A cancelled/timed-out run can leave a VM behind; say what the host
       # state was either way so a red run is diagnosable from the log alone.
       - name: Host state after the runs

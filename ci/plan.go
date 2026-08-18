@@ -206,6 +206,30 @@ func prepareStep() Step {
 for d in /etc /nix /root /usr /var /tmp; do [ -d "$d" ] && chmod u+w "$d" 2>/dev/null; done
 mkdir -p /tmp && chmod 1777 /tmp 2>/dev/null || true
 [ -d /nix ] && { chmod u+w /nix 2>/dev/null; mkdir -p /nix/var 2>/dev/null; } || true
+# Republish the exec environment for every later step. The agent hands each
+# exec session the image's ENV (PATH with /usr/local/go/bin, JAVA_HOME,
+# PHP_INI_DIR, ...), but steps run *login* shells, and /etc/profile on most
+# images resets PATH — clobbering the toolchains the image put there (found
+# live: golang:alpine's go binary vanished from a -lc shell while a plain
+# exec saw it). /proc/self/environ is the step's pre-profile environment —
+# exactly what the agent provided — so capturing it into /etc/profile.d
+# (which profile sources *after* its reset) restores the image's world.
+# PATH merges rather than assigns; other vars only fill gaps, so env passed
+# explicitly to a step stays authoritative.
+if [ -r /proc/self/environ ]; then
+  mkdir -p /etc/profile.d 2>/dev/null || true
+  # cat|tr, not tr<file: busybox reads /proc/self/environ as empty through a
+  # redirect (measured in the guest), while the pipe sees every byte.
+  cat /proc/self/environ | tr '\0' '\n' | while IFS= read -r kv; do
+    k=${kv%%=*}; v=${kv#*=}
+    case "$v" in *'"'*) continue ;; esac
+    case "$k" in
+      HOME|PWD|SHLVL|TERM|HOSTNAME|_|'') continue ;;
+      PATH) printf 'case ":$PATH:" in *":%s:"*) ;; *) export PATH="%s:$PATH" ;; esac\n' "$v" "$v" ;;
+      *) printf 'if [ -z "${%s+x}" ]; then export %s="%s"; fi\n' "$k" "$k" "$v" ;;
+    esac
+  done > /etc/profile.d/bsdkrun-image-env.sh 2>/dev/null || true
+fi
 true`,
 	}
 }

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://mirror.tangled.network/xrpc/sh.tangled.git.temp.getBlob?path=.github%2Fassets%2Fdesktop.png&ref=main&repo=did%3Aplc%3Anbljdkycqux4kcthe34d45vz" alt="bsdkrun Desktop — machines list with a tabbed terminal panel" width="900">
+  <img src="https://mirror-fsn.tangled.network/xrpc/sh.tangled.git.temp.getBlob?path=.github%2Fassets%2Fdesktop.png&ref=main&repo=did%3Aplc%3Anbljdkycqux4kcthe34d45vz" alt="bsdkrun Desktop — machines list with a tabbed terminal panel" width="900">
 </p>
 
 # bsdkrun

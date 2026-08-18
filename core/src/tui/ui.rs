@@ -41,8 +41,24 @@ pub fn render(f: &mut Frame, app: &App) {
     }
     render_status_line(f, app, status);
 
-    // Modals, one at a time, over everything.
-    if let Some(log) = &app.log {
+    // Modals, one at a time, over everything. The shell outranks them all:
+    // while it is open it owns the keyboard, so it must own the screen.
+    if let Some(term) = &app.term {
+        let inner = term_inner_area(area, app.term_fullscreen);
+        let outer = Rect {
+            x: inner.x.saturating_sub(1),
+            y: inner.y.saturating_sub(1),
+            width: inner.width + 2,
+            height: inner.height + 2,
+        };
+        f.render_widget(Clear, outer);
+        let block = Block::bordered()
+            .title(term.title.clone())
+            .title_bottom(" C-\\ detach · ⎇⏎ fullscreen ")
+            .border_style(Style::default().fg(GREEN));
+        f.render_widget(block, outer);
+        term.render(f, inner);
+    } else if let Some(log) = &app.log {
         render_log(f, app, log, area);
     } else if let Some(w) = &app.wizard {
         render_wizard(f, w, area);
@@ -465,70 +481,152 @@ fn render_ci(f: &mut Frame, app: &App, area: Rect) {
 
 /// The persistent bottom status line: selection context on the left, the last
 /// action (or its spinner) in the middle, the domains chip + help hint right.
+/// The neovim-style statusline: a mode block on the left, context and the
+/// last message as segments, context-sensitive shortcuts on the right, and a
+/// position block mirroring the mode color — colored backgrounds throughout,
+/// so the modes read at a glance the way `-- INSERT --` never did.
 fn render_status_line(f: &mut Frame, app: &App, area: Rect) {
-    let len = app.panel_len(app.focus);
-    let left = if len == 0 {
-        format!(" {} — empty", app.focus.title().to_lowercase())
+    const INK: Color = Color::Rgb(0x1e, 0x1c, 0x3f);
+    const SEG_BG: Color = Color::Rgb(0x2d, 0x2b, 0x55);
+    const SEG_FG: Color = Color::Rgb(0xc9, 0xcb, 0xdb);
+
+    // Mode: which state owns the keyboard right now.
+    let (mode, mode_bg) = if app.term.is_some() {
+        ("TERMINAL", GREEN)
+    } else if app.search.is_some() {
+        ("SEARCH", VIOLET)
+    } else if app.confirm.is_some() {
+        ("CONFIRM", RED)
+    } else if app.wizard.is_some() || app.settings.is_some() {
+        ("EDIT", YELLOW)
+    } else if app.tab == super::Tab::Ci {
+        ("CI/CD", TEAL)
     } else {
-        let ctx = match app.focus {
-            Panel::Machines => app
-                .selected_machine()
-                .map(|m| {
-                    format!(
-                        " · {} · {}",
-                        display_name(m),
-                        if m.running { "running" } else { "stopped" }
-                    )
-                })
-                .unwrap_or_default(),
-            _ => String::new(),
-        };
-        format!(
-            " {} {}/{}{}",
-            app.focus.title().to_lowercase(),
-            app.selection() + 1,
-            len,
-            ctx
-        )
+        ("NORMAL", TEAL)
     };
 
+    // Context segment: where you are.
+    let context = if app.term.is_some() {
+        app.term
+            .as_ref()
+            .map(|t| t.title.clone())
+            .unwrap_or_default()
+    } else if app.tab == super::Tab::Ci {
+        match app.ci.current_run() {
+            Some(r) => format!(" {} ", r.workflow),
+            None => " workflows ".into(),
+        }
+    } else {
+        format!(" {} ", app.focus.title().to_lowercase())
+    };
+
+    // Shortcuts: what works *here*. The point of putting them in the bar is
+    // that nobody has to open `?` to remember the three keys that matter.
+    let hints: &str = if app.term.is_some() {
+        "C-\\ detach  ⎇⏎ fullscreen"
+    } else if app.search.is_some() {
+        "⏎ jump  C-u clear  esc close"
+    } else if app.confirm.is_some() {
+        "y confirm  n cancel"
+    } else if app.tab == super::Tab::Ci {
+        "⏎ run  x cancel  j/k move  1 dashboard  ? help"
+    } else {
+        match app.focus {
+            Panel::Machines => "⏎ info  e shell  l logs  s start  x stop  d rm  n new  / search",
+            Panel::Snapshots => "/ search  tab next  2 ci/cd  ? help",
+            Panel::Ai => "/ search  tab next  2 ci/cd  ? help",
+            _ => "/ search  tab next  n new  2 ci/cd  ? help",
+        }
+    };
+
+    // Position block, far right, in the mode color (nvim's ruler).
+    let position = if app.term.is_some() || app.tab == super::Tab::Ci {
+        String::new()
+    } else {
+        let len = app.panel_len(app.focus);
+        if len == 0 {
+            " 0/0 ".into()
+        } else {
+            format!(" {}/{} ", app.selection() + 1, len)
+        }
+    };
+
+    // Middle: busy spinner or the last message, on the bar background.
     let middle = match &app.busy {
         Some(label) => format!("{} {label}", SPINNER[app.frame % SPINNER.len()]),
         None => app.message.clone(),
     };
-
-    let (chip, chip_style) = match &app.snap.domains {
-        Some(d) if d.caddy_running => (
-            format!("https ·{} ✓", d.settings.tld),
-            Style::default().fg(GREEN),
-        ),
-        Some(d) => (
-            format!("https ·{} !", d.settings.tld),
-            Style::default().fg(YELLOW),
-        ),
-        None => ("domains off".to_string(), Style::default().fg(MUTED)),
+    let domains = match &app.snap.domains {
+        Some(d) if d.caddy_running => format!("·{} ", d.settings.tld),
+        _ => String::new(),
     };
 
-    let right_text = " ? help ";
-    let right_width = chip.chars().count() + 3 + right_text.len();
-    let middle_width = (area.width as usize)
-        .saturating_sub(left.chars().count())
-        .saturating_sub(right_width);
+    let mode_block = format!(" {mode} ");
+    let fixed = mode_block.chars().count()
+        + context.chars().count()
+        + 1
+        + hints.chars().count()
+        + 2
+        + domains.chars().count()
+        + position.chars().count();
+    let middle_width = (area.width as usize).saturating_sub(fixed);
+    let middle = format!(
+        " {:<width$}",
+        crate::commands::truncate(&middle, middle_width.saturating_sub(1)),
+        width = middle_width.saturating_sub(1)
+    );
+
     let line = Line::from(vec![
-        Span::styled(left, Style::default().fg(TEAL)),
         Span::styled(
-            format!(
-                "  {:^width$}",
-                crate::commands::truncate(&middle, middle_width.saturating_sub(2)),
-                width = middle_width.saturating_sub(2)
-            ),
+            mode_block,
+            Style::default()
+                .fg(INK)
+                .bg(mode_bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(context, Style::default().fg(SEG_FG).bg(SEG_BG)),
+        Span::styled(
+            middle,
             Style::default().fg(if app.busy.is_some() { YELLOW } else { MUTED }),
         ),
-        Span::styled(chip, chip_style),
-        Span::styled(" · ", Style::default().fg(MUTED)),
-        Span::styled(right_text, Style::default().fg(MUTED)),
+        Span::styled(format!("{hints}  "), Style::default().fg(SEG_FG).bg(SEG_BG)),
+        Span::styled(domains, Style::default().fg(INK).bg(mode_bg)),
+        Span::styled(
+            position,
+            Style::default()
+                .fg(INK)
+                .bg(mode_bg)
+                .add_modifier(Modifier::BOLD),
+        ),
     ]);
     f.render_widget(Paragraph::new(line), area);
+}
+
+/// Where the embedded shell's *content* lives, for both the renderer and the
+/// run loop (which must size the pty to exactly this before the child draws).
+pub fn term_inner_area(frame: Rect, fullscreen: bool) -> Rect {
+    let body = Rect {
+        x: frame.x,
+        y: frame.y + 1,
+        width: frame.width,
+        height: frame.height.saturating_sub(2),
+    };
+    let outer = if fullscreen {
+        body
+    } else {
+        centered(
+            body,
+            body.width.saturating_sub(8).max(40),
+            body.height.saturating_sub(4).max(10),
+        )
+    };
+    // Inside the border.
+    Rect {
+        x: outer.x + 1,
+        y: outer.y + 1,
+        width: outer.width.saturating_sub(2),
+        height: outer.height.saturating_sub(2),
+    }
 }
 
 /// A centered modal rect, clamped to the frame.

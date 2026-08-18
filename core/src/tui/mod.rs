@@ -18,6 +18,7 @@
 pub mod ci;
 pub mod logs;
 pub mod search;
+pub mod term;
 pub mod ui;
 
 use std::process::{Command, Stdio};
@@ -183,6 +184,10 @@ pub struct App {
     pub sel: [usize; 6],
     pub tab: Tab,
     pub ci: ci::CiTab,
+    /// The embedded shell, when one is open. Rendered as a modal over
+    /// everything; `term_fullscreen` trades the chrome for the whole body.
+    pub term: Option<term::TermPane>,
+    pub term_fullscreen: bool,
     /// Status line: outcome of the last action.
     pub message: String,
     /// A worker action in flight, shown as a spinner label.
@@ -219,6 +224,8 @@ impl App {
             sel: [0; 6],
             tab: Tab::Dashboard,
             ci: ci::CiTab::new(),
+            term: None,
+            term_fullscreen: false,
             message: String::new(),
             busy: None,
             frame: 0,
@@ -301,6 +308,15 @@ impl App {
             changed |= log.drain();
         }
         changed |= self.ci.drain();
+        if let Some(term) = &self.term {
+            changed |= term.take_dirty();
+            if term.is_dead() {
+                self.term = None;
+                self.term_fullscreen = false;
+                self.message = "shell session ended".into();
+                changed = true;
+            }
+        }
         changed
     }
 
@@ -394,12 +410,30 @@ fn snapshot() -> Snapshot {
 pub enum Outcome {
     /// Nothing further; redraw.
     Handled,
-    /// Suspend the TUI and run `bsdkrun shell <id>` with the terminal.
-    Shell(String),
 }
 
-/// Route one key press. `Outcome::Shell` bubbles up to the terminal owner.
+/// Route one key press.
 pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> Outcome {
+    // An open shell owns the keyboard outright — everything is forwarded to
+    // the guest except the chords that are ours: Ctrl-\ detaches (and ends
+    // the session; a shell nobody can see is a leak), Alt-Enter and F11
+    // toggle fullscreen.
+    if app.term.is_some() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let alt_enter = key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::ALT);
+        if alt_enter || key.code == KeyCode::F(11) {
+            app.term_fullscreen = !app.term_fullscreen;
+            return Outcome::Handled;
+        }
+        if let Some(term) = &mut app.term {
+            if !term.handle_key(key) {
+                app.term = None;
+                app.term_fullscreen = false;
+                app.message = "shell detached".into();
+            }
+        }
+        return Outcome::Handled;
+    }
     use crossterm::event::{KeyCode, KeyModifiers};
 
     if key.kind != crossterm::event::KeyEventKind::Press {
@@ -544,9 +578,16 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> Outcome {
         KeyCode::Char('e') => {
             if let Some(m) = app.selected_machine() {
                 if m.running {
-                    return Outcome::Shell(m.id.clone());
+                    let title = format!(" shell · {} ", display_name(m));
+                    // Sized provisionally; the draw loop resizes to the modal
+                    // before the first frame the child can have drawn into.
+                    match term::TermPane::open(&m.id, title, 24, 80) {
+                        Ok(pane) => app.term = Some(pane),
+                        Err(e) => app.message = format!("error: {e}"),
+                    }
+                } else {
+                    app.message = format!("{} is not running", display_name(m));
                 }
-                app.message = format!("{} is not running", display_name(m));
             }
         }
         KeyCode::Char('l') => {

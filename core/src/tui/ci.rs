@@ -102,6 +102,12 @@ pub struct CiTab {
     list_rx: Option<mpsc::Receiver<ListEvent>>,
 }
 
+impl Default for CiTab {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CiTab {
     pub fn new() -> Self {
         let repo = std::process::Command::new("git")

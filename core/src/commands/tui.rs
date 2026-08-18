@@ -75,13 +75,23 @@ fn run(app: &mut App) -> Result<()> {
         terminal.draw(|f| ui::render(f, app))?;
         app.frame = app.frame.wrapping_add(1);
 
-        if event::poll(Duration::from_millis(250))? {
+        // Keep an open shell's pty in step with the modal it renders in —
+        // before polling, so the child never draws against a stale size.
+        if app.term.is_some() {
+            let size = terminal.size()?;
+            let area = ui::term_inner_area(
+                ratatui::layout::Rect::new(0, 0, size.width, size.height),
+                app.term_fullscreen,
+            );
+            if let Some(term) = &mut app.term {
+                term.resize(area.height, area.width);
+            }
+        }
+
+        if event::poll(Duration::from_millis(50))? {
             // A resize (or any non-key event) just redraws on the next turn.
             if let Event::Key(key) = event::read()? {
-                match tui::handle_key(app, key) {
-                    Outcome::Handled => {}
-                    Outcome::Shell(id) => shell_into(&mut terminal, app, &id),
-                }
+                let Outcome::Handled = tui::handle_key(app, key);
             }
         }
         app.drain();
@@ -89,28 +99,4 @@ fn run(app: &mut App) -> Result<()> {
             return Ok(());
         }
     }
-}
-
-/// Suspend the dashboard, hand the real terminal to `bsdkrun shell <id>`, and
-/// resume. The shell path drives the guest agent (or the raw console) with its
-/// own raw-mode handling, so the TUI must be fully out of the way.
-fn shell_into(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut App, id: &str) {
-    let _ = disable_raw_mode();
-    let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
-    let status = std::env::current_exe()
-        .map_err(anyhow::Error::from)
-        .and_then(|exe| {
-            std::process::Command::new(exe)
-                .args(["shell", id])
-                .status()
-                .map_err(Into::into)
-        });
-    let _ = enable_raw_mode();
-    let _ = crossterm::execute!(std::io::stdout(), EnterAlternateScreen);
-    let _ = terminal.clear();
-    app.message = match status {
-        Ok(s) if s.success() => format!("shell into {id} closed"),
-        Ok(s) => format!("shell exited with {s}"),
-        Err(e) => format!("error: {e}"),
-    };
 }

@@ -47,7 +47,7 @@ ci = ["dep:rust-embed"]
 solo5 = ["dep:rust-embed"]
 # `bsdkrun tui` — the ratatui terminal dashboard. Off by default so the daemon
 # links no terminal stack; only the CLI turns it on.
-tui = ["dep:ratatui", "dep:crossterm", "dep:nucleo-matcher"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:nucleo-matcher", "dep:portable-pty", "dep:vt100"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -82,6 +82,11 @@ mime_guess = { version = "2", optional = true }
 ratatui = { version = "0.30", optional = true }
 crossterm = { version = "0.29", optional = true }
 nucleo-matcher = { version = "0.3", optional = true }
+# The embedded terminal: interactive shells render *inside* the TUI. The pty
+# half is the same crate the daemon already uses; vt100 interprets the child's
+# output into a screen grid ratatui can draw.
+portable-pty = { version = "0.8", optional = true }
+vt100 = { version = "0.15", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

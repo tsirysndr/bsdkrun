@@ -26,6 +26,9 @@ pub mod machines;
 pub mod pack;
 #[cfg(feature = "boot")]
 pub mod probe;
+/// `bsdkrun prune` — reclaim disk from machines, images, volumes and caches
+/// that nothing is using.
+pub mod prune;
 pub mod snapshot;
 /// Needs `boot` as well as `solo5`: a build that cannot start a machine has no
 /// `dispatch` to reach this from, and it shares the console and machine-record

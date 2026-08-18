@@ -138,6 +138,9 @@ pub fn dispatch(cmd: Command) -> Result<()> {
         Command::Start(args) => commands::boot::cmd_start(&args.id),
         Command::Update(args) => commands::machines::cmd_update(&args.id, args.cpus, args.mem),
         Command::Rm(args) => commands::machines::cmd_rm(&args.ids, args.force),
+        Command::Prune(a) => {
+            commands::prune::cmd_prune(a.all, a.volumes, &a.only, a.force, a.dry_run, a.json)
+        }
         Command::Agent(args) => match args.cmd {
             AgentCmd::Update(a) => commands::guest::cmd_agent_update(&a.id),
         },

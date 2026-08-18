@@ -149,6 +149,12 @@ pub enum Command {
     /// machine unless `-f`, which stops it first.
     Rm(RmArgs),
 
+    /// Reclaim disk: remove stopped machines, unused images and orphaned data.
+    ///
+    /// Asks before removing anything, with a summary of what would go and what
+    /// it is worth — `--force` skips the prompt, `--dry-run` only reports.
+    Prune(PruneArgs),
+
     /// Manage the in-guest agent (e.g. `agent update <id>` to refresh a stale
     /// baked-in agent so ssh/tailscale setup works).
     Agent(AgentArgs),
@@ -581,6 +587,43 @@ pub struct AiDiskGrowArgs {
     /// filesystem in half.
     #[arg(long)]
     pub size: String,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct PruneArgs {
+    /// Also remove saved `bsdkrun cache` entries and the OCI layer cache.
+    ///
+    /// The layer cache is kept by default because it is what makes re-pulling
+    /// the images this removed cheap, and it is already size-bounded.
+    #[arg(short = 'a', long)]
+    pub all: bool,
+
+    /// Also remove volumes no machine references. Off by default: a volume is
+    /// the one thing here holding data that did not come from a registry.
+    #[arg(long)]
+    pub volumes: bool,
+
+    /// Limit the prune to these kinds: `machine`, `image`, `orphan`,
+    /// `volume`, `cache`, `layers`. Repeatable.
+    ///
+    /// `--only orphan` is the one selection that cannot cost anything —
+    /// nothing on the system can reach an orphaned tree. `--only image`
+    /// reclaims unused images and leaves every machine alone. Naming a kind
+    /// here is permission enough: `--only volume` does not also need
+    /// `--volumes`.
+    #[arg(long, value_name = "KIND")]
+    pub only: Vec<String>,
+
+    /// Skip the confirmation prompt.
+    #[arg(short = 'f', long)]
+    pub force: bool,
+
+    /// Report what would be removed and stop.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Parser, Serialize, Deserialize)]

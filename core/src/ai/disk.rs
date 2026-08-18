@@ -332,9 +332,11 @@ pub fn usage() -> Result<Vec<Usage>> {
     let mut out = Vec::new();
     for s in super::sessions()? {
         let vdir = db::state_dir()?.join("machines").join(&s.id);
-        let home = super::home_dir(&s.agent).map(|p| dir_size(&p)).unwrap_or(0);
+        let home = super::home_dir(&s.agent)
+            .map(|p| crate::host::dir_size(&p))
+            .unwrap_or(0);
         out.push(Usage {
-            rootfs: dir_size(&vdir),
+            rootfs: crate::host::dir_size(&vdir),
             home,
             id: s.id,
             name: s.name,
@@ -344,29 +346,6 @@ pub fn usage() -> Result<Vec<Usage>> {
         });
     }
     Ok(out)
-}
-
-/// Recursive apparent size of a directory, symlinks not followed.
-///
-/// Best-effort: an unreadable subdirectory contributes nothing rather than
-/// failing the listing, since this is a report, not an accounting.
-fn dir_size(dir: &Path) -> u64 {
-    let mut total = 0u64;
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&d) else {
-            continue;
-        };
-        for e in entries.flatten() {
-            let Ok(meta) = e.metadata() else { continue };
-            if meta.is_dir() && !e.path().is_symlink() {
-                stack.push(e.path());
-            } else if meta.is_file() {
-                total += meta.len();
-            }
-        }
-    }
-    total
 }
 
 #[cfg(test)]
@@ -396,8 +375,8 @@ mod tests {
         std::fs::create_dir_all(tmp.join("sub")).unwrap();
         std::fs::write(tmp.join("a"), vec![0u8; 1000]).unwrap();
         std::fs::write(tmp.join("sub/b"), vec![0u8; 2000]).unwrap();
-        assert_eq!(dir_size(&tmp), 3000);
-        assert_eq!(dir_size(Path::new("/no/such/directory")), 0);
+        assert_eq!(crate::host::dir_size(&tmp), 3000);
+        assert_eq!(crate::host::dir_size(Path::new("/no/such/directory")), 0);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

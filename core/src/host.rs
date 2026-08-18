@@ -13,6 +13,30 @@ use std::process::Command;
 
 use anyhow::{bail, Result};
 
+/// Recursive apparent size of a directory tree, symlinks not followed.
+///
+/// Best-effort: an unreadable subdirectory contributes nothing rather than
+/// failing the caller, because everything asking this is producing a report —
+/// a number that is slightly low beats an error where a size was wanted.
+pub fn dir_size(dir: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let Ok(meta) = e.metadata() else { continue };
+            if meta.is_dir() && !e.path().is_symlink() {
+                stack.push(e.path());
+            } else if meta.is_file() {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
 /// Remove a directory tree even when it contains read-only entries. A nix-based
 /// rootfs holds a `/nix/store` whose directories are mode `0555`, so you can't
 /// unlink their contents without write permission on the dir — plain

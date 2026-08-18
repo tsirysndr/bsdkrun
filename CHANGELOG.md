@@ -1,0 +1,250 @@
+# Changelog
+
+Notable changes to `bsdkrun` and its SDKs. Roughly [Keep a Changelog][kac], and
+[semantic versioning][semver] — with the caveat that this is 0.x, so a minor
+may still change behaviour.
+
+Entries before 0.10.0 were written from the git history after the fact, so they
+describe what each release contained rather than what its notes said at the
+time.
+
+**The SDKs version independently of the CLI.** They talk to `bsdkrund` over
+gRPC/GraphQL and gain features on their own schedule, so `bsdkrun 0.10.0` does
+not imply `bsdkrun-sdk 0.10.0`. Each release below lists the SDK versions that
+shipped alongside it.
+
+[kac]: https://keepachangelog.com/en/1.1.0/
+[semver]: https://semver.org/spec/v2.0.0.html
+
+## [0.10.0] — 2026-08-18
+
+The AI-sandbox release: coding agents in disposable microVMs, a Docker engine
+you can point the real `docker` CLI at, and copy-on-write machine snapshots.
+
+### Added
+
+- **AI agent sandboxes.** `bsdkrun claude` (or `codex`, `gemini`, `opencode`,
+  `crush`, `copilot`, `kilo`, `qwen`, `kiro`) boots a microVM from that agent's
+  flavor, shares the directory you ran it in, and drops you into its TUI. The
+  agent can do anything it likes in there and cannot reach the rest of the
+  machine. A per-agent home volume keeps its login, so you authenticate once
+  per agent rather than once per session.
+- **A right-docked agent panel** in the desktop app and the web UI, with
+  projects, a session switcher, `--new` sessions, fullscreen, and a start/stop
+  control. Sessions survive hiding the panel.
+- **Shared skills.** One host directory (`~/.agents/skills`) is mounted into
+  every sandbox, so a skill installed once — on the host or by an agent inside
+  a sandbox — is visible to all of them.
+- **Shared Docker and Nix stores** (`bsdkrun ai disk`). Both are disks rather
+  than per-sandbox directories, so an image pulled or a derivation realised in
+  one session is still there in the next. `ai disk grow docker --size 200G`
+  raises a ceiling; `--watch` monitors free space while an agent works.
+- **Uploads for remote engines** (`bsdkrun ai upload`). Driving a VPS leaves
+  your skills, keys, git identity and project on the laptop; this sends them
+  across. `.gitignore` and `.dockerignore` decide what a project upload
+  contains.
+- **Docker compatibility.** `bsdkrun docker` runs a `docker:dind` microVM and
+  serves its API on a host unix socket, so the host's own `docker` CLI drives
+  it — with automatic port publishing and `$HOME` shared, and an optional
+  `/var/run/docker.sock`. A Containers view ships in both UIs.
+- **Snapshots, branches and restores.** `bsdkrun snapshot`, `snapshots`,
+  `branch`, `restore` and `rollback` capture and fork a machine's disk state
+  as copy-on-write clones (APFS `clonefile`, Linux `--reflink`), for Linux,
+  FreeBSD, NetBSD and unikraft guests. Exposed in both UIs and every SDK.
+- **`bsdkrun ai resume <machine>`** brings one stopped sandbox back and waits
+  for its guest agent, so a terminal opened straight after actually works.
+- **New flavors:** `kiro-cli`, `dragonfly`, `uv`, `mise`, `frankenphp`,
+  `mariadb`, `openclaw`, `nanoclaw`, `gemini`, `kilo`, `qwen`.
+- **Prebuilt flavor images** on `ghcr.io/tsirysndr`, pulled on first launch
+  instead of provisioning a VM, with the Dockerfiles generated from the flavor
+  catalog and a CI check that they have not drifted.
+- **`bsdkrun image rm`** removes dangling images.
+- A Scala 3 SDK, published to Maven Central.
+
+### Changed
+
+- Agent sandbox images are built `FROM node:24`, and install the agent CLI
+  **last** so `gh`, Docker and Nix stay cached when an agent releases.
+- Every agent sandbox now ships `gh`, Docker, Nix and git preinstalled, and
+  inherits the host's git identity and (read-only) SSH keys.
+- The Docker VM has a fixed name, so `bsdkrun docker` reuses one engine rather
+  than accumulating them.
+- The `gleam` flavor uses the project's official image instead of Debian + Nix.
+- Progress modals stream the OCI pull, the flavor build and a `git clone`, and
+  dismiss themselves on success.
+
+### Fixed
+
+- Nix could not install inside a container build: it needs
+  `--extra-conf "sandbox = false"`, which the installer's own Docker
+  instructions specify. The step also swallowed its own failure, so images
+  shipped with no `nix` in them and said nothing.
+- `bsdkrun start` dropped a machine's `-e` environment and `--mount` shares on
+  resume, so a restarted Docker VM came back on TLS 2376 and shares came back
+  empty.
+- `bsdkrun commit` resolved a Linux rootfs by hand and failed on macOS's
+  case-sensitive store.
+- Terminal log views were unreadable: HeroUI's foreground scale inverts in dark
+  mode, so the "light" token was near-black.
+
+### SDKs
+
+| SDK        | Version |
+| ---------- | ------- |
+| typescript | 0.6.0   |
+| python     | 0.5.0   |
+| ruby       | 0.5.0   |
+| elixir     | 0.5.0   |
+| clojure    | 0.4.0   |
+| rust       | 0.3.0   |
+| go         | 0.3.0   |
+| gleam      | 1.5.0   |
+| scala      | 0.2.0   |
+
+All nine gained the snapshot, Docker and AI-agent surfaces.
+
+## [0.9.0] — 2026-08-15
+
+### Added
+
+- `bsdkrun cp` copies files and directories between host and guest.
+- `bsdkrun cache` saves and restores a guest directory under a key — on host
+  disk or in S3, in gzip, zstd, estargz or none.
+- `bsdkrun doctor` reports whether this host can run machines at all.
+- `--attach-disk` attaches virtio-blk disks to Linux guests.
+- Environment variables can be passed at machine creation, from every SDK.
+
+### Fixed
+
+- A partially extracted OCI rootfs is never cached.
+
+### SDKs
+
+typescript 0.5.0 · python 0.4.0 · ruby 0.4.0 · elixir 0.4.0 · clojure 0.3.0 ·
+rust 0.2.0 · go 0.2.0 · gleam 1.4.0. Each gained `fs` and `cache` namespaces
+and create-time `env`.
+
+## [0.8.0] — 2026-08-12
+
+### Added
+
+- **MirageOS/Solo5 unikernels** (`bsdkrun solo5`), run through an embedded
+  `solo5-hvt` tender — a hypervisor front end of its own, not libkrun.
+- **Local HTTPS machine domains** (`bsdkrun domains`), with `domains ca` for
+  tools that bypass the system trust store.
+- A ratatui dashboard (`bsdkrun tui`).
+
+### Fixed
+
+- unikraft x86_64 guests were thirty years fast, from a double-counted epoch.
+- `SO_REUSEPORT` and TLS under frankenphp.
+
+Patch releases **0.8.1** (2026-08-12) and **0.8.2** (2026-08-15) followed.
+
+## [0.7.0] — 2026-08-10
+
+### Added
+
+- **`bsdkrun pack`** — railpack for Unikraft: detect a project, plan it, build
+  it through BuildKit, and boot the result as a unikernel.
+- SDKs for **Ruby, Elixir, Gleam and Clojure**, each with a remote client for
+  `bsdkrund`'s GraphQL API.
+- A centralized Clojure/Babashka console for the monorepo.
+
+### Fixed
+
+- `docker:dind` boots: cgroup2 is mounted and a leaf cgroup delegated.
+- One unsupported virtio device no longer hides all the others.
+
+## [0.6.0] — 2026-08-07
+
+### Added
+
+- **`bsdkrund`**, a token-authenticated gRPC daemon, with a **GraphQL API**
+  beside it.
+- **A web UI**, served by `bsdkrun ui`.
+- The desktop app can drive a remote daemon from the same settings field.
+- `bsdkrun` checks `/dev/kvm` on Linux before booting.
+
+### Fixed
+
+- BSD guests get a usable `TERM` on interactive exec, and a real `HOME`.
+- `agent update` installs the right OS's agent.
+
+## [0.5.0] — 2026-08-04
+
+### Added
+
+- **Global networks** — a shared L2 subnet with internal DNS, so machines
+  resolve each other by name. Editable from the CLI and the desktop app, with a
+  members drawer and quick filter.
+
+### Fixed
+
+- `bsdkrun start` resumes a machine's own disk instead of reverting to the base
+  image — which had been silently replacing snapshot data.
+- Peers resolve by name on NetBSD, via a synced `/etc/hosts`.
+
+Patch releases **0.5.1** and **0.5.2** followed on 2026-08-06 (Linux fd limit).
+
+## [0.4.0] — 2026-08-04
+
+### Added
+
+- **The desktop app**: a Docker Desktop-style GUI for bsdkrun, with flavors,
+  streaming launches, repo clone, host terminals, a status bar, a system tray,
+  keyboard navigation and infinite scroll.
+- In-place restart, friendly machine names, `agent update`, and editing a
+  machine's CPU and RAM.
+
+### Changed
+
+- Linux rootfs extraction uses `clonefile(2)` for the whole tree — roughly 10x
+  faster to boot a nix image.
+
+## [0.3.0] — 2026-08-03
+
+### Added
+
+- **Key-based SSH setup** for all guests (`ssh setup` / `add-key` / `status`),
+  driven by the in-guest agent.
+- **Tailscale management** built into the agent, wrapped by
+  `bsdkrun tailscale`.
+- systemd as PID 1 for Linux guests, configured from the agent.
+
+### Fixed
+
+- FreeBSD and NetBSD compile `PermitRootLogin=no` as the *default*, so the
+  agent appends an override rather than assuming.
+- FreeBSD amd64 virtio-mmio discovery, and TSC init via CPUID leaf rather than
+  the kernel cmdline.
+
+Patch releases **0.3.1** and **0.3.2** followed the same day; 0.3.2 fixed
+booting nix-based and empty-`/dev` OCI images.
+
+## [0.2.0] — 2026-08-02
+
+### Added
+
+- **NetBSD amd64** support, via a bundled FFS rootfs and MICROVM kernel, and
+  NetBSD direct-kernel boot with no firmware.
+- FreeBSD defaults to bsdkrun's bundled arm64 image.
+- `bsdkrun logs` surfaces the boot log.
+- The nix flake builds on macOS, importing Homebrew's libkrun into the store.
+
+### Fixed
+
+- Linux volumes are backed by a writable virtio-fs root rather than overlayfs.
+
+## [0.1.0] — 2026-08-01
+
+The first release: boot FreeBSD, NetBSD and Linux (OCI) guests on libkrun.
+
+### Added
+
+- `bsdkrun freebsd` / `netbsd` / `linux` / `kernel` / `firmware` boot modes.
+- `exec` and `shell` into a running guest, over a TCP agent.
+- Machine management for BSD guests, with copy-on-write disk clones.
+- `bsdkrun fetch` downloads and caches guest images; `ps` reports
+  Docker-style status.
+- A serial console, image caching under `$HOME`, and an e2e boot test.

@@ -18,7 +18,7 @@ exclude = ["agent", "desktop", "examples", "library", "sdk"]
 
 [package]
 name = "bsdkrun"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 description = "A Firecracker-style microVM launcher for BSD, Linux (OCI), and unikernel guests on macOS, built on libkrun (Hypervisor.framework)"
 

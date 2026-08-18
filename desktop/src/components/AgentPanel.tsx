@@ -283,10 +283,13 @@ export default function AgentPanel() {
             onPress={session ? stopCurrent : () => start()}
             // Danger-tinted on hover only when it stops: the neighbouring X
             // merely hides the panel, and they are one icon apart.
+            // White, not the muted `foreground-400` the other icons use: this
+            // one is the panel's primary action, and dimmed it read as
+            // disabled next to buttons that genuinely were.
             className={
               session
-                ? "text-foreground-400 data-[hover=true]:text-danger"
-                : "text-foreground-400 data-[hover=true]:text-success"
+                ? "text-white data-[hover=true]:text-danger"
+                : "text-white data-[hover=true]:text-success"
             }
           >
             {session ? (

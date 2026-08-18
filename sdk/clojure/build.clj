@@ -10,7 +10,7 @@
             [deps-deploy.deps-deploy :as dd]))
 
 (def lib 'io.github.tsirysndr/bsdkrun)
-(def version "0.3.0")
+(def version "0.4.0")
 (def class-dir "target/classes")
 (def basis (delay (b/create-basis {:project "deps.edn"})))
 (def jar-file (format "target/bsdkrun-%s.jar" version))

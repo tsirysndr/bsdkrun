@@ -963,7 +963,11 @@ impl Query {
         dir: String,
         #[graphql(default = "manual")] event: String,
     ) -> async_graphql::Result<String> {
-        api(ctx)?.ops.ci_workflows(&dir, &event).await.map_err(gql_err)
+        api(ctx)?
+            .ops
+            .ci_workflows(&dir, &event)
+            .await
+            .map_err(gql_err)
     }
 
     async fn ai_shell_command(

@@ -1385,8 +1385,7 @@ impl Ops {
             .to_string();
         let home =
             std::env::var_os("HOME").ok_or_else(|| OpError::Failed("HOME is not set".into()))?;
-        let base = std::path::PathBuf::from(home)
-            .join(".local/state/bsdkrun/ci-checkouts");
+        let base = std::path::PathBuf::from(home).join(".local/state/bsdkrun/ci-checkouts");
         std::fs::create_dir_all(&base).map_err(|e| OpError::Failed(e.to_string()))?;
         let dest = base.join(&name);
 

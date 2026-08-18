@@ -126,6 +126,16 @@ macro_rules! pip {
 
 /// `provision![cmd, cmd, …]` → an ordered command list (`&[&str]`). Each entry
 /// is one shell command line, run in order in the guest after boot.
+///
+/// **Put the volatile step last.** Each entry becomes its own `RUN` layer in
+/// the generated Dockerfile, and a layer invalidates every layer after it. The
+/// agent CLIs move constantly while `gh`, Docker and Nix do not, so installing
+/// the agent first meant every published image rebuilt those three from
+/// scratch on each agent release — minutes of CI, and a cache that never hit.
+/// Ordering it last leaves the expensive, stable layers untouched.
+///
+/// It is also the right order for a live VM provision, where the agent install
+/// is the step most likely to fail and the cheapest to retry.
 macro_rules! provision {
     () => { &[] as &[&str] };
     ($($cmd:expr),+ $(,)?) => { &[$($cmd),+] as &[&str] };
@@ -452,87 +462,87 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             name: "claude-code",
             category: "ai",
             description: "Claude Code — Anthropic's agentic coding CLI.",
-            base: Base::Oci("node:22"),
+            base: Base::Oci("node:24"),
             ports: NONE,
             env: NONE,
             nix: NONE,
             provision: provision![
                 apt!["git", "ripgrep"],
-                npm!["@anthropic-ai/claude-code"],
                 gh_cli!(),
                 docker_engine!(),
                 nix_engine!(),
+                npm!["@anthropic-ai/claude-code"],
             ],
         },
         CatalogFlavor {
             name: "codex",
             category: "ai",
             description: "OpenAI Codex CLI coding agent.",
-            base: Base::Oci("node:22"),
+            base: Base::Oci("node:24"),
             ports: NONE,
             env: NONE,
             nix: NONE,
             provision: provision![
                 apt!["git"],
-                npm!["@openai/codex"],
                 gh_cli!(),
                 docker_engine!(),
                 nix_engine!(),
+                npm!["@openai/codex"],
             ],
         },
         CatalogFlavor {
             name: "gemini",
             category: "ai",
             description: "Gemini CLI — Google's terminal coding agent.",
-            base: Base::Oci("node:22"),
+            base: Base::Oci("node:24"),
             ports: NONE,
             env: NONE,
             nix: NONE,
             provision: provision![
                 apt!["git", "ripgrep"],
-                npm!["@google/gemini-cli"],
                 gh_cli!(),
                 docker_engine!(),
                 nix_engine!(),
+                npm!["@google/gemini-cli"],
             ],
         },
         CatalogFlavor {
             name: "kilo",
             category: "ai",
             description: "Kilo Code — terminal AI coding agent.",
-            base: Base::Oci("node:22"),
+            base: Base::Oci("node:24"),
             ports: NONE,
             env: NONE,
             nix: NONE,
             provision: provision![
                 apt!["git"],
-                npm!["@kilocode/cli"],
                 gh_cli!(),
                 docker_engine!(),
                 nix_engine!(),
+                npm!["@kilocode/cli"],
             ],
         },
         CatalogFlavor {
             name: "qwen",
             category: "ai",
             description: "Qwen Code — Alibaba's terminal coding agent.",
-            base: Base::Oci("node:22"),
+            base: Base::Oci("node:24"),
             ports: NONE,
             env: NONE,
             nix: NONE,
             provision: provision![
                 apt!["git"],
-                npm!["@qwen-code/qwen-code"],
                 gh_cli!(),
                 docker_engine!(),
                 nix_engine!(),
+                npm!["@qwen-code/qwen-code"],
             ],
         },
         CatalogFlavor {
             name: "kiro-cli",
             category: "ai",
             description: "Kiro CLI — AWS's agentic coding CLI.",
-            base: Base::Oci("node:22"),
+            base: Base::Oci("node:24"),
             ports: NONE,
             env: NONE,
             nix: NONE,
@@ -552,64 +562,64 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             // and a rebuild over a cached layer is exactly when it would hit.
             provision: provision![
                 apt!["git", "curl", "unzip"],
+                gh_cli!(),
+                docker_engine!(),
+                nix_engine!(),
                 "curl -fsSL https://cli.kiro.dev/install | bash -s -- --force",
                 // The installer puts it in ~/.local/bin, which is not on PATH
                 // in a non-login shell — where the sandbox's wrapper runs it.
                 "ln -sf \"$HOME/.local/bin/kiro-cli\" /usr/local/bin/kiro-cli",
-                gh_cli!(),
-                docker_engine!(),
-                nix_engine!(),
             ],
         },
         CatalogFlavor {
             name: "opencode",
             category: "ai",
             description: "OpenCode — open-source terminal AI coding agent.",
-            base: Base::Oci("node:22"),
+            base: Base::Oci("node:24"),
             ports: NONE,
             env: NONE,
             nix: NONE,
             provision: provision![
                 apt!["git", "curl"],
+                gh_cli!(),
+                docker_engine!(),
+                nix_engine!(),
                 concat!(
                     npm!["opencode-ai"],
                     " || curl -fsSL https://opencode.ai/install | bash"
                 ),
-                gh_cli!(),
-                docker_engine!(),
-                nix_engine!(),
             ],
         },
         CatalogFlavor {
             name: "crush",
             category: "ai",
             description: "Crush — Charm's glamourous terminal AI coding agent.",
-            base: Base::Oci("node:22"),
+            base: Base::Oci("node:24"),
             ports: NONE,
             env: NONE,
             nix: NONE,
             provision: provision![
                 apt!["git", "curl"],
-                npm!["@charmland/crush"],
                 gh_cli!(),
                 docker_engine!(),
                 nix_engine!(),
+                npm!["@charmland/crush"],
             ],
         },
         CatalogFlavor {
             name: "copilot",
             category: "ai",
             description: "GitHub Copilot CLI coding agent.",
-            base: Base::Oci("node:22"),
+            base: Base::Oci("node:24"),
             ports: NONE,
             env: NONE,
             nix: NONE,
             provision: provision![
                 apt!["git"],
-                npm!["@github/copilot"],
                 gh_cli!(),
                 docker_engine!(),
                 nix_engine!(),
+                npm!["@github/copilot"],
             ],
         },
         // These two are *assistants*, not TUI coding agents: they run as
@@ -982,4 +992,62 @@ pub fn remove_user_flavor(name: &str) -> Result<bool> {
     let text = toml::to_string_pretty(&file).context("serializing flavors.toml")?;
     std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The agent's own install must be the **last** provisioning step.
+    ///
+    /// Each step is a `RUN` layer, and a changed layer invalidates every layer
+    /// below it. The agent CLIs release constantly; `gh`, Docker and Nix do
+    /// not. With the agent first, every published image rebuilt those three on
+    /// each agent release — so this ordering is a cache property, not a style
+    /// preference, and appending a shared step to one of these lists would
+    /// silently undo it.
+    #[test]
+    fn agent_flavors_install_the_agent_last() {
+        const SHARED: &[&str] = &["command -v gh ", "command -v dockerd ", "command -v nix "];
+        for c in catalog().iter().filter(|c| c.category == "ai") {
+            let Some(last) = c.provision.last() else {
+                continue;
+            };
+            // A flavor that has none of the shared steps has nothing to order.
+            if !c
+                .provision
+                .iter()
+                .any(|s| SHARED.iter().any(|m| s.starts_with(m)))
+            {
+                continue;
+            }
+            assert!(
+                !SHARED.iter().any(|m| last.starts_with(m)),
+                "{} ends with a shared step ({last:.40}…) — the agent install has to \
+                 come last, or every agent release rebuilds gh/docker/nix",
+                c.name
+            );
+        }
+    }
+
+    /// Agent sandboxes track the current Node LTS together; a straggler means
+    /// one agent silently runs on an older runtime than the rest.
+    #[test]
+    fn node_based_agent_flavors_agree_on_one_base() {
+        let bases: Vec<&str> = catalog()
+            .iter()
+            .filter(|c| c.category == "ai")
+            .filter_map(|c| match c.base {
+                Base::Oci(image) if image.starts_with("node:") => Some(image),
+                _ => None,
+            })
+            .collect();
+        assert!(!bases.is_empty(), "the agent flavors are all node-based");
+        for base in &bases {
+            assert_eq!(
+                *base, "node:24",
+                "an agent flavor is still on {base} while the rest moved on"
+            );
+        }
+    }
 }

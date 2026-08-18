@@ -158,9 +158,8 @@ pub(crate) fn cmd_ci(args: &[String]) -> Result<()> {
                 vms.push(m.id);
             }
 
-            let checkouts = std::env::var_os("HOME").map(|h| {
-                std::path::PathBuf::from(h).join(".local/state/bsdkrun/ci-checkouts")
-            });
+            let checkouts = std::env::var_os("HOME")
+                .map(|h| std::path::PathBuf::from(h).join(".local/state/bsdkrun/ci-checkouts"));
             let checkouts_size = checkouts
                 .as_deref()
                 .filter(|p| p.is_dir())
@@ -202,9 +201,7 @@ pub(crate) fn cmd_ci(args: &[String]) -> Result<()> {
             println!("bsdkrun ci prune would remove:");
             println!("  CI VMs           {}", vms.len());
             if running_kept > 0 {
-                println!(
-                    "                   ({running_kept} running kept — -f includes them)"
-                );
+                println!("                   ({running_kept} running kept — -f includes them)");
             }
             println!(
                 "  ci-checkouts     {}",
@@ -360,10 +357,8 @@ fn remove_tree(path: &std::path::Path) -> std::io::Result<()> {
             if meta.is_dir() {
                 let mode = meta.permissions().mode();
                 if mode & 0o700 != 0o700 {
-                    let _ = std::fs::set_permissions(
-                        p,
-                        std::fs::Permissions::from_mode(mode | 0o700),
-                    );
+                    let _ =
+                        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode | 0o700));
                 }
                 if let Ok(rd) = std::fs::read_dir(p) {
                     for entry in rd.flatten() {

@@ -15,6 +15,10 @@ embedded into `bsdkrun` exactly as `pack/` is. **An end user never needs Go** �
 bsdkrun CLI itself, pointed back at the very binary that launched it
 (`$BSDKRUN_BIN`).
 
+<p align="center">
+  <img src="../.github/assets/ci.png" alt="bsdkrun Desktop CI/CD screen — a workflow run with per-step status, timings and live logs" width="900">
+</p>
+
 ## Why this exists
 
 Spindle runs a repository's `.tangled/workflows/*.yml` when a knot sees a push.
@@ -115,6 +119,10 @@ The daemon exposes the same history over GraphQL (`ciTraces`,
 `ciTraceSpans`), which is what the desktop/web CI screen's **Trace** view
 renders — a live waterfall that fills in span by span while the run is
 still going.
+
+<p align="center">
+  <img src="../.github/assets/traces.png" alt="Trace view — a waterfall of the run's spans, one per step, boot included" width="900">
+</p>
 
 To export to a real collector (Jaeger, Grafana Tempo, anything OTLP), point
 the standard variable — or the flag — at it:

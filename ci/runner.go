@@ -57,7 +57,11 @@ type stepResult struct {
 // failure unless opts.Keep — a CI runner that leaks a VM per run would eat
 // the host in a day.
 func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
-	logf(opts, "workflow %s\n  image %s\n", plan.Name, plan.Image)
+	if plan.Platform != "" && plan.Platform != "tangled" {
+		logf(opts, "workflow %s [%s]\n  image %s\n", plan.Name, plan.Platform, plan.Image)
+	} else {
+		logf(opts, "workflow %s\n  image %s\n", plan.Name, plan.Image)
+	}
 
 	// One trace per run, one span per step, exported live when a collector
 	// is configured (--otlp / $OTEL_EXPORTER_OTLP_ENDPOINT). A nil trace is

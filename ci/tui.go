@@ -45,8 +45,9 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 // tuiWorkflowStart / tuiWorkflowDone bracket one workflow; the LogLine stream
 // itself has no workflow boundary, so the orchestrator sends these directly.
 type tuiWorkflowStart struct {
-	Name  string
-	Image string
+	Name     string
+	Image    string
+	Platform string
 }
 
 type tuiWorkflowDone struct {
@@ -79,13 +80,14 @@ type tuiStep struct {
 }
 
 type tuiWorkflow struct {
-	name    string
-	image   string
-	status  string // running | ok | failed
-	started time.Time
-	dur     time.Duration
-	steps   []*tuiStep
-	err     error
+	name     string
+	image    string
+	platform string
+	status   string // running | ok | failed
+	started  time.Time
+	dur      time.Duration
+	steps    []*tuiStep
+	err      error
 }
 
 type tuiModel struct {
@@ -130,10 +132,11 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tick()
 	case tuiWorkflowStart:
 		m.workflows = append(m.workflows, &tuiWorkflow{
-			name:    msg.Name,
-			image:   msg.Image,
-			status:  "running",
-			started: time.Now(),
+			name:     msg.Name,
+			image:    msg.Image,
+			platform: msg.Platform,
+			status:   "running",
+			started:  time.Now(),
 		})
 	case tuiWorkflowDone:
 		if w := m.current(); w != nil {
@@ -218,9 +221,13 @@ func (m *tuiModel) View() string {
 		if w.status == "running" {
 			dur = time.Since(w.started)
 		}
+		label := w.name
+		if w.platform != "" && w.platform != "tangled" {
+			label += " " + styleImage.Render("["+w.platform+"]")
+		}
 		b.WriteString(fmt.Sprintf("%s %s %s %s\n",
 			style.Render(glyph),
-			styleWorkflow.Render(w.name),
+			styleWorkflow.Render(label),
 			styleImage.Render(w.image),
 			styleDur.Render(fmtDur(dur)),
 		))
@@ -334,7 +341,7 @@ func runPlansTUI(plans []*Plan, opts runOpts) (int, error) {
 	failed := 0
 	go func() {
 		for _, plan := range plans {
-			p.Send(tuiWorkflowStart{Name: plan.Name, Image: plan.Image})
+			p.Send(tuiWorkflowStart{Name: plan.Name, Image: plan.Image, Platform: plan.Platform})
 			runOpts := opts
 			runOpts.JSON = true
 			runOpts.Out = &tuiSink{p: p}

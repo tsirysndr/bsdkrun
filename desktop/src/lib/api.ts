@@ -96,8 +96,20 @@ export const api = {
   ciWorkflows: (dir: string, event: string) =>
     invoke<import("./types").CiWorkflowInfo[]>("ci_workflows", { dir, event }),
   /** Run CI workflows, streaming spindle LogLine JSON via flavor:// events. */
-  ciRun: (launchId: string, dir: string, names: string[], event: string) =>
-    invoke<void>("ci_run", { launchId, dir, names, event }),
+  ciRun: (
+    launchId: string,
+    dir: string,
+    names: string[],
+    event: string,
+    secrets?: string,
+  ) =>
+    invoke<void>("ci_run", {
+      launchId,
+      dir,
+      names,
+      event,
+      secrets: secrets ?? null,
+    }),
   /** Clone (or update) a repository for CI; returns the checkout path. */
   ciClone: (url: string) => invoke<string>("ci_clone", { url }),
   /** Kill the CI run started with this launch id. */

@@ -4,7 +4,13 @@ import {
   Button,
   Chip,
   Input,
+  Modal,
+  ModalBody,
+  ModalContent,
+  ModalFooter,
+  ModalHeader,
   Select,
+  Textarea,
   SelectItem,
   Spinner,
   Tooltip,
@@ -12,6 +18,7 @@ import {
 import {
   IconBrandGit,
   IconCheck,
+  IconKey,
   IconChevronDown,
   IconChevronRight,
   IconCircle,
@@ -33,7 +40,7 @@ import {
   pickWorkspace,
 } from "../lib/api";
 import { useToast } from "../state/toast";
-import { ciRepoAtom, ciReposAtom, ciRunsAtom } from "../state/atoms";
+import { ciRepoAtom, ciReposAtom, ciRunsAtom, ciSecretsAtom } from "../state/atoms";
 import type { CiRun, CiStep, CiWorkflowInfo } from "../lib/types";
 import AgentPromptModal from "./AgentPromptModal";
 import { ago } from "../lib/format";
@@ -76,6 +83,10 @@ export default function CicdView() {
   );
   const [runs, setRuns] = useAtom(ciRunsAtom);
   const [repoQuery, setRepoQuery] = useState("");
+  const [allSecrets, setAllSecrets] = useAtom(ciSecretsAtom);
+  const [secretsOpen, setSecretsOpen] = useState(false);
+  const [secretsDraft, setSecretsDraft] = useState("");
+  const repoSecrets = repo ? (allSecrets[repo] ?? "") : "";
   const [repoSearchOpen, setRepoSearchOpen] = useState(false);
   const [visibleRuns, setVisibleRuns] = useState(RUNS_PAGE);
   const [event, setEvent] = useState("manual");
@@ -171,7 +182,7 @@ export default function CicdView() {
     setRuns((rs) => [run, ...rs].slice(0, MAX_RUNS));
     setSelectedRun(id);
     try {
-      await api.ciRun(id, repo, names, event);
+      await api.ciRun(id, repo, names, event, repoSecrets || undefined);
     } catch (e) {
       setRuns((rs) =>
         rs.map((r) => (r.id === id ? finishRun(r, String(e)) : r)),
@@ -190,6 +201,8 @@ export default function CicdView() {
       toast("error", "Cancel failed", String(e));
     }
   };
+
+  const platform = workflows.find((w) => w.platform)?.platform ?? null;
 
   const run = runs.find((r) => r.id === selectedRun) ?? runs[0] ?? null;
   const repoName = repo ? repo.split("/").filter(Boolean).pop() : null;
@@ -310,9 +323,42 @@ export default function CicdView() {
 
         <div className="border-b border-white/10 p-3">
           <div className="mb-1.5 flex items-center justify-between">
-            <span className="text-[11px] font-medium uppercase tracking-wider text-foreground-500">
+            <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-foreground-500">
               Workflows
+              {platform && (
+                <Chip
+                  size="sm"
+                  variant="flat"
+                  color={platform === "tangled" ? "primary" : "secondary"}
+                  className="h-4 px-1 text-[9px] uppercase tracking-wider"
+                >
+                  {platform}
+                </Chip>
+              )}
             </span>
+            <Tooltip
+              content={
+                repoSecrets.trim()
+                  ? "Secrets & env for this repo (set)"
+                  : "Secrets & env for this repo"
+              }
+              placement="top"
+            >
+              <button
+                onClick={() => {
+                  setSecretsDraft(repoSecrets);
+                  setSecretsOpen(true);
+                }}
+                disabled={!repo}
+                className={`mr-1 rounded p-0.5 transition ${
+                  repoSecrets.trim()
+                    ? "text-warning"
+                    : "text-foreground-500 hover:text-foreground"
+                } hover:bg-white/10 disabled:opacity-40`}
+              >
+                <IconKey size={13} />
+              </button>
+            </Tooltip>
             {workflows.some((w) => w.matches) && (
               <Button
                 size="sm"
@@ -342,7 +388,11 @@ export default function CicdView() {
                 className="group flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5"
               >
                 <span
-                  title={w.matches ? "Matches this trigger" : "Does not match"}
+                  title={
+                    w.matches
+                      ? "Runnable"
+                      : w.skip || "Does not match this trigger"
+                  }
                   className={`h-1.5 w-1.5 shrink-0 rounded-full ${
                     w.matches ? "bg-emerald-400" : "bg-foreground-600"
                   }`}
@@ -438,6 +488,56 @@ export default function CicdView() {
         )}
       </div>
 
+      <Modal isOpen={secretsOpen} onClose={() => setSecretsOpen(false)} size="lg">
+        <ModalContent>
+          <ModalHeader className="flex items-center gap-2 text-base">
+            <IconKey size={16} className="text-warning" />
+            Secrets & env
+            <span className="truncate font-mono text-xs font-normal text-foreground-500">
+              {repo?.split("/").filter(Boolean).pop()}
+            </span>
+          </ModalHeader>
+          <ModalBody>
+            <Textarea
+              aria-label="Secrets"
+              minRows={6}
+              maxRows={14}
+              placeholder={"NPM_TOKEN=...\nDATABASE_URL=..."}
+              classNames={{ input: "font-mono text-xs" }}
+              value={secretsDraft}
+              onValueChange={setSecretsDraft}
+            />
+            <p className="text-[11px] leading-snug text-foreground-500">
+              One KEY=VALUE per line (dotenv). Injected into every step of this
+              repository's runs — native and foreign platforms alike — and
+              masked as *** in all logs, base64 encodings included. Stored
+              locally on this machine.
+            </p>
+          </ModalBody>
+          <ModalFooter>
+            <Button size="sm" variant="flat" onPress={() => setSecretsOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              color="primary"
+              onPress={() => {
+                if (repo) {
+                  setAllSecrets((m) => {
+                    const next = { ...m };
+                    if (secretsDraft.trim()) next[repo] = secretsDraft;
+                    else delete next[repo];
+                    return next;
+                  });
+                }
+                setSecretsOpen(false);
+              }}
+            >
+              Save
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
       <AgentPromptModal
         open={prompt === "clone"}
         title="Clone a repository for CI"

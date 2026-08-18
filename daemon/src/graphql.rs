@@ -1976,13 +1976,19 @@ impl Subscription_ {
         #[graphql(default)] names: Vec<String>,
         #[graphql(default = "manual")] event: String,
         #[graphql(default)] run_id: String,
+        #[graphql(default)] secrets: String,
     ) -> async_graphql::Result<impl Stream<Item = LaunchEvent>> {
         let api = api(ctx)?;
         let cmd = api.ops.ci_run_command(&dir, &names, &event);
         // Registered under the client's run id so `ciCancel` can kill it;
-        // unregistered when the stream ends either way.
+        // unregistered when the stream ends either way. Secrets (dotenv
+        // content) travel as environment, never argv.
+        let mut envs = Vec::new();
+        if !secrets.trim().is_empty() {
+            envs.push(("BSDKRUN_CI_SECRETS".to_string(), secrets));
+        }
         let ops = api.ops.clone();
-        let rx = ops.ci_stream(&cmd, &run_id).map_err(gql_err)?;
+        let rx = ops.ci_stream(&cmd, &run_id, &envs).map_err(gql_err)?;
         Ok(async_stream::stream! {
             let mut inner = std::pin::pin!(launch_stream_from(rx));
             while let Some(ev) = inner.next().await {

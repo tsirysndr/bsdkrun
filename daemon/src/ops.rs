@@ -1307,9 +1307,10 @@ impl Ops {
         &self,
         cmd: &CoreCommand,
         run_id: &str,
+        envs: &[(String, String)],
     ) -> Result<crate::supervisor::OutputStream, OpError> {
         let argv = self.supervisor.argv(cmd)?;
-        let (rx, pid) = self.supervisor.stream_with_pid(&argv)?;
+        let (rx, pid) = self.supervisor.stream_with_pid_env(&argv, envs)?;
         if let (Some(pid), false) = (pid, run_id.is_empty()) {
             self.ci_runs.lock().unwrap().insert(run_id.to_string(), pid);
         }

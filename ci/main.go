@@ -387,17 +387,21 @@ func cmdLs(args []string) error {
 			if jerr != nil {
 				return jerr
 			}
+			// Same keys as the tangled listing, so every consumer (the
+			// desktop/web CI screens included) reads one shape; `platform`
+			// is what the badge shows.
 			type frow struct {
 				Name     string `json:"name"`
+				Engine   string `json:"engine"`
+				Matches  bool   `json:"matches"`
 				Platform string `json:"platform"`
-				Runnable bool   `json:"runnable"`
 				Skip     string `json:"skip,omitempty"`
 			}
 			var rows []frow
 			for _, j := range jobs {
 				rows = append(rows, frow{
-					Name: j.Name, Platform: plat.Name,
-					Runnable: j.SkipReason == "", Skip: j.SkipReason,
+					Name: j.Name, Engine: plat.Name, Platform: plat.Name,
+					Matches: j.SkipReason == "", Skip: j.SkipReason,
 				})
 			}
 			if *jsonOut {
@@ -408,7 +412,7 @@ func cmdLs(args []string) error {
 			fmt.Printf("%-28s  %-10s  %s\n", "JOB", "PLATFORM", "RUNNABLE")
 			for _, r := range rows {
 				state := "yes"
-				if !r.Runnable {
+				if !r.Matches {
 					state = "no — " + r.Skip
 				}
 				fmt.Printf("%-28s  %-10s  %s\n", r.Name, r.Platform, state)
@@ -424,14 +428,15 @@ func cmdLs(args []string) error {
 	changed := changedFiles(repo, tr)
 
 	type row struct {
-		Name    string `json:"name"`
-		Engine  string `json:"engine"`
-		Matches bool   `json:"matches"`
+		Name     string `json:"name"`
+		Engine   string `json:"engine"`
+		Matches  bool   `json:"matches"`
+		Platform string `json:"platform"`
 	}
 	var rows []row
 	for _, wf := range wfs {
 		ok, _ := wf.Match(*tr, changed)
-		rows = append(rows, row{Name: wf.Name, Engine: wf.Engine, Matches: ok})
+		rows = append(rows, row{Name: wf.Name, Engine: wf.Engine, Matches: ok, Platform: "tangled"})
 	}
 
 	if *jsonOut {

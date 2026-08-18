@@ -615,12 +615,13 @@ export const api = {
     dir: string,
     names: string[],
     event: string,
+    secrets?: string,
   ): Promise<void> => {
     streamLaunch(
       launchId,
       "runCi",
-      `subscription($d:String!,$n:[String!]!,$e:String!,$r:String!){ runCi(dir:$d, names:$n, event:$e, runId:$r){ line machineId error } }`,
-      { d: dir, n: names, e: event, r: launchId },
+      `subscription($d:String!,$n:[String!]!,$e:String!,$r:String!,$s:String!){ runCi(dir:$d, names:$n, event:$e, runId:$r, secrets:$s){ line machineId error } }`,
+      { d: dir, n: names, e: event, r: launchId, s: secrets ?? "" },
     );
   },
   /** Kill the CI run started with this launch id. */

@@ -394,6 +394,7 @@ async fn ci_run(
     dir: String,
     names: Vec<String>,
     event: String,
+    secrets: Option<String>,
 ) -> Result<(), String> {
     let bin = state.binary().map_err(|e| e.to_string())?;
     let mut args: Vec<String> = vec![
@@ -406,7 +407,11 @@ async fn ci_run(
         event,
     ];
     args.extend(names);
-    stream_bsdkrun(app, bin, args, launch_id, false, "the CI run timed out");
+    let mut envs = Vec::new();
+    if let Some(secrets) = secrets.filter(|s| !s.trim().is_empty()) {
+        envs.push(("BSDKRUN_CI_SECRETS".to_string(), secrets));
+    }
+    stream_bsdkrun_env(app, bin, args, envs, launch_id, false, "the CI run timed out");
     Ok(())
 }
 
@@ -905,6 +910,21 @@ fn stream_bsdkrun(
     capture_id: bool,
     timeout_msg: &'static str,
 ) {
+    stream_bsdkrun_env(app, bin, args, Vec::new(), launch_id, capture_id, timeout_msg)
+}
+
+/// `stream_bsdkrun`, with extra environment for the child. Secrets travel
+/// here rather than in argv — argv is world-readable in `ps`. Local target
+/// only; a remote engine's environment is the daemon's to set.
+fn stream_bsdkrun_env(
+    app: tauri::AppHandle,
+    bin: Target,
+    args: Vec<String>,
+    envs: Vec<(String, String)>,
+    launch_id: String,
+    capture_id: bool,
+    timeout_msg: &'static str,
+) {
     // A remote target streams the same argv through the daemon, which reports
     // stdout, stderr and the exit code exactly as a local child does.
     let bin = match bin {
@@ -918,6 +938,9 @@ fn stream_bsdkrun(
         use std::process::Stdio;
         let mut cmd = tokio::process::Command::new(&bin);
         cmd.env("PATH", bsdkrun::augmented_path());
+        for (k, v) in &envs {
+            cmd.env(k, v);
+        }
         cmd.args(&args);
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());

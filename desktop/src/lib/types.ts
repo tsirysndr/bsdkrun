@@ -283,6 +283,8 @@ export interface CiWorkflowInfo {
   name: string;
   engine: string;
   matches: boolean;
+  platform?: string;
+  skip?: string;
 }
 
 /** A line of step output in a CI run. */

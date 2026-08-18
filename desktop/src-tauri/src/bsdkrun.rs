@@ -469,6 +469,11 @@ pub struct CiWorkflow {
     pub name: String,
     pub engine: String,
     pub matches: bool,
+    /// "tangled" or a foreign platform name — what the UI's badge shows.
+    #[serde(default)]
+    pub platform: String,
+    #[serde(default)]
+    pub skip: Option<String>,
 }
 
 /// The workflows in a repository, and whether each matches `event`.

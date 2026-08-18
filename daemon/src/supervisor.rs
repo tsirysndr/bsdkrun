@@ -238,8 +238,21 @@ impl Supervisor {
     /// needs to cancel the work (CI runs), since dropping the receiver only
     /// stops listening, never the child.
     pub fn stream_with_pid(&self, args: &[String]) -> Result<(OutputStream, Option<u32>), Status> {
+        self.stream_with_pid_env(args, &[])
+    }
+
+    /// `stream_with_pid`, with extra environment for the child — how secrets
+    /// reach a CI run without ever touching argv.
+    pub fn stream_with_pid_env(
+        &self,
+        args: &[String],
+        envs: &[(String, String)],
+    ) -> Result<(OutputStream, Option<u32>), Status> {
         let (tx, rx) = mpsc::channel(CHANNEL_DEPTH);
         let mut cmd = self.command(args)?;
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.kill_on_drop(true);
 

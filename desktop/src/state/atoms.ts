@@ -213,4 +213,13 @@ export const themeAtom = atomWithStorage<"night-rider" | "dark">(
 /** Repositories the CI screen has run against, most recent first. Persisted
  * client-side (localStorage) like the run history, and surfaced both in the
  * CI screen and as command-palette entries. */
+/**
+ * Per-repository CI secrets/env, dotenv text (KEY=VALUE per line). Injected
+ * into every step of that repo's runs and masked as *** in all output.
+ * Stored locally, like everything else in this app.
+ */
+export const ciSecretsAtom = atomWithStorage<Record<string, string>>(
+  "bsdkrun.ciSecrets",
+  {},
+);
 export const ciReposAtom = atomWithStorage<string[]>("bsdkrun-ci-repos", []);

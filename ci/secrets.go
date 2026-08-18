@@ -45,6 +45,13 @@ func collectSecrets(root string, flags, files []string) (map[string]string, erro
 		}
 		fmt.Fprintf(os.Stderr, "loaded secrets from %s\n", wellKnown)
 	}
+	// UIs hand secrets through the environment rather than argv — argv is
+	// world-readable in `ps`, the environment of a child is not.
+	if raw := os.Getenv("BSDKRUN_CI_SECRETS"); raw != "" {
+		if err := parseEnvContent(raw, "$BSDKRUN_CI_SECRETS", out); err != nil {
+			return nil, err
+		}
+	}
 	for _, f := range files {
 		if err := readEnvFile(f, out); err != nil {
 			return nil, err
@@ -77,7 +84,11 @@ func readEnvFile(path string, dst map[string]string) error {
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
-	for i, raw := range strings.Split(string(data), "\n") {
+	return parseEnvContent(string(data), path, dst)
+}
+
+func parseEnvContent(content, source string, dst map[string]string) error {
+	for i, raw := range strings.Split(content, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -86,7 +97,7 @@ func readEnvFile(path string, dst map[string]string) error {
 		k, v, ok := strings.Cut(line, "=")
 		k = strings.TrimSpace(k)
 		if !ok || k == "" {
-			return fmt.Errorf("%s:%d: not KEY=VALUE: %q", path, i+1, raw)
+			return fmt.Errorf("%s:%d: not KEY=VALUE: %q", source, i+1, raw)
 		}
 		v = strings.TrimSpace(v)
 		if len(v) >= 2 {

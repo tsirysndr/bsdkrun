@@ -83,6 +83,9 @@ type Plan struct {
 	Clone workflow.CloneOpts
 	// The nixpkgs dependency list, kept for the no-nixery fallback.
 	NixpkgsDeps []string
+	// Platform names where this plan came from — "tangled" or a foreign
+	// platform — purely for display.
+	Platform string
 	// Workdir is where user steps start; empty means the workspace root.
 	// Set when the workflows live in a subdirectory of the repository.
 	Workdir string
@@ -365,12 +368,13 @@ func buildPlan(wf workflow.Workflow, tr *tangled.Pipeline_TriggerMetadata, pipel
 			steps = append(steps, Step{Name: name, Command: us.Command, Env: us.Environment})
 		}
 		return &Plan{
-			Name:    wf.Name,
-			Image:   img,
-			Env:     env,
-			Steps:   steps,
-			Clone:   wf.CloneOpts,
-			Workdir: workdir,
+			Name:     wf.Name,
+			Platform: "tangled",
+			Image:    img,
+			Env:      env,
+			Steps:    steps,
+			Clone:    wf.CloneOpts,
+			Workdir:  workdir,
 		}, nil
 	}
 
@@ -388,6 +392,7 @@ func buildPlan(wf workflow.Workflow, tr *tangled.Pipeline_TriggerMetadata, pipel
 
 	return &Plan{
 		Name:        wf.Name,
+		Platform:    "tangled",
 		Image:       workflowImage(s.Dependencies),
 		Env:         env,
 		Steps:       steps,

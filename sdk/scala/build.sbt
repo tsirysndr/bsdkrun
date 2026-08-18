@@ -6,7 +6,7 @@
 // the SDK droppable into a codebase already committed to cats-effect, ZIO or
 // neither.
 ThisBuild / organization := "io.github.tsirysndr"
-ThisBuild / version := "0.2.0"
+ThisBuild / version := "0.3.0"
 
 // Scala 3 LTS. The API avoids anything 3-only in its signatures, so a 2.13
 // cross-build is a `crossScalaVersions` line away if one is ever wanted.

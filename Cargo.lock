@@ -615,7 +615,7 @@ dependencies = [
 
 [[package]]
 name = "bsdkrun"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "bsdkrun-core",
@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "bsdkrun-core"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "actix-web",
  "anyhow",
@@ -687,7 +687,7 @@ dependencies = [
 
 [[package]]
 name = "bsdkrun-supervisor"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "bsdkrun-core",

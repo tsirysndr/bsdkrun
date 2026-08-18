@@ -32,13 +32,13 @@ and every namespace is a set of functions over plain maps.
 Via `deps.edn`:
 
 ```clojure
-io.github.tsirysndr/bsdkrun {:mvn/version "0.2.2"}
+io.github.tsirysndr/bsdkrun {:mvn/version "0.5.0"}
 ```
 
 Via Leiningen:
 
 ```clojure
-[io.github.tsirysndr/bsdkrun "0.2.2"]
+[io.github.tsirysndr/bsdkrun "0.5.0"]
 ```
 
 ### The `bsdkrun` binary

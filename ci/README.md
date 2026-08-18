@@ -117,6 +117,7 @@ files are probed automatically; `--platform` forces one:
 | `drone`      | `.drone.yml` (multi-document files included)                          | [`examples/ci-drone`](../examples/ci-drone)           |
 | `circleci`   | `.circleci/config.yml`                                                | [`examples/ci-circleci`](../examples/ci-circleci)     |
 | `buildkite`  | `.buildkite/pipeline.yml`                                             | [`examples/ci-buildkite`](../examples/ci-buildkite)   |
+| `semaphore`  | `.semaphore/semaphore.yml`                                            | [`examples/ci-semaphore`](../examples/ci-semaphore)   |
 | `travis`     | `.travis.yml`                                                         | [`examples/ci-travis`](../examples/ci-travis)         |
 
 ```sh

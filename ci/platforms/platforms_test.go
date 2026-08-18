@@ -341,3 +341,73 @@ steps:
 		t.Fatalf("plugin note missing: %+v", j.Steps[2])
 	}
 }
+
+func TestSemaphore(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, ".semaphore/semaphore.yml", `
+version: v1.0
+name: pipeline
+agent:
+  machine: {type: e1-standard-2, os_image: ubuntu2004}
+global_job_config:
+  env_vars:
+    - {name: GLOBAL, value: g}
+  prologue:
+    commands: [checkout]
+blocks:
+  - name: Test
+    dependencies: [Build]
+    task:
+      env_vars:
+        - {name: BLOCK, value: b}
+      jobs:
+        - name: unit
+          commands: [go test ./...]
+          env_vars:
+            - {name: JOB, value: j}
+  - name: Build
+    dependencies: []
+    task:
+      agent:
+        containers: [{name: main, image: golang:1.22}]
+      jobs:
+        - name: build
+          commands: [go build ./...]
+`)
+	if !detectSemaphore(root) {
+		t.Fatal("semaphore not detected")
+	}
+	jobs, err := loadSemaphore(root, testRepo)
+	if err != nil || len(jobs) != 2 {
+		t.Fatalf("jobs: %+v, %v", jobs, err)
+	}
+	// dependency order: Build before Test.
+	if jobs[0].Name != "Build/build" || jobs[1].Name != "Test/unit" {
+		t.Fatalf("block order: %s, %s", jobs[0].Name, jobs[1].Name)
+	}
+	if jobs[0].Image != "golang:1.22" {
+		t.Fatalf("container image lost: %q", jobs[0].Image)
+	}
+	u := jobs[1]
+	if u.Env["GLOBAL"] != "g" || u.Env["BLOCK"] != "b" || u.Env["JOB"] != "j" {
+		t.Fatalf("env layering: %v", u.Env)
+	}
+	// checkout dissolves; the command survives.
+	if len(u.Steps) != 1 || u.Steps[0].Command != "go test ./..." {
+		t.Fatalf("steps: %+v", u.Steps)
+	}
+
+	macRoot := t.TempDir()
+	write(t, macRoot, ".semaphore/semaphore.yml", `
+agent:
+  machine: {type: a1-standard-4, os_image: macos-xcode15}
+blocks:
+  - name: b
+    task:
+      jobs: [{name: j, commands: [echo hi]}]
+`)
+	mjobs, err := loadSemaphore(macRoot, testRepo)
+	if err != nil || len(mjobs) != 1 || mjobs[0].SkipReason == "" {
+		t.Fatalf("macos pipeline must be skipped: %+v, %v", mjobs, err)
+	}
+}

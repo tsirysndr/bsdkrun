@@ -1,5 +1,6 @@
 // Package platforms translates foreign CI configurations — GitHub Actions,
-// GitLab CI, Woodpecker, Drone, CircleCI, Buildkite, Travis — into a
+// GitLab CI, Woodpecker, Drone, CircleCI, Buildkite, Semaphore, Travis —
+// into a
 // platform-neutral job list the runner turns into microVM plans.
 //
 // A platform's *jobs* are what mean something on a laptop: their image,
@@ -85,6 +86,7 @@ func Registry() []Platform {
 		{Name: "drone", Detect: detectDrone, Load: loadDrone},
 		{Name: "circleci", Detect: detectCircleci, Load: loadCircleci},
 		{Name: "buildkite", Detect: detectBuildkite, Load: loadBuildkite},
+		{Name: "semaphore", Detect: detectSemaphore, Load: loadSemaphore},
 		{Name: "travis", Detect: detectTravis, Load: loadTravis},
 	}
 }
@@ -159,6 +161,14 @@ func Env(platform string, repo Repo) map[string]string {
 			"CIRCLE_BRANCH":            repo.branch(),
 			"CIRCLE_PROJECT_REPONAME":  repo.Name,
 			"CIRCLE_WORKING_DIRECTORY": repo.Workspace,
+		}
+	case "semaphore":
+		return map[string]string{
+			"SEMAPHORE":              "true",
+			"SEMAPHORE_GIT_SHA":      repo.Sha,
+			"SEMAPHORE_GIT_BRANCH":   repo.branch(),
+			"SEMAPHORE_PROJECT_NAME": repo.Name,
+			"SEMAPHORE_GIT_DIR":      repo.Workspace,
 		}
 	}
 	return nil

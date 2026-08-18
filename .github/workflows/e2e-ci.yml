@@ -12,7 +12,8 @@ name: e2e (bsdkrun ci / KVM)
 #     instead. Either path must end in the same passing tests.
 #
 # It then runs the seven foreign-platform examples (github, gitlab,
-# woodpecker, drone, circleci, buildkite, travis) — each config auto-detected
+# woodpecker, drone, circleci, buildkite, semaphore, travis) — each config
+# auto-detected
 # and translated into a microVM run.
 #
 # Following the e2e conventions: the job asserts on the output the guest
@@ -196,11 +197,11 @@ jobs:
       # judging so one broken platform does not hide the others.
       # Strict since its first green run (2026-08-18): all seven passed on
       # x86_64/KVM on the first attempt, so a failure here is a regression.
-      - name: e2e — foreign platforms (github, gitlab, woodpecker, drone, circleci, buildkite, travis)
+      - name: e2e — foreign platforms (github, gitlab, woodpecker, drone, circleci, buildkite, semaphore, travis)
         run: |
           set -eux
           failed=""
-          for p in github gitlab woodpecker drone circleci buildkite travis; do
+          for p in github gitlab woodpecker drone circleci buildkite semaphore travis; do
             d=$(mktemp -d)
             cp -r "examples/ci-$p/." "$d"
             git -C "$d" init -q

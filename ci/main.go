@@ -103,9 +103,9 @@ Run flags:
   --platform <name>                  run a foreign CI config locally:
                                      github (also forgejo/gitea), gitlab,
                                      woodpecker, drone, circleci, buildkite,
-                                     travis — detected automatically when the
-                                     repository has no .tangled/workflows;
-                                     linux jobs only
+                                     semaphore, travis — detected
+                                     automatically when the repository has no
+                                     .tangled/workflows; linux jobs only
   --secret KEY=VALUE | KEY           inject a secret env var into every step
                                      (bare KEY reads the host environment);
                                      values are masked as *** in all output

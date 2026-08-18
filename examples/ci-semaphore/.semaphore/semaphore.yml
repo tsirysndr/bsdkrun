@@ -1,0 +1,24 @@
+version: v1.0
+name: CI
+agent:
+  machine:
+    type: e1-standard-2
+    os_image: ubuntu2004
+global_job_config:
+  prologue:
+    commands:
+      - checkout
+blocks:
+  - name: Test
+    dependencies: []
+    task:
+      agent:
+        containers:
+          - name: main
+            image: alpine:3.20
+      jobs:
+        - name: test
+          commands:
+            - test "$SEMAPHORE" = "true"
+            - test -f hello.txt
+            - echo "semaphore-example-ok"

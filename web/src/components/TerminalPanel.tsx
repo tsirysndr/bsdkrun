@@ -16,6 +16,7 @@ import {
   terminalTabsAtom,
 } from "../state/atoms";
 import { useMachines } from "../lib/queries";
+import { useUiTheme } from "../lib/theme";
 import { kindColor, shortId } from "../lib/format";
 import TerminalPane from "./TerminalPane";
 
@@ -28,6 +29,7 @@ const MIN_H = 140;
  * with only the active one visible). Can expand to fullscreen.
  */
 export default function TerminalPanel() {
+  const ui = useUiTheme();
   const tabs = useAtomValue(terminalTabsAtom);
   const [active, setActive] = useAtom(activeTerminalAtom);
   const [fullscreen, setFullscreen] = useAtom(terminalFullscreenAtom);
@@ -69,8 +71,8 @@ export default function TerminalPanel() {
       style={fullscreen ? undefined : { height }}
       className={`${collapsed ? "hidden " : ""}${
         fullscreen
-          ? "absolute inset-0 z-30 flex flex-col bg-[#0a0d13]"
-          : "relative flex shrink-0 flex-col border-t border-white/10 bg-[#0a0d13]"
+          ? `absolute inset-0 z-30 flex flex-col ${ui.surface}`
+          : `relative flex shrink-0 flex-col border-t border-white/10 ${ui.surface}`
       }`}
     >
       {!fullscreen && (

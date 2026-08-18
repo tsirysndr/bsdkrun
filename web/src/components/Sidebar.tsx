@@ -8,6 +8,7 @@ import {
   IconNetwork,
   IconCamera,
   IconBrandDocker,
+  IconMoon,
   IconSettings,
   IconKeyboard,
   IconCloud,
@@ -17,6 +18,7 @@ import { Tooltip } from "@heroui/react";
 import {
   settingsOpenAtom,
   shortcutsOpenAtom,
+  themeAtom,
   viewAtom,
 } from "../state/atoms";
 import {
@@ -64,6 +66,7 @@ export default function Sidebar() {
     true,
     !!dockerStatus?.running,
   );
+  const [theme, setTheme] = useAtom(themeAtom);
   const [, setSettingsOpen] = useAtom(settingsOpenAtom);
   const [, setShortcutsOpen] = useAtom(shortcutsOpenAtom);
 
@@ -95,7 +98,7 @@ export default function Sidebar() {
               className={`group flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition ${
                 active
                   ? "bg-primary/15 text-foreground shadow-[inset_0_0_0_1px] shadow-primary/25"
-                  : "text-foreground-500 hover:bg-white/5 hover:text-foreground-300"
+                  : "text-foreground-500 hover:bg-default-100/70 hover:text-foreground-300"
               }`}
             >
               <Icon
@@ -108,7 +111,7 @@ export default function Sidebar() {
                   className={`rounded-full px-1.5 py-0.5 text-[11px] font-semibold tabular-nums ${
                     active
                       ? "bg-primary text-white"
-                      : "bg-white/10 text-foreground-400"
+                      : "bg-default-200/70 text-foreground-400"
                   }`}
                 >
                   {counts[it.key]}
@@ -122,10 +125,28 @@ export default function Sidebar() {
       <div className="flex-1" />
 
       <div className="flex flex-col gap-0.5">
+        <Tooltip
+          content={
+            theme === "night-rider"
+              ? "Theme: Night Rider — click for Classic Dark"
+              : "Theme: Classic Dark — click for Night Rider"
+          }
+          placement="right"
+        >
+          <button
+            onClick={() =>
+              setTheme(theme === "night-rider" ? "dark" : "night-rider")
+            }
+            className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-foreground-500 transition hover:bg-default-100/70 hover:text-foreground-300"
+          >
+            <IconMoon size={18} className="text-foreground-400" />
+            <span className="font-medium">Appearance</span>
+          </button>
+        </Tooltip>
         <Tooltip content="Keyboard shortcuts (?)" placement="right">
           <button
             onClick={() => setShortcutsOpen(true)}
-            className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-foreground-500 transition hover:bg-white/5 hover:text-foreground-300"
+            className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-foreground-500 transition hover:bg-default-100/70 hover:text-foreground-300"
           >
             <IconKeyboard size={18} className="text-foreground-400" />
             <span className="font-medium">Shortcuts</span>
@@ -133,7 +154,7 @@ export default function Sidebar() {
         </Tooltip>
         <button
           onClick={() => setSettingsOpen(true)}
-          className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-foreground-500 transition hover:bg-white/5 hover:text-foreground-300"
+          className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-foreground-500 transition hover:bg-default-100/70 hover:text-foreground-300"
         >
           <IconSettings size={18} className="text-foreground-400" />
           <span className="font-medium">Settings</span>
@@ -185,7 +206,7 @@ function ConnectionBadge() {
           <button
             onClick={logout}
             aria-label="Disconnect from this daemon"
-            className="shrink-0 rounded p-0.5 text-foreground-500 transition hover:bg-white/10 hover:text-danger"
+            className="shrink-0 rounded p-0.5 text-foreground-500 transition hover:bg-default-200/70 hover:text-danger"
           >
             <IconLogout size={14} />
           </button>

@@ -29,6 +29,7 @@ export function ViewShell({
         </div>
         <div className="flex-1" />
         <Input
+          data-filter-input
           size="sm"
           radius="lg"
           value={filter}

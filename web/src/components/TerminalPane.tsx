@@ -2,33 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { registerWebLinks } from "../lib/xtermLinks";
+import { useUiTheme } from "../lib/theme";
 import { api, onTermData, onTermExit } from "../lib/api";
 import type { UnlistenFn } from "../lib/api";
 import { HOST_MACHINE } from "../state/atoms";
 
-const THEME = {
-  background: "#0a0d13",
-  foreground: "#dfe4ee",
-  cursor: "#7c8bff",
-  cursorAccent: "#0a0d13",
-  selectionBackground: "rgba(124,139,255,0.35)",
-  black: "#11151c",
-  red: "#ff6b6b",
-  green: "#7ee787",
-  yellow: "#f0c674",
-  blue: "#79b8ff",
-  magenta: "#c398ff",
-  cyan: "#66d9e8",
-  white: "#c9d1d9",
-  brightBlack: "#4b5262",
-  brightRed: "#ff8585",
-  brightGreen: "#a3f7b5",
-  brightYellow: "#ffd479",
-  brightBlue: "#a5c8ff",
-  brightMagenta: "#d7b6ff",
-  brightCyan: "#8ce8f0",
-  brightWhite: "#f0f6fc",
-};
 
 /** An interactive PTY session (`bsdkrun exec -t <id> <cmd>`), streamed over
  *  Tauri events into an xterm.js instance. */
@@ -39,6 +17,14 @@ export default function TerminalPane({
   machineId: string;
   command?: string[];
 }) {
+  const ui = useUiTheme();
+
+  // The live Terminal, for re-theming: xterm is a canvas, so CSS variables
+  // never reach it and the theme has to be pushed in.
+  const termInst = useRef<Terminal | null>(null);
+  useEffect(() => {
+    if (termInst.current) termInst.current.options.theme = ui.term;
+  }, [ui]);
   const hostRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<"connecting" | "open" | "closed">(
     "connecting",
@@ -70,7 +56,7 @@ export default function TerminalPane({
         cursorBlink: true,
         cursorStyle: "bar",
         scrollback: 5000,
-        theme: THEME,
+        theme: ui.term,
         allowProposedApi: true,
       });
       fit = new FitAddon();
@@ -81,6 +67,7 @@ export default function TerminalPane({
         window.open(uri, "_blank", "noopener,noreferrer");
       });
       term.open(hostRef.current);
+      termInst.current = term;
       fit.fit();
 
       term.onData((data) => {

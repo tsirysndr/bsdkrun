@@ -17,6 +17,8 @@ const GROUPS: { title: string; items: [string[], string][] }[] = [
       [["⌘", "K"], "Open command palette"],
       [["?"], "Show this help"],
       [["R"], "Refresh"],
+      [["F"], "Focus the filter box"],
+      [["T"], "Cycle theme (Night Rider / Classic Dark)"],
       [["Esc"], "Close dialog / palette"],
     ],
   },

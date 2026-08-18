@@ -19,7 +19,9 @@ import {
   IconCircleCheck,
   IconAlertTriangle,
 } from "@tabler/icons-react";
-import { settingsOpenAtom } from "../state/atoms";
+import { settingsOpenAtom,
+  themeAtom,
+} from "../state/atoms";
 import {
   useDefaultCache,
   useProbe,
@@ -45,6 +47,7 @@ const looksLikeUrl = (s: string) =>
 type FormValues = z.infer<typeof schema>;
 
 export default function SettingsModal() {
+  const [theme, setTheme] = useAtom(themeAtom);
   const [open, setOpen] = useAtom(settingsOpenAtom);
   const { data: settings } = useSettings();
   const { data: defaultCachePath } = useDefaultCache();
@@ -109,6 +112,34 @@ export default function SettingsModal() {
             Settings
           </ModalHeader>
           <ModalBody className="gap-5">
+            {/* Appearance first: it is the setting people come looking for. */}
+            <div>
+              <label className="mb-1.5 block text-sm font-medium">Appearance</label>
+              <div className="flex gap-2">
+                {(
+                  [
+                    ["night-rider", "Night Rider"],
+                    ["dark", "Classic Dark"],
+                  ] as const
+                ).map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => setTheme(key)}
+                    className={`rounded-lg border px-3 py-1.5 text-sm transition ${
+                      theme === key
+                        ? "border-primary/60 bg-primary/15 text-primary"
+                        : "border-default-200 text-foreground-500 hover:bg-default-100/70"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1 text-[11px] text-foreground-500">
+                Also: the Appearance button in the sidebar, the command palette, or the{" "}
+                <kbd className="rounded bg-default-100 px-1">t</kbd> key.
+              </p>
+            </div>
             <div
               className={`flex items-start gap-3 rounded-xl border p-4 ${
                 probe?.ok

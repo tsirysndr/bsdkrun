@@ -1,10 +1,11 @@
 import ContentLoader from "react-content-loader";
-
-const BG = "#1b2130";
-const FG = "#2b3446";
+import { useUiTheme } from "../lib/theme";
 
 /** One shimmering table row (scales to the container width via viewBox). */
 function RowSkeleton() {
+  // Themed, not constant: a gray shimmer over a purple surface reads as a
+  // rendering glitch rather than as loading.
+  const { skeleton } = useUiTheme();
   return (
     <ContentLoader
       speed={1.5}
@@ -12,8 +13,8 @@ function RowSkeleton() {
       height={52}
       viewBox="0 0 1000 52"
       preserveAspectRatio="none"
-      backgroundColor={BG}
-      foregroundColor={FG}
+      backgroundColor={skeleton.bg}
+      foregroundColor={skeleton.fg}
       className="border-b border-white/5"
     >
       <circle cx="12" cy="26" r="5" />
@@ -29,6 +30,7 @@ function RowSkeleton() {
 
 /** A placeholder table shown while a list query loads for the first time. */
 export function TableSkeleton({ rows = 6 }: { rows?: number }) {
+  const { skeleton } = useUiTheme();
   return (
     <div aria-busy="true" aria-label="Loading">
       {/* Header shimmer */}
@@ -38,8 +40,8 @@ export function TableSkeleton({ rows = 6 }: { rows?: number }) {
         height={34}
         viewBox="0 0 1000 34"
         preserveAspectRatio="none"
-        backgroundColor={BG}
-        foregroundColor={FG}
+        backgroundColor={skeleton.bg}
+        foregroundColor={skeleton.fg}
         className="border-b border-white/10"
       >
         <rect x="30" y="14" rx="3" ry="3" width="70" height="8" />
@@ -57,6 +59,7 @@ export function TableSkeleton({ rows = 6 }: { rows?: number }) {
 
 /** One shimmering flavor card. */
 function CardSkeleton() {
+  const { skeleton } = useUiTheme();
   return (
     <ContentLoader
       speed={1.5}
@@ -64,8 +67,8 @@ function CardSkeleton() {
       height={132}
       viewBox="0 0 300 132"
       preserveAspectRatio="none"
-      backgroundColor={BG}
-      foregroundColor={FG}
+      backgroundColor={skeleton.bg}
+      foregroundColor={skeleton.fg}
       className="rounded-xl border border-white/10"
     >
       <rect x="16" y="16" rx="10" ry="10" width="44" height="44" />
@@ -96,6 +99,7 @@ export function CardGridSkeleton({ cards = 8 }: { cards?: number }) {
 
 /** A small inline block skeleton (e.g. for panels / cards). */
 export function BlockSkeleton({ height = 120 }: { height?: number }) {
+  const { skeleton } = useUiTheme();
   return (
     <ContentLoader
       speed={1.5}
@@ -103,8 +107,8 @@ export function BlockSkeleton({ height = 120 }: { height?: number }) {
       height={height}
       viewBox={`0 0 400 ${height}`}
       preserveAspectRatio="none"
-      backgroundColor={BG}
-      foregroundColor={FG}
+      backgroundColor={skeleton.bg}
+      foregroundColor={skeleton.fg}
     >
       <rect x="0" y="0" rx="8" ry="8" width="400" height={height} />
     </ContentLoader>

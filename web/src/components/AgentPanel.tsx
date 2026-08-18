@@ -38,6 +38,7 @@ import {
 } from "../lib/queries";
 import { useToast } from "../state/toast";
 import { HAS_NATIVE_FOLDER_PICKER, pickWorkspace } from "../lib/api";
+import { useUiTheme } from "../lib/theme";
 import TerminalPane from "./TerminalPane";
 import AgentSessionPicker from "./AgentSessionPicker";
 import AgentPromptModal from "./AgentPromptModal";
@@ -57,6 +58,7 @@ const MIN_W = 340;
  *    hidden behind a spinner (see `useStartAgent`).
  */
 export default function AgentPanel() {
+  const ui = useUiTheme();
   const [open, setOpen] = useAtom(agentPanelOpenAtom);
   const [fullscreen, setFullscreen] = useAtom(agentPanelFullscreenAtom);
   const [width, setWidth] = useAtom(agentPanelWidthAtom);
@@ -170,8 +172,8 @@ export default function AgentPanel() {
       style={fullscreen ? undefined : { width }}
       className={`${!open ? "hidden " : ""}${
         fullscreen
-          ? "absolute inset-0 z-30 flex flex-col bg-[#0a0d13]"
-          : "relative flex shrink-0 flex-col border-l border-white/10 bg-[#0a0d13]"
+          ? `absolute inset-0 z-30 flex flex-col ${ui.surface}`
+          : `relative flex shrink-0 flex-col border-l border-white/10 ${ui.surface}`
       }`}
     >
       {!fullscreen && (

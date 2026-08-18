@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { registerWebLinks } from "../lib/xtermLinks";
+import { useUiTheme } from "../lib/theme";
 import { Button, Input, Switch, Tooltip } from "@heroui/react";
 import {
   IconSearch,
@@ -15,19 +16,16 @@ import { api, onLogLine } from "../lib/api";
 import type { UnlistenFn } from "../lib/api";
 import { useToast } from "../state/toast";
 
-const THEME = {
-  background: "#0a0d13",
-  // Near-white rather than the muted grey the rest of the chrome uses: this is
-  // the content, not a label, and #c6ccd8 on #0a0d13 reads as dim next to it.
-  foreground: "#e8ecf5",
-  cursor: "#0a0d13",
-  selectionBackground: "rgba(124,139,255,0.35)",
-};
 
 /** Read-only console log viewer: initial snapshot + live `logs -f` follow, an
  *  in-buffer quick search, and copy-on-select. Toggle to the boot log for
  *  early-failure diagnostics. */
 export default function LogsPane({ machineId }: { machineId: string }) {
+  const ui = useUiTheme();
+
+  useEffect(() => {
+    if (termRef.current) termRef.current.options.theme = ui.logTerm;
+  }, [ui]);
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
@@ -78,7 +76,7 @@ export default function LogsPane({ machineId }: { machineId: string }) {
         cursorInactiveStyle: "none",
         convertEol: true,
         scrollback: 20000,
-        theme: THEME,
+        theme: ui.logTerm,
       });
       fit = new FitAddon();
       const search = new SearchAddon();

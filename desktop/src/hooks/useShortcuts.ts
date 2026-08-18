@@ -13,6 +13,7 @@ import {
   agentPanelOpenAtom,
   terminalCollapsedAtom,
   terminalTabsAtom,
+  themeAtom,
   viewAtom,
 } from "../state/atoms";
 import { useMachines, useRefreshAll } from "../lib/queries";
@@ -29,6 +30,7 @@ const DOCS_URL = "https://github.com/tsirysndr/bsdkrun";
 export function useShortcuts() {
   const setPalette = useSetAtom(paletteOpenAtom);
   const setRun = useSetAtom(runOpenAtom);
+  const setTheme = useSetAtom(themeAtom);
   const setSettings = useSetAtom(settingsOpenAtom);
   const setShortcuts = useSetAtom(shortcutsOpenAtom);
   const setView = useSetAtom(viewAtom);
@@ -151,9 +153,29 @@ export function useShortcuts() {
         case "N":
           setRun(true);
           break;
+        // Focus the current view's filter box — vim/GitHub muscle memory.
+        // The input marks itself with data-filter-input; preventDefault stops
+        // the "f" from landing in it once focused.
+        case "f":
+        case "F": {
+          const el = document.querySelector<HTMLInputElement>(
+            "[data-filter-input] input, [data-filter-input]",
+          );
+          if (el) {
+            e.preventDefault();
+            el.focus();
+            el.select();
+          }
+          break;
+        }
+        // Cycle themes without reaching for the palette or the sidebar.
+        case "t":
+        case "T":
+          setTheme((t) => (t === "night-rider" ? "dark" : "night-rider"));
+          break;
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [setPalette, setShortcuts, setRun]);
+  }, [setPalette, setShortcuts, setRun, setTheme]);
 }

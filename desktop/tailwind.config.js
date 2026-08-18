@@ -43,6 +43,25 @@ export default {
           extend: "dark",
           colors: {
             background: "#1e1c3f",
+            // The `default` ramp drives inputs, hovers and subtle borders in
+            // HeroUI — without restyling it those stay the old neutral gray
+            // and clash with the purple surfaces. A violet-tinted ramp built
+            // between the theme's own backgrounds and foregrounds.
+            default: {
+              50: "#1A1837",
+              100: "#222246",
+              200: "#2D2B55",
+              300: "#38356A",
+              400: "#454180",
+              500: "#5D5988",
+              600: "#696292",
+              700: "#8481B5",
+              800: "#A5A2CC",
+              900: "#C9CBDB",
+              DEFAULT: "#2D2B55",
+              foreground: "#C9CBDB",
+            },
+
             foreground: "#C9CBDB",
             content1: "#222246",
             content2: "#2D2B55",

@@ -43,6 +43,7 @@ import {
   useStopMachine,
 } from "../lib/queries";
 import { ago, exitLabel, isUnikraft, kindColor, shortId } from "../lib/format";
+import { useUiTheme } from "../lib/theme";
 import { useToast } from "../state/toast";
 import SnapshotsPane from "./SnapshotsPane";
 import TerminalPane from "./TerminalPane";
@@ -115,6 +116,7 @@ function Inspect({ m }: { m: Machine }) {
 }
 
 export default function MachineDetail() {
+  const ui = useUiTheme();
   const [selected, setSelected] = useAtom(selectedMachineAtom);
   const { data: machines = [] } = useMachines();
   const stopMutation = useStopMachine();
@@ -414,12 +416,12 @@ export default function MachineDetail() {
             <DrawerBody className="p-0">
               <div className="h-full min-h-0">
                 {tab === "terminal" && m.running && !isUnikraft(m.kind) && (
-                  <div className="h-full overflow-hidden rounded-lg bg-[#0a0d13]">
+                  <div className={`h-full overflow-hidden rounded-lg ${ui.surface}`}>
                     <TerminalPane machineId={m.id} command={EMPTY} />
                   </div>
                 )}
                 {tab === "logs" && (
-                  <div className="h-full overflow-hidden bg-[#0a0d13]">
+                  <div className={`h-full overflow-hidden ${ui.surface}`}>
                     <LogsPane machineId={m.id} />
                   </div>
                 )}

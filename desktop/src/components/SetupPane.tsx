@@ -7,12 +7,14 @@ import {
   IconDownload,
 } from "@tabler/icons-react";
 import { api } from "../lib/api";
+import { useUiTheme } from "../lib/theme";
 import { useToast } from "../state/toast";
 
 function Output({ text }: { text: string }) {
+  const ui = useUiTheme();
   if (!text) return null;
   return (
-    <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-[#0a0d13] p-3 font-mono text-[13px] leading-relaxed text-foreground-300">
+    <pre className={`mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 ${ui.surface} p-3 font-mono text-[13px] leading-relaxed text-foreground-300`}>
       {text}
     </pre>
   );

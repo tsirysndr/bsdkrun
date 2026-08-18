@@ -131,6 +131,7 @@ pub fn pull(reference: &str) -> Result<Image> {
         .with_context(|| format!("creating {}", staging_rootfs.display()))?;
 
     let total_bytes: u64 = layers.iter().filter_map(|l| l["size"].as_u64()).sum();
+    let (mut cached_bytes, mut downloaded_bytes) = (0u64, 0u64);
     info!(
         count = layers.len(),
         total = %human_size(total_bytes),
@@ -141,30 +142,55 @@ pub fn pull(reference: &str) -> Result<Image> {
             .as_str()
             .with_context(|| format!("layer {i} has no digest"))?;
         let size = layer["size"].as_u64().unwrap_or(0);
-        // A blank line keeps curl's in-place progress bar from being overwritten
-        // by the next log line.
-        eprintln!("  layer {}/{}  {}", i + 1, layers.len(), human_size(size));
-        let blob = staging.join(format!("layer{i}.tar"));
-        get_blob(&r, digest, &token, Some(&blob))?;
-        // A short blob means the transfer was cut off. bsdtar reports a truncated
-        // archive as a *warning* (exit 1) and still extracts the part it read, so
-        // without this check the missing files would be baked into the cache.
-        if size > 0 {
-            let got = std::fs::metadata(&blob).map(|m| m.len()).unwrap_or(0);
-            if got != size {
-                bail!(
-                    "layer {}/{} ({digest}) downloaded {} of {} — the transfer was cut short",
+        // Layers are shared between images far more often than whole images
+        // are: every flavor built `FROM node:24` has the same base layers, and
+        // a tag that moves upstream usually changes one layer out of ten. The
+        // cache is keyed by layer digest, so all of that is downloaded once.
+        let blob = match cached_blob(digest, size) {
+            Some(path) => {
+                eprintln!(
+                    "  layer {}/{}  {}  (cached)",
                     i + 1,
                     layers.len(),
-                    human_size(got),
                     human_size(size)
                 );
+                cached_bytes += size;
+                path
             }
-        }
+            None => {
+                // A blank line keeps curl's in-place progress bar from being
+                // overwritten by the next log line.
+                eprintln!("  layer {}/{}  {}", i + 1, layers.len(), human_size(size));
+                // Downloaded under a temporary name in the cache directory, so
+                // the rename into place is atomic and on the same filesystem.
+                let tmp = blob_dir()?.join(format!(".download-{}-{i}", std::process::id()));
+                get_blob(&r, digest, &token, Some(&tmp))?;
+                // A short blob means the transfer was cut off. bsdtar reports a
+                // truncated archive as a *warning* (exit 1) and still extracts
+                // the part it read, so without this check the missing files
+                // would be baked into the cache.
+                if size > 0 {
+                    let got = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+                    if got != size {
+                        let _ = std::fs::remove_file(&tmp);
+                        bail!(
+                            "layer {}/{} ({digest}) downloaded {} of {} — the transfer was cut short",
+                            i + 1,
+                            layers.len(),
+                            human_size(got),
+                            human_size(size)
+                        );
+                    }
+                }
+                downloaded_bytes += size;
+                store_blob(&tmp, digest)?
+            }
+        };
         extract_layer(&blob, &staging_rootfs)
             .with_context(|| format!("extracting layer {i} ({digest})"))?;
         apply_whiteouts(&staging_rootfs)?;
-        let _ = std::fs::remove_file(&blob);
+        // Deliberately kept: deleting it here is what used to make the next
+        // image re-download layers it already had.
     }
 
     std::fs::write(
@@ -188,6 +214,17 @@ pub fn pull(reference: &str) -> Result<Image> {
     std::fs::rename(&staging, &dir)
         .with_context(|| format!("moving extracted image into cache at {}", dir.display()))?;
 
+    if cached_bytes > 0 {
+        info!(
+            reused = %human_size(cached_bytes),
+            downloaded = %human_size(downloaded_bytes),
+            "layer cache hit"
+        );
+    }
+    // After the pull, not before: evicting a layer this pull is about to reuse
+    // would be the one moment the cache costs more than it saves.
+    prune_blobs();
+
     info!(rootfs = %rootfs.display(), "image ready");
     Ok(Image {
         rootfs,
@@ -195,6 +232,140 @@ pub fn pull(reference: &str) -> Result<Image> {
         digest: config_digest,
         size: total_size,
     })
+}
+
+/// Where downloaded layer blobs are kept, keyed by their digest.
+///
+/// Beside the extracted rootfs trees rather than inside one, because the whole
+/// point is that a blob outlives the image that first pulled it.
+fn blob_dir() -> Result<PathBuf> {
+    let dir = crate::fetch::oci_cache_dir()?.join("blobs");
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    Ok(dir)
+}
+
+fn blob_path(digest: &str) -> Result<PathBuf> {
+    Ok(blob_dir()?.join(digest_to_dirname(digest)))
+}
+
+/// How much disk the blob cache may use before the oldest entries are dropped.
+///
+/// Layers are compressed, so this buys a lot of images. Override with
+/// `BSDKRUN_OCI_BLOB_CACHE` (bytes); `0` disables the cache entirely, which is
+/// the pre-cache behaviour for anyone who would rather have the disk.
+const BLOB_CACHE_DEFAULT: u64 = 20 * 1024 * 1024 * 1024;
+
+fn blob_cache_limit() -> u64 {
+    std::env::var("BSDKRUN_OCI_BLOB_CACHE")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(BLOB_CACHE_DEFAULT)
+}
+
+/// A cached layer, if one is there and is the right size.
+///
+/// Size is a cheap check and a sound one here: a blob only enters the cache
+/// after its digest has been verified, and it is renamed into place in one
+/// step, so a truncated download is never visible under its final name.
+fn cached_blob(digest: &str, size: u64) -> Option<PathBuf> {
+    if blob_cache_limit() == 0 {
+        return None;
+    }
+    let path = blob_path(digest).ok()?;
+    let got = std::fs::metadata(&path).ok()?.len();
+    if size > 0 && got != size {
+        // A stale or half-written file under the final name should not be
+        // trusted; drop it and let the caller re-download.
+        let _ = std::fs::remove_file(&path);
+        return None;
+    }
+    // Touched so the prune below evicts genuinely cold layers rather than the
+    // ones that keep being reused. Best-effort: a cache whose LRU ordering is
+    // slightly wrong still works, and a read-only store should not fail a pull.
+    if let Ok(f) = std::fs::File::options().write(true).open(&path) {
+        let _ = f.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()));
+    }
+    Some(path)
+}
+
+/// Verify a downloaded blob against its digest and move it into the cache.
+///
+/// Verified on the way in, once, rather than on every hit: hashing a 500 MB
+/// layer on each reuse would give back the time the cache is there to save.
+fn store_blob(tmp: &Path, digest: &str) -> Result<PathBuf> {
+    if let Some(want) = digest.strip_prefix("sha256:") {
+        let mut file = std::fs::File::open(tmp)
+            .with_context(|| format!("reading {} to verify it", tmp.display()))?;
+        let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
+        std::io::copy(&mut file, &mut hasher).context("hashing the downloaded layer")?;
+        let got = format!("{:x}", sha2::Digest::finalize(hasher));
+        if got != want {
+            let _ = std::fs::remove_file(tmp);
+            bail!("layer {digest} hashed to sha256:{got} — the download is corrupt");
+        }
+    }
+    let path = blob_path(digest)?;
+    // Rename, so the blob is only ever visible under its final name complete.
+    // The download already lands in this directory, so this is normally a
+    // same-filesystem rename — but on macOS the cache is a sparsebundle, and a
+    // caller handing us a path from anywhere else gets EXDEV. Copy to a
+    // neighbouring temp file and rename that, rather than copying straight to
+    // the final name and briefly publishing a partial blob.
+    match std::fs::rename(tmp, &path) {
+        Ok(()) => {}
+        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+            let staging = path.with_extension("incoming");
+            std::fs::copy(tmp, &staging)
+                .with_context(|| format!("copying the layer into {}", staging.display()))?;
+            std::fs::rename(&staging, &path)
+                .with_context(|| format!("moving the layer into place at {}", path.display()))?;
+            let _ = std::fs::remove_file(tmp);
+        }
+        Err(e) => {
+            return Err(e)
+                .with_context(|| format!("moving the layer into the cache at {}", path.display()))
+        }
+    }
+    Ok(path)
+}
+
+/// Drop the least recently used blobs until the cache fits its limit.
+fn prune_blobs() {
+    let limit = blob_cache_limit();
+    let Ok(dir) = blob_dir() else { return };
+    let mut entries: Vec<(std::time::SystemTime, u64, PathBuf)> = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd
+            .flatten()
+            .filter_map(|e| {
+                let m = e.metadata().ok()?;
+                if !m.is_file() {
+                    return None;
+                }
+                Some((m.modified().ok()?, m.len(), e.path()))
+            })
+            .collect(),
+        Err(_) => return,
+    };
+    let total: u64 = entries.iter().map(|(_, len, _)| len).sum();
+    if total <= limit {
+        return;
+    }
+    // Oldest first.
+    entries.sort_by_key(|(mtime, _, _)| *mtime);
+    let mut freed = 0u64;
+    for (_, len, path) in entries {
+        if total - freed <= limit {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            freed += len;
+        }
+    }
+    info!(
+        freed = %human_size(freed),
+        limit = %human_size(limit),
+        "pruned the OCI layer cache"
+    );
 }
 
 /// A parsed image reference broken into what the registry API needs.
@@ -642,5 +813,34 @@ mod tests {
         assert_eq!(cached_layers(&dir).as_deref(), Some(digests.as_slice()));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A blob only enters the cache after its digest checks out — the whole
+    /// reason a later hit can trust a cheap size comparison.
+    #[test]
+    fn a_corrupt_layer_is_rejected_before_it_is_cached() {
+        let tmp = std::env::temp_dir().join(format!("bsdkrun-blob-{}", std::process::id()));
+        std::fs::write(&tmp, b"not what the digest says").unwrap();
+        // sha256 of something else entirely.
+        let wrong = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+        let err = store_blob(&tmp, wrong).unwrap_err().to_string();
+        assert!(err.contains("the download is corrupt"), "{err}");
+        assert!(
+            !tmp.exists(),
+            "the bad download should be removed, not left behind"
+        );
+    }
+
+    #[test]
+    fn a_matching_digest_is_accepted() {
+        let tmp = std::env::temp_dir().join(format!("bsdkrun-blob-ok-{}", std::process::id()));
+        let body = b"hello layer";
+        std::fs::write(&tmp, body).unwrap();
+        let mut h = <sha2::Sha256 as sha2::Digest>::new();
+        sha2::Digest::update(&mut h, body);
+        let digest = format!("sha256:{:x}", sha2::Digest::finalize(h));
+        let path = store_blob(&tmp, &digest).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), body);
+        let _ = std::fs::remove_file(path);
     }
 }

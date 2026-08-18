@@ -38,7 +38,9 @@ command, from every SDK, from every screen — with tracing to match.
   the terminal dashboard gained tabs with a CI/CD tab of its own.
 - **Foreign CI platforms run locally.** `bsdkrun ci` now translates and runs
   GitHub Actions (plus Forgejo/Gitea), GitLab CI, Woodpecker, Drone,
-  CircleCI, Buildkite, Semaphore and Travis configs in microVMs — auto-detected from
+  CircleCI, Buildkite, Semaphore, Jenkins (declarative pipelines,
+  via a structural parser — scripted Groovy is refused, not mistranslated)
+  and Travis configs in microVMs — auto-detected from
   their well-known files, or forced with `--platform`. Jobs translate
   (images, env, ordering, platform identity variables); what cannot
   translate becomes a visible skip, and non-Linux jobs are skipped outright.

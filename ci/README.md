@@ -118,6 +118,7 @@ files are probed automatically; `--platform` forces one:
 | `circleci`   | `.circleci/config.yml`                                                | [`examples/ci-circleci`](../examples/ci-circleci)     |
 | `buildkite`  | `.buildkite/pipeline.yml`                                             | [`examples/ci-buildkite`](../examples/ci-buildkite)   |
 | `semaphore`  | `.semaphore/semaphore.yml`                                            | [`examples/ci-semaphore`](../examples/ci-semaphore)   |
+| `jenkins`    | `Jenkinsfile` (declarative pipelines only)                            | [`examples/ci-jenkins`](../examples/ci-jenkins)       |
 | `travis`     | `.travis.yml`                                                         | [`examples/ci-travis`](../examples/ci-travis)         |
 
 ```sh
@@ -141,6 +142,14 @@ so; **jobs that ask for windows or macos are skipped** — a Linux microVM
 cannot become another OS, and a green checkmark on a lie helps nobody.
 Images without bash (alpine) run their steps under `sh`, exactly as
 GitLab's own runner would.
+
+Jenkins deserves its own footnote: only **declarative** Jenkinsfiles
+translate, parsed by a small structural tokenizer — not a Groovy
+implementation, because none is needed for the declarative skeleton and
+none short of Jenkins itself would suffice for the scripted dialect. A
+scripted pipeline (`node { ... }`) is refused with a clear error rather
+than mistranslated, and `environment` values that are Groovy expressions
+(`credentials(...)`) are dropped rather than faked.
 
 ## Secrets
 

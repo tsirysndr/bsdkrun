@@ -3,6 +3,7 @@ package platforms
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -259,7 +260,7 @@ func TestDetectPriorityAndForce(t *testing.T) {
 	if err != nil || p.Name != "drone" {
 		t.Fatalf("force broken: %+v, %v", p, err)
 	}
-	if _, err := Detect(root, "jenkins"); err == nil {
+	if _, err := Detect(root, "bamboo"); err == nil {
 		t.Fatal("unknown platform accepted")
 	}
 }
@@ -409,5 +410,89 @@ blocks:
 	mjobs, err := loadSemaphore(macRoot, testRepo)
 	if err != nil || len(mjobs) != 1 || mjobs[0].SkipReason == "" {
 		t.Fatalf("macos pipeline must be skipped: %+v, %v", mjobs, err)
+	}
+}
+
+func TestJenkinsDeclarative(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "Jenkinsfile", `
+// a comment
+pipeline {
+    agent {
+        docker { image 'golang:1.22' }
+    }
+    environment {
+        FOO = 'bar'
+        DYN = credentials('secret-id')
+    }
+    stages {
+        stage('Build') {
+            steps {
+                checkout scm
+                sh 'go build ./...'
+                sh(script: 'go vet ./...')
+            }
+        }
+        stage('Test') {
+            environment {
+                STAGE = 'test'
+            }
+            steps {
+                echo 'running tests'
+                sh """
+                go test ./...
+                """
+                junit 'report.xml'
+            }
+        }
+    }
+    post {
+        always { echo 'done' }
+    }
+}
+`)
+	if !detectJenkins(root) {
+		t.Fatal("jenkins not detected")
+	}
+	jobs, err := loadJenkins(root, testRepo)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("jobs: %+v, %v", jobs, err)
+	}
+	j := jobs[0]
+	if j.Image != "golang:1.22" {
+		t.Fatalf("docker agent image lost: %q", j.Image)
+	}
+	if j.Env["FOO"] != "bar" {
+		t.Fatalf("literal env lost: %v", j.Env)
+	}
+	if _, has := j.Env["DYN"]; has {
+		t.Fatalf("credentials() must be dropped, not mistranslated: %v", j.Env)
+	}
+	if len(j.Steps) != 2 || j.Steps[0].Name != "Build" || j.Steps[1].Name != "Test" {
+		t.Fatalf("stages: %+v", j.Steps)
+	}
+	if j.Steps[0].Command != "go build ./...\ngo vet ./..." {
+		t.Fatalf("sh forms: %q", j.Steps[0].Command)
+	}
+	if j.Steps[1].Env["STAGE"] != "test" {
+		t.Fatalf("stage env lost: %+v", j.Steps[1])
+	}
+	if !strings.Contains(j.Steps[1].Command, `skipped step "junit"`) {
+		t.Fatalf("junit skip not visible: %q", j.Steps[1].Command)
+	}
+}
+
+func TestJenkinsScriptedRefused(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "Jenkinsfile", `
+node {
+    stage('Build') {
+        sh 'make'
+    }
+}
+`)
+	_, err := loadJenkins(root, testRepo)
+	if err == nil || !strings.Contains(err.Error(), "scripted") {
+		t.Fatalf("scripted pipeline must be refused clearly, got: %v", err)
 	}
 }

@@ -1,0 +1,19 @@
+pipeline {
+    agent {
+        docker { image 'alpine:3.20' }
+    }
+    environment {
+        GREETING = 'from-jenkinsfile'
+    }
+    stages {
+        stage('Test') {
+            steps {
+                checkout scm
+                sh 'test "$JENKINS_URL" = "local"'
+                sh 'test -f hello.txt'
+                sh 'echo "$GREETING"'
+                sh 'echo "jenkins-example-ok"'
+            }
+        }
+    }
+}

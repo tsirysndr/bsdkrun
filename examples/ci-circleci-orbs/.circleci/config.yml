@@ -1,0 +1,20 @@
+version: 2.1
+
+orbs:
+  shellcheck: circleci/shellcheck@3
+
+jobs:
+  done:
+    docker:
+      - image: alpine:3.20
+    steps:
+      - checkout
+      - run: echo "circleci-orbs-example-ok"
+
+workflows:
+  main:
+    jobs:
+      - shellcheck/check:
+          dir: ./scripts
+      - done:
+          requires: [shellcheck/check]

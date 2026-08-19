@@ -309,6 +309,24 @@ jobs:
           grep -q "woodpecker-plugins-example-ok" /tmp/ci-wp.log
           test "$rc" -eq 0
 
+      # Real CircleCI orb, fetched from the registry at plan time and
+      # expanded: shellcheck/check's parameterized executor becomes the VM
+      # image, and the done job proves ordering across the orb job.
+      - name: e2e — CircleCI orbs (circleci/shellcheck expands and runs)
+        continue-on-error: true # flip to false after the first green run on x86_64
+        run: |
+          set -eux
+          d=$(mktemp -d)
+          cp -r "examples/ci-circleci-orbs/." "$d"
+          git -C "$d" init -q && git -C "$d" add -A
+          git -C "$d" -c user.email=ci@e2e -c user.name=e2e commit -qm init
+          set +e
+          timeout 900 ./target/release/bsdkrun ci run --plain -w "$d" 2>&1 | tee /tmp/ci-orbs.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          grep -q "circleci-orbs-example-ok" /tmp/ci-orbs.log
+          test "$rc" -eq 0
+
       # No CI config at all: the runner must detect the project (a bare Go
       # module here) and generate + run a workflow for it. Asserts the
       # detection announcement and the test-before-build execution.

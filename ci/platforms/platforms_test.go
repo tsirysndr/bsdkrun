@@ -886,3 +886,131 @@ steps:
 		t.Fatalf("pull failure must be a visible skip: %+v", jobs[0].Steps)
 	}
 }
+
+func TestCircleciOrbsExpand(t *testing.T) {
+	oldFetch := OrbFetchFunc
+	OrbFetchFunc = func(ref string) (string, error) {
+		if ref != "circleci/node@5" {
+			return "", fmt.Errorf("no fixture for %s", ref)
+		}
+		return `
+commands:
+  install-packages:
+    parameters:
+      pkg-manager:
+        type: enum
+        default: npm
+      with-cache:
+        type: boolean
+        default: true
+    steps:
+      - when:
+          condition: << parameters.with-cache >>
+          steps:
+            - restore_cache: {key: deps}
+      - when:
+          condition:
+            equal: [yarn, << parameters.pkg-manager >>]
+          steps:
+            - run: yarn install --frozen-lockfile
+      - unless:
+          condition:
+            equal: [yarn, << parameters.pkg-manager >>]
+          steps:
+            - run: npm ci
+executors:
+  default:
+    parameters:
+      tag:
+        type: string
+        default: lts
+    docker:
+      - image: cimg/node:<< parameters.tag >>
+jobs:
+  test:
+    parameters:
+      version:
+        type: string
+        default: lts
+    executor:
+      name: default
+      tag: << parameters.version >>
+    steps:
+      - checkout
+      - install-packages
+      - run: npm test
+`, nil
+	}
+	defer func() { OrbFetchFunc = oldFetch }()
+
+	root := t.TempDir()
+	write(t, root, ".circleci/config.yml", `
+version: 2.1
+orbs:
+  node: circleci/node@5
+  gone: acme/missing@1.2.3
+jobs:
+  build:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+      - node/install-packages:
+          pkg-manager: yarn
+      - gone/deploy: {target: prod}
+      - run: echo built
+workflows:
+  main:
+    jobs:
+      - build
+      - node/test:
+          version: "20.11"
+          requires: [build]
+`)
+	jobs, err := loadCircleci(root, testRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("want 2 jobs, got %d: %+v", len(jobs), jobs)
+	}
+
+	build := jobs[0]
+	if build.Name != "build" {
+		t.Fatalf("order: %+v", []string{jobs[0].Name, jobs[1].Name})
+	}
+	joined := ""
+	for _, s := range build.Steps {
+		joined += s.Name + "\n" + s.Command + "\n"
+	}
+	// The yarn branch was chosen, the npm branch dropped, the cache step
+	// became a visible no-op, and the broken orb a visible skip.
+	if !strings.Contains(joined, "yarn install --frozen-lockfile") {
+		t.Fatalf("yarn branch missing:\n%s", joined)
+	}
+	if strings.Contains(joined, "npm ci") {
+		t.Fatalf("npm branch should be ruled out:\n%s", joined)
+	}
+	if !strings.Contains(joined, "restore_cache (no-op locally)") {
+		t.Fatalf("cache no-op missing:\n%s", joined)
+	}
+	if !strings.Contains(joined, "no fixture for acme/missing@1.2.3") {
+		t.Fatalf("broken orb must skip visibly:\n%s", joined)
+	}
+
+	test := jobs[1]
+	if test.Name != "node/test" {
+		t.Fatalf("orb job name: %q", test.Name)
+	}
+	// Executor resolved through the orb with the workflow argument.
+	if test.Image != "cimg/node:20.11" {
+		t.Fatalf("executor image: %q", test.Image)
+	}
+	joined = ""
+	for _, s := range test.Steps {
+		joined += s.Name + "\n" + s.Command + "\n"
+	}
+	if !strings.Contains(joined, "npm test") || !strings.Contains(joined, "npm ci") {
+		t.Fatalf("orb job steps:\n%s", joined)
+	}
+}

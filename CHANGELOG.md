@@ -29,6 +29,12 @@ shipped alongside it.
   run-time resolution of step outputs. Container actions and pre/post
   hooks are refused visibly. Verified by running the actual
   oven-sh/setup-bun@v2 end to end.
+- **CircleCI orbs expand for real** — orb source is fetched from the
+  registry at plan time and expanded with full parameter substitution:
+  orb jobs become jobs (executor resolved to the VM image), orb commands
+  inline their steps, `when`/`unless` conditions (scalar, equal, and, or,
+  not) are evaluated from resolved values. Cache/workspace/artifact steps
+  are visible no-ops; unfetchable orbs degrade to visible skips.
 - **Drone plugins execute for real, daemon-less** — the plugin image's
   rootfs is pulled host-side (new `bsdkrun image pull --json` verb),
   mounted read-only into the guest, overlaid writable, and the entrypoint

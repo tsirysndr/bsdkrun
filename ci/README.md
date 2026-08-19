@@ -185,8 +185,20 @@ the real `plugins/download`. Woodpecker pipelines get the identical
 machinery — same `PLUGIN_*` protocol, plus Woodpecker's `CI_*` identity
 variables — via [`examples/ci-woodpecker-plugins`](../examples/ci-woodpecker-plugins).
 
+**CircleCI orbs expand for real.** An orb is YAML in a public registry —
+commands, jobs and executors, parameterized with `<< parameters.x >>` —
+so the runner fetches the source at plan time (partial versions like `@3`
+resolve registry-side) and expands it: orb jobs referenced from workflows
+become full jobs with their executor's docker image, orb commands used as
+steps inline their runs with parameters substituted, and `when`/`unless`
+branches are decided from the resolved values. Cache, workspace and
+artifact steps become visible no-ops; an orb that fails to fetch degrades
+to visible skips, never silence. See
+[`examples/ci-circleci-orbs`](../examples/ci-circleci-orbs), which runs
+the real `circleci/shellcheck` orb.
+
 What deliberately does not translate elsewhere is announced rather than
-faked: orbs, human gates and cross-pipeline triggers become
+faked: human gates and cross-pipeline triggers become
 visible skipped steps in the timeline; matrix strategies run once and say
 so; **jobs that ask for windows or macos are skipped** — a Linux microVM
 cannot become another OS, and a green checkmark on a lie helps nobody.

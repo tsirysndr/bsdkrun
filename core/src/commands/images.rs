@@ -137,10 +137,7 @@ pub(crate) fn cmd_images(json: bool) -> Result<()> {
         println!("{}", serde_json::to_string(&images)?);
         return Ok(());
     }
-    println!(
-        "{:<14}  {:<32}  {:<10}  {}",
-        "ID", "REFERENCE", "SIZE", "CREATED"
-    );
+    println!("{:<14}  {:<32}  {:<10}  CREATED", "ID", "REFERENCE", "SIZE");
     for im in images {
         println!(
             "{:<14}  {:<32}  {:<10}  {}",

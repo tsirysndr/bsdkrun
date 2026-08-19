@@ -54,7 +54,9 @@ shipped alongside it.
   prints how to attach rather than blocking. The shell carries the
   environment the last step ended with — a run that installs a toolchain and
   exports its PATH hands you a machine where that tool is found — captured
-  from the step's own shell rather than reconstructed.
+  from the step's own shell rather than reconstructed. `--sh=JOB` picks one
+  job out of a multi-job run (prefix or substring); the rest run untouched,
+  and the run continues when the shell exits.
 - **`bsdkrun ci serve` can be your spindle.** Built with
   `BSDKRUN_CI_SPINDLE=1`, it serves spindle's full API — `sh.tangled.owner`,
   `ci.queryPipelines` / `getPipeline` / `subscribePipelineLogs` /

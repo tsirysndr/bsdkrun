@@ -143,6 +143,18 @@ A failing step's log tells you what broke. The machine tells you why.
 bsdkrun ci run --sh          # --shell and --ssh work too
 ```
 
+When a run has several jobs, name the one you care about:
+
+```sh
+bsdkrun ci run --sh=build     # a prefix or substring is enough
+```
+
+Only that job hands you a shell; the others run untouched. Exiting the shell
+destroys that machine and the run carries on with whatever is still queued —
+the banner says how many jobs are left, so exiting is never a guess. A name
+that matches no job is reported at the end with the list of job names, rather
+than a run where the shell silently never appears.
+
 With `--sh` the microVM is **not** destroyed when the workflow ends — pass or
 fail — and you land in an interactive shell inside it: same image, same
 environment, same workspace with whatever the run left in it, sitting in the

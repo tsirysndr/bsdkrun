@@ -31,8 +31,13 @@ type runOpts struct {
 	JSON bool
 	Out  io.Writer
 	// Shell keeps the machine alive when the workflow ends — pass or fail —
-	// and opens an interactive shell inside it (`--sh` / `--ssh`).
-	Shell bool
+	// and opens an interactive shell inside it (`--sh` / `--shell` / `--ssh`),
+	// optionally only for the job it names (`--sh=build`).
+	Shell shellTarget
+	// MoreJobs is how many workflows still run after this one. The shell says
+	// so, because "exit to destroy the machine" and "exit to carry on with
+	// three more jobs" are different promises.
+	MoreJobs int
 	// Secret values to inject into every step, and the log masker built from
 	// them — every emitted line passes through mask() so a value (or its
 	// base64 encoding) never survives into any consumer's view.
@@ -154,10 +159,10 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 		// whether the workflow passed or failed: that is the whole point of
 		// asking for a shell rather than reading a log.
 		keepForShell := false
-		if opts.Shell {
+		if opts.Shell.matches(plan.Name) {
 			keepForShell = shellIntoVM(sbx, plan, opts, err)
 		}
-		if keepForShell || (opts.Keep && (err != nil || opts.Shell)) {
+		if keepForShell || (opts.Keep && (err != nil || opts.Shell.on)) {
 			logf(opts, "keeping VM %s for inspection — `bsdkrun shell %s`, `bsdkrun rm -f %s`\n",
 				sbx.ID, sbx.ID, sbx.ID)
 			return
@@ -234,7 +239,7 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 		// Dumping the step's own shell state gives the interactive shell the
 		// real thing rather than a reconstruction. The exit code is preserved
 		// across the dump — the step's verdict is not this feature's to change.
-		if opts.Shell {
+		if opts.Shell.matches(plan.Name) {
 			script += "\n__bsdkrun_rc=$?\n" +
 				"export -p 2>/dev/null | grep -vE ' (BASHOPTS|SHELLOPTS|BASH_VERSINFO|EUID|PPID|UID)=' > " +
 				envCaptureFile + " 2>/dev/null || true\n" +

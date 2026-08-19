@@ -24,6 +24,54 @@ import (
 	"golang.org/x/term"
 )
 
+// shellTarget is `--sh` with an optional job: `--sh` takes whichever machine
+// the run leaves, `--sh=build` waits for the job called build. Implementing
+// flag.Value plus IsBoolFlag is what lets one flag be both — Go's flag package
+// treats `--sh` alone as the bool form and `--sh=build` as the valued one.
+type shellTarget struct {
+	on  bool
+	job string
+}
+
+func (t *shellTarget) String() string {
+	if t == nil || !t.on {
+		return "false"
+	}
+	if t.job == "" {
+		return "true"
+	}
+	return t.job
+}
+
+func (t *shellTarget) Set(v string) error {
+	t.on = true
+	if v != "true" && v != "" {
+		t.job = v
+	}
+	return nil
+}
+
+// IsBoolFlag lets `--sh` stand alone without swallowing the next argument.
+func (t *shellTarget) IsBoolFlag() bool { return true }
+
+// matches decides whether this workflow is the one to hand over. With no job
+// named, every workflow qualifies; with one named, an exact name wins, and a
+// case-insensitive prefix or substring is accepted because job names are long
+// and typing them exactly is not the point of a debugging flag.
+func (t shellTarget) matches(name string) bool {
+	if !t.on {
+		return false
+	}
+	if t.job == "" {
+		return true
+	}
+	if name == t.job {
+		return true
+	}
+	n, j := strings.ToLower(name), strings.ToLower(t.job)
+	return n == j || strings.HasPrefix(n, j) || strings.Contains(n, j)
+}
+
 // envCaptureFile is where a step's final shell state is dumped when --sh is
 // on, and where the interactive shell reads it back from. It lives under
 // /tangled rather than $HOME because HOME is a tmpfs the run mounts.
@@ -73,6 +121,9 @@ done`, homeDir, envCaptureFile)}, nil, nil, nil)
 		logf(opts, "\n--sh: no terminal on stdin, so the machine is left running instead.\n")
 		logf(opts, "      bsdkrun shell %s      # attach\n", v.ID)
 		logf(opts, "      bsdkrun rm -f %s      # when you are done\n", v.ID)
+		if opts.MoreJobs > 0 {
+			logf(opts, "      the run continues with %d more job(s).\n", opts.MoreJobs)
+		}
 		// Kept, because that is what the line above just promised — and
 		// because --sh's whole contract is that the machine survives the run.
 		return true
@@ -88,7 +139,14 @@ done`, homeDir, envCaptureFile)}, nil, nil, nil)
 	if cmd := lastUserStep(plan); cmd != "" {
 		fmt.Fprintf(os.Stderr, "      last step ran: %s\n", cmd)
 	}
-	fmt.Fprintf(os.Stderr, "      exit the shell to destroy the machine.\n\n")
+	switch {
+	case opts.MoreJobs == 1:
+		fmt.Fprintf(os.Stderr, "      exit the shell to destroy it and run the last remaining job.\n\n")
+	case opts.MoreJobs > 1:
+		fmt.Fprintf(os.Stderr, "      exit the shell to destroy it and run the %d remaining jobs.\n\n", opts.MoreJobs)
+	default:
+		fmt.Fprintf(os.Stderr, "      exit the shell to destroy the machine.\n\n")
+	}
 
 	// `bsdkrun shell` owns the PTY and the raw-mode handling; inheriting the
 	// standard streams is all this side has to do.

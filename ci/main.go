@@ -103,6 +103,8 @@ Run flags:
   --plain                            plain line output even on a terminal
   --sh, --shell, --ssh               when the workflow ends (pass or fail),
                                      keep its microVM and open a shell in it
+  --sh=JOB                           only for the job named JOB (prefix or
+                                     substring is enough)
                                      (the default when stdout is not a tty)
   --dry-run                          a generated deploy step announces its
                                      command instead of running it
@@ -186,9 +188,10 @@ func cmdRun(args []string) error {
 	// Three spellings of one flag: --sh is what it is, --shell is what people
 	// type, --ssh is what fingers type after years of remote debugging. None
 	// of them is worth a wrong-flag error.
-	shellFlag := fs.Bool("sh", false, "")
-	fs.BoolVar(shellFlag, "shell", false, "")
-	fs.BoolVar(shellFlag, "ssh", false, "")
+	shellFlag := &shellTarget{}
+	fs.Var(shellFlag, "sh", "")
+	fs.Var(shellFlag, "shell", "")
+	fs.Var(shellFlag, "ssh", "")
 	var inputs, files, secretFlags, secretFiles repeatable
 	fs.Var(&inputs, "input", "")
 	fs.Var(&files, "file", "")
@@ -435,7 +438,7 @@ func runPlans(plans []*Plan, opts runOpts, jsonOut, plain bool) error {
 	// --sh ends by handing the terminal to a shell, and the TUI owns the
 	// terminal until it exits: two things cannot draw on it at once, so the
 	// shell wins and the run prints lines.
-	if opts.Shell {
+	if opts.Shell.on {
 		plain = true
 	}
 	if !jsonOut && !plain && term.IsTerminal(int(os.Stdout.Fd())) {
@@ -443,13 +446,32 @@ func runPlans(plans []*Plan, opts runOpts, jsonOut, plain bool) error {
 		return err
 	}
 	failed := 0
-	for _, plan := range plans {
+	shellMatched := false
+	for i, plan := range plans {
+		// The shell tells you what exiting it means, so it has to know what
+		// is still queued behind this workflow.
+		opts.MoreJobs = len(plans) - i - 1
+		if opts.Shell.matches(plan.Name) {
+			shellMatched = true
+		}
+		// A shelled workflow that failed does not stop the rest: the point of
+		// jumping into one job is to inspect it while the run carries on.
 		if _, err := runPlan(plan, opts); err != nil {
 			failed++
 			fmt.Fprintf(os.Stderr, "✗ %s: %v\n", plan.Name, err)
 			continue
 		}
 		logf(opts, "✓ %s passed\n\n", plan.Name)
+	}
+	// A job name that matched nothing would otherwise be a silent no-op — the
+	// run would look normal and the shell simply never appear.
+	if opts.Shell.on && opts.Shell.job != "" && !shellMatched {
+		names := make([]string, 0, len(plans))
+		for _, p := range plans {
+			names = append(names, p.Name)
+		}
+		fmt.Fprintf(os.Stderr, "--sh=%s matched no job in this run; it has: %s\n",
+			opts.Shell.job, strings.Join(names, ", "))
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d of %d workflow(s) failed", failed, len(plans))

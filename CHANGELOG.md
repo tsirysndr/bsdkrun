@@ -29,6 +29,13 @@ shipped alongside it.
   run-time resolution of step outputs. Container actions and pre/post
   hooks are refused visibly. Verified by running the actual
   oven-sh/setup-bun@v2 end to end.
+- **Tekton catalog tasks resolve, and per-step images run.** A `taskRef`
+  the checkout does not carry is fetched from the tektoncd catalog (by
+  version from the catalog repo, newest via Artifact Hub) the way the hub
+  resolver would, with array params expanding into argv elements. Steps
+  declaring an image other than the VM's now chroot into their own pulled
+  rootfs over the shared workspace instead of being announced as
+  unsupported.
 - **CircleCI orbs expand for real** — orb source is fetched from the
   registry at plan time and expanded with full parameter substitution:
   orb jobs become jobs (executor resolved to the VM image), orb commands

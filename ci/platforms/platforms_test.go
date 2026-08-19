@@ -820,7 +820,7 @@ steps:
 	for _, needle := range []string{
 		`mount -t tmpfs tmpfs "$W"`, "mount -t overlay",
 		"mount --bind /tangled/workspace",
-		`cd "$W/root"/drone/src`, `chroot "$W/root" '/bin/drone-download'`,
+		`cd '/drone/src' && exec "$@"`, `chroot "$W/root" '/bin/drone-download'`,
 	} {
 		if !strings.Contains(plugin.Command, needle) {
 			t.Fatalf("execution lacks %q:\n%s", needle, plugin.Command)
@@ -1013,5 +1013,136 @@ workflows:
 	}
 	if !strings.Contains(joined, "npm test") || !strings.Contains(joined, "npm ci") {
 		t.Fatalf("orb job steps:\n%s", joined)
+	}
+}
+
+func TestTektonCatalogAndPerStepImages(t *testing.T) {
+	oldCat := TektonCatalogFunc
+	TektonCatalogFunc = func(name, version string) (string, error) {
+		if name != "lint" || version != "0.2" {
+			return "", fmt.Errorf("no fixture for %s@%s", name, version)
+		}
+		return `
+apiVersion: tekton.dev/v1
+kind: Task
+metadata: {name: lint}
+spec:
+  params:
+    - name: severity
+      default: warning
+  steps:
+    - name: run-lint
+      image: linter:1
+      script: |
+        lint --severity=$(params.severity) $(workspaces.source.path)
+`, nil
+	}
+	defer func() { TektonCatalogFunc = oldCat }()
+
+	oldPull := PullImageFunc
+	PullImageFunc = func(ref string) (PulledImage, error) {
+		switch ref {
+		case "linter:1":
+			return PulledImage{Rootfs: "/host/oci/linter/rootfs", Env: []string{"LINT_HOME=/opt"}}, nil
+		case "gone:1":
+			return PulledImage{}, fmt.Errorf("registry says no")
+		}
+		return PulledImage{}, fmt.Errorf("no fixture for %s", ref)
+	}
+	defer func() { PullImageFunc = oldPull }()
+
+	root := t.TempDir()
+	write(t, root, ".tekton/pipeline.yml", `
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata: {name: main}
+spec:
+  tasks:
+    - name: build
+      taskSpec:
+        steps:
+          - name: compile
+            image: golang:1.22
+            script: go build ./...
+          - name: scan
+            image: linter:1
+            script: scan .
+          - name: broken
+            image: gone:1
+            script: never runs
+    - name: check
+      runAfter: [build]
+      taskRef:
+        resolver: hub
+        params:
+          - {name: name, value: lint}
+          - {name: version, value: "0.2"}
+      params:
+        - {name: severity, value: error}
+`)
+	jobs, err := loadTekton(root, testRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("want 2 jobs, got %d: %+v", len(jobs), jobs)
+	}
+
+	build := jobs[0]
+	if build.Image != "golang:1.22" {
+		t.Fatalf("first step's image must boot the VM: %q", build.Image)
+	}
+	if len(build.Steps) != 3 {
+		t.Fatalf("steps: %+v", build.Steps)
+	}
+	// The divergent-image step chroots into its own pulled rootfs, image
+	// env riding along, and the VM mounts that rootfs read-only.
+	scan := build.Steps[1]
+	if !strings.Contains(scan.Name, "image: linter:1") ||
+		!strings.Contains(scan.Command, "mount -t overlay") ||
+		!strings.Contains(scan.Command, "chroot") {
+		t.Fatalf("scan step must chroot: %+v", scan)
+	}
+	if scan.Env["LINT_HOME"] != "/opt" {
+		t.Fatalf("image env lost: %v", scan.Env)
+	}
+	if len(build.ExtraMounts) != 1 || !strings.HasPrefix(build.ExtraMounts[0], "/host/oci/linter/rootfs:") {
+		t.Fatalf("mounts: %v", build.ExtraMounts)
+	}
+	// A pull failure is a visible skip.
+	if !strings.Contains(build.Steps[2].Name, "skipped") ||
+		!strings.Contains(build.Steps[2].Command, "registry says no") {
+		t.Fatalf("broken image must skip visibly: %+v", build.Steps[2])
+	}
+
+	// The hub-resolved catalog task ran with the pipeline's param value.
+	check := jobs[1]
+	if check.Image != "linter:1" {
+		t.Fatalf("catalog task image: %q", check.Image)
+	}
+	if len(check.Steps) != 1 || !strings.Contains(check.Steps[0].Command, "lint --severity=error /tangled/workspace") {
+		t.Fatalf("catalog task steps: %+v", check.Steps)
+	}
+
+	// An unresolvable ref degrades to a visible skip, not a silent drop.
+	TektonCatalogFunc = func(name, version string) (string, error) {
+		return "", fmt.Errorf("hub unreachable")
+	}
+	write(t, root, ".tekton/pipeline.yml", `
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata: {name: main}
+spec:
+  tasks:
+    - name: fetch
+      taskRef: {name: git-clone}
+`)
+	jobs, err = loadTekton(root, testRepo)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("jobs: %+v, %v", jobs, err)
+	}
+	if !strings.Contains(jobs[0].Steps[0].Name, "unresolved") ||
+		!strings.Contains(jobs[0].Steps[0].Command, "hub unreachable") {
+		t.Fatalf("unresolved ref must skip visibly: %+v", jobs[0].Steps)
 	}
 }

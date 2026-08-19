@@ -18,6 +18,13 @@ shipped alongside it.
 
 ## [Unreleased]
 
+## [0.11.2] — 2026-08-19
+
+The CI runner stops translating around the ecosystem and starts running
+it: real GitHub Actions, Buildkite plugins, Drone and Woodpecker plugins,
+CircleCI orbs, Tekton catalog tasks — and Jenkins running itself when a
+Jenkinsfile is a Groovy program rather than a structure.
+
 ### Added
 
 - **GitHub Actions `uses:` steps execute for real.** A genuine actions

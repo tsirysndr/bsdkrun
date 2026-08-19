@@ -432,3 +432,69 @@ jobs:
           ./target/release/bsdkrun ps || true
           ./target/release/bsdkrun ps 2>/dev/null | awk 'NR>1 {print $1}' \
             | xargs -r -n1 ./target/release/bsdkrun rm -f || true
+
+  # The spindle-compatible server, exercised on Linux without building the
+  # whole CLI: `ci` is a plain Go binary, and the surface under test is HTTP,
+  # not VMs. This is the job that would catch a route disappearing, auth
+  # loosening, or the spindle build tag breaking.
+  spindle-api:
+    name: spindle API (drop-in surface)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ci/go.mod
+
+      - name: Unit tests (spindle build)
+        run: go -C ci test -tags spindle ./...
+
+      # Both build variants must keep compiling: the default one is what ships
+      # in a portable binary, the tagged one is what a self-hoster runs.
+      - name: Build both variants
+        run: |
+          set -eux
+          go -C ci build ./...
+          go -C ci build -tags spindle -o /tmp/bsdkrun-ci .
+
+      - name: Serve and answer like a spindle
+        run: |
+          set -eux
+          export SPINDLE_SERVER_HOSTNAME=localhost:6555
+          export SPINDLE_SERVER_OWNER=did:plc:e2eowner
+          export SPINDLE_SERVER_DB_PATH=/tmp/spindle.db
+          export SPINDLE_SERVER_LOG_DIR=/tmp/spindle-logs
+          export SPINDLE_SERVER_REPO_DIR=/tmp/spindle-repos
+          export SPINDLE_SERVER_LISTEN_ADDR=127.0.0.1:6555
+          /tmp/bsdkrun-ci serve > /tmp/spindle-serve.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:6555/xrpc/sh.tangled.owner >/dev/null && break
+            sleep 1
+          done
+          cat /tmp/spindle-serve.log
+
+          # The appview verifies a spindle with exactly this call.
+          curl -sf http://127.0.0.1:6555/xrpc/sh.tangled.owner | tee /tmp/owner.json
+          grep -q '"owner":"did:plc:e2eowner"' /tmp/owner.json
+
+          # Public reads answer; a missing parameter is a 400, not a 500.
+          test "$(curl -s -o /dev/null -w '%{http_code}' \
+            'http://127.0.0.1:6555/xrpc/sh.tangled.ci.queryPipelines?repo=did:plc:x')" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' \
+            'http://127.0.0.1:6555/xrpc/sh.tangled.ci.queryPipelines')" = 400
+
+          # Anything that can start work or touch secrets refuses an
+          # unauthenticated caller.
+          for ep in ci.triggerPipeline ci.cancelPipeline repo.addSecret repo.removeSecret; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+              "http://127.0.0.1:6555/xrpc/sh.tangled.$ep")
+            test "$code" = 403 || { echo "$ep answered $code, expected 403"; exit 1; }
+          done
+
+          # The database it created is spindle's own schema.
+          sudo apt-get install -y --no-install-recommends sqlite3 >/dev/null
+          sqlite3 /tmp/spindle.db '.tables' | tee /tmp/tables.txt
+          for t in acl events pipelines workflows secrets repos spindle_members; do
+            grep -qw "$t" /tmp/tables.txt || { echo "missing table $t"; exit 1; }
+          done

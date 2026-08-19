@@ -173,7 +173,14 @@
           #   cd ci && go mod vendor -o /tmp/v && nix hash path --sri /tmp/v
           vendorHash = "sha256-OvXL0d+f1xUqQ2LK/m6VTzEMRCwRI9dmWoA9FPyU6BQ=";
 
-          env.CGO_ENABLED = "0";
+          # Built like a release binary: with the spindle-compatible server, so
+          # `bsdkrun ci serve` can stand in for a spindle from a nix install
+          # too. That needs cgo, since spindle's storage is SQLite through
+          # mattn/go-sqlite3. Unlike pack — which is embedded and exec'd and so
+          # must not depend on the host libc — this binary is built by nix for
+          # the closure it ships in, so cgo costs nothing here.
+          env.CGO_ENABLED = "1";
+          tags = [ "spindle" ];
           ldflags = [ "-s" "-w" ];
 
           # The binary has to carry the name rust_embed looks for.

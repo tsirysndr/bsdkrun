@@ -21,6 +21,8 @@ import (
 	"gopkg.in/yaml.v3"
 	"tangled.org/core/api/tangled"
 	"tangled.org/core/workflow"
+
+	"github.com/tsirysndr/bsdkrun/ci/platforms"
 )
 
 // depMap tolerates both spellings of `dependencies:` in the wild.
@@ -377,6 +379,44 @@ func buildPlan(wf workflow.Workflow, tr *tangled.Pipeline_TriggerMetadata, pipel
 
 	sha := env["TANGLED_COMMIT_SHA"]
 
+	// `engine: dagger` — the workflow's own steps, in a machine where the
+	// dagger CLI and a Docker daemon are already up. Spindle would reject
+	// this engine as unknown; here it is the same environment `.dagger`
+	// detection builds, arrived at from the other direction: there we choose
+	// the command, here the workflow does.
+	if strings.EqualFold(strings.TrimSpace(wf.Engine), "dagger") {
+		image := s.Image
+		if image == "" || !isOCIRef(image) {
+			image = platforms.DaggerImage()
+		}
+		for k, v := range platforms.DaggerEnv() {
+			if _, set := env[k]; !set {
+				env[k] = v
+			}
+		}
+		steps := []Step{prepareStep(), ensureGitStep(), localCloneStep(wf.CloneOpts, sha)}
+		for _, ds := range platforms.DaggerSetupSteps() {
+			steps = append(steps, Step{Name: ds.Name, Command: ds.Command, Env: ds.Env, System: true})
+		}
+		for _, us := range s.Steps {
+			name := us.Name
+			if name == "" {
+				name = firstLine(us.Command)
+			}
+			steps = append(steps, Step{Name: name, Command: daggerStepCommand(us.Command), Env: us.Environment})
+		}
+		return &Plan{
+			Name:      wf.Name,
+			Platform:  "tangled",
+			Image:     image,
+			Env:       env,
+			Steps:     steps,
+			Clone:     wf.CloneOpts,
+			Workdir:   workdir,
+			MinMemMiB: platforms.DaggerMinMemMiB,
+		}, nil
+	}
+
 	// An `image:` that reads as an OCI reference ("ubuntu:24.04",
 	// "ghcr.io/org/img") boots that image directly — no nixery, no nix
 	// machinery. Bare words ("nixos", spindle's default) keep the nixery
@@ -428,6 +468,25 @@ func buildPlan(wf workflow.Workflow, tr *tangled.Pipeline_TriggerMetadata, pipel
 		NixpkgsDeps: s.Dependencies["nixpkgs"],
 		Workdir:     workdir,
 	}, nil
+}
+
+// daggerStepCommand reads a step of an `engine: dagger` workflow as what it
+// is: a call into the repository's module. `command: test` means the module's
+// `test` function, so the file says what the pipeline does rather than
+// repeating "dagger call" on every line — the engine already said that.
+//
+// A command that starts with `dagger` is left alone, which keeps `dagger
+// functions`, `dagger version` and any flag-carrying invocation expressible
+// without a second syntax to learn.
+func daggerStepCommand(cmd string) string {
+	trimmed := strings.TrimSpace(cmd)
+	if trimmed == "" {
+		return cmd
+	}
+	if strings.HasPrefix(trimmed, "dagger") {
+		return cmd
+	}
+	return "dagger call " + trimmed
 }
 
 // isOCIRef distinguishes a pullable image reference from spindle's bare base

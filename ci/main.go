@@ -106,6 +106,8 @@ Run flags:
                                      keep its microVM and open a shell in it
   --sh=JOB                           only for the job named JOB (prefix or
                                      substring is enough)
+  --dagger-call FUNCTION             for a dagger module: the function to call
+                                     (default: ci, test, build or all)
                                      (the default when stdout is not a tty)
   --dry-run                          a generated deploy step announces its
                                      command instead of running it
@@ -189,6 +191,10 @@ func cmdRun(args []string) error {
 	// Three spellings of one flag: --sh is what it is, --shell is what people
 	// type, --ssh is what fingers type after years of remote debugging. None
 	// of them is worth a wrong-flag error.
+	// Which dagger function to call, for a repository whose CI *is* a dagger
+	// module. Empty picks a conventional one in the guest, where the engine
+	// that can answer "what does this module expose?" is running.
+	daggerCall := fs.String("dagger-call", "", "")
 	shellFlag := &shellTarget{}
 	fs.Var(shellFlag, "sh", "")
 	fs.Var(shellFlag, "shell", "")
@@ -203,6 +209,7 @@ func cmdRun(args []string) error {
 		return err
 	}
 	names := fs.Args()
+	platforms.DaggerCall = *daggerCall
 	nixeryOverride = *nixery
 	otlpOverride = *otlp
 

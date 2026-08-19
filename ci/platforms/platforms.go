@@ -102,6 +102,10 @@ func Registry() []Platform {
 		{Name: "codebuild", Detect: detectCodebuild, Load: loadCodebuild},
 		{Name: "tekton", Detect: detectTekton, Load: loadTekton},
 		{Name: "travis", Detect: detectTravis, Load: loadTravis},
+		// Last on purpose: a repository with a dagger module usually also has
+		// a CI config that *calls* dagger, and running that config reproduces
+		// what its CI does. `--platform dagger` picks it deliberately.
+		{Name: "dagger", Detect: detectDagger, Load: loadDagger},
 	}
 }
 

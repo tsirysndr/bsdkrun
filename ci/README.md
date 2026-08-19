@@ -33,6 +33,7 @@ Point it at a repository and it detects the platform and runs it:
 | Tekton                                  | `.tekton/*.yaml`                         |
 | Semaphore                               | `.semaphore/semaphore.yml`               |
 | Travis                                  | `.travis.yml`                            |
+| Dagger                                  | `dagger.json`, `dagger.toml`, `.dagger/` |
 
 And the ecosystem around those files runs for real, not in effigy: **GitHub
 Actions** `uses:` steps execute (JavaScript and composite actions, the full
@@ -57,6 +58,7 @@ bsdkrun CLI itself, pointed back at the very binary that launched it
 
 - [Why this exists](#why-this-exists)
 - [What a run does](#what-a-run-does)
+- [Dagger](#dagger) — run a dagger module, or use it as a workflow engine
 - [Dropping into the machine — `--sh`](#dropping-into-the-machine----sh)
 - [Examples](#examples)
 - [Triggers](#triggers)
@@ -134,6 +136,49 @@ For each matching workflow:
 4. **Steps**, serially, each from the workspace, with workflow + step
    environment applied. First failure stops the workflow; the VM is destroyed
    unless `--keep`, which leaves it for `bsdkrun shell <id>`.
+
+## Dagger
+
+A dagger module is not a config to translate — it is a program, and running it
+means running the dagger CLI, which needs a container runtime to provision its
+engine into. So `bsdkrun ci` builds that: a microVM with a Docker daemon and
+the CLI, and then it calls the module.
+
+```sh
+bsdkrun ci run                       # calls ci, test, build or all — whichever exists
+bsdkrun ci run --dagger-call deploy  # or name one
+```
+
+Detection covers the whole version boundary that is currently open:
+`dagger.json` (through 0.21.x, and still the legacy name the 1.0 line reads),
+`dagger-module.toml` (what 1.0 renamed it to) and `dagger.toml` (1.0's
+workspace file, listing several modules). A bare `.dagger/` directory counts
+too. It is detected *last*, after every other platform: a repository with a
+dagger module usually also has a CI config that calls dagger, and running that
+config reproduces what its CI actually does. `--platform dagger` picks it
+deliberately.
+
+**From a tangled workflow**, `engine: dagger` gives a workflow the same
+environment, and there a step *is* a function — the engine has been named
+already, so `dagger call` on every line would only repeat it:
+
+```yaml
+engine: dagger
+steps:
+  - name: test
+    command: test            # → dagger call test
+  - name: versions
+    command: dagger version  # anything starting with `dagger` runs verbatim
+```
+
+| Variable                       | Effect                                                        |
+| ------------------------------ | ------------------------------------------------------------- |
+| `BSDKRUN_CI_DAGGER_IMAGE`      | The VM image. Default `docker:dind`; point it at the `dagger` flavor image to skip installing the CLI each run. |
+| `BSDKRUN_CI_DAGGER_VERSION`    | Pins the CLI (`DAGGER_VERSION` for the installer). Empty installs the latest stable. |
+
+The engine image is pulled into a fresh VM on every run, which is the bulk of
+the wall time; the run's total is printed at the end, so the cost is visible
+rather than folded into "CI was slow".
 
 ## Dropping into the machine — `--sh`
 

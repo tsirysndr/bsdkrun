@@ -20,6 +20,14 @@ shipped alongside it.
 
 ### Added
 
+- **Dagger support.** `bsdkrun ci` detects a dagger module (`dagger.json`,
+  and the 1.0 line's `dagger.toml` / `dagger-module.toml`, or a `.dagger/`
+  directory) and runs it: a microVM with a Docker daemon, the dagger CLI, the
+  engine pulled with retries, and a function called — `ci`, `test`, `build` or
+  `all` by default, or `--dagger-call NAME`. A tangled workflow can ask for
+  the same environment with `engine: dagger`, where each step is a function
+  name rather than a `dagger call` line. New `dagger` flavor (dind + CLI,
+  `DAGGER_VERSION` overridable) for a VM that starts ready.
 - **`bsdkrun ci` reports the wall time of a run.** The last line says how many
   workflows ran, how many failed, and how long the whole thing took —
   measured from before the first VM boots, so it is comparable with what a

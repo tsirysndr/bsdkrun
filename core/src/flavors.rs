@@ -860,6 +860,36 @@ pub fn catalog() -> &'static [CatalogFlavor] {
             nix: NONE,
             provision: NONE,
         },
+        // Dagger needs a container runtime to provision its engine into, so it
+        // is dind plus the CLI rather than a base of its own. `bsdkrun ci`
+        // boots this image for a repository with a dagger module, which is why
+        // the CLI is baked in: installing it per run costs a download every
+        // time, and this is the image that makes a dagger run start in seconds.
+        CatalogFlavor {
+            name: "dagger",
+            category: "runtime",
+            description: "Dagger CLI on Docker-in-Docker (dagger call, dagger run).",
+            base: Base::Oci("docker:dind"),
+            ports: NONE,
+            // DAGGER_VERSION is declared empty so it can be overridden at run
+            // time (`-e DAGGER_VERSION=v0.21.8`) without editing the catalog:
+            // a project on the 1.0 line needs a CLI from that line, and only
+            // the project knows which. Empty means the latest stable.
+            env: &["DOCKER_TLS_CERTDIR=", "DAGGER_VERSION="],
+            nix: NONE,
+            provision: provision![
+                "apk add --no-cache curl >/dev/null 2>&1 || true",
+                // The installer reads DAGGER_VERSION itself, but passing it
+                // empty is not the same as not passing it, so branch.
+                "if [ -n \"$DAGGER_VERSION\" ]; then \
+                   curl -fsSL https://dl.dagger.io/dagger/install.sh | \
+                     DAGGER_VERSION=\"$DAGGER_VERSION\" BIN_DIR=/usr/local/bin sh; \
+                 else \
+                   curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=/usr/local/bin sh; \
+                 fi",
+                "dagger version",
+            ],
+        },
         CatalogFlavor {
             name: "freebsd",
             category: "os",

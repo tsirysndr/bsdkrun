@@ -29,6 +29,15 @@ shipped alongside it.
   run-time resolution of step outputs. Container actions and pre/post
   hooks are refused visibly. Verified by running the actual
   oven-sh/setup-bun@v2 end to end.
+- **Buildkite plugins execute for real** — cloned at their ref, configured
+  through Buildkite's own BUILDKITE_PLUGIN_* env flattening, hooks wrapped
+  around the command in the agent's order (environment sourced,
+  pre-command, command, post-command with exit status preserved).
+- **Jenkins runs itself when translation is not enough.** Scripted
+  pipelines, script blocks and plugin steps execute under Jenkinsfile
+  Runner — a real headless Jenkins assembled in the guest (pinned war,
+  plugins resolved by the official plugin manager, the repo's plugins.txt
+  honored). Structural pipelines keep the fast translation path.
 - **Project detection: CI with no config at all.** When a repository has no
   recognizable CI configuration (or `--detect` forces it), `bsdkrun ci`
   detects the project — go, rust, nodejs, bun, deno, python, ruby, php,

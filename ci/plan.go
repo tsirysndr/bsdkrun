@@ -86,6 +86,8 @@ type Plan struct {
 	// Platform names where this plan came from — "tangled" or a foreign
 	// platform — purely for display.
 	Platform string
+	// MinMemMiB raises the VM memory floor for jobs that need it.
+	MinMemMiB int
 	// Workdir is where user steps start; empty means the workspace root.
 	// Set when the workflows live in a subdirectory of the repository.
 	Workdir string
@@ -442,7 +444,7 @@ func ensureGitStep() Step {
 		Command: `command -v git >/dev/null 2>&1 && exit 0
 if command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get -o Acquire::Check-Valid-Until=false update -qq && apt-get install -y -qq --no-install-recommends git ca-certificates
+  apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq --no-install-recommends git ca-certificates
 elif command -v apk >/dev/null 2>&1; then
   apk add --no-cache git
 elif command -v dnf >/dev/null 2>&1; then

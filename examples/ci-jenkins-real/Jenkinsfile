@@ -1,0 +1,9 @@
+// A *scripted* pipeline — a Groovy program only Jenkins itself can run.
+// bsdkrun ci assembles a real headless Jenkins (Jenkinsfile Runner) in the
+// guest and executes this exactly as Jenkins would.
+node {
+    stage('Test') {
+        sh 'test -f hello.txt'
+        sh 'echo "jenkins-real-example-ok"'
+    }
+}

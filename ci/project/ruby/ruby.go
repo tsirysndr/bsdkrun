@@ -27,7 +27,7 @@ func (Provider) Job(dir string) platforms.Job {
 		// native extensions (minitest 6 pulls prism); a compiler is table
 		// stakes, not an optimization.
 		step("install build tools",
-			"apt-get -o Acquire::Check-Valid-Until=false update -qq && apt-get install -y -qq --no-install-recommends build-essential"),
+			"apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq --no-install-recommends build-essential"),
 		step("bundle install", "bundle install"),
 	}
 	switch {

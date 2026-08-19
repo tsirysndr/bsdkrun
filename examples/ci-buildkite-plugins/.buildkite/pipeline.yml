@@ -1,0 +1,9 @@
+steps:
+  - label: test
+    command: |
+      test -f hello.txt
+      test -f /tmp/metahook-ran
+      echo "buildkite-plugins-example-ok"
+    plugins:
+      - improbable-eng/metahook#v0.4.1:
+          environment: touch /tmp/metahook-ran

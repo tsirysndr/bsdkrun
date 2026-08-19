@@ -359,8 +359,9 @@ steps:
 	if j.Steps[0].Env["STEP"] != "2" {
 		t.Fatalf("step env lost: %+v", j.Steps[0])
 	}
-	if j.Steps[2].Command[:4] != "echo" {
-		t.Fatalf("plugin note missing: %+v", j.Steps[2])
+	if !strings.Contains(j.Steps[2].Command, "docker-buildkite-plugin") ||
+		!strings.Contains(j.Steps[2].Command, "hooks/environment") {
+		t.Fatalf("plugin lifecycle missing: %+v", j.Steps[2])
 	}
 }
 
@@ -463,7 +464,6 @@ pipeline {
                 sh """
                 go test ./...
                 """
-                junit 'report.xml'
             }
         }
     }
@@ -498,12 +498,10 @@ pipeline {
 	if j.Steps[1].Env["STAGE"] != "test" {
 		t.Fatalf("stage env lost: %+v", j.Steps[1])
 	}
-	if !strings.Contains(j.Steps[1].Command, `skipped step "junit"`) {
-		t.Fatalf("junit skip not visible: %q", j.Steps[1].Command)
-	}
+
 }
 
-func TestJenkinsScriptedRefused(t *testing.T) {
+func TestJenkinsScriptedGetsRealJenkins(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "Jenkinsfile", `
 node {
@@ -512,9 +510,55 @@ node {
     }
 }
 `)
-	_, err := loadJenkins(root, testRepo)
-	if err == nil || !strings.Contains(err.Error(), "scripted") {
-		t.Fatalf("scripted pipeline must be refused clearly, got: %v", err)
+	jobs, err := loadJenkins(root, testRepo)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("scripted must run under real Jenkins: %+v, %v", jobs, err)
+	}
+	j := jobs[0]
+	if j.Image != "eclipse-temurin:17-jdk" {
+		t.Fatalf("runner image: %q", j.Image)
+	}
+	if len(j.Steps) != 4 {
+		t.Fatalf("provision, plugins, run expected: %+v", j.Steps)
+	}
+	if !strings.Contains(j.Steps[0].Command, "scripted pipelines are Groovy programs") {
+		t.Fatalf("the reason must be announced: %q", j.Steps[0].Command)
+	}
+	if !strings.Contains(j.Steps[3].Command, "jenkinsfile-runner") ||
+		!strings.Contains(j.Steps[3].Command, "-f Jenkinsfile") {
+		t.Fatalf("run step: %q", j.Steps[3].Command)
+	}
+}
+
+func TestJenkinsPluginStepsGetRealJenkins(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "Jenkinsfile", `
+pipeline {
+    agent any
+    stages {
+        stage('Test') {
+            steps {
+                sh 'make test'
+                junit 'report.xml'
+            }
+        }
+    }
+}
+`)
+	write(t, root, "plugins.txt", "junit\n")
+	jobs, err := loadJenkins(root, testRepo)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("plugin steps must run under real Jenkins: %+v, %v", jobs, err)
+	}
+	j := jobs[0]
+	if j.Image != "eclipse-temurin:17-jdk" {
+		t.Fatalf("runner image: %q", j.Image)
+	}
+	if !strings.Contains(j.Steps[0].Command, "junit") {
+		t.Fatalf("the plugin step must be named in the reason: %q", j.Steps[0].Command)
+	}
+	if !strings.Contains(j.Steps[2].Command, "cat plugins.txt") {
+		t.Fatalf("the repo's plugins.txt must be honored: %q", j.Steps[2].Command)
 	}
 }
 
@@ -662,5 +706,57 @@ spec:
 	}
 	if jobs[0].Image != "golang:1.22" {
 		t.Fatalf("image: %q", jobs[0].Image)
+	}
+}
+
+func TestBuildkitePluginsRunForReal(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, ".buildkite/pipeline.yml", `
+steps:
+  - label: lint
+    command: make lint
+    plugins:
+      - shellcheck#v1.4.0:
+          files:
+            - scripts/*.sh
+            - hooks/**
+      - myorg/custom#v2.0.0:
+          debug: true
+          region: eu-1
+`)
+	jobs, err := loadBuildkite(root, testRepo)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("jobs: %+v, %v", jobs, err)
+	}
+	s := jobs[0].Steps[0]
+	if !strings.Contains(s.Name, "plugins: shellcheck#v1.4.0, myorg/custom#v2.0.0") &&
+		!strings.Contains(s.Name, "plugins:") {
+		t.Fatalf("plugins must be announced in the name: %q", s.Name)
+	}
+	// Config flattened per Buildkite's scheme: arrays indexed, keys upper.
+	if s.Env["BUILDKITE_PLUGIN_SHELLCHECK_FILES_0"] != "scripts/*.sh" ||
+		s.Env["BUILDKITE_PLUGIN_SHELLCHECK_FILES_1"] != "hooks/**" {
+		t.Fatalf("array config: %v", s.Env)
+	}
+	if s.Env["BUILDKITE_PLUGIN_CUSTOM_DEBUG"] != "true" ||
+		s.Env["BUILDKITE_PLUGIN_CUSTOM_REGION"] != "eu-1" {
+		t.Fatalf("map config: %v", s.Env)
+	}
+	// The lifecycle: clone from the conventional repos, source environment,
+	// pre-command, the command, post-command with the exit code preserved.
+	for _, needle := range []string{
+		"github.com/buildkite-plugins/shellcheck-buildkite-plugin",
+		"github.com/myorg/custom-buildkite-plugin",
+		"hooks/environment",
+		`export -p > "$__bk_envcap"`,
+		"hooks/pre-command",
+		"make lint",
+		"BUILDKITE_COMMAND_EXIT_STATUS=$__bk_rc",
+		"hooks/post-command",
+		"exit $__bk_rc",
+	} {
+		if !strings.Contains(s.Command, needle) {
+			t.Fatalf("lifecycle lacks %q:\n%s", needle, s.Command)
+		}
 	}
 }

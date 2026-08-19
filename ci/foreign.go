@@ -86,11 +86,12 @@ func foreignPlan(platform string, job platforms.Job, repo *repoInfo) *Plan {
 		workdir = filepath.Join(workspaceDir, repo.Subdir)
 	}
 	return &Plan{
-		Name:     job.Name,
-		Platform: platform,
-		Image:    image,
-		Env:      env,
-		Steps:    steps,
-		Workdir:  workdir,
+		Name:      job.Name,
+		Platform:  platform,
+		Image:     image,
+		Env:       env,
+		Steps:     steps,
+		Workdir:   workdir,
+		MinMemMiB: job.MinMemMiB,
 	}
 }

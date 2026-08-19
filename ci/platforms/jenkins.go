@@ -1,13 +1,13 @@
 package platforms
 
-// Jenkins: the Jenkinsfile at the repository root — the declarative dialect
-// only, and that is a scope decision, not a shortcut. A *scripted* pipeline
-// (`node { ... }`) is an arbitrary Groovy program executing against Jenkins'
-// CPS runtime; nothing short of embedding Jenkins runs one faithfully, so a
-// scripted file gets a clear refusal instead of a wrong translation. A
-// *declarative* pipeline is a rigid block skeleton, and parsing that needs a
-// small structural tokenizer (comments, strings, braces, statements), not a
-// Groovy implementation.
+// Jenkins: the Jenkinsfile at the repository root, on two roads. The fast
+// road is structural translation of the declarative dialect (a rigid block
+// skeleton needing a small tokenizer, not a Groovy implementation) — taken
+// whenever every step is sh/echo/checkout. Everything else takes the real
+// road: Jenkinsfile Runner, an actual headless Jenkins assembled in the
+// guest (see jenkinsrunner.go), which executes scripted pipelines, script
+// blocks and plugin steps exactly as Jenkins would — because nothing short
+// of Jenkins can.
 //
 // What translates: the pipeline (or per-stage) docker agent image, `agent
 // any` on the default image, `environment { K = 'literal' }` at pipeline
@@ -47,13 +47,23 @@ func loadJenkins(root string, repo Repo) ([]Job, error) {
 		case "pipeline":
 			pipeline = &nodes[i]
 		case "node", "stage", "properties":
-			return nil, fmt.Errorf(
-				"this Jenkinsfile is a scripted pipeline (a Groovy program); only " +
-					"declarative pipelines (`pipeline { ... }`) translate locally")
+			// A scripted pipeline is a Groovy program only Jenkins itself
+			// can run — so run Jenkins itself.
+			return []Job{jenkinsRunnerJob(
+				"scripted pipelines are Groovy programs; only Jenkins can execute them",
+				fileExists(filepath.Join(root, "plugins.txt")))}, nil
 		}
 	}
 	if pipeline == nil {
 		return nil, fmt.Errorf("no `pipeline { ... }` block in the Jenkinsfile")
+	}
+
+	// Declarative, but leaning on plugin steps or script blocks the
+	// structural translation cannot honor? Real Jenkins for those too.
+	if extra := jenkinsNeedsRealRunner(*pipeline); len(extra) > 0 {
+		return []Job{jenkinsRunnerJob(
+			"the pipeline uses steps only Jenkins provides: "+strings.Join(extra, ", "),
+			fileExists(filepath.Join(root, "plugins.txt")))}, nil
 	}
 
 	job := Job{Name: "pipeline", Env: map[string]string{}}

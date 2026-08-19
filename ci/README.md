@@ -152,8 +152,27 @@ microVM runs no Docker daemon), as are `pre`/`post` hooks — stated limits.
 See [`examples/ci-github-actions`](../examples/ci-github-actions), which
 runs the actual `oven-sh/setup-bun@v2`.
 
+**Buildkite plugins run for real.** A Buildkite plugin is a git repository
+of shell hooks, so the runner clones it at its ref, exports its
+configuration as `BUILDKITE_PLUGIN_<NAME>_<KEY>` (nested maps flattened,
+arrays indexed — Buildkite's own scheme), and wraps the step's command in
+the agent's own hook order: `environment` sourced, `pre-command`, the
+command, `post-command` with the exit status preserved. See
+[`examples/ci-buildkite-plugins`](../examples/ci-buildkite-plugins).
+
+**Jenkins runs itself when translation is not enough.** A Jenkins plugin
+is Java living inside Jenkins' runtime — so for scripted pipelines,
+`script { }` blocks and plugin steps, the runner assembles a real headless
+Jenkins in the guest ([Jenkinsfile
+Runner](https://github.com/jenkinsci/jenkinsfile-runner): multi-arch JDK
+image, pinned `jenkins.war`, plugins resolved by the official
+plugin-installation-manager, your repo's `plugins.txt` included) and
+executes the Jenkinsfile in it. Purely structural pipelines keep the fast
+translation path. See
+[`examples/ci-jenkins-real`](../examples/ci-jenkins-real).
+
 What deliberately does not translate elsewhere is announced rather than
-faked: plugins, orbs, human gates and cross-pipeline triggers become
+faked: orbs, human gates and cross-pipeline triggers become
 visible skipped steps in the timeline; matrix strategies run once and say
 so; **jobs that ask for windows or macos are skipped** — a Linux microVM
 cannot become another OS, and a green checkmark on a lie helps nobody.

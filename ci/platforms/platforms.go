@@ -48,6 +48,9 @@ type Job struct {
 	Steps []Step
 	// SkipReason, when set, excludes the job and says why.
 	SkipReason string
+	// MinMemMiB raises the VM's memory when the default would starve the
+	// job (a real Jenkins needs heap, not hope).
+	MinMemMiB int
 }
 
 // Repo is what the translators may know about the checkout.

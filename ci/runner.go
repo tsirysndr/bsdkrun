@@ -78,6 +78,14 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 	}
 	name := vmName(plan.Name)
 
+	// A job may declare a memory floor (a real Jenkins in 2 GiB just
+	// GC-thrashes for an hour); the flag still wins upward.
+	mem := opts.Mem
+	if plan.MinMemMiB > mem {
+		mem = plan.MinMemMiB
+		logf(opts, "  (memory raised to %d MiB — the job declares it needs it)\n", mem)
+	}
+
 	// The boot is a step like any other, and a *streamed* one: an image pull
 	// can take minutes (nixery builds large dependency sets server-side and
 	// may even 504 while it does — bsdkrun retries, and the retry notice
@@ -94,7 +102,7 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 		bootOut = prefixed(opts)
 		bootErr = prefixed(opts)
 	}
-	sbx, err := createVM(plan.Image, name, opts.Cpus, opts.Mem, mounts,
+	sbx, err := createVM(plan.Image, name, opts.Cpus, mem, mounts,
 		[]string{"sleep", "infinity"}, bootOut, bootErr)
 	if err != nil && len(plan.NixpkgsDeps) > 0 && plan.Image != fallbackImage {
 		// nixery could not produce the image (it builds server-side, and a
@@ -112,7 +120,7 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 			logf(opts, "  %s\n", note)
 		}
 		plan.ToFallback()
-		sbx, err = createVM(plan.Image, name+"-fb", opts.Cpus, opts.Mem, mounts,
+		sbx, err = createVM(plan.Image, name+"-fb", opts.Cpus, mem, mounts,
 			[]string{"sleep", "infinity"}, bootOut, bootErr)
 	}
 	bootRes := stepResult{
@@ -148,6 +156,15 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 		}
 	}()
 
+	// The guest wall clock is not to be trusted — it has booted at the
+	// epoch and drifted days apart from the host, and everything from apt
+	// release validation to TLS breaks on a wrong clock. The host knows
+	// the time; hand it over. Best-effort: a guest without date -s still
+	// runs everything that does not check clocks.
+	_, _ = sbx.exec([]string{"sh", "-c",
+		fmt.Sprintf("date -u -s @%d >/dev/null 2>&1 || true", time.Now().Unix())},
+		nil, nil, nil)
+
 	// Workflow commands are written against bash, and every image the
 	// tangled path plans carries it — but a foreign platform's image may be
 	// bash-less (alpine). GitLab's own runner falls back to sh there; so
@@ -160,13 +177,16 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 
 	// The workspace and home exist before any step runs; every step then
 	// starts from the workspace, like spindle's container workdir.
-	// chown after mkdir, best-effort: on macOS hosts virtio-fs maps host
-	// ownership to guest root and this is a no-op; on Linux hosts the
-	// passthrough shows the real host uid and an unprivileged host cannot
-	// chown to root — tools that check ownership (stack) get their own
-	// accommodation flags instead.
+	// HOME lives on a tmpfs, deliberately. On Linux hosts the virtio-fs
+	// rootfs shows the real (non-root) host uid, an unprivileged host
+	// cannot chown to root, and tools refuse a HOME "owned by someone
+	// else" — stack's S-7613 even survives --allow-different-user, because
+	// the refusal guards Stack root *creation*. A tmpfs is kernel-mounted
+	// and guest-root-owned on every host, which retires the whole class.
+	// Ephemeral by nature, exactly like the VM it lives in.
 	if res, err := sbx.exec([]string{"sh", "-c",
 		"mkdir -p " + workspaceDir + " " + homeDir +
+			" && { mount -t tmpfs -o mode=0755 tmpfs " + homeDir + " 2>/dev/null || true; }" +
 			" && chown 0:0 /tangled " + workspaceDir + " " + homeDir + " 2>/dev/null || true"},
 		nil, nil, nil); err != nil {
 		return nil, fmt.Errorf("preparing %s: %w", workspaceDir, err)

@@ -116,10 +116,28 @@ func loadBuildkite(root string, repo Repo) ([]Job, error) {
 			name = fmt.Sprintf("step %d", i+1)
 		}
 		cmd := strings.Join(lines, "\n")
-		if !s.Plugins.IsZero() {
-			cmd = `echo "note: this step's plugins are not supported locally"` + "\n" + cmd
+		env := s.Env
+		// Plugins run for real: cloned at their ref, configured through
+		// BUILDKITE_PLUGIN_* env, their hooks wrapped around the command
+		// (see bkplugins.go).
+		if plugins := bkParsePlugins(s.Plugins); len(plugins) > 0 {
+			wrapped, pluginEnv := bkPluginLifecycle(plugins, cmd)
+			cmd = wrapped
+			merged := map[string]string{}
+			for k, v := range pluginEnv {
+				merged[k] = v
+			}
+			for k, v := range s.Env {
+				merged[k] = v
+			}
+			env = merged
+			names := make([]string, len(plugins))
+			for pi, pl := range plugins {
+				names[pi] = pl.Name
+			}
+			name = name + " [plugins: " + strings.Join(names, ", ") + "]"
 		}
-		job.Steps = append(job.Steps, Step{Name: name, Command: cmd, Env: s.Env})
+		job.Steps = append(job.Steps, Step{Name: name, Command: cmd, Env: env})
 	}
 	if len(job.Steps) == 0 {
 		return nil, nil

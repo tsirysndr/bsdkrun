@@ -270,8 +270,10 @@ jobs:
           done
           test -z "$failed" || { echo "FAILED:$failed"; exit 1; }
 
+      # Strict since its first green run (2026-08-19): every heavy example
+      # passed on x86_64/KVM, so a failure here is a regression — or a
+      # registry outage, which the step's own log names explicitly.
       - name: e2e — detection over unikraft examples (heavy set)
-        continue-on-error: true # flip to false after the first green run on x86_64
         run: |
           set -eux
           failed=""

@@ -29,9 +29,12 @@ shipped alongside it.
   service auth, ACL, storage and log format are spindle's own code imported
   from `tangled.org/core`; what bsdkrun replaces is the `models.Engine` seam,
   so workflows run in libkrun microVMs — no qemu, no cgroups, no Docker
-  daemon. Firehose ingestion (push-triggered pipelines) is not implemented
-  yet: pipelines start from `triggerPipeline`. See ci/README.md §
-  Self-hosting a spindle.
+  daemon. Work arrives the way it does on spindle: a push on any known knot
+  (`sh.tangled.git.refUpdate`, `skip-ci` honoured), a repo assignment on the
+  jetstream firehose (`sh.tangled.repo` naming this hostname), or
+  `triggerPipeline`. Pull-request pipelines from `sh.tangled.repo.pull`
+  records and the embedded tap relay are not implemented yet. See
+  ci/README.md § Self-hosting a spindle.
 
 ## [0.11.2] — 2026-08-19
 

@@ -53,6 +53,28 @@ embedded into `bsdkrun` exactly as `pack/` is. **An end user never needs Go** �
 bsdkrun CLI itself, pointed back at the very binary that launched it
 (`$BSDKRUN_BIN`).
 
+## Contents
+
+- [Why this exists](#why-this-exists)
+- [What a run does](#what-a-run-does)
+- [Examples](#examples)
+- [Triggers](#triggers)
+- [Foreign platforms](#foreign-platforms) — the twelve providers, and what runs for real
+- [No config at all? Project detection](#no-config-at-all-project-detection)
+- [Secrets](#secrets)
+- [OpenTelemetry tracing](#opentelemetry-tracing)
+- [`bsdkrun ci serve`](#bsdkrun-ci-serve)
+- [Self-hosting a spindle](#self-hosting-a-spindle) — run this in place of spindle.tangled.sh
+  - [Build](#build)
+  - [Required configuration](#required-configuration)
+  - [The rest of the configuration](#the-rest-of-the-configuration)
+  - [Quick guide: from zero to a running pipeline](#quick-guide-from-zero-to-a-running-pipeline)
+  - [What it serves](#what-it-serves)
+  - [How work arrives](#how-work-arrives)
+- [Workflows from code](#workflows-from-code)
+- [Environment](#environment)
+- [Building](#building)
+
 ## Why this exists
 
 CI runs on someone else's machine, and that is the wrong place to *iterate* on
@@ -610,15 +632,32 @@ Engine names are all aliases for the bsdkrun engine: a workflow that says
 `engine: nixery` or `engine: microvm` keeps running after the swap instead of
 failing as an unknown engine.
 
-### Not yet: firehose ingestion
+### How work arrives
 
-What is implemented is the served API — everything above, including triggering
-and running pipelines. What is *not* yet implemented is the other half of
-spindle's inputs: the jetstream/tap consumers that learn about repos, spindle
-members and collaborators from the network, and the knot event consumer that
-starts a pipeline on push. Until those land, a repo must already exist in the
-database (a spindle.db carried over from the server being replaced does), and
-pipelines start from `sh.tangled.ci.triggerPipeline` rather than from a push.
+Three ways, and you do not have to choose:
+
+- **A push.** Every knot the server knows about is consumed over a WebSocket,
+  and a `sh.tangled.git.refUpdate` compiles the repo's workflows at the new
+  SHA and runs the ones whose `when:` matches a push. `git push -o skip-ci`
+  (or `ci-skip`) is obeyed. An event is only honoured from the knot the repo
+  actually lives on — a knot may not speak for repos it does not host.
+- **An assignment.** The jetstream firehose is filtered to the DIDs this
+  server cares about; a `sh.tangled.repo` record naming your
+  `SPINDLE_SERVER_HOSTNAME` in its `spindle` field records the repo, grants
+  its owner the repo policies, and adds its knot to the list above. So
+  assigning a repo in tangled is all it takes to start getting its pushes.
+  `sh.tangled.spindle.member` records add members — but only when the record
+  names this instance *and* the DID that wrote it is allowed to invite.
+- **An API call.** `sh.tangled.ci.triggerPipeline`, as above.
+
+Both streams are best-effort: a server that cannot reach the firehose still
+serves its API and still runs what it is told to run. The startup banner says
+which knots it is listening to, because "none" is the quiet reason a push
+never starts anything.
+
+Not yet implemented: pull-request pipelines from `sh.tangled.repo.pull`
+records, and the embedded tap relay. A pull request can still be run through
+`triggerPipeline` with a `#pullRequest` trigger.
 
 ## Workflows from code
 

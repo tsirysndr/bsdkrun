@@ -520,6 +520,7 @@ forces it.
 | `SPINDLE_SERVER_SECRETS_OPENBAO_MOUNT`      | `spindle`                 | OpenBao mount path.                                |
 | `SPINDLE_SERVER_PLC_URL`             | `https://plc.directory`          | DID resolution.                                    |
 | `SPINDLE_SERVER_DEV`                 | `false`                          | Talk to knots over http/ws instead of https/wss.   |
+| `SPINDLE_SERVER_MOTD_FILE`           | —                                | Serve this file at `/` instead of spindle's greeting. |
 
 Host requirements: git ≥ 2.49 (spindle's floor, and the same sparse fetch
 happens here — the server refuses to start otherwise), and whatever libkrun
@@ -666,7 +667,7 @@ not need to know.
 | `GET /xrpc/sh.tangled.repo.listSecrets`         | service auth | Names only — values are never returned.             |
 | `GET /events`                                   | none         | WebSocket: every pipeline and status event after `?cursor=<unix-nanos>`. |
 | `GET /logs/{knot}/{rkey}/{name}`                | none         | WebSocket: the raw JSONL log stream.                |
-| `GET /`                                         | none         | MOTD, including the server's DID.                   |
+| `GET /`                                         | none         | Spindle's own greeting — ascii art and all — byte for byte. `SPINDLE_SERVER_MOTD_FILE` replaces it. |
 
 Engine names are all aliases for the bsdkrun engine: a workflow that says
 `engine: nixery` or `engine: microvm` keeps running after the swap instead of

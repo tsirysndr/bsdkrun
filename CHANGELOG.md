@@ -25,14 +25,18 @@ shipped alongside it.
   refuse writes that need a copy-up (`can't create …: Not supported`), which
   broke Tekton's per-step images on x86_64 while leaving argv-only plugins
   working. The mount is now accepted only if the merged root has content *and*
-  takes a file in a subdirectory; otherwise the rootfs is copied into tmpfs,
-  and the substitution is announced.
+  takes a file in *both* directories a step writes to (`/tmp` for its script,
+  `/etc` for resolv.conf); otherwise the rootfs is copied into tmpfs, and the
+  substitution is announced. `BSDKRUN_CI_NO_OVERLAY=1` forces the copy path,
+  which is how it is tested on hosts where the overlay works.
 - **Plugin containers get working DNS.** A chroot-executed Drone/Woodpecker
   plugin has its own `/etc`, and a missing `resolv.conf` there makes Go's
   resolver fall back to localhost — the failure reads `lookup <host> on
   [::1]:53: connection refused`, which looks like an outage and is not one.
   The guest's resolver configuration is now copied through symlinks, and a
   nameserver is derived from the default route when that yields nothing.
+  (The x86_64 instance of this turned out to be the overlay defect above —
+  the write of resolv.conf itself was failing — but the hardening stands.)
 - **OCI opaque whiteouts no longer delete their own layer's files.** An
   `.wh..wh..opq` marker hides what the layers *below* put in a directory, but
   whiteouts were applied after the layer was unpacked, so a layer that empties

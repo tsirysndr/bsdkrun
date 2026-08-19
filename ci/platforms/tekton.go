@@ -374,6 +374,9 @@ func tkChrootStep(name, image, script string, argv []string, env map[string]stri
 	if workdir == "" {
 		workdir = repo.Workspace
 	}
+	if v := os.Getenv("BSDKRUN_CI_NO_OVERLAY"); v != "" {
+		env["BSDKRUN_CI_NO_OVERLAY"] = v
+	}
 	env["HOME"] = "/root"
 	return Step{
 		Name:    name + " [image: " + image + "]",

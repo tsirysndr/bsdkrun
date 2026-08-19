@@ -19,6 +19,7 @@ package platforms
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -172,11 +173,17 @@ mkdir -p "$W/up" "$W/work" "$W/root"
 # test is whether the merged root has content AND accepts a file in a
 # subdirectory, which is exactly what running a step needs.
 overlay_ok=0
-if mount -t overlay overlay -o lowerdir=%[1]s,upperdir="$W/up",workdir="$W/work" "$W/root" 2>/dev/null; then
+if [ -n "$BSDKRUN_CI_NO_OVERLAY" ]; then
+  echo "[bsdkrun] BSDKRUN_CI_NO_OVERLAY is set — copying the rootfs into tmpfs"
+elif mount -t overlay overlay -o lowerdir=%[1]s,upperdir="$W/up",workdir="$W/work" "$W/root" 2>/dev/null; then
+  # Writes into directories the image already carries are what fail: those
+  # need a copy-up, and that is the operation overlayfs refuses over some
+  # lower filesystems. /tmp and /etc are exactly the two a step touches (its
+  # script, and resolv.conf), so test both rather than the root alone.
   if [ -n "$(ls -A "$W/root" 2>/dev/null)" ] &&
-     mkdir -p "$W/root/tmp" 2>/dev/null &&
-     touch "$W/root/tmp/.rwcheck" 2>/dev/null; then
-    rm -f "$W/root/tmp/.rwcheck"
+     mkdir -p "$W/root/tmp" "$W/root/etc" 2>/dev/null &&
+     touch "$W/root/tmp/.rwcheck" "$W/root/etc/.rwcheck" 2>/dev/null; then
+    rm -f "$W/root/tmp/.rwcheck" "$W/root/etc/.rwcheck"
     overlay_ok=1
   fi
 fi
@@ -231,6 +238,11 @@ func dronePluginStep(stepName, image string, settings yaml.Node, repo Repo, flav
 	}
 	for k, v := range droneSettingsEnv(settings) {
 		env[k] = v
+	}
+	// An escape hatch that is also how the copy path gets tested on a host
+	// where the overlay happens to work: the guest only sees what we pass it.
+	if v := os.Getenv("BSDKRUN_CI_NO_OVERLAY"); v != "" {
+		env["BSDKRUN_CI_NO_OVERLAY"] = v
 	}
 	env["DRONE"] = "true"
 	env["DRONE_COMMIT_SHA"] = repo.Sha

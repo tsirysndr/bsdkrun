@@ -6,14 +6,46 @@
 
 [![e2e (bsdkrun ci / KVM)](https://github.com/tsirysndr/bsdkrun/actions/workflows/e2e-ci.yml/badge.svg)](https://github.com/tsirysndr/bsdkrun/actions/workflows/e2e-ci.yml)
 
-Run [tangled](https://tangled.org) spindle CI workflows in bsdkrun microVMs —
-locally, from one command, with nothing installed but bsdkrun itself.
+Run CI in bsdkrun microVMs — locally, from one command, with nothing
+installed but bsdkrun itself. **Not only [tangled](https://tangled.org)
+workflows:** it reads the configuration your repository already has, from
+whichever provider it belongs to.
 
 ```sh
 bsdkrun ci run            # run every workflow that matches (manual trigger)
 bsdkrun ci ls             # list workflows and whether they'd match
-bsdkrun ci serve          # accept spindle pipeline records over HTTP
+bsdkrun ci serve          # be a spindle: serve its full API on libkrun VMs
 ```
+
+Point it at a repository and it detects the platform and runs it:
+
+| Provider                                | Config it reads                          |
+| --------------------------------------- | ---------------------------------------- |
+| tangled spindle                         | `.tangled/workflows/*.yml`               |
+| GitHub Actions (and Forgejo, Gitea)     | `.github/workflows/*.yml`                |
+| GitLab CI                               | `.gitlab-ci.yml`                          |
+| CircleCI                                | `.circleci/config.yml`                   |
+| Drone / Woodpecker                      | `.drone.yml`, `.woodpecker/*.yml`        |
+| Buildkite                               | `.buildkite/pipeline.yml`                |
+| Jenkins                                 | `Jenkinsfile`                            |
+| Azure Pipelines                         | `azure-pipelines.yml`                    |
+| AWS CodeBuild                           | `buildspec.yml`                          |
+| Tekton                                  | `.tekton/*.yaml`                         |
+| Semaphore                               | `.semaphore/semaphore.yml`               |
+| Travis                                  | `.travis.yml`                            |
+
+And the ecosystem around those files runs for real, not in effigy: **GitHub
+Actions** `uses:` steps execute (JavaScript and composite actions, the full
+`INPUT_*`/`GITHUB_ENV`/`GITHUB_OUTPUT` protocol), **Buildkite plugins** run
+their hooks, **Drone and Woodpecker plugins** execute their container images,
+**CircleCI orbs** are fetched from the registry and expanded, **Tekton**
+resolves catalog tasks, and a **Jenkinsfile** that is a Groovy program is run
+by an actual headless Jenkins. A repository with no CI configuration at all
+is detected by language and gets a workflow generated for it.
+
+Whatever cannot be translated is announced as a visible skip rather than
+quietly dropped — the [foreign platforms](#foreign-platforms) section is
+explicit about where each line is drawn.
 
 This directory is the tool itself: a Go binary compiled by `core/build.rs` and
 embedded into `bsdkrun` exactly as `pack/` is. **An end user never needs Go** —
@@ -23,14 +55,20 @@ bsdkrun CLI itself, pointed back at the very binary that launched it
 
 ## Why this exists
 
-Spindle runs a repository's `.tangled/workflows/*.yml` when a knot sees a push.
-That is the right place for CI to run — and the wrong place to *iterate* on it.
-The push-edit-push loop for debugging a workflow is miserable everywhere, and
-spindle's microvm engine only runs on Linux hosts with KVM.
+CI runs on someone else's machine, and that is the wrong place to *iterate* on
+it. The push-edit-push loop for debugging a workflow is miserable on every
+provider: a one-character fix costs a commit and a wait, and the environment
+you are debugging is one you cannot open a shell into.
 
-`bsdkrun ci` runs the same files, in real microVMs, on the machine in front of
-you. A workflow that passes here is a workflow spindle will run the same way,
-because the parts that could disagree are not reimplemented:
+`bsdkrun ci` runs the real files — your `.github/workflows`, your
+`.gitlab-ci.yml`, your `Jenkinsfile`, your `.tangled/workflows` — in real
+microVMs on the machine in front of you. Where a provider's own runner needs
+Linux and a container daemon, this needs neither: libkrun boots the VM on
+macOS and Linux alike.
+
+The tangled path holds to a stronger promise, because it can: a workflow that
+passes here is one spindle will run the same way, since the parts that could
+disagree are not reimplemented:
 
 - **The schema and `when:` matching are tangled's own Go package**
   (`tangled.org/core/workflow`), imported, not transcribed. Glob semantics,

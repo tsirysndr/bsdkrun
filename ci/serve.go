@@ -21,6 +21,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -57,9 +58,10 @@ type server struct {
 
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	bind := fs.String("bind", "127.0.0.1:8517", "")
+	bind := fs.String("bind", "", "address to listen on (default 127.0.0.1:8517, or SPINDLE_SERVER_LISTEN_ADDR in spindle mode)")
 	cpus := fs.Int("cpus", 2, "")
 	mem := fs.Int("mem", 2048, "")
+	spindleMode := fs.Bool("spindle", false, "serve the full spindle API (implied when SPINDLE_SERVER_HOSTNAME is set)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -76,9 +78,37 @@ func cmdServe(args []string) error {
 		fmt.Fprintln(w, "ok")
 	})
 
-	fmt.Printf("bsdkrun ci serve on http://%s\n", *bind)
+	// Spindle mode is implied by its own configuration being present: an
+	// operator swapping spindle out already has these variables exported, and
+	// requiring a flag as well would be one more thing to get wrong.
+	addr := *bind
+	if *spindleMode || os.Getenv("SPINDLE_SERVER_HOSTNAME") != "" {
+		sp, err := startSpindle(&serveConfig{Cpus: *cpus, Mem: *mem})
+		if err != nil {
+			return fmt.Errorf("starting in spindle mode: %w", err)
+		}
+		sp.Register(mux)
+		if addr == "" {
+			addr = sp.ListenAddr()
+		}
+		fmt.Printf("bsdkrun ci serve on http://%s — spindle-compatible\n", addr)
+		for _, line := range sp.Banner() {
+			fmt.Println(line)
+		}
+		return http.ListenAndServe(addr, mux)
+	}
+
+	if addr == "" {
+		addr = "127.0.0.1:8517"
+	}
+	fmt.Printf("bsdkrun ci serve on http://%s\n", addr)
 	fmt.Println("POST a sh.tangled.pipeline record to /pipelines to run it.")
-	return http.ListenAndServe(*bind, mux)
+	if spindleBuilt {
+		fmt.Println("For the full spindle API (xrpc, events, secrets), set SPINDLE_SERVER_HOSTNAME and SPINDLE_SERVER_OWNER — see ci/README.md.")
+	} else {
+		fmt.Println("This build has no spindle support; `--spindle` explains how to get one. See ci/README.md.")
+	}
+	return http.ListenAndServe(addr, mux)
 }
 
 func (s *server) postPipeline(w http.ResponseWriter, r *http.Request) {

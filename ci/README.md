@@ -347,12 +347,240 @@ curl localhost:8517/pipelines/run-1                       # status + step result
 curl localhost:8517/pipelines/run-1/logs                  # spindle LogLine JSON
 ```
 
-Deliberately the *runner seam*, not the whole spindle: jetstream ingestion,
-XRPC, secrets and AT-proto record publishing stay with spindle (or
-[tack](https://github.com/mitchellh/tack)). This serves the piece bsdkrun is
-uniquely placed to provide — executing a pipeline in real VMs — behind an
-interface small enough to point either of them at, or curl by hand. In serve
-mode the clone fetches from the knot URL in the record's trigger metadata.
+That is the small surface — enough to point spindle, [tack](https://github.com/mitchellh/tack)
+or curl at. In serve mode the clone fetches from the knot URL in the record's
+trigger metadata rather than a mounted checkout.
+
+For the real thing — a server you can put in an existing spindle's place —
+see below.
+
+## Self-hosting a spindle
+
+`bsdkrun ci serve` can *be* your spindle: same routes, same request and
+response shapes, same service-auth, same SQLite schema, same event stream,
+same on-disk log format. That is not a reimplementation — the XRPC handlers,
+the ACL, the storage and the log format are spindle's own code, imported from
+`tangled.org/core`. What bsdkrun replaces is the one seam spindle leaves open,
+`models.Engine`, so workflows run in libkrun microVMs instead of qemu ones.
+
+The appview cannot tell the difference: it verifies a spindle by calling
+`sh.tangled.owner`, and every pipeline it later reads comes back through
+`sh.tangled.ci.queryPipelines`, `getPipeline` and `subscribePipelineLogs`.
+
+### Build
+
+Spindle support is a build-tag feature, off by default:
+
+```sh
+BSDKRUN_CI_SPINDLE=1 cargo build --release
+make sign-release            # macOS: re-sign, as after any build
+```
+
+**Published releases already have it** — the release workflow builds with
+this flag and fails if the support did not make it in — so swapping a spindle
+needs no rebuild. The flag is for local builds.
+
+It is a flag at all because spindle's storage is SQLite through
+`mattn/go-sqlite3`, which needs cgo, while the embedded `ci` binary is
+otherwise built `CGO_ENABLED=0` so it runs against any host libc, musl
+included. A cgo build links against the libc it was built on: the published
+Linux binary therefore wants a glibc no older than the release runner's. If
+you need a binary for a musl host (Alpine) or an older distribution, build it
+there, or build without the flag if you only want `bsdkrun ci run`.
+
+A build without the tag accepts `--spindle` and tells you how to get one,
+rather than starting a server that silently lacks the API.
+
+### Required configuration
+
+Configuration is spindle's own, read from the same environment variables, so
+an existing deployment's env file works unchanged. Two are required:
+
+| Variable                  | Meaning                                                                     |
+| ------------------------- | --------------------------------------------------------------------------- |
+| `SPINDLE_SERVER_HOSTNAME` | The public hostname. Becomes this service's DID — `did:web:<hostname>` — and every service-auth token must be minted for that audience, so it must match what the appview knows. A port is percent-encoded: `localhost:6555` → `did:web:localhost%3A6555`. |
+| `SPINDLE_SERVER_OWNER`    | DID of the owner. Returned by `sh.tangled.owner`, and the only DID that may add spindle members. |
+
+Setting `SPINDLE_SERVER_HOSTNAME` is what turns spindle mode on — no flag
+needed, since an operator swapping spindle out already exports it. `--spindle`
+forces it.
+
+### The rest of the configuration
+
+| Variable                             | Default                          | Meaning                                            |
+| ------------------------------------ | -------------------------------- | -------------------------------------------------- |
+| `SPINDLE_SERVER_LISTEN_ADDR`         | `0.0.0.0:6555`                   | Listen address. `--bind` overrides it.             |
+| `SPINDLE_SERVER_DB_PATH`             | `spindle.db`                     | SQLite file: pipelines, events, ACL and (by default) secrets. Point it at your existing spindle.db to keep history. |
+| `SPINDLE_SERVER_LOG_DIR`             | `/var/log/spindle`               | One JSONL file per workflow, in spindle's format.  |
+| `SPINDLE_SERVER_REPO_DIR`            | `repos`                          | Where repositories are sparsely checked out to read `.tangled/workflows`. |
+| `SPINDLE_SERVER_QUEUE_SIZE`          | `100`                            | Pending pipelines before new ones are refused.     |
+| `SPINDLE_SERVER_MAX_JOB_COUNT`       | `2`                              | Pipelines running at once.                         |
+| `SPINDLE_SERVER_SECRETS_PROVIDER`    | `sqlite`                         | `sqlite` or `openbao`.                             |
+| `SPINDLE_SERVER_SECRETS_OPENBAO_PROXY_ADDR` | `http://127.0.0.1:8200`   | OpenBao proxy, when that provider is chosen.       |
+| `SPINDLE_SERVER_SECRETS_OPENBAO_MOUNT`      | `spindle`                 | OpenBao mount path.                                |
+| `SPINDLE_SERVER_PLC_URL`             | `https://plc.directory`          | DID resolution.                                    |
+| `SPINDLE_SERVER_DEV`                 | `false`                          | Talk to knots over http/ws instead of https/wss.   |
+
+Host requirements: git ≥ 2.49 (spindle's floor, and the same sparse fetch
+happens here — the server refuses to start otherwise), and whatever libkrun
+needs to boot a VM. No qemu, no cgroups, no Docker daemon.
+
+```sh
+export SPINDLE_SERVER_HOSTNAME=spindle.example.com
+export SPINDLE_SERVER_OWNER=did:plc:yourownerdid
+export SPINDLE_SERVER_DB_PATH=/var/lib/spindle/spindle.db
+export SPINDLE_SERVER_LOG_DIR=/var/log/spindle
+bsdkrun ci serve
+
+# it prints its DID — the audience every token must target
+curl -s https://spindle.example.com/xrpc/sh.tangled.owner
+# {"owner":"did:plc:yourownerdid"}
+```
+
+### Quick guide: from zero to a running pipeline
+
+Five minutes, locally, with nothing else installed. This uses the real API —
+the same calls the appview makes.
+
+**1. Build with spindle support and start it.**
+
+```sh
+BSDKRUN_CI_SPINDLE=1 cargo build --release && make sign-release
+
+export SPINDLE_SERVER_HOSTNAME=localhost:6555
+export SPINDLE_SERVER_OWNER=did:plc:yourownerdid   # your own DID
+export SPINDLE_SERVER_DB_PATH=./spindle.db
+export SPINDLE_SERVER_LOG_DIR=./logs
+export SPINDLE_SERVER_LISTEN_ADDR=127.0.0.1:6555
+export SPINDLE_SERVER_DEV=true                     # knots over http, for local ones
+
+bsdkrun ci serve
+```
+
+The banner prints the DID it derived — `did:web:localhost%3A6555` here. Every
+authenticated call must be signed for **that** audience; a mismatch is the
+usual cause of a `403 Auth` on an otherwise correct request.
+
+**2. Check it is alive.** No auth needed:
+
+```sh
+curl -s localhost:6555/xrpc/sh.tangled.owner
+# {"owner":"did:plc:yourownerdid"}
+```
+
+If you are pointing a tangled appview at it, this is the call it makes to
+verify the spindle — nothing else is required for it to accept the server.
+
+**3. Watch the event stream** in a second terminal. It is a WebSocket, and the
+cursor is unix *nanoseconds*; `0` means from the beginning:
+
+```sh
+websocat "ws://localhost:6555/events?cursor=0"
+```
+
+Every pipeline record and every workflow status transition appears here as it
+happens — this is what a dashboard consumes.
+
+**4. Trigger a pipeline.** This one needs service auth: an AT Protocol
+service-auth JWT, signed by your DID's key, whose `aud` is the server's DID
+and whose `lxm` is the exact method being called. Your PDS mints it — this is
+the same call the appview makes:
+
+```sh
+mint() {   # mint <lxm>
+  curl -s -H "Authorization: Bearer $PDS_ACCESS_JWT" \
+    "$PDS_HOST/xrpc/com.atproto.server.getServiceAuth?aud=did:web:localhost%3A6555&lxm=$1&exp=$(( $(date +%s) + 300 ))" \
+    | jq -r .token
+}
+TOKEN=$(mint sh.tangled.ci.triggerPipeline)
+
+curl -s -X POST localhost:6555/xrpc/sh.tangled.ci.triggerPipeline \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "repo": "did:plc:yourrepodid",
+        "trigger": {
+          "$type": "sh.tangled.ci.trigger#manual",
+          "sha": "0000000000000000000000000000000000000000",
+          "ref": "refs/heads/main"
+        }
+      }'
+# {"pipeline":"at://did:web:localhost%3A6555/sh.tangled.pipeline/3l..."}
+```
+
+A token is bound to one method: `lxm` must equal the endpoint you call, so
+each of the calls below needs its own. Tokens are short-lived (60s minimum
+expiry); mint them per request rather than caching.
+
+The server fetches `.tangled/workflows` from the repo at that SHA, compiles
+the workflows whose `when:` matches, boots one microVM per workflow and runs
+them. The `sha` must be a full 40-character hash — the API rejects short ones.
+
+**5. Follow the run.**
+
+```sh
+# the pipeline and its workflow statuses
+curl -s "localhost:6555/xrpc/sh.tangled.ci.queryPipelines?repo=did:plc:yourrepodid" | jq
+
+# live logs (CBOR frames — this is the endpoint the appview uses)
+# rkey is the last path segment of the at:// URI above
+curl -s "localhost:6555/xrpc/sh.tangled.ci.getPipeline?pipeline=3l..." | jq
+
+# or the raw JSONL stream, one text frame per line
+websocat "ws://localhost:6555/logs/localhost%3A6555/3l.../my-workflow"
+```
+
+**6. Give a repo a secret.** Note the difference in identifiers, which is easy
+to get wrong: secrets take the repo's **AT-URI**, while trigger and query take
+its **DID**.
+
+```sh
+TOKEN=$(mint sh.tangled.repo.addSecret)   # the helper from step 4
+
+curl -s -X POST localhost:6555/xrpc/sh.tangled.repo.addSecret \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"repo":"at://did:plc:you/sh.tangled.repo/abc","key":"NPM_TOKEN","value":"s3cret"}'
+```
+
+Secrets reach steps as environment variables and are masked in the logs. Only
+names come back from `listSecrets`; values never leave the store.
+
+**Swapping a running spindle.** Stop it, point `SPINDLE_SERVER_DB_PATH` at its
+existing `spindle.db` (repos, ACL, secrets and pipeline history all live
+there), keep `SPINDLE_SERVER_HOSTNAME` identical so the DID and every issued
+token stay valid, and start `bsdkrun ci serve` on the same address. Clients do
+not need to know.
+
+### What it serves
+
+| Route                                          | Auth         |                                                     |
+| ---------------------------------------------- | ------------ | --------------------------------------------------- |
+| `GET /xrpc/sh.tangled.owner`                    | none         | Owner DID; this is how the appview verifies a spindle. |
+| `GET /xrpc/sh.tangled.ci.queryPipelines`        | none         | Pipelines for a repo, cursor-paged.                 |
+| `GET /xrpc/sh.tangled.ci.getPipeline`           | none         | One pipeline by rkey.                               |
+| `GET /xrpc/sh.tangled.ci.subscribePipelineLogs` | none         | Live logs, CBOR frames over WebSocket.              |
+| `POST /xrpc/sh.tangled.ci.triggerPipeline`      | service auth | Compile the repo's workflows at a SHA and run them. |
+| `POST /xrpc/sh.tangled.ci.cancelPipeline`       | service auth | Cancel workflows; tears the VMs down.               |
+| `POST /xrpc/sh.tangled.repo.addSecret`          | service auth | Store a secret for a repo.                          |
+| `POST /xrpc/sh.tangled.repo.removeSecret`       | service auth | Remove one.                                         |
+| `GET /xrpc/sh.tangled.repo.listSecrets`         | service auth | Names only — values are never returned.             |
+| `GET /events`                                   | none         | WebSocket: every pipeline and status event after `?cursor=<unix-nanos>`. |
+| `GET /logs/{knot}/{rkey}/{name}`                | none         | WebSocket: the raw JSONL log stream.                |
+| `GET /`                                         | none         | MOTD, including the server's DID.                   |
+
+Engine names are all aliases for the bsdkrun engine: a workflow that says
+`engine: nixery` or `engine: microvm` keeps running after the swap instead of
+failing as an unknown engine.
+
+### Not yet: firehose ingestion
+
+What is implemented is the served API — everything above, including triggering
+and running pipelines. What is *not* yet implemented is the other half of
+spindle's inputs: the jetstream/tap consumers that learn about repos, spindle
+members and collaborators from the network, and the knot event consumer that
+starts a pipeline on push. Until those land, a repo must already exist in the
+database (a spindle.db carried over from the server being replaced does), and
+pipelines start from `sh.tangled.ci.triggerPipeline` rather than from a push.
 
 ## Workflows from code
 

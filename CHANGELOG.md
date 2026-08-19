@@ -18,6 +18,21 @@ shipped alongside it.
 
 ## [Unreleased]
 
+### Added
+
+- **`bsdkrun ci serve` can be your spindle.** Built with
+  `BSDKRUN_CI_SPINDLE=1`, it serves spindle's full API — `sh.tangled.owner`,
+  `ci.queryPipelines` / `getPipeline` / `subscribePipelineLogs` /
+  `triggerPipeline` / `cancelPipeline`, `repo.{add,remove,list}Secret*`, the
+  `/events` stream and the `/logs/...` stream — reading spindle's own
+  `SPINDLE_SERVER_*` configuration and its SQLite schema. The XRPC handlers,
+  service auth, ACL, storage and log format are spindle's own code imported
+  from `tangled.org/core`; what bsdkrun replaces is the `models.Engine` seam,
+  so workflows run in libkrun microVMs — no qemu, no cgroups, no Docker
+  daemon. Firehose ingestion (push-triggered pipelines) is not implemented
+  yet: pipelines start from `triggerPipeline`. See ci/README.md §
+  Self-hosting a spindle.
+
 ## [0.11.2] — 2026-08-19
 
 The CI runner stops translating around the ecosystem and starts running

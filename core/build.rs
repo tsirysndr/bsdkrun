@@ -265,13 +265,24 @@ fn ensure_ci_binary() {
         return;
     }
 
-    let out = Command::new("go")
-        .current_dir(&ci_src)
-        .env("CGO_ENABLED", "0")
-        .args(["build", "-trimpath", "-ldflags", "-s -w", "-o"])
-        .arg(&out_bin)
-        .arg(".")
-        .output();
+    // CGO_ENABLED=0 by default: a pure-Go `ci` runs on any host libc, musl
+    // included, and `bsdkrun ci run` should not acquire that dependency.
+    // BSDKRUN_CI_SPINDLE=1 builds the spindle-compatible server instead, which
+    // needs cgo — spindle's storage is SQLite through mattn/go-sqlite3. The
+    // resulting binary is therefore dynamically linked against the host libc.
+    println!("cargo:rerun-if-env-changed=BSDKRUN_CI_SPINDLE");
+    let spindle = std::env::var("BSDKRUN_CI_SPINDLE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    let mut cmd = Command::new("go");
+    cmd.current_dir(&ci_src)
+        .env("CGO_ENABLED", if spindle { "1" } else { "0" })
+        .args(["build", "-trimpath", "-ldflags", "-s -w"]);
+    if spindle {
+        cmd.args(["-tags", "spindle"]);
+    }
+    let out = cmd.arg("-o").arg(&out_bin).arg(".").output();
 
     match out {
         Ok(o) if o.status.success() => {}

@@ -91,8 +91,27 @@ jobs:
         with:
           go-version-file: pack/go.mod
 
+      # Releases always carry the spindle-compatible server: `bsdkrun ci serve`
+      # is meant to be able to replace a spindle deployment straight from a
+      # published binary, with no rebuild. It costs cgo (spindle's storage is
+      # mattn/go-sqlite3), which every release runner has.
       - name: Build + sign bsdkrun (release)
+        env:
+          BSDKRUN_CI_SPINDLE: "1"
         run: make release
+
+      # build.rs only *warns* when the Go build fails and keeps whatever was
+      # embedded before, so a release could otherwise ship a `ci` binary
+      # quietly missing spindle support. A build that has it gets as far as
+      # reading spindle's configuration; one that does not says so instead.
+      - name: Verify spindle support was embedded
+        run: |
+          set -eux
+          out=$(env -u SPINDLE_SERVER_HOSTNAME -u SPINDLE_SERVER_OWNER \
+            ./target/release/bsdkrun ci serve --spindle 2>&1 || true)
+          echo "$out"
+          echo "$out" | grep -q "SPINDLE_SERVER_HOSTNAME"
+          ! echo "$out" | grep -q "without spindle support"
 
       # build.rs degrades gracefully (a warning, not a build failure) when Go
       # is missing, so a contributor's local build never breaks over it — but
@@ -267,8 +286,20 @@ jobs:
         with:
           go-version-file: pack/go.mod
 
+      # Same as macOS: releases always include the spindle-compatible server.
       - name: Build bsdkrun (release)
+        env:
+          BSDKRUN_CI_SPINDLE: "1"
         run: cargo build --release
+
+      - name: Verify spindle support was embedded
+        run: |
+          set -eux
+          out=$(env -u SPINDLE_SERVER_HOSTNAME -u SPINDLE_SERVER_OWNER \
+            ./target/release/bsdkrun ci serve --spindle 2>&1 || true)
+          echo "$out"
+          echo "$out" | grep -q "SPINDLE_SERVER_HOSTNAME"
+          ! echo "$out" | grep -q "without spindle support"
 
       # As on macOS: a release binary must never silently ship without pack
       # support just because this runner happened to lack Go.

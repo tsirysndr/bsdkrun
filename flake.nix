@@ -365,7 +365,7 @@
         commonArgs = {
           inherit src;
           pname = "bsdkrun";
-          version = "0.11.1";
+          version = "0.11.2";
           strictDeps = true;
           # Explicit even though the workspace's `default-members` is this
           # package: the daemon is a member too, and nothing here should build
@@ -464,7 +464,7 @@
         # itself does not have to. Same source tree, different package.
         supervisorArgs = daemonArgs // {
           pname = "bsdkrun-supervisor";
-          version = "0.11.1";
+          version = "0.11.2";
           cargoExtraArgs = "-p bsdkrun-supervisor";
 
           # The supervisor carries the embedded Solo5 tender (its core dep

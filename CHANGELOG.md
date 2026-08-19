@@ -18,6 +18,21 @@ shipped alongside it.
 
 ## [Unreleased]
 
+### Added
+
+- **`bsdkrun ci` reports the wall time of a run.** The last line says how many
+  workflows ran, how many failed, and how long the whole thing took —
+  measured from before the first VM boots, so it is comparable with what a
+  hosted CI would have charged you in minutes.
+
+### Fixed
+
+- **A version bump no longer breaks every run until the release exists.** The
+  guest agent is fetched from the tag matching `CARGO_PKG_VERSION`, so a
+  source build sitting at a just-bumped version failed to boot anything with
+  a 404 for its agent. It now falls back to the newest published release,
+  saying so, with `BSDKRUN_AGENT_VERSION` to pin one deliberately.
+
 ## [0.11.3] — 2026-08-19
 
 `bsdkrun ci` grows a server and a debugger: it can stand in for a spindle

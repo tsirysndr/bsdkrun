@@ -15,7 +15,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::fetch::{cache_dir, run};
 
@@ -27,6 +27,9 @@ pub const GUEST_PATH: &str = "sbin/bsdkrun-agent";
 /// GitHub release the prebuilt agents are published to (see the `release`
 /// workflows). Per-(os, arch) binaries are attached as assets.
 const AGENT_RELEASE_BASE: &str = "https://github.com/tsirysndr/bsdkrun/releases/download";
+/// GitHub resolves this to whatever the newest published release is, so the
+/// fallback needs no API call and no token.
+const AGENT_RELEASE_LATEST: &str = "https://github.com/tsirysndr/bsdkrun/releases/latest/download";
 
 // Frame channels (must match the agent).
 const CH_STDIN: u8 = 0;
@@ -89,21 +92,37 @@ pub fn ensure_agent(os: GuestOs, arch: Arch) -> Result<PathBuf> {
     info!(%url, "downloading exec agent…");
     let tmp = dir.join(format!("{asset}.partial"));
     let _ = std::fs::remove_file(&tmp);
-    run(
-        Command::new("curl")
-            .args(["-L", "--fail", "--progress-bar", "-o"])
-            .arg(&tmp)
-            .arg(&url),
-        "curl (download agent)",
-    )
-    .with_context(|| {
-        format!(
-            "downloading bsdkrun-agent {version} ({asset}) — is that bsdkrun release published \
-             with that asset? Override the tag with BSDKRUN_AGENT_VERSION, or point {} at a \
-             local binary.",
-            env_key(os),
+    let fetch = |from: &str| {
+        run(
+            Command::new("curl")
+                .args(["-L", "--fail", "--progress-bar", "-o"])
+                .arg(&tmp)
+                .arg(from),
+            "curl (download agent)",
         )
-    })?;
+    };
+    if let Err(first) = fetch(&url) {
+        // The version bump lands before the release does, so a source build
+        // sits at a tag GitHub has never heard of and every VM fails to boot
+        // on a 404 for its agent. The newest published agent is the right
+        // thing to use there, and saying so beats a dead runner: the protocol
+        // is what matters, and it does not change per patch release.
+        let _ = std::fs::remove_file(&tmp);
+        let latest = format!("{AGENT_RELEASE_LATEST}/{asset}");
+        warn!(
+            "no agent published for {version} ({first:#}); falling back to the latest release — \
+             set BSDKRUN_AGENT_VERSION to pin one"
+        );
+        info!(url = %latest, "downloading exec agent from the latest release…");
+        fetch(&latest).with_context(|| {
+            format!(
+                "downloading bsdkrun-agent ({asset}) from {version} and from the latest release — \
+                 is a bsdkrun release published with that asset? Override the tag with \
+                 BSDKRUN_AGENT_VERSION, or point {} at a local binary.",
+                env_key(os),
+            )
+        })?;
+    }
     set_executable(&tmp)?;
     std::fs::rename(&tmp, &dest).context("moving agent into cache")?;
     Ok(dest)

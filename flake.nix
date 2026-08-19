@@ -167,7 +167,11 @@
           version = "0.1.0";
 
           src = ./ci;
-          vendorHash = "sha256-CCAaLQQvZP1pi2G1PBoMiWwTJ6vqXo+lGa6Ng0rAZMc=";
+          # Bumped when `ci` gained the spindle-compatible server: importing
+          # tangled.org/core's spindle packages pulls in casbin, sqlite,
+          # openbao, the AWS SDK and more. Computed with the procedure above:
+          #   cd ci && go mod vendor -o /tmp/v && nix hash path --sri /tmp/v
+          vendorHash = "sha256-OvXL0d+f1xUqQ2LK/m6VTzEMRCwRI9dmWoA9FPyU6BQ=";
 
           env.CGO_ENABLED = "0";
           ldflags = [ "-s" "-w" ];

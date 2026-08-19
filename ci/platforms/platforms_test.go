@@ -184,12 +184,13 @@ steps:
 	if j.Image != "golang:1.22" {
 		t.Fatalf("image: %q", j.Image)
 	}
-	// image-divergence notice + test step + plugin skip
-	if len(j.Steps) != 3 {
+	// test step + plugin skip; no divergence notice — a plugin step's image
+	// is the chroot target, not a VM-image candidate
+	if len(j.Steps) != 2 {
 		t.Fatalf("steps: %+v", j.Steps)
 	}
-	if j.Steps[1].Env["FOO"] != "bar" {
-		t.Fatalf("environment lost: %+v", j.Steps[1])
+	if j.Steps[0].Env["FOO"] != "bar" {
+		t.Fatalf("environment lost: %+v", j.Steps[0])
 	}
 
 	droneRoot := t.TempDir()
@@ -758,5 +759,130 @@ steps:
 		if !strings.Contains(s.Command, needle) {
 			t.Fatalf("lifecycle lacks %q:\n%s", needle, s.Command)
 		}
+	}
+}
+
+func TestDronePluginsExecute(t *testing.T) {
+	oldPull := PullImageFunc
+	PullImageFunc = func(ref string) (PulledImage, error) {
+		if ref != "plugins/download" {
+			return PulledImage{}, fmt.Errorf("no fixture for %s", ref)
+		}
+		return PulledImage{
+			Rootfs:     "/host/cache/oci/sha-x/rootfs",
+			Entrypoint: []string{"/bin/drone-download"},
+			Env:        []string{"PATH=/bin", "GODEBUG=netdns=go"},
+		}, nil
+	}
+	defer func() { PullImageFunc = oldPull }()
+
+	root := t.TempDir()
+	write(t, root, ".drone.yml", `
+kind: pipeline
+name: default
+steps:
+  - name: fetch
+    image: plugins/download
+    settings:
+      source: https://example.com/file.txt
+      md5: abc
+      tags:
+        - one
+        - two
+  - name: use
+    image: alpine:3.20
+    commands: [test -f file.txt]
+`)
+	jobs, err := loadDrone(root, testRepo)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("jobs: %+v, %v", jobs, err)
+	}
+	j := jobs[0]
+	var plugin *Step
+	for i := range j.Steps {
+		if strings.Contains(j.Steps[i].Name, "plugin: plugins/download") {
+			plugin = &j.Steps[i]
+		}
+	}
+	if plugin == nil {
+		t.Fatalf("plugin step missing: %+v", j.Steps)
+	}
+	// Drone's settings flattening: upper keys, lists comma-joined.
+	if plugin.Env["PLUGIN_SOURCE"] != "https://example.com/file.txt" ||
+		plugin.Env["PLUGIN_TAGS"] != "one,two" {
+		t.Fatalf("settings env: %v", plugin.Env)
+	}
+	// The image's own env rides along, and DRONE identity is set.
+	if plugin.Env["GODEBUG"] != "netdns=go" || plugin.Env["DRONE_WORKSPACE"] != "/drone/src" {
+		t.Fatalf("image/identity env: %v", plugin.Env)
+	}
+	// The execution shape: overlay, workspace bind, cwd trick, chroot.
+	for _, needle := range []string{
+		"mount -t overlay", "mount --bind /tangled/workspace",
+		`cd "$W/root/drone/src"`, `chroot "$W/root" '/bin/drone-download'`,
+	} {
+		if !strings.Contains(plugin.Command, needle) {
+			t.Fatalf("execution lacks %q:\n%s", needle, plugin.Command)
+		}
+	}
+	// And the VM must mount the pulled rootfs read-only.
+	if len(j.ExtraMounts) != 1 || !strings.HasPrefix(j.ExtraMounts[0], "/host/cache/oci/sha-x/rootfs:") ||
+		!strings.HasSuffix(j.ExtraMounts[0], ":ro") {
+		t.Fatalf("mounts: %v", j.ExtraMounts)
+	}
+
+	// The VM boots the command-step's image; a scratch plugin image must
+	// never be a boot candidate, and its divergence is not announced.
+	if j.Image != "alpine:3.20" {
+		t.Fatalf("plugin image leaked into VM image: %q", j.Image)
+	}
+	for _, s := range j.Steps {
+		if strings.Contains(s.Name, "per-step images") {
+			t.Fatalf("plugin step should not trigger a divergence notice: %+v", j.Steps)
+		}
+	}
+
+	// Woodpecker rides the same path but speaks CI_* alongside PLUGIN_*.
+	wpRoot := t.TempDir()
+	write(t, wpRoot, ".woodpecker.yml", `
+steps:
+  - name: fetch
+    image: plugins/download
+    settings: {source: https://example.com/file.txt}
+  - name: use
+    image: alpine:3.20
+    commands: [test -f file.txt]
+`)
+	wpJobs, err := loadWoodpecker(wpRoot, testRepo)
+	if err != nil || len(wpJobs) != 1 {
+		t.Fatalf("woodpecker jobs: %+v, %v", wpJobs, err)
+	}
+	var wpPlugin *Step
+	for i := range wpJobs[0].Steps {
+		if strings.Contains(wpJobs[0].Steps[i].Name, "plugin: plugins/download") {
+			wpPlugin = &wpJobs[0].Steps[i]
+		}
+	}
+	if wpPlugin == nil {
+		t.Fatalf("woodpecker plugin step missing: %+v", wpJobs[0].Steps)
+	}
+	if wpPlugin.Env["CI"] != "woodpecker" || wpPlugin.Env["CI_WORKSPACE"] != "/drone/src" ||
+		wpPlugin.Env["CI_COMMIT_SHA"] != testRepo.Sha || wpPlugin.Env["DRONE"] != "true" {
+		t.Fatalf("woodpecker plugin env: %v", wpPlugin.Env)
+	}
+
+	// A pull failure stays a visible skip, never a silent one.
+	PullImageFunc = func(ref string) (PulledImage, error) {
+		return PulledImage{}, fmt.Errorf("registry unreachable")
+	}
+	jobs, _ = loadDrone(root, testRepo)
+	found := false
+	for _, s := range jobs[0].Steps {
+		if strings.Contains(s.Name, "skipped") && strings.Contains(s.Command, "registry unreachable") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("pull failure must be a visible skip: %+v", jobs[0].Steps)
 	}
 }

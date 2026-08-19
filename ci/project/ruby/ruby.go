@@ -23,11 +23,13 @@ func (Provider) Detect(dir string) (string, bool) {
 
 func (Provider) Job(dir string) platforms.Job {
 	steps := []platforms.Step{
-		// ruby:slim ships no toolchain, and the gem ecosystem is full of
-		// native extensions (minitest 6 pulls prism); a compiler is table
-		// stakes, not an optimization.
-		step("install build tools",
-			"apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq --no-install-recommends build-essential"),
+		// The full image, not slim, deliberately: it ships git and the
+		// compiler toolchain the gem ecosystem's native extensions need
+		// (minitest 6 pulls prism), so no apt runs at all — debian's CDN
+		// has served the guest deterministically skewed snapshots that no
+		// retry fixes. The guard stays for custom images that lack gcc.
+		step("ensure build tools",
+			"command -v gcc >/dev/null 2>&1 || { apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq --no-install-recommends build-essential; }"),
 		step("bundle install", "bundle install"),
 	}
 	switch {
@@ -36,7 +38,7 @@ func (Provider) Job(dir string) platforms.Job {
 	case probe.Exists(dir, "Rakefile") && probe.Exists(dir, "test"):
 		steps = append(steps, step("rake test", "bundle exec rake test"))
 	}
-	return job("ruby:3.3-slim", steps...)
+	return job("ruby:3.3", steps...)
 }
 
 func job(image string, steps ...platforms.Step) platforms.Job {

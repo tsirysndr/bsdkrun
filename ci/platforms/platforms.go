@@ -51,6 +51,9 @@ type Job struct {
 	// MinMemMiB raises the VM's memory when the default would starve the
 	// job (a real Jenkins needs heap, not hope).
 	MinMemMiB int
+	// ExtraMounts are host:guest:ro mounts the VM needs — plugin image
+	// rootfs, pulled host-side at plan time.
+	ExtraMounts []string
 }
 
 // Repo is what the translators may know about the checkout.

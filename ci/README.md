@@ -171,6 +171,20 @@ executes the Jenkinsfile in it. Purely structural pipelines keep the fast
 translation path. See
 [`examples/ci-jenkins-real`](../examples/ci-jenkins-real).
 
+**Drone plugins run for real, without a Docker daemon.** A Drone plugin is
+a container image whose settings arrive as `PLUGIN_*` env and whose
+entrypoint does the work — so the runner pulls the plugin image's rootfs
+host-side at plan time (same cache, same registry resilience), mounts it
+read-only into the guest, overlays it writable, binds the workspace at
+`/drone/src`, and chroot-executes the entrypoint with Drone's exact
+settings flattening. No shell needed inside the image — scratch plus one
+static binary works. Plugins that need an actual Docker daemon
+(`plugins/docker`) fail inside with their own error. See
+[`examples/ci-drone-plugins`](../examples/ci-drone-plugins), which runs
+the real `plugins/download`. Woodpecker pipelines get the identical
+machinery — same `PLUGIN_*` protocol, plus Woodpecker's `CI_*` identity
+variables — via [`examples/ci-woodpecker-plugins`](../examples/ci-woodpecker-plugins).
+
 What deliberately does not translate elsewhere is announced rather than
 faked: orbs, human gates and cross-pipeline triggers become
 visible skipped steps in the timeline; matrix strategies run once and say

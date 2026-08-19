@@ -56,7 +56,7 @@ type dwPipeline struct {
 }
 
 func loadDrone(root string, repo Repo) ([]Job, error) {
-	return dwLoadFiles([]string{filepath.Join(root, ".drone.yml")}, "drone")
+	return dwLoadFiles([]string{filepath.Join(root, ".drone.yml")}, "drone", repo)
 }
 
 func loadWoodpecker(root string, repo Repo) ([]Job, error) {
@@ -67,10 +67,10 @@ func loadWoodpecker(root string, repo Repo) ([]Job, error) {
 		}
 	}
 	files = append(files, yamlFiles(filepath.Join(root, ".woodpecker"))...)
-	return dwLoadFiles(files, "woodpecker")
+	return dwLoadFiles(files, "woodpecker", repo)
 }
 
-func dwLoadFiles(files []string, flavor string) ([]Job, error) {
+func dwLoadFiles(files []string, flavor string, repo Repo) ([]Job, error) {
 	var out []Job
 	for _, f := range files {
 		data, err := os.ReadFile(f)
@@ -86,7 +86,7 @@ func dwLoadFiles(files []string, flavor string) ([]Job, error) {
 			if err != nil {
 				break // io.EOF or a trailing empty document
 			}
-			job, ok := dwPipelineJob(f, docIdx, p)
+			job, ok := dwPipelineJob(f, docIdx, p, repo, flavor)
 			if ok {
 				out = append(out, job)
 			}
@@ -96,7 +96,7 @@ func dwLoadFiles(files []string, flavor string) ([]Job, error) {
 	return out, nil
 }
 
-func dwPipelineJob(file string, docIdx int, p dwPipeline) (Job, bool) {
+func dwPipelineJob(file string, docIdx int, p dwPipeline, dwRepo Repo, flavor string) (Job, bool) {
 	steps := p.Steps
 	if len(steps) == 0 && !p.Pipeline.IsZero() {
 		// Woodpecker's legacy `pipeline:` map keeps declaration order in the
@@ -129,13 +129,18 @@ func dwPipelineJob(file string, docIdx int, p dwPipeline) (Job, bool) {
 		}
 	}
 
-	// One VM, one image: the first step's. Divergence is announced, not
-	// hidden.
+	// One VM, one image: the first command-step's. Divergence is announced,
+	// not hidden. Plugin steps (settings, no commands) don't vote — their
+	// image is the chroot target mounted into the VM, not the VM itself; a
+	// scratch-plus-one-binary plugin image cannot boot the agent.
 	var divergent []string
 	for _, s := range steps {
-		if s.Image != "" && job.Image == "" {
+		if s.Image == "" || (len(s.Commands) == 0 && !s.Settings.IsZero()) {
+			continue
+		}
+		if job.Image == "" {
 			job.Image = s.Image
-		} else if s.Image != "" && s.Image != job.Image {
+		} else if s.Image != job.Image {
 			divergent = append(divergent, fmt.Sprintf("%s (%s)", s.Name, s.Image))
 		}
 	}
@@ -155,10 +160,19 @@ func dwPipelineJob(file string, docIdx int, p dwPipeline) (Job, bool) {
 		}
 		if len(s.Commands) == 0 {
 			if !s.Settings.IsZero() {
-				job.Steps = append(job.Steps, Step{
-					Name:    name + " (plugin, skipped)",
-					Command: fmt.Sprintf(`echo "skipped plugin step %s — plugins are not supported locally"`, name),
-				})
+				// A settings step IS a plugin invocation: pull the image,
+				// chroot-execute its entrypoint with PLUGIN_* env (see
+				// droneplugins.go). What cannot pull skips visibly.
+				pluginStep, mount, err := dronePluginStep(name, s.Image, s.Settings, dwRepo, flavor)
+				if err != nil {
+					job.Steps = append(job.Steps, Step{
+						Name:    name + " (plugin, skipped)",
+						Command: fmt.Sprintf(`echo "skipped plugin step %s — %s"`, name, strings.ReplaceAll(err.Error(), `"`, `'`)),
+					})
+					continue
+				}
+				job.Steps = append(job.Steps, pluginStep)
+				job.ExtraMounts = append(job.ExtraMounts, mount)
 			}
 			continue
 		}

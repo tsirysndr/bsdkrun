@@ -107,6 +107,30 @@ pub(crate) fn cmd_image_rm(ids: &[String], force: bool) -> Result<()> {
 }
 
 #[allow(clippy::print_literal)] // padded tabular headers read clearer as args
+/// Pull (or reuse from cache) and report where the rootfs landed plus the
+/// image's runtime config — what lets tooling on top (the CI runner's drone
+/// plugin support) execute an image's entrypoint without a container
+/// runtime: the rootfs is a directory, the config says what to run in it.
+pub(crate) fn cmd_image_pull(reference: &str, json: bool) -> Result<()> {
+    let img = crate::oci::pull(reference)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "rootfs": img.rootfs,
+                "digest": img.digest,
+                "entrypoint": img.config.entrypoint,
+                "cmd": img.config.cmd,
+                "env": img.config.env,
+                "workdir": img.config.workdir,
+            })
+        );
+    } else {
+        println!("{}", img.rootfs.display());
+    }
+    Ok(())
+}
+
 pub(crate) fn cmd_images(json: bool) -> Result<()> {
     let images = api::list_images()?;
     if json {

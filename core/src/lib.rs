@@ -133,6 +133,7 @@ pub fn dispatch(cmd: Command) -> Result<()> {
         Command::Images(args) => commands::images::cmd_images(args.json),
         Command::Image(args) => match args.cmd {
             ImageCmd::Rm(a) => commands::images::cmd_image_rm(&a.ids, a.force),
+            ImageCmd::Pull(a) => commands::images::cmd_image_pull(&a.reference, a.json),
         },
         Command::Stop(args) => commands::machines::cmd_stop(&args.id),
         Command::Start(args) => commands::boot::cmd_start(&args.id),

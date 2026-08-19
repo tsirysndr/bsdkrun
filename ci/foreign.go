@@ -8,8 +8,10 @@ package main
 // job's own environment.
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/tsirysndr/bsdkrun/ci/platforms"
@@ -31,6 +33,23 @@ func platformRepo(repo *repoInfo) platforms.Repo {
 // ghToken is the operator's GITHUB_TOKEN secret, set by cmdRun before any
 // plan is built — what real actions authenticate with.
 var ghToken string
+
+func init() {
+	// Drone plugin images pull through the bsdkrun that launched this tool
+	// — the same binary, the same cache, the same registry resilience.
+	platforms.PullImageFunc = func(ref string) (platforms.PulledImage, error) {
+		out, err := exec.Command(bsdkrunBin(),
+			"--log-level", "0", "image", "pull", ref, "--json").Output()
+		if err != nil {
+			return platforms.PulledImage{}, fmt.Errorf("bsdkrun image pull %s: %w", ref, err)
+		}
+		var img platforms.PulledImage
+		if err := json.Unmarshal(out, &img); err != nil {
+			return platforms.PulledImage{}, fmt.Errorf("parsing image pull output: %w", err)
+		}
+		return img, nil
+	}
+}
 
 // foreignPlans loads the platform's jobs and turns the runnable ones into
 // plans. Skipped jobs (non-Linux) and name filtering are announced on
@@ -86,12 +105,13 @@ func foreignPlan(platform string, job platforms.Job, repo *repoInfo) *Plan {
 		workdir = filepath.Join(workspaceDir, repo.Subdir)
 	}
 	return &Plan{
-		Name:      job.Name,
-		Platform:  platform,
-		Image:     image,
-		Env:       env,
-		Steps:     steps,
-		Workdir:   workdir,
-		MinMemMiB: job.MinMemMiB,
+		Name:        job.Name,
+		Platform:    platform,
+		Image:       image,
+		Env:         env,
+		Steps:       steps,
+		Workdir:     workdir,
+		MinMemMiB:   job.MinMemMiB,
+		ExtraMounts: job.ExtraMounts,
 	}
 }

@@ -507,6 +507,19 @@ pub struct ImageArgs {
 pub enum ImageCmd {
     /// Remove dangling images (ones no machine uses) and their rootfs.
     Rm(ImageRmArgs),
+    /// Pull an image (or reuse the cache) and print its rootfs + config.
+    Pull(ImagePullArgs),
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct ImagePullArgs {
+    /// Image reference, e.g. `alpine:3.20` or `plugins/download`.
+    #[arg(value_name = "IMAGE")]
+    pub reference: String,
+
+    /// Print {rootfs, entrypoint, cmd, env, workdir} as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Parser, Serialize, Deserialize)]

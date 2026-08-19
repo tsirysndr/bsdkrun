@@ -276,6 +276,39 @@ jobs:
           grep -q "jenkins-real-example-ok" /tmp/ci-jfr.log
           test "$rc" -eq 0
 
+      # Real Drone plugins, daemon-less: plugins/download's rootfs pulled
+      # host-side, chroot-executed with PLUGIN_* env; the next step asserts
+      # the fetched file arrived in the shared workspace.
+      - name: e2e — real Drone plugins (plugins/download executes)
+        continue-on-error: true # flip to false after the first green run on x86_64
+        run: |
+          set -eux
+          d=$(mktemp -d)
+          cp -r "examples/ci-drone-plugins/." "$d"
+          git -C "$d" init -q && git -C "$d" add -A
+          git -C "$d" -c user.email=ci@e2e -c user.name=e2e commit -qm init
+          set +e
+          timeout 900 ./target/release/bsdkrun ci run --plain -w "$d" 2>&1 | tee /tmp/ci-dp.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          grep -q "drone-plugins-example-ok" /tmp/ci-dp.log
+          test "$rc" -eq 0
+
+      - name: e2e — real Woodpecker plugins (same protocol, CI_* identity)
+        continue-on-error: true # flip to false after the first green run on x86_64
+        run: |
+          set -eux
+          d=$(mktemp -d)
+          cp -r "examples/ci-woodpecker-plugins/." "$d"
+          git -C "$d" init -q && git -C "$d" add -A
+          git -C "$d" -c user.email=ci@e2e -c user.name=e2e commit -qm init
+          set +e
+          timeout 900 ./target/release/bsdkrun ci run --plain -w "$d" 2>&1 | tee /tmp/ci-wp.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          grep -q "woodpecker-plugins-example-ok" /tmp/ci-wp.log
+          test "$rc" -eq 0
+
       # No CI config at all: the runner must detect the project (a bare Go
       # module here) and generate + run a workflow for it. Asserts the
       # detection announcement and the test-before-build execution.

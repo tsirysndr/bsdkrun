@@ -88,6 +88,8 @@ type Plan struct {
 	Platform string
 	// MinMemMiB raises the VM memory floor for jobs that need it.
 	MinMemMiB int
+	// ExtraMounts are additional host:guest:ro mounts (plugin rootfs).
+	ExtraMounts []string
 	// Workdir is where user steps start; empty means the workspace root.
 	// Set when the workflows live in a subdirectory of the repository.
 	Workdir string

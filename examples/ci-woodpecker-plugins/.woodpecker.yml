@@ -1,0 +1,12 @@
+steps:
+  - name: fetch
+    image: plugins/download
+    settings:
+      source: https://raw.githubusercontent.com/git/git/master/README.md
+      destination: fetched.md
+
+  - name: verify
+    image: alpine:3.20
+    commands:
+      - test -s fetched.md
+      - echo "woodpecker-plugins-example-ok"

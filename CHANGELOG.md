@@ -29,6 +29,14 @@ shipped alongside it.
   run-time resolution of step outputs. Container actions and pre/post
   hooks are refused visibly. Verified by running the actual
   oven-sh/setup-bun@v2 end to end.
+- **Drone plugins execute for real, daemon-less** — the plugin image's
+  rootfs is pulled host-side (new `bsdkrun image pull --json` verb),
+  mounted read-only into the guest, overlaid writable, and the entrypoint
+  chroot-executed with Drone's PLUGIN_* settings flattening, the workspace
+  bound at /drone/src. Scratch-plus-one-binary plugin images work; daemon
+  plugins fail inside with their own error. Woodpecker settings steps ride
+  the same path, with `CI=woodpecker` and `CI_*` identity alongside the
+  drone-compatible `PLUGIN_*`/`DRONE_*` set.
 - **Buildkite plugins execute for real** — cloned at their ref, configured
   through Buildkite's own BUILDKITE_PLUGIN_* env flattening, hooks wrapped
   around the command in the agent's order (environment sourced,

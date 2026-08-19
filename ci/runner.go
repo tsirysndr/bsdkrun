@@ -76,6 +76,7 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 	if opts.Source != "" {
 		mounts = append(mounts, opts.Source+":"+sourceMount+":ro")
 	}
+	mounts = append(mounts, plan.ExtraMounts...)
 	name := vmName(plan.Name)
 
 	// A job may declare a memory floor (a real Jenkins in 2 GiB just

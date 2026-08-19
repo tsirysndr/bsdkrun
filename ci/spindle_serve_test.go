@@ -9,8 +9,10 @@ package main
 // in someone's swapped-out deployment.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -128,7 +130,9 @@ func TestSpindleSurface(t *testing.T) {
 		})
 	}
 
-	t.Run("motd names the service", func(t *testing.T) {
+	// `/` is what a human sees when they open a spindle, so it serves
+	// spindle's own greeting verbatim rather than something of our own.
+	t.Run("motd is spindle's, verbatim", func(t *testing.T) {
 		resp, err := http.Get(srv.URL + "/")
 		if err != nil {
 			t.Fatal(err)
@@ -136,6 +140,19 @@ func TestSpindleSurface(t *testing.T) {
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
 			t.Fatalf("status %d", resp.StatusCode)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(body, defaultMotd) {
+			t.Fatalf("/ must serve the embedded motd byte for byte, got %d bytes", len(body))
+		}
+		if !bytes.Contains(body, []byte("This is a spindle server")) {
+			t.Fatal("the embedded motd lost its text")
+		}
+		if !bytes.Contains(body, []byte("****")) {
+			t.Fatal("the embedded motd lost its ascii art")
 		}
 	})
 }

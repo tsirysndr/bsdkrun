@@ -75,7 +75,9 @@ shipped alongside it.
   jetstream firehose (`sh.tangled.repo` naming this hostname), or
   `triggerPipeline`. Pull-request pipelines from `sh.tangled.repo.pull`
   records and the embedded tap relay are not implemented yet. See
-  ci/README.md § Self-hosting a spindle.
+  ci/README.md § Self-hosting a spindle. `/` serves spindle's own greeting —
+  ascii art and text, byte for byte — with `SPINDLE_SERVER_MOTD_FILE` to
+  replace it.
 
 ## [0.11.2] — 2026-08-19
 

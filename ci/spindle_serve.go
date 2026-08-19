@@ -21,6 +21,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -51,6 +52,12 @@ import (
 	"tangled.org/core/workflow"
 	"tangled.org/core/xrpc/serviceauth"
 )
+
+// defaultMotd is spindle's own greeting, embedded so `/` looks the same
+// whichever implementation is answering it.
+//
+//go:embed motd
+var defaultMotd []byte
 
 // rbacDomain is spindle's constant: every policy in the ACL is scoped to it.
 const rbacDomain = rbac.ThisServer
@@ -241,10 +248,29 @@ func (s *spindleServer) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/", s.motd)
 }
 
+// motd answers `/` the way spindle does: the bytes, verbatim, with no
+// content type of its own — a human opening the root of a spindle sees the
+// spindle. The default is upstream's own file, kept here byte for byte
+// because this server stands in for one; SPINDLE_SERVER_MOTD_FILE replaces
+// it, which is the same escape hatch spindle offers through SetMotdContent.
 func (s *spindleServer) motd(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "bsdkrun ci serve — a spindle-compatible runner on libkrun microVMs\n")
-	fmt.Fprintf(w, "did: %s\n", s.cfg.Server.Did())
-	fmt.Fprintf(w, "engines: %s\n", strings.Join(engineNames(), ", "))
+	w.Write(s.motdContent())
+}
+
+// motdContent is the file named by SPINDLE_SERVER_MOTD_FILE when it can be
+// read, and the embedded default otherwise. A named file that cannot be read
+// is reported rather than silently ignored — an operator who set it meant it.
+func (s *spindleServer) motdContent() []byte {
+	path := os.Getenv("SPINDLE_SERVER_MOTD_FILE")
+	if path == "" {
+		return defaultMotd
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		s.l.Warn("cannot read SPINDLE_SERVER_MOTD_FILE, serving the default", "path", path, "err", err)
+		return defaultMotd
+	}
+	return b
 }
 
 // events is spindle's /events: a WebSocket replaying every pipeline and

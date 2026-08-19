@@ -34,11 +34,15 @@ import (
 	"strings"
 	"time"
 
+	"net/http"
+	"net/url"
+
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	indigoxrpc "github.com/bluesky-social/indigo/xrpc"
 	jsmodels "github.com/bluesky-social/jetstream/pkg/models"
 
 	"tangled.org/core/api/tangled"
+	avmodels "tangled.org/core/appview/models"
 	"tangled.org/core/eventconsumer"
 	"tangled.org/core/eventconsumer/cursor"
 	"tangled.org/core/eventstream"
@@ -244,6 +248,7 @@ func (s *spindleServer) startJetstream(ctx context.Context) error {
 		tangled.SpindleMemberNSID,
 		tangled.RepoNSID,
 		tangled.RepoCollaboratorNSID,
+		tangled.RepoPullNSID,
 	}
 	jc, err := jetstream.NewJetstreamClient(
 		s.cfg.Server.JetstreamEndpoint, "bsdkrun-spindle", collections, nil,
@@ -254,6 +259,9 @@ func (s *spindleServer) startJetstream(ctx context.Context) error {
 	// The firehose is filtered by DID: without this it would carry the whole
 	// network. Everyone already known, plus the owner, is who we listen for.
 	jc.AddDid(s.cfg.Server.Owner)
+	// Pull requests are opened by people this server has never heard of, so
+	// that collection is exempt from the DID filter — upstream does the same.
+	jc.ExemptCollection(tangled.RepoPullNSID)
 	if dids, err := s.db.GetAllDids(); err == nil {
 		for _, did := range dids {
 			jc.AddDid(did)
@@ -285,6 +293,8 @@ func (s *spindleServer) processFirehose(ctx context.Context, e *jsmodels.Event) 
 		return s.onRepoRecord(ctx, e)
 	case tangled.SpindleMemberNSID:
 		return s.onMemberRecord(ctx, e)
+	case tangled.RepoPullNSID:
+		return s.onPullRecord(ctx, e)
 	}
 	return nil
 }
@@ -310,10 +320,10 @@ func (s *spindleServer) onRepoRecord(ctx context.Context, e *jsmodels.Event) err
 	owner := syntax.DID(e.Did)
 	repoDid := syntax.DID(*record.RepoDid)
 	repo := db.Repo{
-		Knot:    record.Knot,
-		Owner:   owner,
-		Rkey:    syntax.RecordKey(e.Commit.RKey),
-		RepoDid: repoDid,
+		Knot:      record.Knot,
+		Owner:     owner,
+		Rkey:      syntax.RecordKey(e.Commit.RKey),
+		RepoDid:   repoDid,
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
 	if err := s.db.AddRepo(repo); err != nil {
@@ -370,6 +380,113 @@ func (s *spindleServer) onMemberRecord(ctx context.Context, e *jsmodels.Event) e
 	}
 	s.l.Info("spindle member added", "subject", record.Subject, "by", e.Did)
 	return nil
+}
+
+// onPullRecord runs a pull request. Only branch-based pull requests against
+// a repo of ours qualify: a patch-based one has no branch to check out, and a
+// fork-based one would mean fetching from a repository this server has not
+// been asked to trust.
+func (s *spindleServer) onPullRecord(ctx context.Context, e *jsmodels.Event) error {
+	if e.Commit.Operation == jsmodels.CommitOperationDelete {
+		return nil
+	}
+	var record tangled.RepoPull
+	if err := json.Unmarshal(e.Commit.Record, &record); err != nil {
+		return fmt.Errorf("malformed sh.tangled.repo.pull: %w", err)
+	}
+	if record.Target == nil {
+		return nil // legacy record, no target repo
+	}
+	if record.Source == nil || record.Source.Repo != nil {
+		return nil // patch-based or fork-based
+	}
+
+	targetDid, err := syntax.ParseDID(record.Target.Repo)
+	if err != nil {
+		return nil
+	}
+	repo, err := s.db.GetRepoByDid(targetDid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // someone else's repo
+	}
+	if err != nil {
+		return fmt.Errorf("looking up target repo %s: %w", targetDid, err)
+	}
+
+	// The SHA to build is the head of the pull's newest round, which lives in
+	// a blob on the author's PDS rather than in the record.
+	sourceSha, err := s.latestPullSha(ctx, e.Did, e.Commit.RKey, &record)
+	if err != nil {
+		return fmt.Errorf("resolving the pull's latest submission: %w", err)
+	}
+
+	pullUri := fmt.Sprintf("at://%s/%s/%s", e.Did, tangled.RepoPullNSID, e.Commit.RKey)
+	trigger := tangled.Pipeline_TriggerMetadata{
+		Kind: string(workflow.TriggerKindPullRequest),
+		PullRequest: &tangled.Pipeline_PullRequestTriggerData{
+			SourceBranch: record.Source.Branch,
+			SourceSha:    sourceSha,
+			TargetBranch: record.Target.Branch,
+			Pull:         &pullUri,
+		},
+		Repo: s.triggerRepo(ctx, repo),
+	}
+
+	pipelineId, err := s.runPipeline(ctx, targetDid, trigger, sourceSha, nil)
+	if err != nil {
+		return err
+	}
+	if pipelineId.Rkey == "" {
+		s.l.Info("no workflow matches a pull_request trigger", "pull", pullUri)
+		return nil
+	}
+	s.l.Info("pipeline triggered by pull request", "pipeline", pipelineId.AtUri(), "pull", pullUri)
+	return nil
+}
+
+// latestPullSha fetches the newest round's submission blob from the author's
+// PDS and reads the revision it was cut from.
+func (s *spindleServer) latestPullSha(ctx context.Context, did, rkey string, record *tangled.RepoPull) (string, error) {
+	if len(record.Rounds) == 0 {
+		return "", errors.New("pull record has no rounds")
+	}
+	ident, err := s.res.ResolveIdent(ctx, did)
+	if err != nil {
+		return "", fmt.Errorf("resolving %s: %w", did, err)
+	}
+	roundNumber := len(record.Rounds) - 1
+	round := record.Rounds[roundNumber]
+	if round == nil || round.PatchBlob == nil {
+		return "", errors.New("pull round carries no patch blob")
+	}
+
+	blobURL, err := url.Parse(ident.PDSEndpoint() + "/xrpc/com.atproto.sync.getBlob")
+	if err != nil {
+		return "", err
+	}
+	q := blobURL.Query()
+	q.Set("cid", round.PatchBlob.Ref.String())
+	q.Set("did", did)
+	blobURL.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, blobURL.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetching the submission blob: %w", err)
+	}
+	defer resp.Body.Close()
+
+	submission, err := avmodels.PullSubmissionFromRecord(did, rkey, roundNumber, round, resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("parsing the submission: %w", err)
+	}
+	if submission.SourceRev == "" {
+		return "", errors.New("submission names no source revision")
+	}
+	return submission.SourceRev, nil
 }
 
 // syncRepo fetches a repo at a revision into the server's repo directory.

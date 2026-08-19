@@ -247,9 +247,19 @@ pub fn pull(reference: &str) -> Result<Image> {
                 store_blob(&tmp, digest)?
             }
         };
+        // Whiteouts hide what the layers BELOW put there, so they have to be
+        // applied before this layer is unpacked, not after: an opaque marker
+        // and the files replacing that directory ride in the same layer, and
+        // deleting afterwards deletes the replacements too. That is not
+        // theoretical — plugins/download's amd64 image ships /bin/.wh..wh..opq
+        // beside /bin/drone-download, and applying it afterwards left /bin
+        // empty and the guest reporting "can't execute: No such file or
+        // directory" for a binary that had just been extracted.
+        apply_whiteouts_from_layer(&blob, &staging_rootfs)
+            .with_context(|| format!("applying whiteouts of layer {i} ({digest})"))?;
         extract_layer(&blob, &staging_rootfs)
             .with_context(|| format!("extracting layer {i} ({digest})"))?;
-        apply_whiteouts(&staging_rootfs)?;
+        remove_whiteout_markers(&staging_rootfs)?;
         // Deliberately kept: deleting it here is what used to make the next
         // image re-download layers it already had.
     }
@@ -774,46 +784,74 @@ fn extract_layer(blob: &Path, rootfs: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Apply OCI whiteouts left by the most recently extracted layer.
+/// Apply the whiteouts a layer declares, against what the layers below left.
 ///
-/// `.wh.<name>` deletes `<name>` from the layers below; `.wh..wh..opq` marks its
-/// directory opaque (hide everything inherited from below). We delete the marked
-/// targets and remove the marker files themselves.
-fn apply_whiteouts(root: &Path) -> Result<()> {
-    fn walk(dir: &Path) -> Result<()> {
-        let entries: Vec<_> = match std::fs::read_dir(dir) {
-            Ok(rd) => rd.filter_map(|e| e.ok()).collect(),
-            Err(_) => return Ok(()),
-        };
-        for e in &entries {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            if name == ".wh..wh..opq" {
-                // Opaque dir: drop every non-marker sibling.
-                for sib in &entries {
-                    let sname = sib.file_name();
-                    if !sname.to_string_lossy().starts_with(".wh.") {
-                        remove_any(&sib.path());
-                    }
-                }
-                let _ = std::fs::remove_file(e.path());
-            } else if let Some(target) = name.strip_prefix(".wh.") {
-                remove_any(&dir.join(target));
-                let _ = std::fs::remove_file(e.path());
-            }
-        }
-        // Recurse into surviving subdirectories.
-        if let Ok(rd) = std::fs::read_dir(dir) {
-            for e in rd.filter_map(|e| e.ok()) {
-                let p = e.path();
-                if p.is_dir() && !p.is_symlink() {
-                    walk(&p)?;
-                }
-            }
-        }
-        Ok(())
+/// `.wh.<name>` deletes `<name>`; `.wh..wh..opq` makes its directory opaque —
+/// everything inherited from below is hidden. Both are read from the layer's
+/// tar listing and applied to the rootfs *before* the layer is unpacked, which
+/// is the only ordering that preserves the layer's own files: a directory is
+/// routinely emptied and refilled by one and the same layer.
+fn apply_whiteouts_from_layer(blob: &Path, root: &Path) -> Result<()> {
+    let out = Command::new("tar")
+        .arg("-tf")
+        .arg(blob)
+        .output()
+        .context("listing layer entries")?;
+    if !out.status.success() {
+        // A listing we cannot read is not worth failing the pull over: the
+        // extraction below will report anything genuinely broken.
+        warn!(
+            "could not list layer entries to apply whiteouts: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        return Ok(());
     }
-    walk(root)
+
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let rel = line.trim_start_matches("./").trim_end_matches('/');
+        if rel.is_empty() {
+            continue;
+        }
+        let (dir, name) = match rel.rsplit_once('/') {
+            Some((d, n)) => (root.join(d), n),
+            None => (root.to_path_buf(), rel),
+        };
+        if name == ".wh..wh..opq" {
+            // Opaque: drop what the lower layers put in this directory. The
+            // directory itself stays, so this layer can refill it.
+            if let Ok(rd) = std::fs::read_dir(&dir) {
+                for e in rd.filter_map(|e| e.ok()) {
+                    remove_any(&e.path());
+                }
+            }
+        } else if let Some(target) = name.strip_prefix(".wh.") {
+            remove_any(&dir.join(target));
+        }
+    }
+    Ok(())
+}
+
+/// Marker files are metadata, not content: whatever the extraction wrote must
+/// not survive into the rootfs the guest sees.
+fn remove_whiteout_markers(root: &Path) -> Result<()> {
+    fn walk(dir: &Path) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.filter_map(|e| e.ok()) {
+            let path = e.path();
+            let name = e.file_name();
+            if name.to_string_lossy().starts_with(".wh.") {
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
+            if path.is_dir() && !path.is_symlink() {
+                walk(&path);
+            }
+        }
+    }
+    walk(root);
+    Ok(())
 }
 
 fn remove_any(p: &Path) {
@@ -932,5 +970,55 @@ mod tests {
         let path = store_blob(&tmp, &digest).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), body);
         let _ = std::fs::remove_file(path);
+    }
+
+    /// An opaque whiteout hides what the layers *below* put in a directory —
+    /// never what its own layer puts there. Applying it after extraction is
+    /// the bug this guards: plugins/download's amd64 image ships
+    /// `/bin/.wh..wh..opq` beside `/bin/drone-download`, and the wrong order
+    /// left `/bin` empty and the guest reporting "No such file or directory"
+    /// for a binary that had just been unpacked.
+    #[test]
+    fn opaque_whiteout_keeps_its_own_layer() {
+        let tmp = std::env::temp_dir().join(format!("bsdkrun-wh-{}", std::process::id()));
+        let build = tmp.join("build/bin");
+        let rootfs = tmp.join("rootfs");
+        std::fs::create_dir_all(&build).unwrap();
+        std::fs::create_dir_all(rootfs.join("bin")).unwrap();
+
+        // The rootfs as the lower layers left it.
+        std::fs::write(rootfs.join("bin/inherited"), b"from below").unwrap();
+
+        // A layer that empties /bin and puts its own binary there.
+        std::fs::write(build.join(".wh..wh..opq"), b"").unwrap();
+        std::fs::write(build.join("replacement"), b"from this layer").unwrap();
+        let layer = tmp.join("layer.tar");
+        let status = Command::new("tar")
+            .arg("-cf")
+            .arg(&layer)
+            .arg("-C")
+            .arg(tmp.join("build"))
+            .arg(".")
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        apply_whiteouts_from_layer(&layer, &rootfs).unwrap();
+        extract_layer(&layer, &rootfs).unwrap();
+        remove_whiteout_markers(&rootfs).unwrap();
+
+        assert!(
+            rootfs.join("bin/replacement").exists(),
+            "the layer's own file must survive its opaque whiteout"
+        );
+        assert!(
+            !rootfs.join("bin/inherited").exists(),
+            "inherited content must be hidden by the opaque whiteout"
+        );
+        assert!(
+            !rootfs.join("bin/.wh..wh..opq").exists(),
+            "marker files must not reach the guest"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

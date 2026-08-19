@@ -18,6 +18,18 @@ shipped alongside it.
 
 ## [Unreleased]
 
+### Fixed
+
+- **OCI opaque whiteouts no longer delete their own layer's files.** An
+  `.wh..wh..opq` marker hides what the layers *below* put in a directory, but
+  whiteouts were applied after the layer was unpacked, so a layer that empties
+  a directory and refills it — which is routine — lost its own contents. The
+  visible symptom was a guest reporting `can't execute '/bin/x': No such file
+  or directory` for a binary that had just been extracted, on images whose
+  amd64 variant carries the marker while arm64 does not (`plugins/download`).
+  Whiteouts are now read from the layer's listing and applied before it is
+  unpacked, and marker files never reach the guest.
+
 ### Added
 
 - **`bsdkrun ci serve` can be your spindle.** Built with

@@ -217,6 +217,30 @@ jobs:
           done
           test -z "$failed" || { echo "FAILED:$failed"; exit 1; }
 
+      # The real actions runner: this example executes the actual
+      # oven-sh/setup-bun@v2 JavaScript action under the Actions protocol,
+      # and the following run: step's `bun --version` only works if the
+      # action's GITHUB_PATH write survived into the next step.
+      - name: e2e — real GitHub Actions (setup-bun executes for real)
+        continue-on-error: true # flip to false after the first green run on x86_64
+        run: |
+          set -eux
+          d=$(mktemp -d)
+          cp -r "examples/ci-github-actions/." "$d"
+          git -C "$d" init -q
+          git -C "$d" add -A
+          git -C "$d" -c user.email=ci@e2e -c user.name=e2e commit -qm init
+          set +e
+          timeout 900 ./target/release/bsdkrun ci run --plain -w "$d" \
+            --secret GITHUB_TOKEN="${GITHUB_TOKEN}" 2>&1 | tee /tmp/ci-gha.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          grep -q "Provision actions runtime (node)" /tmp/ci-gha.log
+          grep -q "github-actions-example-ok" /tmp/ci-gha.log
+          test "$rc" -eq 0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       # No CI config at all: the runner must detect the project (a bare Go
       # module here) and generate + run a workflow for it. Asserts the
       # detection announcement and the test-before-build execution.

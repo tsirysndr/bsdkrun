@@ -1,0 +1,15 @@
+name: CI
+on: [push]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: test
+        run: |
+          bun --version
+          test -f hello.txt
+          echo "github-actions-example-ok"

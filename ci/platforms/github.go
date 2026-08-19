@@ -202,7 +202,8 @@ func ghStepToSteps(i int, s ghStep, repo Repo) ([]Step, bool) {
 			stepID = fmt.Sprintf("step-%d", i)
 		}
 		aRepo := actions.Repo{
-			Sha: repo.Sha, Branch: repo.branch(), Name: repo.Name, Workspace: repo.Workspace,
+			Sha: repo.Sha, Branch: repo.branch(), Name: repo.Name,
+			Workspace: repo.Workspace, Token: repo.Token,
 		}
 		with := map[string]string{}
 		for k, v := range s.With {

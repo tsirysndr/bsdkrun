@@ -137,9 +137,23 @@ platform's identity env (`GITHUB_SHA`, `CI_PROJECT_DIR`, `DRONE_COMMIT_SHA`,
 …) pointed at the runner's own workspace. Secrets, the TUI, tracing and the
 log stream all work the same as for native workflows.
 
-What deliberately does not translate is announced rather than faked:
-`uses:` actions (except `actions/checkout`, which the clone genuinely
-covers), plugins, orbs, human gates and cross-pipeline triggers become
+**GitHub Actions `uses:` steps run for real.** Any JavaScript or composite
+action executes: the runner fetches the action's `action.yml` (cached
+host-side) to learn what it is, clones it into the guest at its ref,
+provisions a node runtime once per job, and executes it under the genuine
+Actions protocol — `INPUT_*` from `with:` (defaults included, expression
+defaults evaluated where the subset allows and dropped rather than
+mistranslated otherwise), and `GITHUB_ENV` / `GITHUB_PATH` /
+`GITHUB_OUTPUT` command files whose effects persist into every later step,
+`run:` steps included. `${{ steps.<id>.outputs.* }}` resolves in the guest,
+where the outputs live. Inject `--secret GITHUB_TOKEN` to authenticate
+actions that call the GitHub API. Container actions are refused visibly (a
+microVM runs no Docker daemon), as are `pre`/`post` hooks — stated limits.
+See [`examples/ci-github-actions`](../examples/ci-github-actions), which
+runs the actual `oven-sh/setup-bun@v2`.
+
+What deliberately does not translate elsewhere is announced rather than
+faked: plugins, orbs, human gates and cross-pipeline triggers become
 visible skipped steps in the timeline; matrix strategies run once and say
 so; **jobs that ask for windows or macos are skipped** — a Linux microVM
 cannot become another OS, and a green checkmark on a lie helps nobody.

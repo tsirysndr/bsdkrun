@@ -171,3 +171,28 @@ func TestWrapStepCarriesTheProtocol(t *testing.T) {
 		}
 	}
 }
+
+func TestExpressionDefaultsResolveEmptyInValues(t *testing.T) {
+	// setup-bun's real token default: an operator expression the subset
+	// cannot evaluate. In value position it must vanish — the visible
+	// marker became a bearer token and a 401 once.
+	fake(t, map[string]string{
+		"a/tok": `
+runs: {using: node20, main: index.js}
+inputs:
+  token:
+    default: ${{ github.server_url == 'https://github.com' && github.token || '' }}
+  version: {default: latest}
+`,
+	})
+	steps, _, err := Translate("a/tok@v1", "s", nil, nil, testRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := steps[0].Env["INPUT_TOKEN"]; present {
+		t.Fatalf("unevaluable default must be unset, got %v", steps[0].Env)
+	}
+	if steps[0].Env["INPUT_VERSION"] != "latest" {
+		t.Fatalf("plain defaults must survive: %v", steps[0].Env)
+	}
+}

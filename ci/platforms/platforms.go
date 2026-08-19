@@ -59,6 +59,9 @@ type Repo struct {
 	// Workspace is the in-guest path the clone lands at; every platform's
 	// workspace variable must point there or scripts cd into nothing.
 	Workspace string
+	// Token is the operator's GITHUB_TOKEN secret, when injected — what
+	// `${{ github.token }}` resolves to for real actions.
+	Token string
 }
 
 func (r Repo) branch() string {

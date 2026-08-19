@@ -322,6 +322,7 @@ func cmdRun(args []string) error {
 			if err != nil {
 				return err
 			}
+			ghToken = secrets["GITHUB_TOKEN"]
 			opts := runOpts{
 				Cpus:    *cpus,
 				Mem:     *mem,

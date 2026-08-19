@@ -104,7 +104,17 @@ func WrapStep(stepID, body string) string {
 func NodeProvisionStep() Step {
 	return Step{
 		Name: "Provision actions runtime (node)",
-		Command: `command -v node >/dev/null 2>&1 && { echo "node $(node --version) already present"; exit 0; }
+		Command: `# The tool baseline JS actions assume: GitHub's runners preship
+# unzip/tar/xz, and @actions/tool-cache shells out to them.
+if command -v apt-get >/dev/null 2>&1; then
+  command -v unzip >/dev/null 2>&1 || {
+    apt-get -o Acquire::Check-Valid-Until=false update -qq
+    apt-get install -y -qq --no-install-recommends unzip xz-utils
+  }
+elif command -v apk >/dev/null 2>&1; then
+  command -v unzip >/dev/null 2>&1 || apk add --no-cache unzip xz tar
+fi
+command -v node >/dev/null 2>&1 && { echo "node $(node --version) already present"; exit 0; }
 if command -v apk >/dev/null 2>&1; then
   # Official tarballs are glibc; on musl the distro package is the one
   # that actually runs.
@@ -113,7 +123,7 @@ if command -v apk >/dev/null 2>&1; then
   exit 0
 fi
 command -v curl >/dev/null 2>&1 || {
-  apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates xz-utils
+  apt-get -o Acquire::Check-Valid-Until=false update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates xz-utils
 }
 case "$(uname -m)" in x86_64) a=x64 ;; aarch64|arm64) a=arm64 ;; *) echo "unsupported arch"; exit 1 ;; esac
 v=$(curl -fsSL https://nodejs.org/dist/latest-v24.x/ | grep -oE 'node-v24[0-9.]*-linux-'"$a"'\.tar\.xz' | head -1)

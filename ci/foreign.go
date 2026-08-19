@@ -24,8 +24,13 @@ func platformRepo(repo *repoInfo) platforms.Repo {
 		DefaultBranch: repo.DefaultBranch,
 		Name:          repo.Name,
 		Workspace:     workspaceDir,
+		Token:         ghToken,
 	}
 }
+
+// ghToken is the operator's GITHUB_TOKEN secret, set by cmdRun before any
+// plan is built — what real actions authenticate with.
+var ghToken string
 
 // foreignPlans loads the platform's jobs and turns the runnable ones into
 // plans. Skipped jobs (non-Linux) and name filtering are announced on

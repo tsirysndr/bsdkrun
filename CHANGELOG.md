@@ -20,6 +20,15 @@ shipped alongside it.
 
 ### Added
 
+- **GitHub Actions `uses:` steps execute for real.** A genuine actions
+  runner for JavaScript and composite actions: action.yml fetched and
+  parsed at plan time, the action cloned into the guest at its ref, a node
+  runtime provisioned once per job, and the real Actions protocol
+  throughout — `INPUT_*` with expression-aware defaults, GITHUB_ENV /
+  GITHUB_PATH / GITHUB_OUTPUT command files persisting across steps, and
+  run-time resolution of step outputs. Container actions and pre/post
+  hooks are refused visibly. Verified by running the actual
+  oven-sh/setup-bun@v2 end to end.
 - **Project detection: CI with no config at all.** When a repository has no
   recognizable CI configuration (or `--detect` forces it), `bsdkrun ci`
   detects the project — go, rust, nodejs, bun, deno, python, ruby, php,

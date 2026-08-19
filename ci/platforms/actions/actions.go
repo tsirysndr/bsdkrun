@@ -40,6 +40,9 @@ type Repo struct {
 	Branch    string
 	Name      string
 	Workspace string
+	// Token backs `${{ github.token }}` when the operator injected a
+	// GITHUB_TOKEN secret; empty means unauthenticated.
+	Token string
 }
 
 // Metadata is the parsed action.yml — the parts execution needs.
@@ -165,12 +168,20 @@ func translate(uses, stepID string, with, env map[string]string, repo Repo, dept
 func resolveInputs(meta *Metadata, with map[string]string, repo Repo) map[string]string {
 	out := map[string]string{}
 	for name, in := range meta.Inputs {
-		if in.Default != "" {
-			out[name] = Interpolate(in.Default, nil, repo)
+		if v := InterpolateValue(in.Default, nil, repo); v != "" {
+			out[name] = v
 		}
 	}
 	for k, v := range with {
-		out[k] = Interpolate(v, nil, repo)
+		out[k] = InterpolateValue(v, nil, repo)
+	}
+	// An input that resolved to empty is *unset*, not empty-but-present:
+	// actions feed inputs straight into auth headers, and an empty bearer
+	// token is a 401, not an unauthenticated request.
+	for k, v := range out {
+		if v == "" {
+			delete(out, k)
+		}
 	}
 	return out
 }
@@ -223,7 +234,7 @@ func compositeSteps(uses string, ref Ref, meta *Metadata, stepID string, inputs,
 			stepEnv[k] = v
 		}
 		for k, v := range cs.Env {
-			stepEnv[k] = Interpolate(v, inputs, repo)
+			stepEnv[k] = InterpolateValue(v, inputs, repo)
 		}
 		switch {
 		case cs.Uses != "":
@@ -283,18 +294,40 @@ func cloneSnippet(ref Ref) string {
 // Interpolate substitutes the expression lookups real workflows lean on.
 // `steps.<id>.outputs.<name>` resolves in the guest at run time — that is
 // where the output files live — via command substitution.
+// InterpolateValue is Interpolate with *value* semantics: an expression the
+// subset cannot evaluate becomes empty rather than a visible marker. The
+// marker is right for shell text a human reads; an env value is fed
+// straight to code — setup-bun's token default is a && || expression, and
+// the marker-as-bearer-token was a 401. Empty is also what the expression
+// usually means here: those defaults guard on being on real github.com.
+func InterpolateValue(s string, inputs map[string]string, repo Repo) string {
+	return interpolate(s, inputs, repo, true)
+}
+
 func Interpolate(s string, inputs map[string]string, repo Repo) string {
+	return interpolate(s, inputs, repo, false)
+}
+
+func interpolate(s string, inputs map[string]string, repo Repo, strict bool) string {
+	// Replacements go to the builder and are never rescanned — the unknown-
+	// expression fallback re-emits `${{ ... }}` verbatim, which would spin
+	// an in-place substitution forever.
+	var b strings.Builder
 	for {
 		start := strings.Index(s, "${{")
 		if start < 0 {
-			return s
+			b.WriteString(s)
+			return b.String()
 		}
 		end := strings.Index(s[start:], "}}")
 		if end < 0 {
-			return s
+			b.WriteString(s)
+			return b.String()
 		}
+		b.WriteString(s[:start])
 		expr := strings.TrimSpace(s[start+3 : start+end])
-		s = s[:start] + evalExpr(expr, inputs, repo) + s[start+end+2:]
+		b.WriteString(evalExpr(expr, inputs, repo, strict))
+		s = s[start+end+2:]
 	}
 }
 
@@ -304,12 +337,12 @@ func interpolateMap(m, inputs map[string]string, repo Repo) map[string]string {
 	}
 	out := map[string]string{}
 	for k, v := range m {
-		out[k] = Interpolate(v, inputs, repo)
+		out[k] = InterpolateValue(v, inputs, repo)
 	}
 	return out
 }
 
-func evalExpr(expr string, inputs map[string]string, repo Repo) string {
+func evalExpr(expr string, inputs map[string]string, repo Repo, strict bool) string {
 	switch {
 	case strings.HasPrefix(expr, "inputs."):
 		return inputs[strings.TrimPrefix(expr, "inputs.")]
@@ -330,7 +363,11 @@ func evalExpr(expr string, inputs map[string]string, repo Repo) string {
 	case expr == "github.repository":
 		return repo.Name
 	case expr == "github.token", expr == "secrets.GITHUB_TOKEN":
-		return "${GITHUB_TOKEN}"
+		// The operator's injected GITHUB_TOKEN when present, else empty —
+		// and empty resolves to *unset* in inputs (see resolveInputs): a
+		// literal ${GITHUB_TOKEN} and an empty-but-present bearer were each
+		// a 401 lesson on the way here.
+		return repo.Token
 	case expr == "runner.os":
 		return "Linux"
 	case expr == "runner.temp":
@@ -340,8 +377,11 @@ func evalExpr(expr string, inputs map[string]string, repo Repo) string {
 	case strings.HasPrefix(expr, "github.action_path"):
 		return "${GITHUB_ACTION_PATH}"
 	}
-	// Anything else (functions, operators) is beyond the subset; keep it
-	// visible in the command rather than silently emptying it.
+	// Anything else (functions, operators) is beyond the subset. In value
+	// position it must become empty; in command text it stays visible.
+	if strict {
+		return ""
+	}
 	return "${{ " + expr + " }}"
 }
 

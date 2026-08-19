@@ -818,8 +818,9 @@ steps:
 	}
 	// The execution shape: overlay, workspace bind, cwd trick, chroot.
 	for _, needle := range []string{
-		"mount -t overlay", "mount --bind /tangled/workspace",
-		`cd "$W/root/drone/src"`, `chroot "$W/root" '/bin/drone-download'`,
+		`mount -t tmpfs tmpfs "$W"`, "mount -t overlay",
+		"mount --bind /tangled/workspace",
+		`cd "$W/root"/drone/src`, `chroot "$W/root" '/bin/drone-download'`,
 	} {
 		if !strings.Contains(plugin.Command, needle) {
 			t.Fatalf("execution lacks %q:\n%s", needle, plugin.Command)

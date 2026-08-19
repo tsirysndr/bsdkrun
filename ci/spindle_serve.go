@@ -44,6 +44,8 @@ import (
 	"tangled.org/core/spindle/models"
 	"tangled.org/core/spindle/queue"
 	"tangled.org/core/spindle/secrets"
+	"tangled.org/core/eventconsumer"
+	"tangled.org/core/jetstream"
 	spindlexrpc "tangled.org/core/spindle/xrpc"
 	"tangled.org/core/tid"
 	"tangled.org/core/workflow"
@@ -90,6 +92,8 @@ func (s *spindleServer) Banner() []string {
 		fmt.Sprintf("  engines      %s (every one runs on libkrun)", strings.Join(engineNames(), ", ")),
 		"  xrpc         /xrpc/sh.tangled.{owner,ci.*,repo.*Secret*}",
 		"  events       /events        logs  /logs/{knot}/{rkey}/{name}",
+		fmt.Sprintf("  ingest       jetstream %s", s.cfg.Server.JetstreamEndpoint),
+		fmt.Sprintf("  knots        %s", s.knotSummary()),
 	}
 }
 
@@ -107,6 +111,11 @@ type spindleServer struct {
 	res   *idresolver.Resolver
 	eng   models.Engine
 	jq    *queue.Queue
+
+	// The two input streams (see spindle_ingest.go). Nil until started, and
+	// nil forever on a server that could not reach them — the API still works.
+	knots *eventconsumer.Consumer
+	jc    *jetstream.JetstreamClient
 }
 
 var _ spindlexrpc.PipelineTrigger = (*spindleServer)(nil)
@@ -183,6 +192,11 @@ func newSpindleServer(ctx context.Context, l *slog.Logger, cpus, mem int) (*spin
 		jq:    queue.NewQueue(cfg.Server.QueueSize, cfg.Server.MaxJobCount),
 	}
 	s.jq.Start()
+
+	// Both input streams come up here: without them the server answers its
+	// API but never learns of a push, which is the difference between a
+	// runner you call and a CI server.
+	s.startIngestion(ctx)
 	return s, nil
 }
 
@@ -348,20 +362,12 @@ func (s *spindleServer) loadPipeline(ctx context.Context, repo *tangled.Pipeline
 	if repo == nil {
 		return nil, errors.New("trigger has no repo")
 	}
-	cloneURL := models.BuildRepoURL(repo)
-	if s.cfg.Server.Dev {
-		cloneURL = strings.Replace(cloneURL, "https://", "http://", 1)
-	}
-	slug := repo.Knot
-	if repo.Repo != nil {
-		slug += "-" + *repo.Repo
-	}
-	dir := filepath.Join(s.cfg.Server.RepoDir, strings.NewReplacer("/", "-", ":", "-").Replace(slug))
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+	if err := os.MkdirAll(s.cfg.Server.RepoDir, 0o755); err != nil {
 		return nil, err
 	}
-	if err := spindlegit.SparseSyncGitRepo(ctx, cloneURL, dir, rev); err != nil {
-		return nil, fmt.Errorf("syncing %s: %w", cloneURL, err)
+	dir, err := s.syncRepo(ctx, repo, rev)
+	if err != nil {
+		return nil, err
 	}
 
 	entries, err := os.ReadDir(filepath.Join(dir, workflow.WorkflowDir))
@@ -448,6 +454,28 @@ func (s *spindleServer) processPipeline(repoDid syntax.DID, tpl tangled.Pipeline
 		}
 	}
 	return nil
+}
+
+// repoPath is where a repo is checked out: one directory per repo, named for
+// the knot and rkey so two repos of the same name on different knots cannot
+// collide.
+func (s *spindleServer) repoPath(repo *tangled.Pipeline_TriggerRepo) string {
+	slug := repo.Knot
+	if repo.Repo != nil {
+		slug += "-" + *repo.Repo
+	}
+	return filepath.Join(s.cfg.Server.RepoDir,
+		strings.NewReplacer("/", "-", ":", "-").Replace(slug))
+}
+
+// knotSummary reports which knots are being listened to, because "no knots"
+// is the quiet reason a push never starts anything.
+func (s *spindleServer) knotSummary() string {
+	knots, err := s.db.Knots()
+	if err != nil || len(knots) == 0 {
+		return "none yet — a repo assigned to this spindle brings its knot with it"
+	}
+	return strings.Join(knots, ", ")
 }
 
 func filterWorkflowsByName(workflows []*tangled.Pipeline_Workflow, only []string) []*tangled.Pipeline_Workflow {

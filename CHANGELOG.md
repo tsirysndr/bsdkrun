@@ -18,34 +18,12 @@ shipped alongside it.
 
 ## [Unreleased]
 
-### Fixed
+## [0.11.3] — 2026-08-19
 
-- **Chrooted plugin and per-step-image containers no longer trip over
-  overlayfs.** Over a virtio-fs lower, overlayfs can mount populated and still
-  refuse writes that need a copy-up (`can't create …: Not supported`), which
-  broke Tekton's per-step images on x86_64 while leaving argv-only plugins
-  working. The mount is now accepted only if the merged root has content *and*
-  takes a file in *both* directories a step writes to (`/tmp` for its script,
-  `/etc` for resolv.conf); otherwise the rootfs is copied into tmpfs, and the
-  substitution is announced. `BSDKRUN_CI_NO_OVERLAY=1` forces the copy path,
-  which is how it is tested on hosts where the overlay works.
-- **Plugin containers get working DNS.** A chroot-executed Drone/Woodpecker
-  plugin has its own `/etc`, and a missing `resolv.conf` there makes Go's
-  resolver fall back to localhost — the failure reads `lookup <host> on
-  [::1]:53: connection refused`, which looks like an outage and is not one.
-  The guest's resolver configuration is now copied through symlinks, and a
-  nameserver is derived from the default route when that yields nothing.
-  (The x86_64 instance of this turned out to be the overlay defect above —
-  the write of resolv.conf itself was failing — but the hardening stands.)
-- **OCI opaque whiteouts no longer delete their own layer's files.** An
-  `.wh..wh..opq` marker hides what the layers *below* put in a directory, but
-  whiteouts were applied after the layer was unpacked, so a layer that empties
-  a directory and refills it — which is routine — lost its own contents. The
-  visible symptom was a guest reporting `can't execute '/bin/x': No such file
-  or directory` for a binary that had just been extracted, on images whose
-  amd64 variant carries the marker while arm64 does not (`plugins/download`).
-  Whiteouts are now read from the layer's listing and applied before it is
-  unpacked, and marker files never reach the guest.
+`bsdkrun ci` grows a server and a debugger: it can stand in for a spindle
+deployment, and `--sh` hands you the microVM a workflow ran in instead of
+its log. Plus the OCI extraction and container-chroot fixes those two turned
+up along the way.
 
 ### Added
 
@@ -78,6 +56,35 @@ shipped alongside it.
   ci/README.md § Self-hosting a spindle. `/` serves spindle's own greeting —
   ascii art and text, byte for byte — with `SPINDLE_SERVER_MOTD_FILE` to
   replace it.
+
+### Fixed
+
+- **Chrooted plugin and per-step-image containers no longer trip over
+  overlayfs.** Over a virtio-fs lower, overlayfs can mount populated and still
+  refuse writes that need a copy-up (`can't create …: Not supported`), which
+  broke Tekton's per-step images on x86_64 while leaving argv-only plugins
+  working. The mount is now accepted only if the merged root has content *and*
+  takes a file in *both* directories a step writes to (`/tmp` for its script,
+  `/etc` for resolv.conf); otherwise the rootfs is copied into tmpfs, and the
+  substitution is announced. `BSDKRUN_CI_NO_OVERLAY=1` forces the copy path,
+  which is how it is tested on hosts where the overlay works.
+- **Plugin containers get working DNS.** A chroot-executed Drone/Woodpecker
+  plugin has its own `/etc`, and a missing `resolv.conf` there makes Go's
+  resolver fall back to localhost — the failure reads `lookup <host> on
+  [::1]:53: connection refused`, which looks like an outage and is not one.
+  The guest's resolver configuration is now copied through symlinks, and a
+  nameserver is derived from the default route when that yields nothing.
+  (The x86_64 instance of this turned out to be the overlay defect above —
+  the write of resolv.conf itself was failing — but the hardening stands.)
+- **OCI opaque whiteouts no longer delete their own layer's files.** An
+  `.wh..wh..opq` marker hides what the layers *below* put in a directory, but
+  whiteouts were applied after the layer was unpacked, so a layer that empties
+  a directory and refills it — which is routine — lost its own contents. The
+  visible symptom was a guest reporting `can't execute '/bin/x': No such file
+  or directory` for a binary that had just been extracted, on images whose
+  amd64 variant carries the marker while arm64 does not (`plugins/download`).
+  Whiteouts are now read from the layer's listing and applied before it is
+  unpacked, and marker files never reach the guest.
 
 ## [0.11.2] — 2026-08-19
 

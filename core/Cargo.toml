@@ -1,6 +1,6 @@
 [package]
 name = "bsdkrun-core"
-version = "0.11.2"
+version = "0.11.3"
 edition = "2021"
 description = "The bsdkrun engine: microVM boot, images, networking, volumes and the guest agent, as a library"
 

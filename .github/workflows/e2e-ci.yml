@@ -222,7 +222,7 @@ jobs:
       # and the following run: step's `bun --version` only works if the
       # action's GITHUB_PATH write survived into the next step.
       - name: e2e — real GitHub Actions (setup-bun executes for real)
-        continue-on-error: true # flip to false after the first green run on x86_64
+        # strict since the first green x86_64 run (32260226204)
         run: |
           set -eux
           d=$(mktemp -d)
@@ -245,7 +245,7 @@ jobs:
       # BUILDKITE_PLUGIN_* env, its environment hook sourced — the command
       # asserts the hook's export actually arrived.
       - name: e2e — real Buildkite plugins (metahook executes)
-        continue-on-error: true # flip to false after the first green run on x86_64
+        # strict since the first green x86_64 run (32260226204)
         run: |
           set -eux
           d=$(mktemp -d)
@@ -262,7 +262,7 @@ jobs:
       # Real Jenkins: a scripted pipeline assembled and executed under
       # Jenkinsfile Runner — an actual headless Jenkins — in the guest.
       - name: e2e — real Jenkins (scripted pipeline under Jenkinsfile Runner)
-        continue-on-error: true # flip to false after the first green run on x86_64
+        # strict since the first green x86_64 run (32260226204)
         run: |
           set -eux
           d=$(mktemp -d)
@@ -280,7 +280,7 @@ jobs:
       # host-side, chroot-executed with PLUGIN_* env; the next step asserts
       # the fetched file arrived in the shared workspace.
       - name: e2e — real Drone plugins (plugins/download executes)
-        continue-on-error: true # flip to false after the first green run on x86_64
+        # strict since the first green x86_64 run (32260226204)
         run: |
           set -eux
           d=$(mktemp -d)
@@ -295,7 +295,7 @@ jobs:
           test "$rc" -eq 0
 
       - name: e2e — real Woodpecker plugins (same protocol, CI_* identity)
-        continue-on-error: true # flip to false after the first green run on x86_64
+        # strict since the first green x86_64 run (32260226204)
         run: |
           set -eux
           d=$(mktemp -d)

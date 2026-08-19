@@ -101,6 +101,8 @@ Run flags:
   --keep                             keep the VM after a failure
   --json                             spindle log-line JSON on stdout
   --plain                            plain line output even on a terminal
+  --sh, --shell, --ssh               when the workflow ends (pass or fail),
+                                     keep its microVM and open a shell in it
                                      (the default when stdout is not a tty)
   --dry-run                          a generated deploy step announces its
                                      command instead of running it
@@ -181,6 +183,12 @@ func cmdRun(args []string) error {
 	dryRun := fs.Bool("dry-run", false, "")
 	nixery := fs.String("nixery", "", "")
 	otlp := fs.String("otlp", "", "")
+	// Three spellings of one flag: --sh is what it is, --shell is what people
+	// type, --ssh is what fingers type after years of remote debugging. None
+	// of them is worth a wrong-flag error.
+	shellFlag := fs.Bool("sh", false, "")
+	fs.BoolVar(shellFlag, "shell", false, "")
+	fs.BoolVar(shellFlag, "ssh", false, "")
 	var inputs, files, secretFlags, secretFiles repeatable
 	fs.Var(&inputs, "input", "")
 	fs.Var(&files, "file", "")
@@ -265,6 +273,7 @@ func cmdRun(args []string) error {
 					Cpus:    *cpus,
 					Mem:     *mem,
 					Keep:    *keep,
+					Shell:   *shellFlag,
 					Source:  repo.Root,
 					JSON:    *jsonOut,
 					Out:     os.Stdout,
@@ -327,6 +336,7 @@ func cmdRun(args []string) error {
 				Cpus:    *cpus,
 				Mem:     *mem,
 				Keep:    *keep,
+				Shell:   *shellFlag,
 				Source:  repo.Root,
 				JSON:    *jsonOut,
 				Out:     os.Stdout,
@@ -398,6 +408,7 @@ func cmdRun(args []string) error {
 		Cpus:    *cpus,
 		Mem:     *mem,
 		Keep:    *keep,
+		Shell:   *shellFlag,
 		Source:  repo.Root,
 		JSON:    *jsonOut,
 		Out:     os.Stdout,
@@ -421,6 +432,12 @@ func cmdRun(args []string) error {
 // piped get lines. The TUI consumes the same LogLine stream --json prints,
 // so the two views can never tell a different story.
 func runPlans(plans []*Plan, opts runOpts, jsonOut, plain bool) error {
+	// --sh ends by handing the terminal to a shell, and the TUI owns the
+	// terminal until it exits: two things cannot draw on it at once, so the
+	// shell wins and the run prints lines.
+	if opts.Shell {
+		plain = true
+	}
 	if !jsonOut && !plain && term.IsTerminal(int(os.Stdout.Fd())) {
 		_, err := runPlansTUI(plans, opts)
 		return err

@@ -57,6 +57,7 @@ bsdkrun CLI itself, pointed back at the very binary that launched it
 
 - [Why this exists](#why-this-exists)
 - [What a run does](#what-a-run-does)
+- [Dropping into the machine — `--sh`](#dropping-into-the-machine----sh)
 - [Examples](#examples)
 - [Triggers](#triggers)
 - [Foreign platforms](#foreign-platforms) — the twelve providers, and what runs for real
@@ -133,6 +134,26 @@ For each matching workflow:
 4. **Steps**, serially, each from the workspace, with workflow + step
    environment applied. First failure stops the workflow; the VM is destroyed
    unless `--keep`, which leaves it for `bsdkrun shell <id>`.
+
+## Dropping into the machine — `--sh`
+
+A failing step's log tells you what broke. The machine tells you why.
+
+```sh
+bsdkrun ci run --sh          # --shell and --ssh work too
+```
+
+With `--sh` the microVM is **not** destroyed when the workflow ends — pass or
+fail — and you land in an interactive shell inside it: same image, same
+environment, same workspace with whatever the run left in it, sitting in the
+directory the steps ran from. Re-run the failing command, poke at the build
+tree, install something and try again. The VM goes away when you exit the
+shell; `--keep` keeps it beyond that for a later `bsdkrun shell <id>`.
+
+Without a terminal on stdin (a pipe, a CI job, an editor task) there is
+nobody to hand a shell to, so the run says so and leaves the machine up with
+the exact commands to attach or remove it — it never blocks waiting for input
+that cannot come.
 
 ## Examples
 

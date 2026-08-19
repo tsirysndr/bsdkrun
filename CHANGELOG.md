@@ -20,6 +20,12 @@ shipped alongside it.
 
 ### Fixed
 
+- **Plugin containers get working DNS.** A chroot-executed Drone/Woodpecker
+  plugin has its own `/etc`, and a missing `resolv.conf` there makes Go's
+  resolver fall back to localhost — the failure reads `lookup <host> on
+  [::1]:53: connection refused`, which looks like an outage and is not one.
+  The guest's resolver configuration is now copied through symlinks, and a
+  nameserver is derived from the default route when that yields nothing.
 - **OCI opaque whiteouts no longer delete their own layer's files.** An
   `.wh..wh..opq` marker hides what the layers *below* put in a directory, but
   whiteouts were applied after the layer was unpacked, so a layer that empties
@@ -32,6 +38,13 @@ shipped alongside it.
 
 ### Added
 
+- **`bsdkrun ci run --sh` drops you into the CI microVM.** When the workflow
+  ends — pass or fail — the machine is kept and an interactive shell opens
+  inside it, in the workspace, with the run's environment: the same image and
+  state the failing step saw, instead of a guess at reproducing it. Exiting
+  the shell destroys the VM (`--keep` keeps it). `--shell` and `--ssh` are
+  aliases; without a terminal on stdin the run leaves the machine up and
+  prints how to attach rather than blocking.
 - **`bsdkrun ci serve` can be your spindle.** Built with
   `BSDKRUN_CI_SPINDLE=1`, it serves spindle's full API — `sh.tangled.owner`,
   `ci.queryPipelines` / `getPipeline` / `subscribePipelineLogs` /

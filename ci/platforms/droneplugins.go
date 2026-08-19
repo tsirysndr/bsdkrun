@@ -181,7 +181,19 @@ mkdir -p "$W/root%[2]s" "$W/root/proc" "$W/root/dev" "$W/root/etc" "$W/root/tmp"
 mount --bind /tangled/workspace "$W/root%[2]s"
 mount --bind /proc "$W/root/proc" 2>/dev/null || mount -t proc proc "$W/root/proc" || true
 mount --bind /dev "$W/root/dev" 2>/dev/null || true
-cp /etc/resolv.conf "$W/root/etc/resolv.conf" 2>/dev/null || true
+# DNS: the chroot gets its own /etc, so without this a plugin resolves
+# against nothing and Go's resolver falls back to localhost — the failure
+# reads "lookup <host> on [::1]:53: connection refused", which looks like a
+# network outage and is not one. cat rather than cp, because the guest's
+# resolv.conf may be a symlink; and if what lands has no nameserver, derive
+# one from the default route rather than leaving the plugin blind.
+cat /etc/resolv.conf > "$W/root/etc/resolv.conf" 2>/dev/null || true
+if ! grep -q '^nameserver' "$W/root/etc/resolv.conf" 2>/dev/null; then
+  __gw=$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}')
+  [ -n "$__gw" ] || __gw=192.168.127.1
+  echo "[bsdkrun] the guest has no usable resolv.conf — pointing the plugin at $__gw"
+  printf 'nameserver %s\n' "$__gw" > "$W/root/etc/resolv.conf"
+fi
 %[3]s`, bkQuote(imgDir), bindDst, launch)
 }
 

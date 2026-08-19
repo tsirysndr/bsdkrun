@@ -30,6 +30,9 @@ type runOpts struct {
 	// Structured spindle-style log lines on stdout instead of human output.
 	JSON bool
 	Out  io.Writer
+	// Shell keeps the machine alive when the workflow ends — pass or fail —
+	// and opens an interactive shell inside it (`--sh` / `--ssh`).
+	Shell bool
 	// Secret values to inject into every step, and the log masker built from
 	// them — every emitted line passes through mask() so a value (or its
 	// base64 encoding) never survives into any consumer's view.
@@ -147,7 +150,13 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 	emitControl(opts, 0, bootStep, "end")
 	logf(opts, "  ✓ %s (%s)\n", bootStep.Name, bootRes.Duration)
 	defer func() {
-		if err != nil && opts.Keep {
+		// --sh hands the finished machine over before anything tears it down,
+		// whether the workflow passed or failed: that is the whole point of
+		// asking for a shell rather than reading a log.
+		if opts.Shell {
+			shellIntoVM(sbx, plan, opts, err)
+		}
+		if opts.Keep && (err != nil || opts.Shell) {
 			logf(opts, "keeping VM %s for inspection — `bsdkrun shell %s`, `bsdkrun rm -f %s`\n",
 				sbx.ID, sbx.ID, sbx.ID)
 			return

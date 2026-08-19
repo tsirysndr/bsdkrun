@@ -150,10 +150,17 @@ directory the steps ran from. Re-run the failing command, poke at the build
 tree, install something and try again. The VM goes away when you exit the
 shell; `--keep` keeps it beyond that for a later `bsdkrun shell <id>`.
 
+The shell gets the environment the **last step ended with**, not just the
+image's: a workflow that installs a toolchain and exports its PATH hands you
+a machine where that tool is on PATH, because the step's own shell state is
+captured as it exits and sourced when the shell opens. (That environment
+includes the run's secrets, exactly as the steps had them.)
+
 Without a terminal on stdin (a pipe, a CI job, an editor task) there is
-nobody to hand a shell to, so the run says so and leaves the machine up with
-the exact commands to attach or remove it — it never blocks waiting for input
-that cannot come.
+nobody to hand a shell to, so the run leaves the machine running and prints
+the commands to attach or remove it — the environment and working directory
+are set up either way, so a later `bsdkrun shell <id>` lands in the same
+place a direct `--sh` would.
 
 ## Examples
 

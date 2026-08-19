@@ -24,23 +24,37 @@ import (
 	"golang.org/x/term"
 )
 
-// shellIntoVM opens an interactive shell in a finished workflow's machine.
-// Failures here are reported and swallowed: the run's own verdict is what the
-// caller returns, and a shell that could not open must not turn a passing
-// workflow into a failing one.
-func shellIntoVM(v *vm, plan *Plan, opts runOpts, runErr error) {
+// envCaptureFile is where a step's final shell state is dumped when --sh is
+// on, and where the interactive shell reads it back from. It lives under
+// /tangled rather than $HOME because HOME is a tmpfs the run mounts.
+const envCaptureFile = "/tangled/.bsdkrun-env"
+
+// shellIntoVM opens an interactive shell in a finished workflow's machine and
+// reports whether the machine must outlive this call. Failures here are
+// reported and swallowed: the run's own verdict is what the caller returns,
+// and a shell that could not open must not turn a passing workflow into a
+// failing one.
+func shellIntoVM(v *vm, plan *Plan, opts runOpts, runErr error) (keep bool) {
 	if v == nil {
-		return
+		return false
 	}
-	// Without a terminal there is nobody to hand the shell to — a CI job, a
-	// pipe, an editor task. Say what to do instead of opening something that
-	// would immediately read EOF and exit.
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		logf(opts, "\n--sh: no terminal on stdin, so the machine is left running instead.\n")
-		logf(opts, "      bsdkrun shell %s      # attach\n", v.ID)
-		logf(opts, "      bsdkrun rm -f %s      # when you are done\n", v.ID)
-		return
-	}
+	// Give the shell the environment the last step ended with. Without this
+	// the shell is a fresh exec with only the image's environment: a run that
+	// installed bun and exported its PATH would hand you a machine where
+	// `bun` is not found, which is precisely the confusion --sh exists to
+	// remove. Sourced from the shell's rc rather than passed as env, because
+	// `bsdkrun shell` opens the shell itself.
+	// A quoted heredoc carries the snippet verbatim: no quoting games, and
+	// nothing in it is expanded by the shell that writes it.
+	_, _ = v.exec([]string{"sh", "-c", fmt.Sprintf(`
+for f in /root/.bashrc %[1]s/.bashrc /root/.profile %[1]s/.profile; do
+  mkdir -p "$(dirname "$f")" 2>/dev/null || continue
+  grep -q bsdkrun-env "$f" 2>/dev/null && continue
+  cat >> "$f" <<'BSDKRUN_RC_EOF' 2>/dev/null || true
+# bsdkrun-env: the environment the workflow's last step ended with
+if [ -f %[2]s ]; then . %[2]s 2>/dev/null || true; fi
+BSDKRUN_RC_EOF
+done`, homeDir, envCaptureFile)}, nil, nil, nil)
 
 	// The shell starts where the steps ran, not at /: `bsdkrun shell` reads
 	// this file to pick its working directory.
@@ -51,6 +65,18 @@ func shellIntoVM(v *vm, plan *Plan, opts runOpts, runErr error) {
 	_, _ = v.exec([]string{"sh", "-c",
 		fmt.Sprintf("printf '%%s\\n' %q > /etc/bsdkrun-cwd 2>/dev/null || true", workdir)},
 		nil, nil, nil)
+
+	// Without a terminal there is nobody to hand the shell to — a CI job, a
+	// pipe, an editor task. Say what to do instead of opening something that
+	// would immediately read EOF and exit.
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		logf(opts, "\n--sh: no terminal on stdin, so the machine is left running instead.\n")
+		logf(opts, "      bsdkrun shell %s      # attach\n", v.ID)
+		logf(opts, "      bsdkrun rm -f %s      # when you are done\n", v.ID)
+		// Kept, because that is what the line above just promised — and
+		// because --sh's whole contract is that the machine survives the run.
+		return true
+	}
 
 	fmt.Fprintln(os.Stderr)
 	if runErr != nil {
@@ -73,8 +99,12 @@ func shellIntoVM(v *vm, plan *Plan, opts runOpts, runErr error) {
 		// and not something to report as a failure of the run.
 		if _, ok := err.(*exec.ExitError); !ok {
 			fmt.Fprintf(os.Stderr, "--sh: could not open a shell in %s: %v\n", v.ID, err)
+			// The shell never opened, so nothing has been inspected yet:
+			// keep the machine rather than destroying it unseen.
+			return true
 		}
 	}
+	return false
 }
 
 // lastUserStep is the command a reader most likely wants to re-run by hand:

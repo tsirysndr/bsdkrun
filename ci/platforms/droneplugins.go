@@ -164,19 +164,30 @@ mkdir -p "$W/up" "$W/work" "$W/root"
   echo "image rootfs at %[1]s is empty in the guest — the read-only share did not arrive"
   exit 1
 }
-# overlayfs cannot always stack on the filesystem the rootfs arrives over:
-# with a virtio-fs lower it mounts EMPTY instead of failing, so test the
-# merged root rather than the mount's exit code, and copy when it lies.
-if mount -t overlay overlay -o lowerdir=%[1]s,upperdir="$W/up",workdir="$W/work" "$W/root" 2>/dev/null &&
-   [ -n "$(ls -A "$W/root" 2>/dev/null)" ]; then
-  :
-else
-  echo "[bsdkrun] overlay over %[1]s came up empty — copying the rootfs into tmpfs instead"
+# overlayfs does not reliably stack on the filesystem an image rootfs arrives
+# over. Two ways it has failed here, neither of them loudly: with a virtio-fs
+# lower it can mount EMPTY instead of failing, and it can mount populated but
+# reject writes with EOPNOTSUPP when a directory has to be copied up ("can't
+# create ...: Not supported"). So the mount's exit code proves nothing — the
+# test is whether the merged root has content AND accepts a file in a
+# subdirectory, which is exactly what running a step needs.
+overlay_ok=0
+if mount -t overlay overlay -o lowerdir=%[1]s,upperdir="$W/up",workdir="$W/work" "$W/root" 2>/dev/null; then
+  if [ -n "$(ls -A "$W/root" 2>/dev/null)" ] &&
+     mkdir -p "$W/root/tmp" 2>/dev/null &&
+     touch "$W/root/tmp/.rwcheck" 2>/dev/null; then
+    rm -f "$W/root/tmp/.rwcheck"
+    overlay_ok=1
+  fi
+fi
+if [ "$overlay_ok" -ne 1 ]; then
+  # Copying costs RAM equal to the image, and always works: the tmpfs is
+  # ours, so there is no lower filesystem left to disagree with.
+  echo "[bsdkrun] overlay is unusable over %[1]s — copying the rootfs into tmpfs instead"
   umount "$W/root" 2>/dev/null || true
+  rm -rf "$W/root" && mkdir -p "$W/root"
   cp -a %[1]s/. "$W/root/"
 fi
-# Refuse to run on a half-working root: prove it is writable.
-touch "$W/root/.rwcheck" && rm "$W/root/.rwcheck"
 mkdir -p "$W/root%[2]s" "$W/root/proc" "$W/root/dev" "$W/root/etc" "$W/root/tmp" "$W/root/root"
 mount --bind /tangled/workspace "$W/root%[2]s"
 mount --bind /proc "$W/root/proc" 2>/dev/null || mount -t proc proc "$W/root/proc" || true

@@ -153,10 +153,11 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 		// --sh hands the finished machine over before anything tears it down,
 		// whether the workflow passed or failed: that is the whole point of
 		// asking for a shell rather than reading a log.
+		keepForShell := false
 		if opts.Shell {
-			shellIntoVM(sbx, plan, opts, err)
+			keepForShell = shellIntoVM(sbx, plan, opts, err)
 		}
-		if opts.Keep && (err != nil || opts.Shell) {
+		if keepForShell || (opts.Keep && (err != nil || opts.Shell)) {
 			logf(opts, "keeping VM %s for inspection — `bsdkrun shell %s`, `bsdkrun rm -f %s`\n",
 				sbx.ID, sbx.ID, sbx.ID)
 			return
@@ -226,6 +227,19 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 			wd = plan.Workdir
 		}
 		script := "cd " + wd + " && {\n" + step.Command + "\n}"
+		// --sh promises the machine the step ran in, and half of that is the
+		// environment the step ended with: a step that installs a toolchain
+		// and exports its PATH leaves nothing behind for the next exec, so a
+		// shell opened afterwards would not find the tool the run just used.
+		// Dumping the step's own shell state gives the interactive shell the
+		// real thing rather than a reconstruction. The exit code is preserved
+		// across the dump — the step's verdict is not this feature's to change.
+		if opts.Shell {
+			script += "\n__bsdkrun_rc=$?\n" +
+				"export -p 2>/dev/null | grep -vE ' (BASHOPTS|SHELLOPTS|BASH_VERSINFO|EUID|PPID|UID)=' > " +
+				envCaptureFile + " 2>/dev/null || true\n" +
+				"exit $__bsdkrun_rc"
+		}
 		env := map[string]string{}
 		for k, v := range plan.Env {
 			env[k] = v

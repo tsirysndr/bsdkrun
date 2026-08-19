@@ -20,6 +20,13 @@ shipped alongside it.
 
 ### Fixed
 
+- **Chrooted plugin and per-step-image containers no longer trip over
+  overlayfs.** Over a virtio-fs lower, overlayfs can mount populated and still
+  refuse writes that need a copy-up (`can't create …: Not supported`), which
+  broke Tekton's per-step images on x86_64 while leaving argv-only plugins
+  working. The mount is now accepted only if the merged root has content *and*
+  takes a file in a subdirectory; otherwise the rootfs is copied into tmpfs,
+  and the substitution is announced.
 - **Plugin containers get working DNS.** A chroot-executed Drone/Woodpecker
   plugin has its own `/etc`, and a missing `resolv.conf` there makes Go's
   resolver fall back to localhost — the failure reads `lookup <host> on
@@ -44,7 +51,10 @@ shipped alongside it.
   state the failing step saw, instead of a guess at reproducing it. Exiting
   the shell destroys the VM (`--keep` keeps it). `--shell` and `--ssh` are
   aliases; without a terminal on stdin the run leaves the machine up and
-  prints how to attach rather than blocking.
+  prints how to attach rather than blocking. The shell carries the
+  environment the last step ended with — a run that installs a toolchain and
+  exports its PATH hands you a machine where that tool is found — captured
+  from the step's own shell rather than reconstructed.
 - **`bsdkrun ci serve` can be your spindle.** Built with
   `BSDKRUN_CI_SPINDLE=1`, it serves spindle's full API — `sh.tangled.owner`,
   `ci.queryPipelines` / `getPipeline` / `subscribePipelineLogs` /

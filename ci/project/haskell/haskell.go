@@ -31,7 +31,7 @@ func (Provider) Job(dir string) platforms.Job {
 		// --system-ghc: the image ships GHC; letting stack download its own
 		// would multiply the run by gigabytes.
 		return job("haskell:9.6-slim",
-			step("stack build", "stack build --system-ghc --no-terminal --test"))
+			step("stack build", "stack build --system-ghc --allow-different-user --no-terminal --test"))
 	}
 	steps := []platforms.Step{step("cabal update", "cabal update")}
 	if cabalHasTests(dir) {

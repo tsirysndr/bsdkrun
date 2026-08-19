@@ -1,10 +1,13 @@
 package platforms
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tsirysndr/bsdkrun/ci/platforms/actions"
 )
 
 func write(t *testing.T, root, rel, content string) {
@@ -49,6 +52,17 @@ jobs:
 	if !detectGithub(root) {
 		t.Fatal("github not detected")
 	}
+	// Offline and deterministic: setup-node resolves against a fixture, so
+	// the assertion is about the runner, not the network.
+	oldFetch := actions.FetchFunc
+	actions.FetchFunc = func(ref actions.Ref) ([]byte, error) {
+		if ref.Slug() == "actions/setup-node" {
+			return []byte("name: Setup Node\nruns: {using: node20, main: dist/index.js}\n"), nil
+		}
+		return nil, fmt.Errorf("no fixture for %s", ref.Slug())
+	}
+	defer func() { actions.FetchFunc = oldFetch }()
+
 	jobs, err := loadGithub(root, testRepo)
 	if err != nil {
 		t.Fatal(err)
@@ -67,18 +81,25 @@ jobs:
 	if b.Env["TOP"] != "1" || b.Env["JOB"] != "2" {
 		t.Fatalf("env merge wrong: %v", b.Env)
 	}
-	// checkout no-ops, setup-node is a visible skip, run steps translate.
-	if len(b.Steps) != 4 {
-		t.Fatalf("want 4 steps, got %d: %+v", len(b.Steps), b.Steps)
+	// node provision first (setup-node is a JS action), then checkout
+	// no-op, npm ci, the real setup-node execution, npm test — all wrapped
+	// in the Actions env protocol.
+	if len(b.Steps) != 5 {
+		t.Fatalf("want 5 steps, got %d: %+v", len(b.Steps), b.Steps)
 	}
-	if b.Steps[0].Command != "true" {
-		t.Fatalf("checkout should be a no-op: %+v", b.Steps[0])
+	if b.Steps[0].Name != "Provision actions runtime (node)" {
+		t.Fatalf("node provisioning must come first: %+v", b.Steps[0])
 	}
-	if b.Steps[1].Command != "npm ci" {
-		t.Fatalf("run step lost: %+v", b.Steps[1])
+	if !strings.Contains(b.Steps[1].Command, "true") {
+		t.Fatalf("checkout should be a no-op: %+v", b.Steps[1])
 	}
-	if want := `echo "skipped uses: actions/setup-node@v4 — actions are not supported locally"`; b.Steps[2].Command != want {
-		t.Fatalf("action skip not visible: %+v", b.Steps[2])
+	if !strings.Contains(b.Steps[2].Command, "npm ci") ||
+		!strings.Contains(b.Steps[2].Command, "GITHUB_ENV=") {
+		t.Fatalf("run step must carry the env protocol: %+v", b.Steps[2])
+	}
+	if b.Steps[3].Name != "Setup Node" ||
+		!strings.Contains(b.Steps[3].Command, "dist/index.js") {
+		t.Fatalf("setup-node must run for real: %+v", b.Steps[3])
 	}
 	for _, j := range jobs {
 		if j.Name == "windows" && j.SkipReason == "" {

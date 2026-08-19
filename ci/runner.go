@@ -160,9 +160,11 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 
 	// The workspace and home exist before any step runs; every step then
 	// starts from the workspace, like spindle's container workdir.
-	// chown after mkdir: the /tangled parent can arrive owned by the
-	// virtio-fs/init uid mapping rather than root, and stack (like modern
-	// git) refuses to work under a HOME "owned by someone else".
+	// chown after mkdir, best-effort: on macOS hosts virtio-fs maps host
+	// ownership to guest root and this is a no-op; on Linux hosts the
+	// passthrough shows the real host uid and an unprivileged host cannot
+	// chown to root — tools that check ownership (stack) get their own
+	// accommodation flags instead.
 	if res, err := sbx.exec([]string{"sh", "-c",
 		"mkdir -p " + workspaceDir + " " + homeDir +
 			" && chown 0:0 /tangled " + workspaceDir + " " + homeDir + " 2>/dev/null || true"},

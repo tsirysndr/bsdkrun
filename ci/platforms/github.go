@@ -19,6 +19,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/tsirysndr/bsdkrun/ci/platforms/actions"
 )
 
 var githubDirs = []string{
@@ -55,10 +57,12 @@ type ghJob struct {
 }
 
 type ghStep struct {
+	ID    string            `yaml:"id"`
 	Name  string            `yaml:"name"`
 	Run   string            `yaml:"run"`
 	Uses  string            `yaml:"uses"`
 	Shell string            `yaml:"shell"`
+	With  map[string]string `yaml:"with"`
 	Env   map[string]string `yaml:"env"`
 	Wdir  string            `yaml:"working-directory"`
 }
@@ -78,12 +82,12 @@ func loadGithub(root string, repo Repo) ([]Job, error) {
 		if err := yaml.Unmarshal(data, &wf); err != nil {
 			return nil, fmt.Errorf("%s: %w", filepath.Base(f), err)
 		}
-		jobs = append(jobs, ghWorkflowJobs(filepath.Base(f), wf)...)
+		jobs = append(jobs, ghWorkflowJobs(filepath.Base(f), wf, repo)...)
 	}
 	return jobs, nil
 }
 
-func ghWorkflowJobs(file string, wf ghWorkflow) []Job {
+func ghWorkflowJobs(file string, wf ghWorkflow, repo Repo) []Job {
 	// needs-order: repeatedly take jobs whose needs are satisfied; ties in
 	// declaration-independent map order break alphabetically for stability.
 	ids := make([]string, 0, len(wf.Jobs))
@@ -154,30 +158,68 @@ func ghWorkflowJobs(file string, wf ghWorkflow) []Job {
 				Command: `echo "matrix strategies are not expanded locally — running the job once, without matrix context"`,
 			})
 		}
+		needsNode := false
+		var translated []Step
 		for i, s := range j.Steps {
-			job.Steps = append(job.Steps, ghStepToStep(i, s))
+			steps, nn := ghStepToSteps(i, s, repo)
+			translated = append(translated, steps...)
+			needsNode = needsNode || nn
 		}
+		// JavaScript actions need a node runtime the image may not carry;
+		// provision it once, before anything runs.
+		if needsNode {
+			p := actions.NodeProvisionStep()
+			job.Steps = append(job.Steps, Step{Name: p.Name, Command: p.Command})
+		}
+		// Every step runs under the Actions env protocol — a run: step must
+		// see what a setup action exported, exactly as on the real runner.
+		for i := range translated {
+			translated[i].Command = actions.WrapStep(ghStepID(id, i), translated[i].Command)
+		}
+		job.Steps = append(job.Steps, translated...)
 		out = append(out, job)
 	}
 	return out
 }
 
-func ghStepToStep(i int, s ghStep) Step {
+func ghStepID(jobID string, i int) string {
+	return fmt.Sprintf("%s-%d", jobID, i)
+}
+
+// ghStepToSteps translates one workflow step. A `uses:` goes through the
+// actions runner: any JavaScript or composite action executes for real;
+// what genuinely cannot run here (container actions, unreachable
+// metadata) becomes a visible skip naming the reason.
+func ghStepToSteps(i int, s ghStep, repo Repo) ([]Step, bool) {
 	name := s.Name
 	switch {
 	case s.Uses != "":
 		if name == "" {
 			name = s.Uses
 		}
-		if strings.HasPrefix(s.Uses, "actions/checkout") {
-			return Step{Name: name + " (covered by the clone)", Command: "true"}
+		stepID := s.ID
+		if stepID == "" {
+			stepID = fmt.Sprintf("step-%d", i)
 		}
-		// An action is JavaScript/composite machinery this runner does not
-		// host. Saying so in the timeline beats pretending.
-		return Step{
-			Name:    name + " (skipped)",
-			Command: fmt.Sprintf(`echo "skipped uses: %s — actions are not supported locally"`, s.Uses),
+		aRepo := actions.Repo{
+			Sha: repo.Sha, Branch: repo.branch(), Name: repo.Name, Workspace: repo.Workspace,
 		}
+		with := map[string]string{}
+		for k, v := range s.With {
+			with[k] = v
+		}
+		translated, needsNode, err := actions.Translate(s.Uses, stepID, with, s.Env, aRepo)
+		if err != nil {
+			return []Step{{
+				Name:    name + " (skipped)",
+				Command: fmt.Sprintf(`echo "skipped uses: %s — %s"`, s.Uses, strings.ReplaceAll(err.Error(), `"`, `'`)),
+			}}, false
+		}
+		out := make([]Step, len(translated))
+		for j, t := range translated {
+			out[j] = Step{Name: t.Name, Command: t.Command, Env: t.Env}
+		}
+		return out, needsNode
 	case s.Run != "":
 		if name == "" {
 			name = firstLineOf(s.Run)
@@ -186,12 +228,12 @@ func ghStepToStep(i int, s ghStep) Step {
 		if s.Wdir != "" {
 			cmd = "cd " + s.Wdir + " && {\n" + cmd + "\n}"
 		}
-		return Step{Name: name, Command: cmd, Env: s.Env}
+		return []Step{{Name: name, Command: cmd, Env: s.Env}}, false
 	default:
 		if name == "" {
 			name = fmt.Sprintf("step %d", i+1)
 		}
-		return Step{Name: name + " (empty)", Command: "true"}
+		return []Step{{Name: name + " (empty)", Command: "true"}}, false
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"golang.org/x/term"
 	"tangled.org/core/workflow"
@@ -431,6 +432,26 @@ func cmdRun(args []string) error {
 }
 
 // runPlans executes plans through the renderer the output mode calls for.
+// printRunTotal closes a run with what it cost: how many workflows ran, how
+// many failed, and the wall time for all of it. Written to stderr so it
+// survives a piped stdout, and skipped in --json, where the stream is the
+// output and a prose line would corrupt it.
+func printRunTotal(opts runOpts, total, failed int, d time.Duration) {
+	if opts.JSON || total == 0 {
+		return
+	}
+	word := "workflows"
+	if total == 1 {
+		word = "workflow"
+	}
+	switch {
+	case failed > 0:
+		fmt.Fprintf(os.Stderr, "%d %s in %s — %d failed\n", total, word, fmtDur(d), failed)
+	default:
+		fmt.Fprintf(os.Stderr, "%d %s in %s\n", total, word, fmtDur(d))
+	}
+}
+
 // An interactive terminal gets the live TUI; --json, --plain and anything
 // piped get lines. The TUI consumes the same LogLine stream --json prints,
 // so the two views can never tell a different story.
@@ -441,8 +462,13 @@ func runPlans(plans []*Plan, opts runOpts, jsonOut, plain bool) error {
 	if opts.Shell.on {
 		plain = true
 	}
+	// One clock for the whole run, started before the first VM boots: what a
+	// reader wants to compare against their hosted CI is wall time, image
+	// pulls and all, not the sum of the step timings.
+	started := time.Now()
 	if !jsonOut && !plain && term.IsTerminal(int(os.Stdout.Fd())) {
-		_, err := runPlansTUI(plans, opts)
+		failed, err := runPlansTUI(plans, opts)
+		printRunTotal(opts, len(plans), failed, time.Since(started))
 		return err
 	}
 	failed := 0
@@ -473,6 +499,7 @@ func runPlans(plans []*Plan, opts runOpts, jsonOut, plain bool) error {
 		fmt.Fprintf(os.Stderr, "--sh=%s matched no job in this run; it has: %s\n",
 			opts.Shell.job, strings.Join(names, ", "))
 	}
+	printRunTotal(opts, len(plans), failed, time.Since(started))
 	if failed > 0 {
 		return fmt.Errorf("%d of %d workflow(s) failed", failed, len(plans))
 	}

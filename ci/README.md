@@ -197,6 +197,16 @@ to visible skips, never silence. See
 [`examples/ci-circleci-orbs`](../examples/ci-circleci-orbs), which runs
 the real `circleci/shellcheck` orb.
 
+**Tekton resolves catalog tasks and honors per-step images.** A `taskRef`
+naming a task the checkout does not carry is fetched from the tektoncd
+catalog — by version from the catalog repo, or newest via Artifact Hub —
+exactly as the hub resolver would in a cluster, array params included. And
+because Tekton gives every step its own container, a step whose image
+differs from the one the VM booted runs chrooted into its own pulled
+rootfs over the shared workspace, rather than being announced as
+unsupported. See
+[`examples/ci-tekton-catalog`](../examples/ci-tekton-catalog).
+
 What deliberately does not translate elsewhere is announced rather than
 faked: human gates and cross-pipeline triggers become
 visible skipped steps in the timeline; matrix strategies run once and say

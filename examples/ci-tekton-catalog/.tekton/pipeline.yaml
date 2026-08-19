@@ -1,0 +1,45 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: main
+spec:
+  tasks:
+    # Not in this repository: resolved from the tektoncd catalog, the way
+    # the hub resolver would in a cluster. `options` is an array param, so
+    # it expands into argv elements rather than being substituted as a
+    # string — and with no -o, curl prints what it fetched, which is how
+    # this task proves it really ran.
+    - name: fetch
+      taskRef:
+        resolver: hub
+        params:
+          - name: name
+            value: curl
+          - name: version
+            value: "0.1"
+      params:
+        - name: url
+          value: https://raw.githubusercontent.com/tektoncd/catalog/main/task/curl/0.1/curl.yaml
+        - name: options
+          value: ["-sL"]
+        - name: curl-image
+          value: curlimages/curl:8.10.1
+
+    # Each Tekton task is its own pod — here, its own VM with its own
+    # workspace — so this task verifies itself rather than the fetch's
+    # output. Its two steps declare different images: the first boots the
+    # VM, the second runs chrooted into its own pulled rootfs over the
+    # same workspace, which is what lets it read the file step one wrote.
+    - name: per-step-images
+      runAfter: [fetch]
+      taskSpec:
+        steps:
+          - name: write
+            image: alpine:3.20
+            script: |
+              echo "tekton-catalog" > note.txt
+          - name: report
+            image: busybox:1.36
+            script: |
+              test -s note.txt
+              echo "$(cat note.txt)-example-ok"

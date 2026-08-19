@@ -8,9 +8,10 @@ package platforms
 // and mounted read-only into the guest, and at run time the step builds a
 // writable overlay over it, bind-mounts the workspace at /drone/src,
 // enters via chroot with the image's own env plus the flattened settings,
-// and runs the entrypoint. The cwd-survives-chroot trick supplies the
-// working directory without needing a shell inside the image — many plugin
-// images are scratch plus one static binary.
+// and runs the entrypoint. No shell is required inside the image — many
+// plugin images are scratch plus one static binary — and such a plugin
+// starts in /, exactly as it would under a runtime with no WORKDIR, with
+// DRONE_WORKSPACE naming the workspace it should write to.
 //
 // Plugins that talk to a Docker daemon (plugins/docker building images)
 // still fail inside, with their own error — the same honest boundary as
@@ -102,33 +103,50 @@ func dronePluginMountDir(name string) string {
 }
 
 // chrootExecScript builds the shell that runs one containerized step
-// without a Docker daemon: a writable overlay over the read-only image
-// rootfs mounted at imgDir, the run's workspace bound at bindDst inside
-// it, and the cwd-survives-chroot trick for the working directory — chdir
-// to the target through the overlay path first, then chroot; the kernel
-// keeps the cwd inode, so the process starts in workdir with no shell
-// needed inside the image. Exactly one of argv (exec'd directly) or
-// script (written into the chroot and exec'd, so its shebang decides the
-// interpreter) runs.
+// without a Docker daemon: a writable root over the read-only image rootfs
+// mounted at imgDir, with the run's workspace bound at bindDst inside it.
+// Exactly one of argv (exec'd directly) or script (written into the root
+// and exec'd, so its shebang picks the interpreter) runs.
+//
+// chroot(1) chdirs to the new root, so the working directory has to be set
+// on the other side of it — a probe showed a chrooted step starting in /
+// no matter what the outer shell had chdir'd to. A script can just cd
+// itself; an argv goes through the image's own /bin/sh when it has one,
+// and otherwise runs from / (which is what a scratch plugin image gets —
+// Drone plugins read DRONE_WORKSPACE for their working directory anyway).
 func chrootExecScript(imgDir, bindDst, workdir string, argv []string, script string) string {
 	var launch string
 	if script != "" {
-		if !strings.HasPrefix(script, "#!") {
-			script = "#!/bin/sh\nset -e\n" + script
+		body := script
+		if !strings.HasPrefix(body, "#!") {
+			body = "#!/bin/sh\nset -e\n" + body
+		}
+		// The cd belongs inside the script: chroot lands the process in /.
+		if workdir != "" {
+			lines := strings.SplitN(body, "\n", 2)
+			body = lines[0] + "\ncd " + bkQuote(workdir) + "\n"
+			if len(lines) > 1 {
+				body += lines[1]
+			}
 		}
 		launch = fmt.Sprintf(`cat > "$W/root/tmp/bsdkrun-step" <<'BSDKRUN_STEP_EOF'
 %s
 BSDKRUN_STEP_EOF
 chmod +x "$W/root/tmp/bsdkrun-step"
-cd "$W/root"%s
-chroot "$W/root" /tmp/bsdkrun-step`, script, workdir)
+chroot "$W/root" /tmp/bsdkrun-step`, body)
 	} else {
 		quoted := make([]string, len(argv))
 		for i, a := range argv {
 			quoted[i] = bkQuote(a)
 		}
-		launch = fmt.Sprintf(`cd "$W/root"%s
-chroot "$W/root" %s`, workdir, strings.Join(quoted, " "))
+		joined := strings.Join(quoted, " ")
+		launch = fmt.Sprintf(`if [ -x "$W/root/bin/sh" ]; then
+  chroot "$W/root" /bin/sh -c 'cd %[1]s && exec "$@"' bsdkrun %[2]s
+else
+  # No shell in the image (scratch plus one binary): run from /, which is
+  # what a container runtime would give a plugin with no WORKDIR either.
+  chroot "$W/root" %[2]s
+fi`, bkQuote(workdir), joined)
 	}
 	return fmt.Sprintf(`set -e
 W=/tmp/bsdkrun-chroot-$$
@@ -140,8 +158,24 @@ mkdir -p "$W"
 # always qualifies.
 mount -t tmpfs tmpfs "$W"
 mkdir -p "$W/up" "$W/work" "$W/root"
-mount -t overlay overlay -o lowerdir=%[1]s,upperdir="$W/up",workdir="$W/work" "$W/root"
-# Refuse to run on a half-working overlay: prove it is writable.
+# The share must have arrived, or the chroot below fails as a confusing
+# ENOENT from exec rather than as the missing mount it is.
+[ -n "$(ls -A %[1]s 2>/dev/null)" ] || {
+  echo "image rootfs at %[1]s is empty in the guest — the read-only share did not arrive"
+  exit 1
+}
+# overlayfs cannot always stack on the filesystem the rootfs arrives over:
+# with a virtio-fs lower it mounts EMPTY instead of failing, so test the
+# merged root rather than the mount's exit code, and copy when it lies.
+if mount -t overlay overlay -o lowerdir=%[1]s,upperdir="$W/up",workdir="$W/work" "$W/root" 2>/dev/null &&
+   [ -n "$(ls -A "$W/root" 2>/dev/null)" ]; then
+  :
+else
+  echo "[bsdkrun] overlay over %[1]s came up empty — copying the rootfs into tmpfs instead"
+  umount "$W/root" 2>/dev/null || true
+  cp -a %[1]s/. "$W/root/"
+fi
+# Refuse to run on a half-working root: prove it is writable.
 touch "$W/root/.rwcheck" && rm "$W/root/.rwcheck"
 mkdir -p "$W/root%[2]s" "$W/root/proc" "$W/root/dev" "$W/root/etc" "$W/root/tmp" "$W/root/root"
 mount --bind /tangled/workspace "$W/root%[2]s"

@@ -18,6 +18,14 @@ shipped alongside it.
 
 ## [Unreleased]
 
+## [0.11.4] — 2026-08-20
+
+Dagger runs locally: `bsdkrun ci` detects a module and runs it in a microVM
+with its own Docker daemon. Getting there uncovered one defect wearing three
+faces — anything needing a real filesystem cannot live on the guest's
+virtio-fs rootfs — which is fixed for plugin chroots, dockerd's sockets and
+docker's own image store alike.
+
 ### Added
 
 - **Dagger support.** `bsdkrun ci` detects a dagger module (`dagger.json`,
@@ -35,6 +43,14 @@ shipped alongside it.
 
 ### Fixed
 
+- **Dagger's Docker daemon gets filesystems that behave.** Three symptoms,
+  one cause: the guest's rootfs is virtio-fs, and a passthrough filesystem
+  neither takes a bound unix socket (dockerd died with `listen unix
+  /var/run/docker/libnetwork/….sock: bind: permission denied`) nor carries an
+  overlay (docker's snapshotter died with `.dockerenv: read-only file
+  system`). The runtime directory is now a tmpfs and `/var/lib/docker` a
+  virtio-blk disk — shared between runs under a lock, so it caches the engine
+  image and halves the second run.
 - **A version bump no longer breaks every run until the release exists.** The
   guest agent is fetched from the tag matching `CARGO_PKG_VERSION`, so a
   source build sitting at a just-bumped version failed to boot anything with

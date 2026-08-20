@@ -354,7 +354,7 @@ jobs:
       # the engine image is pulled into a fresh VM — so it gets its own
       # generous timeout and is the last of the ecosystem steps.
       - name: e2e — dagger module (detected, engine provisioned, function called)
-        continue-on-error: true # flip to false after the first green run on x86_64
+        # strict since run 32351370053 served its marker on x86_64
         run: |
           set -eux
           d=$(mktemp -d)

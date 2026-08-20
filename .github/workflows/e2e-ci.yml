@@ -280,7 +280,7 @@ jobs:
       # host-side, chroot-executed with PLUGIN_* env; the next step asserts
       # the fetched file arrived in the shared workspace.
       - name: e2e — real Drone plugins (plugins/download executes)
-        continue-on-error: true # flip to false after the first green run on x86_64
+        # strict since run 32291858197 served its marker on x86_64
         run: |
           set -eux
           d=$(mktemp -d)
@@ -295,7 +295,7 @@ jobs:
           test "$rc" -eq 0
 
       - name: e2e — real Woodpecker plugins (same protocol, CI_* identity)
-        continue-on-error: true # flip to false after the first green run on x86_64
+        # strict since run 32291858197 served its marker on x86_64
         run: |
           set -eux
           d=$(mktemp -d)
@@ -313,7 +313,7 @@ jobs:
       # expanded: shellcheck/check's parameterized executor becomes the VM
       # image, and the done job proves ordering across the orb job.
       - name: e2e — CircleCI orbs (circleci/shellcheck expands and runs)
-        continue-on-error: true # flip to false after the first green run on x86_64
+        # strict since run 32291858197 served its marker on x86_64
         run: |
           set -eux
           d=$(mktemp -d)
@@ -331,7 +331,7 @@ jobs:
       # tektoncd catalog, plus a step whose image differs from the VM's and
       # therefore runs chrooted into its own rootfs.
       - name: e2e — Tekton catalog tasks and per-step images
-        continue-on-error: true # flip to false after the first green run on x86_64
+        # strict since run 32291858197 served its marker on x86_64
         run: |
           set -eux
           d=$(mktemp -d)

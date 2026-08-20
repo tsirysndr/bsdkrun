@@ -70,6 +70,19 @@ if ! command -v dockerd-entrypoint.sh >/dev/null 2>&1; then
   echo "this image has no Docker daemon — a dagger run needs one (image: ` + "`docker:dind`" + ` or the bsdkrun dagger flavor)"
   exit 1
 fi
+# dockerd's sockets live under /var/run/docker, and /var/run is a symlink to
+# /run — which is on the guest's virtio-fs rootfs. Binding a unix socket there
+# is not something a passthrough filesystem reliably allows: on a Linux host
+# dockerd dies with
+#   listen unix /var/run/docker/libnetwork/<id>.sock: bind: permission denied
+# which reads like a privilege problem and is a filesystem one. A tmpfs is
+# kernel-backed and takes sockets everywhere, so put the runtime directory on
+# one before the daemon wants it.
+if ! mountpoint -q /run 2>/dev/null; then
+  mount -t tmpfs -o mode=0755 tmpfs /run 2>/dev/null || true
+fi
+mkdir -p /run/docker /var/run/docker 2>/dev/null || true
+echo "docker runtime dir: $(stat -f -c %T /var/run 2>/dev/null || echo unknown)"
 if docker info >/dev/null 2>&1; then
   echo "docker is already running"
 else

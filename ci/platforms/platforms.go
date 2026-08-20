@@ -54,6 +54,10 @@ type Job struct {
 	// ExtraMounts are host:guest:ro mounts the VM needs — plugin image
 	// rootfs, pulled host-side at plan time.
 	ExtraMounts []string
+	// Disks are `hostImage:/guest/path` block devices. A job needs one when
+	// a directory has to behave like a real filesystem rather than the
+	// virtio-fs rootfs — overlayfs, for one, will not stack on virtio-fs.
+	Disks []string
 }
 
 // Repo is what the translators may know about the checkout.

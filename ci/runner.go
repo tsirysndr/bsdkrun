@@ -111,7 +111,7 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 		bootOut = prefixed(opts)
 		bootErr = prefixed(opts)
 	}
-	sbx, err := createVM(plan.Image, name, opts.Cpus, mem, mounts,
+	sbx, err := createVM(plan.Image, name, opts.Cpus, mem, mounts, plan.Disks,
 		[]string{"sleep", "infinity"}, bootOut, bootErr)
 	if err != nil && len(plan.NixpkgsDeps) > 0 && plan.Image != fallbackImage {
 		// nixery could not produce the image (it builds server-side, and a
@@ -129,7 +129,7 @@ func runPlan(plan *Plan, opts runOpts) (results []stepResult, err error) {
 			logf(opts, "  %s\n", note)
 		}
 		plan.ToFallback()
-		sbx, err = createVM(plan.Image, name+"-fb", opts.Cpus, mem, mounts,
+		sbx, err = createVM(plan.Image, name+"-fb", opts.Cpus, mem, mounts, plan.Disks,
 			[]string{"sleep", "infinity"}, bootOut, bootErr)
 	}
 	bootRes := stepResult{

@@ -475,6 +475,7 @@ func runPlans(plans []*Plan, opts runOpts, jsonOut, plain bool) error {
 	started := time.Now()
 	if !jsonOut && !plain && term.IsTerminal(int(os.Stdout.Fd())) {
 		failed, err := runPlansTUI(plans, opts)
+		platforms.CleanupTempDisks()
 		printRunTotal(opts, len(plans), failed, time.Since(started))
 		return err
 	}
@@ -506,6 +507,7 @@ func runPlans(plans []*Plan, opts runOpts, jsonOut, plain bool) error {
 		fmt.Fprintf(os.Stderr, "--sh=%s matched no job in this run; it has: %s\n",
 			opts.Shell.job, strings.Join(names, ", "))
 	}
+	platforms.CleanupTempDisks()
 	printRunTotal(opts, len(plans), failed, time.Since(started))
 	if failed > 0 {
 		return fmt.Errorf("%d of %d workflow(s) failed", failed, len(plans))

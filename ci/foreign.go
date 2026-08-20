@@ -112,6 +112,7 @@ func foreignPlan(platform string, job platforms.Job, repo *repoInfo) *Plan {
 		Steps:       steps,
 		Workdir:     workdir,
 		MinMemMiB:   job.MinMemMiB,
+		Disks:       job.Disks,
 		ExtraMounts: job.ExtraMounts,
 	}
 }

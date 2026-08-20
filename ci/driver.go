@@ -51,6 +51,7 @@ func createVM(
 	image, name string,
 	cpus, mem int,
 	mounts []string,
+	disks []string,
 	command []string,
 	stdout, stderr io.Writer,
 ) (*vm, error) {
@@ -62,6 +63,9 @@ func createVM(
 	}
 	for _, m := range mounts {
 		args = append(args, "--mount", m)
+	}
+	for _, d := range disks {
+		args = append(args, "--attach-disk", d)
 	}
 	if len(command) > 0 {
 		args = append(args, "--")

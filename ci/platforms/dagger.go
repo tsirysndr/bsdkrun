@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // DaggerImage is the VM image a dagger run boots. docker:dind by default —
@@ -225,5 +226,96 @@ func loadDagger(root string, repo Repo) ([]Job, error) {
 		MinMemMiB: DaggerMinMemMiB,
 		Steps:     append(DaggerSetupSteps(), DaggerCallStep(DaggerCall)),
 	}
+	if disk, err := DaggerDockerDisk(); err == nil {
+		job.Disks = append(job.Disks, disk)
+	}
 	return []Job{job}, nil
+}
+
+// DaggerDockerDisk gives dockerd a real filesystem for /var/lib/docker.
+//
+// It cannot use the guest's rootfs: that is virtio-fs, and docker's snapshotter
+// stacks an overlay on its data root — which over virtio-fs mounts read-only,
+// so the engine container dies at
+//
+//	open /tmp/containerd-mount…/.dockerenv: read-only file system
+//
+// A virtio-blk disk is a real ext4 filesystem, formatted by the guest on first
+// boot. Sparse, so its ceiling costs nothing until used, and per-run, because
+// two runs sharing one image would write the same filesystem from two kernels.
+func DaggerDockerDisk() (string, error) {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	dir = filepath.Join(dir, "bsdkrun", "ci", "dagger")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	// One shared disk, held for the run: reusing it keeps the engine image
+	// and every layer a build pulled, which is the difference between a
+	// two-minute run and a four-minute one. Two runs must not write the same
+	// filesystem from two kernels, so the lock decides — and a run that
+	// cannot take it gets a private disk instead of waiting or corrupting.
+	shared := filepath.Join(dir, "docker.img")
+	if takeDaggerDiskLock(dir) {
+		if err := ensureDiskImage(shared); err != nil {
+			return "", err
+		}
+		return shared + ":/var/lib/docker", nil
+	}
+	private := filepath.Join(dir, fmt.Sprintf("docker-%d.img", os.Getpid()))
+	if err := ensureDiskImage(private); err != nil {
+		return "", err
+	}
+	// Private disks are this run's alone, so they go when it does.
+	tempDisks = append(tempDisks, private)
+	return private + ":/var/lib/docker", nil
+}
+
+// ensureDiskImage creates the image if missing. 32 GiB of ceiling: the engine
+// and a build's layers fit, and a sparse file occupies only what is written.
+func ensureDiskImage(path string) error {
+	if st, err := os.Stat(path); err == nil && st.Size() > 0 {
+		return nil
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Truncate(32 << 30)
+}
+
+var (
+	daggerDiskLock *os.File
+	tempDisks      []string
+)
+
+// takeDaggerDiskLock reports whether this process owns the shared disk. The
+// handle is kept for the process's lifetime deliberately: the lock has to
+// outlive this call, since what it guards is the VM that runs afterwards.
+func takeDaggerDiskLock(dir string) bool {
+	if daggerDiskLock != nil {
+		return true
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "docker.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return false
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return false
+	}
+	daggerDiskLock = f
+	return true
+}
+
+// CleanupTempDisks removes the per-run disks. The shared one is kept on
+// purpose — it is the cache.
+func CleanupTempDisks() {
+	for _, p := range tempDisks {
+		_ = os.Remove(p)
+	}
+	tempDisks = nil
 }

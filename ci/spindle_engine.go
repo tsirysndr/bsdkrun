@@ -134,14 +134,14 @@ func (e *spindleEngine) SetupWorkflow(ctx context.Context, wid models.WorkflowId
 	}
 
 	machine, err := createVM(ew.plan.Image, vmName(wid.String()), e.cpus, mem,
-		ew.plan.ExtraMounts, []string{"sleep", "infinity"}, out, errW)
+		ew.plan.ExtraMounts, ew.plan.Disks, []string{"sleep", "infinity"}, out, errW)
 	if err != nil && len(ew.plan.NixpkgsDeps) > 0 && ew.plan.Image != fallbackImage {
 		// nixery could not build the image in time; same environment by the
 		// other road, announced rather than silently substituted.
 		fmt.Fprintf(errW, "image pull failed (%v) — falling back to %s + nix profile add\n", err, fallbackImage)
 		ew.plan.ToFallback()
 		machine, err = createVM(ew.plan.Image, vmName(wid.String())+"-fb", e.cpus, mem,
-			ew.plan.ExtraMounts, []string{"sleep", "infinity"}, out, errW)
+			ew.plan.ExtraMounts, ew.plan.Disks, []string{"sleep", "infinity"}, out, errW)
 	}
 	if err != nil {
 		return fmt.Errorf("booting the %s VM (image %s): %w", wf.Name, ew.plan.Image, err)

@@ -92,6 +92,9 @@ type Plan struct {
 	MinMemMiB int
 	// ExtraMounts are additional host:guest:ro mounts (plugin rootfs).
 	ExtraMounts []string
+	// Disks are `hostImage:/guest/path` virtio-blk attachments, for the
+	// directories that need a real filesystem under them.
+	Disks []string
 	// Workdir is where user steps start; empty means the workspace root.
 	// Set when the workflows live in a subdirectory of the repository.
 	Workdir string

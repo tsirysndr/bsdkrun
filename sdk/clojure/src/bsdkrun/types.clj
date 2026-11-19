@@ -89,6 +89,38 @@
      :created-at (when (some? created) (to-int created))
      :tracked (boolean (get row "tracked"))}))
 
+(defn zfs-branch-from-row
+  "A branch of a ZFS volume: a dataset cloned copy-on-write inside its pool.
+  `:origin` is the branch it was cloned from, nil for `main`."
+  [row]
+  (let [created (get row "created_at")]
+    {:name (str (get row "name"))
+     :origin (get row "origin")
+     :created-at (when (some? created) (to-int created))}))
+
+(defn zfs-attachment-from-row
+  "The machine holding a ZFS volume and what it mounts."
+  [row]
+  {:machine (str (get row "machine"))
+   :machine-name (get row "machine_name")
+   :running (boolean (get row "running"))
+   :mounts (mapv (fn [m] {:branch (str (get m "branch"))
+                          :mountpoint (str (get m "mountpoint"))})
+                 (or (get row "mounts") []))})
+
+(defn zfs-volume-info-from-row
+  "A ZFS volume as reported by `bsdkrun zfs ls --json`. `:size-bytes` is the
+  image's nominal size; `:size` the space actually allocated on the host."
+  [row]
+  (let [created (get row "created_at")]
+    {:name (str (get row "name"))
+     :path (str (get row "path"))
+     :size-bytes (to-int (or (get row "size_bytes") 0))
+     :size (get row "size")
+     :branches (mapv zfs-branch-from-row (or (get row "branches") []))
+     :attached-to (mapv zfs-attachment-from-row (or (get row "attached_to") []))
+     :created-at (when (some? created) (to-int created))}))
+
 (defn network-info-from-row
   "A global network as reported by `bsdkrun network ls --json`."
   [row]

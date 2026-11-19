@@ -262,6 +262,17 @@ Host-level namespaces:
 (images/list)                               ; vector of image-info maps
 (volumes/list)                              ; vector of volume-info maps
 (volumes/remove! "web" {:force true})
+
+;; ZFS volumes: one zpool per volume, branched copy-on-write in the guest
+;; (zfs clone), held by one machine at a time (Linux, FreeBSD, NetBSD).
+(require '[bsdkrun.zfs :as zfs])
+(zfs/create! "data" {:size "10G"})          ; sparse image; pool made on first import
+(zfs/attach! "data" vm-id)                  ; data@main at /mnt/data on next start
+(zfs/branch! "data" "feature")              ; zfs snapshot + clone, no copy
+(zfs/attach! "data@feature" vm-id {:mount "/srv"})
+(zfs/list)                                  ; vector of zfs-volume-info maps
+(zfs/destroy! "data@feature")
+(zfs/destroy! "data" {:force true})
 (networks/list)                             ; vector of network-info maps
 (system/fetch-image! :freebsd {:version "14.3"})
 (system/versions :netbsd)                   ; vector of strings
@@ -338,7 +349,7 @@ to choose one (`with-volume`, or a literal `:volume`) before it boots.
   `with-volume`, `with-network`, `exec!`, `run-command!`, `logs`, `shell!`,
   `status`, `running?`, `stop!`, `start!`, `remove!`, `update!`,
   `connect-network!`, `disconnect-network!`, `ssh-setup!`, `tailscale-up!`.
-- `bsdkrun.images` / `bsdkrun.volumes` / `bsdkrun.networks` / `bsdkrun.system`
+- `bsdkrun.images` / `bsdkrun.volumes` / `bsdkrun.zfs` / `bsdkrun.networks` / `bsdkrun.system`
   — host-level inventory and toolchain operations.
 - `bsdkrun.args` — the pure argv-builder behind `sandbox/create!`
   (`build-create-args` and friends), handy if you want to see or reuse the

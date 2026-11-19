@@ -12,6 +12,7 @@ require_relative "bsdkrun/types"
 require_relative "bsdkrun/sandbox"
 require_relative "bsdkrun/images"
 require_relative "bsdkrun/volumes"
+require_relative "bsdkrun/zfs"
 require_relative "bsdkrun/networks"
 require_relative "bsdkrun/system"
 require_relative "bsdkrun/websocket_frame"
@@ -78,6 +79,12 @@ module Bsdkrun
     # @return [Module]
     def volumes
       Volumes
+    end
+
+    # The {Zfs} namespace.
+    # @return [Module]
+    def zfs
+      Zfs
     end
 
     # The {Networks} namespace.

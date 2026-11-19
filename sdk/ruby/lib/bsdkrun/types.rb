@@ -315,6 +315,60 @@ module Bsdkrun
     end
   end
 
+  # One branch of a ZFS volume mounted in a guest.
+  ZfsMount = Data.define(:branch, :mountpoint) do
+    # @param row [Hash]
+    # @return [ZfsMount]
+    def self.from_row(row)
+      new(branch: row["branch"].to_s, mountpoint: row["mountpoint"].to_s)
+    end
+  end
+
+  # A branch of a ZFS volume: a dataset cloned copy-on-write inside its pool.
+  # +origin+ is the branch it was cloned from, nil for +main+.
+  ZfsBranch = Data.define(:name, :origin, :created_at) do
+    # @param row [Hash]
+    # @return [ZfsBranch]
+    def self.from_row(row)
+      created = row["created_at"]
+      new(name: row["name"].to_s, origin: row["origin"], created_at: created.nil? ? nil : created.to_i)
+    end
+  end
+
+  # The machine holding a ZFS volume and what it mounts.
+  ZfsAttachment = Data.define(:machine, :machine_name, :running, :mounts) do
+    # @param row [Hash]
+    # @return [ZfsAttachment]
+    def self.from_row(row)
+      new(
+        machine: row["machine"].to_s,
+        machine_name: row["machine_name"],
+        running: !!row["running"],
+        mounts: (row["mounts"] || []).map { |m| ZfsMount.from_row(m) }
+      )
+    end
+  end
+
+  # A ZFS volume as reported by +bsdkrun zfs ls --json+. +size_bytes+ is the
+  # image's nominal size (what the guest sees); +size+ the space actually
+  # allocated on the host. +attached_to+ holds the one machine holding it.
+  ZfsVolumeInfo = Data.define(:name, :path, :size_bytes, :size, :branches, :attached_to, :created_at) do
+    # @param row [Hash]
+    # @return [ZfsVolumeInfo]
+    def self.from_row(row)
+      created = row["created_at"]
+      new(
+        name: row["name"].to_s,
+        path: row["path"].to_s,
+        size_bytes: (row["size_bytes"] || 0).to_i,
+        size: row["size"],
+        branches: (row["branches"] || []).map { |b| ZfsBranch.from_row(b) },
+        attached_to: (row["attached_to"] || []).map { |a| ZfsAttachment.from_row(a) },
+        created_at: created.nil? ? nil : created.to_i
+      )
+    end
+  end
+
   # A global network as reported by +bsdkrun network ls --json+.
   NetworkInfo = Data.define(:name, :subnet, :gateway, :members, :running, :up, :created_at) do
     # @param row [Hash]

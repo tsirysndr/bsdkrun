@@ -207,6 +207,16 @@ Bsdkrun::System.probe                          # toolchain sanity check -> Boole
 Bsdkrun::Images.list                           # Array<ImageInfo>
 Bsdkrun::Volumes.list                          # Array<VolumeInfo>
 Bsdkrun::Volumes.remove("web", force: true)
+
+# ZFS volumes: one zpool per volume, branched copy-on-write in the guest
+# (zfs clone), held by one machine at a time (Linux, FreeBSD, NetBSD).
+Bsdkrun::Zfs.create("data", size: "10G")       # sparse image; pool made on first import
+Bsdkrun::Zfs.attach("data", vm_id)             # data@main at /mnt/data on next start
+Bsdkrun::Zfs.branch("data", "feature")         # zfs snapshot + clone, no copy
+Bsdkrun::Zfs.attach("data@feature", vm_id, mount: "/srv")
+Bsdkrun::Zfs.list                              # Array<ZfsVolumeInfo>
+Bsdkrun::Zfs.destroy("data@feature")
+Bsdkrun::Zfs.destroy("data", force: true)
 Bsdkrun::Networks.list                         # Array<NetworkInfo>
 Bsdkrun::System.fetch_image("freebsd", version: "14.3")
 Bsdkrun::System.versions("netbsd")             # Array<String>

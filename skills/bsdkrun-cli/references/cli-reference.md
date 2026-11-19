@@ -17,7 +17,7 @@ Run an OCI image (Docker Hub / any registry) as a Linux machine.
 - `-d, --detach` — background + print id.
 - `--initramfs` — load whole rootfs into RAM instead of virtio-fs (for kernels lacking CONFIG_VIRTIO_FS).
 - `-v, --volume <NAME>` — persist rootfs to a named volume (CoW-clones the image first; reuse to keep changes).
-- `--zfs <VOL[@BRANCH][:/mount]>` — attach a `bsdkrun zfs` volume at boot (repeatable; needs a ZFS-enabled kernel + `zpool`).
+- `--zfs <VOL[@BRANCH][:/mount]>` — attach a `bsdkrun zfs` volume at boot (repeatable; the image needs `zpool`).
 - `--mount <HOST:GUEST[:ro]>` — bind-mount a host dir over virtio-fs (repeatable; Linux only).
 - `--attach-disk <PATH[:ro]>` — extra virtio-blk disk (repeatable; `:ro` for read-only).
 - `--entrypoint <EP>` — override the image entrypoint.
@@ -476,7 +476,7 @@ ZFS volumes: one zpool per volume on a sparse disk image, held by **one machine 
 - `zfs destroy <VOL[@BRANCH]>... [-f]` — a branch (`zfs destroy`) or the whole image (refused while attached unless `-f`).
 - `--zfs VOL[@BRANCH][:/mount]` on `linux`/`freebsd`/`netbsd` attaches at boot (repeatable).
 NetBSD: the first attach boots the machine once to ship the kernel's `zfs` module and register it
-in `/etc/modules.conf`. Linux: needs a `--kernel` with ZFS and `zpool` in the image.
+in `/etc/modules.conf`. Linux: the default kernel (7.3.5+) has ZFS built in; the image needs `zpool`.
 
 ### `fetch [--os freebsd|netbsd] [--version V] [--dir DIR] [-f]`
 Download a BSD arm64 image and prepare it for booting. `--dir` links the cache-backed image

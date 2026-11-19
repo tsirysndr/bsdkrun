@@ -1875,7 +1875,7 @@ pub struct LinuxArgs {
 
     /// Attach a `bsdkrun zfs` volume (repeatable): `VOL` mounts its `main`
     /// branch at `/mnt/VOL`; `VOL@BRANCH:/path` picks a branch and a path.
-    /// The guest needs a kernel with ZFS and `zpool` in the image.
+    /// The default kernel has ZFS built in; the image needs `zpool`.
     #[arg(long = "zfs", value_name = "VOL[@BRANCH][:/mount]")]
     pub zfs: Vec<ZfsAttachSpec>,
 

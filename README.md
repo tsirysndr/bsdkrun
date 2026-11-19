@@ -1007,9 +1007,10 @@ Per guest:
   running kernel, which bsdkrun fetches from the CDN separately from the image. The first
   `attach` to a NetBSD machine boots it once to ship the matching `zfs`/`solaris` modules and
   register them in `/etc/modules.conf`; from then on every start imports the pool.
-- **Linux** needs a kernel with the ZFS module and `zpool` in the image. The stock
-  vmlinux-builder kernel has neither (ZFS is out of tree), so use `--kernel` with a ZFS-enabled
-  build; the init says clearly when `zpool` is missing rather than failing the mount silently.
+- **Linux** needs `zpool` in the image (`apk add zfs`, `apt install zfsutils-linux`); the
+  kernel side is covered: vmlinux-builder builds OpenZFS into every release since 7.3.5, which is
+  the default kernel, so there is no module to install or match. The init says clearly when
+  `zpool` is missing rather than failing the mount silently.
 
 Pools created by FreeBSD or Linux use a feature set NetBSD's older ZFS understands, so a volume
 branched before it was ever attached still imports on every guest.

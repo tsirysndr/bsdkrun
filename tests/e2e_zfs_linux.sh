@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# End-to-end check of `bsdkrun zfs` against a Linux guest, which needs a
-# kernel with OpenZFS built in (vmlinux-builder releases made after ZFS went
-# into its default build) and `zpool` in the image.
+# End-to-end check of `bsdkrun zfs` against a Linux guest. The default
+# kernel (vmlinux-builder 7.3.5 and later) has OpenZFS built in; the image
+# supplies `zpool`.
 #
 # The image is prepared once on a named volume: `apk add zfs` on Alpine's
 # edge, whose userland matches the OpenZFS the kernel carries. The pool is
 # then imported by the generated init, before the entrypoint, so the command
 # sees it mounted.
 #
-# Usage: E2E_KERNEL=/path/to/vmlinux tests/e2e_zfs_linux.sh [path/to/bsdkrun]
-#    or: E2E_KERNEL_VERSION=7.2.15 tests/e2e_zfs_linux.sh
+# Usage: tests/e2e_zfs_linux.sh [path/to/bsdkrun]
+# Another kernel: E2E_KERNEL=/path/to/vmlinux or E2E_KERNEL_VERSION=<release>.
 set -euo pipefail
 
 B=${1:-${BSDKRUN:-target/release/bsdkrun}}
@@ -23,9 +23,6 @@ if [ -n "${E2E_KERNEL:-}" ]; then
   KERNEL_ARGS=(--kernel "$E2E_KERNEL")
 elif [ -n "${E2E_KERNEL_VERSION:-}" ]; then
   KERNEL_ARGS=(--kernel-version "$E2E_KERNEL_VERSION")
-else
-  echo "set E2E_KERNEL=<vmlinux with CONFIG_ZFS=y> or E2E_KERNEL_VERSION=<vmlinux-builder release>" >&2
-  exit 2
 fi
 
 cleanup() {

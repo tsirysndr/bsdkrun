@@ -45,11 +45,10 @@
 //!   separately from the image. [`prepare_netbsd`] ships the matching
 //!   `zfs`/`solaris` modules in and registers them; the machine then needs
 //!   one restart.
-//! - **Linux** needs a kernel with the ZFS module and an image with `zpool`.
-//!   The stock vmlinux-builder kernel has neither (ZFS is out of tree), so
-//!   Linux works with `--kernel` pointing at a ZFS-enabled build; the init
-//!   reports clearly when `zpool` is missing instead of failing the mount
-//!   silently.
+//! - **Linux** needs `zpool` in the image; the kernel side is built in.
+//!   vmlinux-builder has carried OpenZFS in every release since 7.3.5, the
+//!   default kernel, so nothing is loaded or matched. The init reports
+//!   clearly when `zpool` is missing instead of failing the mount silently.
 //!
 //! Pools created by the FreeBSD helper (or a Linux guest) are created with an
 //! explicit feature set NetBSD's older implementation understands, so a volume

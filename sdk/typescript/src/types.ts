@@ -427,6 +427,42 @@ export interface VolumeInfo {
   tracked: boolean;
 }
 
+/** One branch of a ZFS volume mounted in a guest. */
+export interface ZfsMountInfo {
+  branch: string;
+  mountpoint: string;
+}
+
+/** A branch of a ZFS volume: a dataset cloned copy-on-write inside its pool. */
+export interface ZfsBranchInfo {
+  name: string;
+  /** The branch it was cloned from; `null` for `main`. */
+  origin: string | null;
+  createdAt: number | null;
+}
+
+/** The machine holding a ZFS volume and what it mounts. */
+export interface ZfsAttachmentInfo {
+  machine: string;
+  machineName: string | null;
+  running: boolean;
+  mounts: ZfsMountInfo[];
+}
+
+/** A ZFS volume as reported by `bsdkrun zfs ls --json`. */
+export interface ZfsVolumeInfo {
+  name: string;
+  path: string;
+  /** The image's nominal size: what the guest sees as the disk. */
+  sizeBytes: number;
+  /** Space actually allocated on the host, e.g. "1.2 GiB"; `null` if unmeasured. */
+  size: string | null;
+  branches: ZfsBranchInfo[];
+  /** The holder, if any; at most one. */
+  attachedTo: ZfsAttachmentInfo[];
+  createdAt: number | null;
+}
+
 /** A global network as reported by `bsdkrun network ls --json`. */
 export interface NetworkInfo {
   name: string;

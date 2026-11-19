@@ -41,6 +41,16 @@ export type { Sh, ShellRunOptions, ShellRunner } from "./shell.js";
 export { images, listImages } from "./images.js";
 export { volumes, listVolumes, removeVolume } from "./volumes.js";
 export {
+  zfs,
+  listZfsVolumes,
+  zfsBranches,
+  createZfsVolume,
+  branchZfsVolume,
+  attachZfsVolume,
+  detachZfsVolume,
+  destroyZfsVolume,
+} from "./zfs.js";
+export {
   networks,
   listNetworks,
   createNetwork,
@@ -116,6 +126,10 @@ export type {
   AiSession,
   ImageInfo,
   VolumeInfo,
+  ZfsVolumeInfo,
+  ZfsBranchInfo,
+  ZfsAttachmentInfo,
+  ZfsMountInfo,
   NetworkInfo,
 } from "./types.js";
 

@@ -265,6 +265,22 @@ await images.list();                        // ImageInfo[]
 await volumes.list();                       // VolumeInfo[]
 await volumes.remove("web", { force: true });
 await networks.list();                      // NetworkInfo[]
+```
+
+ZFS volumes — one zpool per volume, branched copy-on-write inside the guest
+(`zfs clone`), held by one machine at a time (Linux, FreeBSD, NetBSD):
+
+```ts
+import { zfs } from "@bsdkrun/sdk";
+
+await zfs.create("data", { size: "10G" });          // sparse image; pool made on first import
+await zfs.attach("data", vmId);                     // mounts data@main at /mnt/data on next start
+await zfs.branch("data", "feature");                // zfs snapshot + clone, no copy
+await zfs.attach("data@feature", vmId, { mount: "/srv" });  // live if vmId holds the pool
+await zfs.list();                                   // ZfsVolumeInfo[] (branches, holder)
+await zfs.detach("data@feature", vmId);
+await zfs.destroy("data@feature");
+await zfs.destroy("data", { force: true });
 await fetchImage("freebsd", { version: "14.3" });
 await versions("netbsd");
 ```

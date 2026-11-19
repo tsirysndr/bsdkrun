@@ -2182,6 +2182,7 @@ pub(crate) fn wait_for_agent(
 /// Parent-side of a BSD boot with a trailing command: wait for the guest agent,
 /// run the command against it (streaming stdio), and — unless `keep_running`
 /// (`-d`) — power the VM off afterward. Exits with the command's status.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_guest_command(
     id: &str,
     kind: &str,

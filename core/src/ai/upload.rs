@@ -401,10 +401,8 @@ fn walk(root: &Path, everything: bool, skipped: &mut Vec<String>) -> Result<Surv
             return true;
         }
         let name = e.file_name().to_string_lossy();
-        if SKIP_DIRS.contains(&name.as_ref()) && e.path() != skip_root {
-            return false;
-        }
-        true
+        // A skipped directory, unless it is the root the walk started from.
+        !(SKIP_DIRS.contains(&name.as_ref()) && e.path() != skip_root)
     });
 
     for result in builder.build() {

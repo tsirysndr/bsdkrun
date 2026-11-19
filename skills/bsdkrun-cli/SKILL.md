@@ -44,6 +44,9 @@ Interact:
 - `bsdkrun cache restore <id>[:<path>] --key K [--restore-keys PREFIX...]` — put it back (a miss exits 0).
 - `bsdkrun cache ls` / `bsdkrun cache rm <key>... | --all` — list and remove entries.
 - `bsdkrun doctor [--json]` — check the host can run machines; exits 1 on any failure.
+- `bsdkrun zfs create|ls|branch|attach|detach|destroy` — ZFS volumes: one zpool per volume, branched
+  copy-on-write in the guest (`zfs clone`), held by one machine at a time; `--zfs VOL[@BRANCH][:/mount]`
+  on `linux`/`freebsd`/`netbsd` attaches at boot.
 - `bsdkrun shell <id>` — attach an interactive console to a detached machine.
 - `bsdkrun logs [-f] [--boot] <id>` — show the console log (`--boot` = bsdkrun's own boot log).
 

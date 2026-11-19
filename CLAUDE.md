@@ -199,6 +199,27 @@ What that split costs, and what pays for it:
   belongs upstream in mirage-crypto, whose stated requirement that every
   counter read differ is false on this hardware.
 
+## `bsdkrun zfs` — the guest facts the code depends on
+
+A volume is one zpool on a sparse image (`<state>/zfs/<name>.img`), imported by
+**one machine at a time**; branches are `zfs clone`s inside it. `core/src/zfs.rs`
+generates the guest script; the BSDs run it through the agent after boot, Linux
+from the generated init. Learned by probing, not from docs:
+
+| Guest   | What bit                                                                                                                                                                                                                                                     |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| NetBSD  | Virtio disks are `ld4`, `ld5`, … (not `ld0`): find the disk by position in `hw.disknames`, after the root. `zpool` dies on `modctl` EPERM at securelevel 1, so the module must load from `/etc/modules.conf` during rc, and it must match the CDN kernel. |
+| NetBSD  | `zpool import -d` wants a *directory*; FreeBSD wants the *device path*. Delete a symlink dir you imported through and the pool is UNAVAIL on the next boot.                                                                                                |
+| all     | The module auto-imports pools from `zpool.cache` at load time, by the path recorded last time, ahead of any script. Create and import with `cachefile=none`.                                                                                                  |
+| all     | `canmount` is not inherited: `zfs set mountpoint=` on a child mounts it at once; check `mounted` before `zfs mount`.                                                                                                                                         |
+| FreeBSD | Default pool features (`zstd`, `log_spacemap`, …) do not import on NetBSD; create with `-d` plus the explicit list in `PORTABLE_FEATURES`.                                                                                                                  |
+| all     | A one-shot command's writes are lost to the SIGTERM teardown unless the pool is exported first (txg commit).                                                                                                                                                |
+| Linux   | The vmlinux-builder kernel has no ZFS; the init reports a missing `zpool` and carries on.                                                                                                                                                                    |
+
+The guest script refuses to `zpool create` on a disk anything is mounted from —
+the device index was off by one on NetBSD once and only ZFS's own refusal saved
+the root disk.
+
 ## Verifying
 
 A guest that boots is not a guest that works. **Curl it and read the body.** Two

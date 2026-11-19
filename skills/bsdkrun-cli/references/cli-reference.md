@@ -17,6 +17,7 @@ Run an OCI image (Docker Hub / any registry) as a Linux machine.
 - `-d, --detach` — background + print id.
 - `--initramfs` — load whole rootfs into RAM instead of virtio-fs (for kernels lacking CONFIG_VIRTIO_FS).
 - `-v, --volume <NAME>` — persist rootfs to a named volume (CoW-clones the image first; reuse to keep changes).
+- `--zfs <VOL[@BRANCH][:/mount]>` — attach a `bsdkrun zfs` volume at boot (repeatable; needs a ZFS-enabled kernel + `zpool`).
 - `--mount <HOST:GUEST[:ro]>` — bind-mount a host dir over virtio-fs (repeatable; Linux only).
 - `--attach-disk <PATH[:ro]>` — extra virtio-blk disk (repeatable; `:ro` for read-only).
 - `--entrypoint <EP>` — override the image entrypoint.
@@ -41,6 +42,7 @@ Without `-d`, a `CMD` is one-shot: boot → run (streaming output) → power off
 - `-d, --detach` — background + print id.
 - `--persist` — boot the disk in place (writes persist to it; one machine at a time) instead of a per-machine CoW clone.
 - `-v, --volume <NAME>` — persist disk to a named volume (under `<state>/volumes/<NAME>`).
+- `--zfs <VOL[@BRANCH][:/mount]>` — attach a `bsdkrun zfs` volume at boot (repeatable; imported once the agent is up).
 - `--no-net`, `--port <HOST:GUEST>`, `--mac`, `--network <NAME>`, `--name <NAME>` — as for `linux`.
 - `--cpus <N>` (1), `--mem <MiB>` (512).
 - `--disk-size <SIZE>` — grow root disk before boot (only enlarges), e.g. `8G`, `4096M`.
@@ -459,6 +461,22 @@ List downloaded images.
 
 ### `volume ls` / `volume rm <name>...`
 List / remove persistent volumes (and their data).
+
+### `zfs create|ls|branch|attach|detach|destroy`
+ZFS volumes: one zpool per volume on a sparse disk image, held by **one machine at a time**
+(Linux, FreeBSD, NetBSD); branches are datasets cloned copy-on-write inside the pool.
+- `zfs create <NAME> [--size 10G]` — sparse image; the pool and its `main` branch are made on first import.
+- `zfs ls [VOL] [--json]` — volumes (DISK, USED, BRANCHES, ATTACHED), or the branches of one.
+- `zfs branch <VOL> <NAME> [--from BRANCH]` — `zfs snapshot` + `zfs clone`; runs in the holding
+  machine or in a throwaway FreeBSD helper (~15s).
+- `zfs attach <VOL[@BRANCH]> <MACHINE> [--mount PATH]` — default `/mnt/VOL` (`/mnt/VOL-BRANCH`).
+  A stopped machine picks it up on `start`; a running holder mounts the branch live; a running
+  non-holder is refused (no hot-plug). A stopped holder elsewhere is displaced; a running one refuses.
+- `zfs detach <VOL[@BRANCH]> <MACHINE>` — live unmount/export on a running machine; the disk leaves on next start.
+- `zfs destroy <VOL[@BRANCH]>... [-f]` — a branch (`zfs destroy`) or the whole image (refused while attached unless `-f`).
+- `--zfs VOL[@BRANCH][:/mount]` on `linux`/`freebsd`/`netbsd` attaches at boot (repeatable).
+NetBSD: the first attach boots the machine once to ship the kernel's `zfs` module and register it
+in `/etc/modules.conf`. Linux: needs a `--kernel` with ZFS and `zpool` in the image.
 
 ### `fetch [--os freebsd|netbsd] [--version V] [--dir DIR] [-f]`
 Download a BSD arm64 image and prepare it for booting. `--dir` links the cache-backed image

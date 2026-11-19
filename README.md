@@ -143,6 +143,8 @@ one CLI, no daemon required.
 
 **Interfaces & tooling**
 
+- **ZFS volumes** — one zpool per volume, [branched copy-on-write](#persistent-volumes--v-name)
+  inside the guest with `zfs clone`, attached to Linux, FreeBSD and NetBSD machines.
 - **TUI dashboard** — [live panels](#tui--the-terminal-dashboard) for machines, images, volumes and
   networks, with fuzzy search, a new-machine wizard, and a follow-mode log viewer.
 - **Desktop app** — machines list with a tabbed terminal panel (the screenshot up top).
@@ -965,6 +967,52 @@ bsdkrun volume ls              # NAME, GUEST, BASE, SIZE (du, CoW-aware), CREATE
 bsdkrun volume rm web          # delete a volume's data (refused if a machine is using it)
 bsdkrun volume rm -f web db    # force removal / multiple names
 ```
+
+**ZFS volumes (`bsdkrun zfs`)** — a volume is one **zpool on a sparse disk image**, attached to a
+Linux, FreeBSD or NetBSD machine as virtio-blk and imported by the guest. Its **branches** are
+datasets inside that pool: `main` comes with the pool, and `zfs branch` forks one with
+`zfs snapshot` + `zfs clone` — ZFS's own copy-on-write, so a branch costs nothing until it
+diverges and shares blocks with its parent inside the guest, however the image is stored on the
+host.
+
+```sh
+bsdkrun zfs create data --size 10G          # sparse image; the pool is made on first import
+bsdkrun zfs attach data web                 # web (stopped) mounts data@main at /mnt/data on start
+bsdkrun start web
+bsdkrun zfs branch data feature             # zfs snapshot + clone inside the pool, no copy
+bsdkrun zfs attach data@feature web --mount /srv   # web holds the pool: mounted live
+bsdkrun zfs ls                              # NAME, DISK, USED, BRANCHES, ATTACHED
+bsdkrun zfs ls data                         # BRANCH, ORIGIN, MOUNTED
+bsdkrun zfs detach data@feature web
+bsdkrun zfs destroy data@feature            # zfs destroy, refused while branches clone from it
+bsdkrun zfs destroy data                    # the whole image (refused while attached; --force)
+bsdkrun freebsd -d --zfs data               # or attach at boot: VOL[@BRANCH][:/mount], repeatable
+```
+
+The constraint that shapes it: **a pool is imported by one kernel at a time.** The host has no
+ZFS and libkrun cannot share a block device between VMs, so a volume — all of its branches — is
+held by at most one machine. Attaching it elsewhere is refused while that machine runs, and
+moves it when the machine is stopped. Several branches of one volume mount in the same guest at
+different paths; different volumes go to different machines freely. A machine that does not
+hold the pool cannot be given it while running (no hot-plug): attach while stopped, then
+`start`. `branch` and `destroy VOL@BRANCH` need a kernel with the pool imported — the holder's,
+if it is running, otherwise a **throwaway FreeBSD helper** boots with the image, does the work,
+exports the pool and powers off (~15s).
+
+Per guest:
+
+- **FreeBSD** has ZFS in base; nothing to install.
+- **NetBSD** can only load the `zfs` module during `/etc/rc` (its `zpool` dies on `modctl`
+  at securelevel 1 before the kernel's autoload gets a chance), and the module must match the
+  running kernel, which bsdkrun fetches from the CDN separately from the image. The first
+  `attach` to a NetBSD machine boots it once to ship the matching `zfs`/`solaris` modules and
+  register them in `/etc/modules.conf`; from then on every start imports the pool.
+- **Linux** needs a kernel with the ZFS module and `zpool` in the image. The stock
+  vmlinux-builder kernel has neither (ZFS is out of tree), so use `--kernel` with a ZFS-enabled
+  build; the init says clearly when `zpool` is missing rather than failing the mount silently.
+
+Pools created by FreeBSD or Linux use a feature set NetBSD's older ZFS understands, so a volume
+branched before it was ever attached still imports on every guest.
 
 **Bind-mount host directories (`--mount`, Linux only)** — share a host directory into the guest at
 a path, like `docker run -v`. Repeatable; append `:ro` for read-only:

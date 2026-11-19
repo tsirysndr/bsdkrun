@@ -141,6 +141,44 @@ impl From<ops::Volume> for Volume {
     }
 }
 
+impl From<ops::ZfsVolume> for ZfsVolume {
+    fn from(v: ops::ZfsVolume) -> Self {
+        ZfsVolume {
+            name: v.name,
+            path: v.path,
+            size_bytes: v.size_bytes,
+            size: v.size,
+            branches: v
+                .branches
+                .into_iter()
+                .map(|b| ZfsBranch {
+                    name: b.name,
+                    origin: b.origin,
+                    created_at: b.created_at,
+                })
+                .collect(),
+            attached_to: v
+                .attached_to
+                .into_iter()
+                .map(|a| ZfsAttachment {
+                    machine: a.machine,
+                    machine_name: a.machine_name,
+                    running: a.running,
+                    mounts: a
+                        .mounts
+                        .into_iter()
+                        .map(|m| ZfsMount {
+                            branch: m.branch,
+                            mountpoint: m.mountpoint,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            created_at: v.created_at,
+        }
+    }
+}
+
 impl From<ops::Network> for Network {
     fn from(n: ops::Network) -> Self {
         Network {
@@ -553,6 +591,74 @@ impl Bsdkrun for BsdkrunService {
         let r = req.into_inner();
         Ok(Response::new(
             self.ops.remove_volumes(&r.names, r.force).await?,
+        ))
+    }
+
+    // -- zfs volumes ---------------------------------------------------------
+
+    async fn list_zfs_volumes(
+        &self,
+        _: Request<ListZfsVolumesRequest>,
+    ) -> Result<Response<ListZfsVolumesResponse>, Status> {
+        let volumes = self.ops.list_zfs_volumes().await?;
+        Ok(Response::new(ListZfsVolumesResponse {
+            volumes: volumes.into_iter().map(Into::into).collect(),
+        }))
+    }
+
+    async fn create_zfs_volume(
+        &self,
+        req: Request<CreateZfsVolumeRequest>,
+    ) -> Result<Response<CommandResult>, Status> {
+        let r = req.into_inner();
+        Ok(Response::new(
+            self.ops
+                .create_zfs_volume(&r.name, r.size.as_deref())
+                .await?,
+        ))
+    }
+
+    async fn branch_zfs_volume(
+        &self,
+        req: Request<BranchZfsVolumeRequest>,
+    ) -> Result<Response<CommandResult>, Status> {
+        let r = req.into_inner();
+        Ok(Response::new(
+            self.ops
+                .branch_zfs_volume(&r.volume, &r.name, r.from_branch.as_deref())
+                .await?,
+        ))
+    }
+
+    async fn attach_zfs_volume(
+        &self,
+        req: Request<AttachZfsVolumeRequest>,
+    ) -> Result<Response<CommandResult>, Status> {
+        let r = req.into_inner();
+        Ok(Response::new(
+            self.ops
+                .attach_zfs_volume(&r.target, &r.machine, r.mount.as_deref())
+                .await?,
+        ))
+    }
+
+    async fn detach_zfs_volume(
+        &self,
+        req: Request<DetachZfsVolumeRequest>,
+    ) -> Result<Response<CommandResult>, Status> {
+        let r = req.into_inner();
+        Ok(Response::new(
+            self.ops.detach_zfs_volume(&r.target, &r.machine).await?,
+        ))
+    }
+
+    async fn destroy_zfs_volumes(
+        &self,
+        req: Request<DestroyZfsVolumesRequest>,
+    ) -> Result<Response<CommandResult>, Status> {
+        let r = req.into_inner();
+        Ok(Response::new(
+            self.ops.destroy_zfs_volumes(&r.targets, r.force).await?,
         ))
     }
 

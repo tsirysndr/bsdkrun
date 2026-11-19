@@ -94,11 +94,21 @@ async fn main() -> Result<()> {
     // themselves.
     let supervisor = Supervisor::resolve(args.supervisor);
     match supervisor.exe() {
-        Some(exe) => info!(
-            engine = bsdkrun_core::VERSION,
-            supervisor = %exe.display(),
-            "bsdkrun engine linked in"
-        ),
+        Some(exe) => {
+            // The engine's own out-of-process boots (the ZFS helper VM, a
+            // NetBSD preparation) spawn "bsdkrun"; here that is the
+            // supervisor's `cli` mode.
+            std::env::set_var("BSDKRUN_BIN", exe);
+            std::env::set_var(
+                "BSDKRUN_BIN_ARGS",
+                bsdkrun_daemon::supervisor::CLI_SUBCOMMAND,
+            );
+            info!(
+                engine = bsdkrun_core::VERSION,
+                supervisor = %exe.display(),
+                "bsdkrun engine linked in"
+            )
+        }
         None => warn!(
             engine = bsdkrun_core::VERSION,
             "no bsdkrun-supervisor found beside this binary or on PATH — this daemon cannot \

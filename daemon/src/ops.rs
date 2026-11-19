@@ -30,7 +30,7 @@ use crate::supervisor::Supervisor;
 /// `--json` — so nothing is re-declared or re-parsed here.
 pub use bsdkrun_core::api::{
     AiAgent, AiSession, DockerContainer, DockerStatus, Flavor, Image, Machine, Network, Snapshot,
-    Version, Volume,
+    Version, Volume, ZfsAttachment, ZfsBranch, ZfsVolume,
 };
 
 // ---------------------------------------------------------------------------
@@ -136,6 +136,7 @@ impl RunLinuxOpts {
                 .iter()
                 .filter_map(|d| d.parse().ok())
                 .collect(),
+            zfs: vec![],
             entrypoint: self.entrypoint.clone(),
             env: self.env.clone(),
             console: self.console.clone().unwrap_or(d.console),
@@ -175,6 +176,7 @@ impl RunBsdOpts {
                 .iter()
                 .filter_map(|d| d.parse().ok())
                 .collect(),
+            zfs: vec![],
             run: RunConfig {
                 detach: true,
                 persist: self.persist,
@@ -1137,6 +1139,86 @@ impl Ops {
         require_non_empty("names", names)?;
         let names = names.to_vec();
         as_result(each(names, move |n| api::remove_volume(&n, force)).await)
+    }
+
+    // -- zfs volumes ---------------------------------------------------------
+
+    pub async fn list_zfs_volumes(&self) -> OpResult<Vec<ZfsVolume>> {
+        blocking("listing zfs volumes", api::list_zfs_volumes).await
+    }
+
+    pub async fn create_zfs_volume(
+        &self,
+        name: &str,
+        size: Option<&str>,
+    ) -> OpResult<CommandResult> {
+        let (name, size) = (name.to_string(), size.map(str::to_string));
+        as_result(
+            blocking("creating a zfs volume", move || {
+                api::create_zfs_volume(&name, size.as_deref())
+            })
+            .await,
+        )
+    }
+
+    /// Branches run ZFS in a guest — the holder's, or a helper booted for the
+    /// purpose — so this can take as long as a BSD boot.
+    pub async fn branch_zfs_volume(
+        &self,
+        volume: &str,
+        name: &str,
+        from: Option<&str>,
+    ) -> OpResult<CommandResult> {
+        let (volume, name, from) = (
+            volume.to_string(),
+            name.to_string(),
+            from.map(str::to_string),
+        );
+        as_result(
+            blocking("branching a zfs volume", move || {
+                api::branch_zfs_volume(&volume, &name, from.as_deref())
+            })
+            .await,
+        )
+    }
+
+    pub async fn attach_zfs_volume(
+        &self,
+        target: &str,
+        machine: &str,
+        mount: Option<&str>,
+    ) -> OpResult<CommandResult> {
+        let (target, machine, mount) = (
+            target.to_string(),
+            machine.to_string(),
+            mount.map(str::to_string),
+        );
+        as_result(
+            blocking("attaching a zfs volume", move || {
+                api::attach_zfs_volume(&target, &machine, mount.as_deref())
+            })
+            .await,
+        )
+    }
+
+    pub async fn detach_zfs_volume(&self, target: &str, machine: &str) -> OpResult<CommandResult> {
+        let (target, machine) = (target.to_string(), machine.to_string());
+        as_result(
+            blocking("detaching a zfs volume", move || {
+                api::detach_zfs_volume(&target, &machine)
+            })
+            .await,
+        )
+    }
+
+    pub async fn destroy_zfs_volumes(
+        &self,
+        targets: &[String],
+        force: bool,
+    ) -> OpResult<CommandResult> {
+        require_non_empty("targets", targets)?;
+        let targets = targets.to_vec();
+        as_result(each(targets, move |t| api::destroy_zfs_volume(&t, force)).await)
     }
 
     // -- networks ------------------------------------------------------------

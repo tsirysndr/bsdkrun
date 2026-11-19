@@ -363,6 +363,85 @@ message RemoveVolumesRequest {
 }
 
 // ---------------------------------------------------------------------------
+// ZFS volumes
+// ---------------------------------------------------------------------------
+//
+// One zpool per volume on a disk image, held by one machine at a time;
+// branches are datasets cloned copy-on-write inside the pool.
+
+message ZfsMount {
+  string branch = 1;
+  string mountpoint = 2;
+}
+
+message ZfsBranch {
+  string name = 1;
+  // The branch this one was cloned from; unset for `main`.
+  optional string origin = 2;
+  optional string created_at = 3;
+}
+
+message ZfsAttachment {
+  string machine = 1;
+  optional string machine_name = 2;
+  bool running = 3;
+  repeated ZfsMount mounts = 4;
+}
+
+message ZfsVolume {
+  string name = 1;
+  string path = 2;
+  // The image's nominal size — what the guest sees as the disk.
+  uint64 size_bytes = 3;
+  // Human-readable space actually allocated on the host; unset if unmeasured.
+  optional string size = 4;
+  repeated ZfsBranch branches = 5;
+  // The holder, if any; at most one.
+  repeated ZfsAttachment attached_to = 6;
+  optional string created_at = 7;
+}
+
+message ListZfsVolumesRequest {}
+
+message ListZfsVolumesResponse {
+  repeated ZfsVolume volumes = 1;
+}
+
+message CreateZfsVolumeRequest {
+  string name = 1;
+  // Disk size such as "10G" (the default when unset). Sparse.
+  optional string size = 2;
+}
+
+message BranchZfsVolumeRequest {
+  string volume = 1;
+  string name = 2;
+  // Branch to fork from; `main` when unset.
+  optional string from_branch = 3;
+}
+
+message AttachZfsVolumeRequest {
+  // `VOL` or `VOL@BRANCH`.
+  string target = 1;
+  string machine = 2;
+  // Guest mount path; `/mnt/VOL` (or `/mnt/VOL-BRANCH`) when unset.
+  optional string mount = 3;
+}
+
+message DetachZfsVolumeRequest {
+  // `VOL@BRANCH` for one branch, `VOL` for the whole volume.
+  string target = 1;
+  string machine = 2;
+}
+
+message DestroyZfsVolumesRequest {
+  // Each `VOL@BRANCH` or `VOL`.
+  repeated string targets = 1;
+  // Destroy a volume even if a stopped machine has it attached.
+  bool force = 2;
+}
+
+// ---------------------------------------------------------------------------
 // Networks
 // ---------------------------------------------------------------------------
 
@@ -779,6 +858,14 @@ service Bsdkrun {
   // -- volumes --------------------------------------------------------------
   rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
   rpc RemoveVolumes(RemoveVolumesRequest) returns (CommandResult);
+
+  // -- zfs volumes ----------------------------------------------------------
+  rpc ListZfsVolumes(ListZfsVolumesRequest) returns (ListZfsVolumesResponse);
+  rpc CreateZfsVolume(CreateZfsVolumeRequest) returns (CommandResult);
+  rpc BranchZfsVolume(BranchZfsVolumeRequest) returns (CommandResult);
+  rpc AttachZfsVolume(AttachZfsVolumeRequest) returns (CommandResult);
+  rpc DetachZfsVolume(DetachZfsVolumeRequest) returns (CommandResult);
+  rpc DestroyZfsVolumes(DestroyZfsVolumesRequest) returns (CommandResult);
 
   // -- networks -------------------------------------------------------------
   rpc ListNetworks(ListNetworksRequest) returns (ListNetworksResponse);

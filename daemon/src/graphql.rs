@@ -183,6 +183,83 @@ impl From<ops::Volume> for Volume {
     }
 }
 
+/// A ZFS volume: one zpool on a disk image, held by one machine at a time,
+/// with branches cloned copy-on-write inside it.
+#[derive(SimpleObject)]
+pub struct ZfsVolume {
+    pub name: String,
+    pub path: String,
+    /// The image's nominal size in bytes — what the guest sees as the disk.
+    /// `Float` because an `Int` cannot hold it (see the module docs).
+    pub size_bytes: f64,
+    /// Human-readable space actually allocated on the host; absent if unmeasured.
+    pub size: Option<String>,
+    pub branches: Vec<ZfsBranch>,
+    /// The holder, if any; at most one.
+    pub attached_to: Vec<ZfsAttachment>,
+    pub created_at: Option<String>,
+}
+
+#[derive(SimpleObject)]
+pub struct ZfsBranch {
+    pub name: String,
+    /// The branch this one was cloned from; absent for `main`.
+    pub origin: Option<String>,
+    pub created_at: Option<String>,
+}
+
+#[derive(SimpleObject)]
+pub struct ZfsAttachment {
+    pub machine: String,
+    pub machine_name: Option<String>,
+    pub running: bool,
+    pub mounts: Vec<ZfsMount>,
+}
+
+#[derive(SimpleObject)]
+pub struct ZfsMount {
+    pub branch: String,
+    pub mountpoint: String,
+}
+
+impl From<ops::ZfsVolume> for ZfsVolume {
+    fn from(v: ops::ZfsVolume) -> Self {
+        ZfsVolume {
+            name: v.name,
+            path: v.path,
+            size_bytes: v.size_bytes as f64,
+            size: v.size,
+            branches: v
+                .branches
+                .into_iter()
+                .map(|b| ZfsBranch {
+                    name: b.name,
+                    origin: b.origin,
+                    created_at: b.created_at,
+                })
+                .collect(),
+            attached_to: v
+                .attached_to
+                .into_iter()
+                .map(|a| ZfsAttachment {
+                    machine: a.machine,
+                    machine_name: a.machine_name,
+                    running: a.running,
+                    mounts: a
+                        .mounts
+                        .into_iter()
+                        .map(|m| ZfsMount {
+                            branch: m.branch,
+                            mountpoint: m.mountpoint,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            created_at: v.created_at,
+        }
+    }
+}
+
 #[derive(SimpleObject)]
 pub struct Network {
     pub name: String,
@@ -917,6 +994,17 @@ impl Query {
             .collect())
     }
 
+    async fn zfs_volumes(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<ZfsVolume>> {
+        Ok(api(ctx)?
+            .ops
+            .list_zfs_volumes()
+            .await
+            .map_err(gql_err)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
     async fn networks(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<Network>> {
         Ok(api(ctx)?
             .ops
@@ -1533,6 +1621,82 @@ impl Mutation {
         Ok(api(ctx)?
             .ops
             .remove_volumes(&names, force)
+            .await
+            .map_err(gql_err)?
+            .into())
+    }
+
+    // -- zfs volumes ---------------------------------------------------------
+
+    async fn create_zfs_volume(
+        &self,
+        ctx: &Context<'_>,
+        name: String,
+        size: Option<String>,
+    ) -> async_graphql::Result<CommandResult> {
+        Ok(api(ctx)?
+            .ops
+            .create_zfs_volume(&name, size.as_deref())
+            .await
+            .map_err(gql_err)?
+            .into())
+    }
+
+    /// Fork a branch copy-on-write. Runs ZFS in the holding machine, or in a
+    /// helper VM booted for it, so it can take as long as a BSD boot.
+    async fn branch_zfs_volume(
+        &self,
+        ctx: &Context<'_>,
+        volume: String,
+        name: String,
+        from: Option<String>,
+    ) -> async_graphql::Result<CommandResult> {
+        Ok(api(ctx)?
+            .ops
+            .branch_zfs_volume(&volume, &name, from.as_deref())
+            .await
+            .map_err(gql_err)?
+            .into())
+    }
+
+    async fn attach_zfs_volume(
+        &self,
+        ctx: &Context<'_>,
+        target: String,
+        machine: String,
+        mount: Option<String>,
+    ) -> async_graphql::Result<CommandResult> {
+        Ok(api(ctx)?
+            .ops
+            .attach_zfs_volume(&target, &machine, mount.as_deref())
+            .await
+            .map_err(gql_err)?
+            .into())
+    }
+
+    async fn detach_zfs_volume(
+        &self,
+        ctx: &Context<'_>,
+        target: String,
+        machine: String,
+    ) -> async_graphql::Result<CommandResult> {
+        Ok(api(ctx)?
+            .ops
+            .detach_zfs_volume(&target, &machine)
+            .await
+            .map_err(gql_err)?
+            .into())
+    }
+
+    async fn destroy_zfs_volumes(
+        &self,
+        ctx: &Context<'_>,
+        targets: Vec<String>,
+        #[graphql(default)] force: bool,
+    ) -> async_graphql::Result<CommandResult> {
+        Ok(api(ctx)?
+            .ops
+            .destroy_zfs_volumes(&targets, force)
             .await
             .map_err(gql_err)?
             .into())

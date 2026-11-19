@@ -64,6 +64,8 @@ pub mod tui;
 pub mod ui;
 pub mod unikraft;
 pub mod watchdog;
+/// ZFS volumes: one zpool per volume, branched copy-on-write inside the guest.
+pub mod zfs;
 
 #[cfg(feature = "boot")]
 use anyhow::Result;
@@ -175,6 +177,16 @@ pub fn dispatch(cmd: Command) -> Result<()> {
         Command::Volume(args) => match args.cmd {
             VolumeCmd::Ls(a) => commands::volumes::cmd_volume_ls(a.json),
             VolumeCmd::Rm(a) => commands::volumes::cmd_volume_rm(&a.names, a.force),
+        },
+        Command::Zfs(args) => match args.cmd {
+            ZfsCmd::Create(a) => commands::zfs::cmd_create(&a.name, &a.size),
+            ZfsCmd::Ls(a) => commands::zfs::cmd_ls(a.volume.as_deref(), a.json),
+            ZfsCmd::Branch(a) => commands::zfs::cmd_branch(&a.volume, &a.name, a.from.as_deref()),
+            ZfsCmd::Attach(a) => {
+                commands::zfs::cmd_attach(&a.target, &a.machine, a.mount.as_deref())
+            }
+            ZfsCmd::Detach(a) => commands::zfs::cmd_detach(&a.target, &a.machine),
+            ZfsCmd::Destroy(a) => commands::zfs::cmd_destroy(&a.targets, a.force),
         },
         #[cfg(target_os = "macos")]
         Command::Store(args) => match args.cmd {

@@ -189,6 +189,10 @@ pub enum Command {
     /// Manage persistent volumes (list / remove).
     Volume(VolumeArgs),
 
+    /// ZFS volumes: a zpool per volume, branched copy-on-write inside the
+    /// guest (`zfs clone`), attached to Linux, FreeBSD and NetBSD machines.
+    Zfs(ZfsArgs),
+
     /// Manage the case-sensitive Linux rootfs store (macOS only).
     #[cfg(target_os = "macos")]
     Store(StoreArgs),
@@ -1421,6 +1425,108 @@ pub struct StoreRmArgs {
 }
 
 #[derive(Parser, Serialize, Deserialize)]
+pub struct ZfsArgs {
+    #[command(subcommand)]
+    pub cmd: ZfsCmd,
+}
+
+#[derive(Subcommand, Serialize, Deserialize)]
+pub enum ZfsCmd {
+    /// Create a volume: a sparse disk image that becomes a zpool with a
+    /// `main` branch the first time a guest imports it.
+    Create(ZfsCreateArgs),
+    /// List volumes, or the branches of one (`ls VOL`).
+    Ls(ZfsLsArgs),
+    /// Fork a branch copy-on-write (`zfs snapshot` + `zfs clone`). Runs in
+    /// the machine holding the volume, or in a short-lived FreeBSD helper.
+    Branch(ZfsBranchArgs),
+    /// Attach a volume to a machine, mounting one branch at a path. A pool
+    /// is imported by one machine at a time; a stopped machine picks it up
+    /// on `start`, a running holder mounts the branch live.
+    Attach(ZfsAttachArgs),
+    /// Detach a branch (or, without `@BRANCH`, the whole volume) from a
+    /// machine. Live for a running machine; the disk leaves on next start.
+    Detach(ZfsDetachArgs),
+    /// Destroy a branch (`zfs destroy`) or a whole volume and its image.
+    Destroy(ZfsDestroyArgs),
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct ZfsCreateArgs {
+    /// Volume name (also the zpool's name in the guest).
+    #[arg(value_name = "NAME")]
+    pub name: String,
+
+    /// Disk size, e.g. `10G`, `512M`. Sparse: costs nothing until written.
+    #[arg(long, value_name = "SIZE", default_value = "10G")]
+    pub size: String,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct ZfsLsArgs {
+    /// Show the branches of this volume instead of the volume list.
+    #[arg(value_name = "VOL")]
+    pub volume: Option<String>,
+
+    /// Emit JSON (for scripting / the SDK).
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct ZfsBranchArgs {
+    /// Volume to branch in.
+    #[arg(value_name = "VOL")]
+    pub volume: String,
+
+    /// Name of the new branch.
+    #[arg(value_name = "NAME")]
+    pub name: String,
+
+    /// Branch to fork from (default: `main`).
+    #[arg(long, value_name = "BRANCH")]
+    pub from: Option<String>,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct ZfsAttachArgs {
+    /// `VOL` or `VOL@BRANCH` (default branch: `main`).
+    #[arg(value_name = "VOL[@BRANCH]")]
+    pub target: String,
+
+    /// Machine id or name.
+    #[arg(value_name = "MACHINE")]
+    pub machine: String,
+
+    /// Guest path to mount the branch at (default: `/mnt/VOL`, or
+    /// `/mnt/VOL-BRANCH` for a branch other than `main`).
+    #[arg(long, value_name = "PATH")]
+    pub mount: Option<String>,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct ZfsDetachArgs {
+    /// `VOL@BRANCH` to unmount one branch, or `VOL` to detach the volume.
+    #[arg(value_name = "VOL[@BRANCH]")]
+    pub target: String,
+
+    /// Machine id or name.
+    #[arg(value_name = "MACHINE")]
+    pub machine: String,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
+pub struct ZfsDestroyArgs {
+    /// `VOL@BRANCH` to destroy one branch, or `VOL` for the whole volume.
+    #[arg(value_name = "VOL[@BRANCH]", required = true)]
+    pub targets: Vec<String>,
+
+    /// Destroy even if attached to a (stopped) machine; its record is dropped.
+    #[arg(short, long)]
+    pub force: bool,
+}
+
+#[derive(Parser, Serialize, Deserialize)]
 pub struct VolumeLsArgs {
     /// Emit the volume list as a JSON array (for scripting / the SDK).
     #[arg(long)]
@@ -1766,6 +1872,12 @@ pub struct LinuxArgs {
     /// appears as `/dev/vda`. Re-attached automatically on `start`.
     #[arg(long = "attach-disk", value_name = "PATH[:ro]")]
     pub attach_disk: Vec<DiskSpec>,
+
+    /// Attach a `bsdkrun zfs` volume (repeatable): `VOL` mounts its `main`
+    /// branch at `/mnt/VOL`; `VOL@BRANCH:/path` picks a branch and a path.
+    /// The guest needs a kernel with ZFS and `zpool` in the image.
+    #[arg(long = "zfs", value_name = "VOL[@BRANCH][:/mount]")]
+    pub zfs: Vec<ZfsAttachSpec>,
 
     /// Override the image's entrypoint (like `docker run --entrypoint`).
     #[arg(long)]
@@ -2144,6 +2256,12 @@ pub struct BsdArgs {
     #[arg(long = "attach-disk", value_name = "PATH[:ro]")]
     pub attach_disk: Vec<DiskSpec>,
 
+    /// Attach a `bsdkrun zfs` volume (repeatable): `VOL` mounts its `main`
+    /// branch at `/mnt/VOL`; `VOL@BRANCH:/path` picks a branch and a path.
+    /// Imported by the guest once its agent is up.
+    #[arg(long = "zfs", value_name = "VOL[@BRANCH][:/mount]")]
+    pub zfs: Vec<ZfsAttachSpec>,
+
     #[command(flatten)]
     pub run: RunConfig,
 
@@ -2233,6 +2351,63 @@ pub struct DiskSpec {
     /// there, and grows the filesystem if the image has since been enlarged.
     #[serde(default)]
     pub mount: Option<String>,
+    /// Set when the disk is a `bsdkrun zfs` volume: the pool to import and
+    /// the branches to mount. Recorded in `attached-disks.json` like any other
+    /// disk, so `start` brings the volume back; never parsed from the command
+    /// line (that is `--zfs`).
+    #[serde(default)]
+    pub zfs: Option<ZfsDisk>,
+}
+
+/// A ZFS volume riding on an attached disk: which pool, and which of its
+/// branches mount where in the guest.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZfsDisk {
+    pub volume: String,
+    pub mounts: Vec<ZfsMount>,
+}
+
+/// One branch of a ZFS volume and the guest path it mounts at.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZfsMount {
+    pub branch: String,
+    pub mountpoint: String,
+}
+
+/// `--zfs VOL[@BRANCH][:/mount]`: attach a ZFS volume at boot, mounting one
+/// of its branches (`main` by default) at a path (`/mnt/VOL`, or
+/// `/mnt/VOL-BRANCH`, by default). Repeat it for several branches of one
+/// volume; they share the one disk.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZfsAttachSpec {
+    pub volume: String,
+    pub branch: String,
+    pub mountpoint: Option<String>,
+}
+
+impl FromStr for ZfsAttachSpec {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // The mount path is the part after the first `:` that starts with `/`.
+        let (target, mountpoint) = match s.split_once(':') {
+            Some((t, m)) if m.starts_with('/') => (t, Some(m.to_string())),
+            Some((_, m)) => return Err(format!("mount path must be absolute, got {m:?}")),
+            None => (s, None),
+        };
+        let (volume, branch) = match target.split_once('@') {
+            Some((v, b)) => (v, b),
+            None => (target, "main"),
+        };
+        if volume.is_empty() || branch.is_empty() {
+            return Err(format!("expected VOL[@BRANCH][:/mount], got {s:?}"));
+        }
+        Ok(ZfsAttachSpec {
+            volume: volume.to_string(),
+            branch: branch.to_string(),
+            mountpoint,
+        })
+    }
 }
 
 impl FromStr for DiskSpec {
@@ -2258,6 +2433,7 @@ impl FromStr for DiskSpec {
             path: PathBuf::from(path),
             read_only,
             mount,
+            zfs: None,
         })
     }
 }
@@ -2319,6 +2495,7 @@ impl Default for LinuxArgs {
             volume: None,
             mounts: vec![],
             attach_disk: vec![],
+            zfs: vec![],
             entrypoint: None,
             env: vec![],
             console: "hvc0".to_string(),

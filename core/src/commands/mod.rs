@@ -42,6 +42,7 @@ pub mod store;
 #[cfg(all(feature = "boot", feature = "tui"))]
 pub mod tui;
 pub mod volumes;
+pub mod zfs;
 
 use std::path::PathBuf;
 
@@ -112,6 +113,7 @@ pub(crate) fn save_attached_disks(vdir: &std::path::Path, disks: &[crate::cli::D
             path: std::fs::canonicalize(&d.path).unwrap_or_else(|_| d.path.clone()),
             read_only: d.read_only,
             mount: d.mount.clone(),
+            zfs: d.zfs.clone(),
         })
         .collect();
     match serde_json::to_vec(&abs) {

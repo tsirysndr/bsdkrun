@@ -12,7 +12,7 @@ use crate::krun::Ctx;
 use crate::net::{Gvproxy, PortForward};
 use crate::{
     agent, ai, console, db, docker, fetch, flavors, host, id, krun, linux, names, nanos, net,
-    network, oci, osv, tty, unikraft, watchdog,
+    network, oci, osv, tty, unikraft, watchdog, zfs,
 };
 
 use super::flavor::{
@@ -856,6 +856,16 @@ pub(crate) fn bsd_inject_repo(args: &mut BsdArgs) {
     }
 }
 
+/// Fold `--zfs` volumes into the attached disks (so `start` re-attaches them)
+/// and register them for the post-boot import. A BSD guest has no init of
+/// ours, so the pool is imported through the agent once it answers.
+pub(crate) fn bsd_inject_zfs(args: &mut BsdArgs, os: host::GuestOs) -> Result<()> {
+    args.attach_disk.extend(zfs::disks_from_flags(&args.zfs)?);
+    args.zfs.clear();
+    zfs::register_post_boot(os, args.version.as_deref(), &args.attach_disk);
+    Ok(())
+}
+
 /// `freebsd` / `netbsd`: fetch the image if needed, auto-locate the firmware,
 /// then boot it. How it boots depends on the host OS:
 ///
@@ -871,6 +881,7 @@ pub(crate) fn boot_freebsd(args: BsdArgs) -> Result<()> {
 /// boot a committed snapshot) instead of the fetched/bundled base image.
 pub(crate) fn boot_freebsd_disk(mut args: BsdArgs, disk_override: Option<PathBuf>) -> Result<()> {
     bsd_inject_repo(&mut args);
+    bsd_inject_zfs(&mut args, host::GuestOs::Freebsd)?;
     #[cfg(target_os = "macos")]
     {
         boot_freebsd_efi(args, disk_override)
@@ -1079,6 +1090,7 @@ pub(crate) fn boot_netbsd(args: BsdArgs) -> Result<()> {
 /// boot a committed snapshot) instead of the fetched bundled image.
 pub(crate) fn boot_netbsd_disk(mut args: BsdArgs, disk_override: Option<PathBuf>) -> Result<()> {
     bsd_inject_repo(&mut args);
+    bsd_inject_zfs(&mut args, host::GuestOs::Netbsd)?;
     let (exec_after, interactive) = bsd_exec_after(&args.command, args.run.detach, args.net.no_net);
     ensure_net_for_exec(&args.net, &exec_after)?;
     let joined = prepare_network(&args.net, true)?; // NetBSD DHCPs its IP
@@ -1342,6 +1354,9 @@ pub(crate) fn run_machine(
     verbose: bool,
     build: impl FnOnce() -> Result<(Ctx, Option<Gvproxy>)>,
 ) -> Result<()> {
+    // ZFS volumes a BSD boot registered: imported through the agent once the
+    // guest is up, by whichever path below is still around to do it.
+    let post = zfs::take_post_boot();
     // A trailing command runs in the guest via its agent once it's up, which
     // needs the VM in the background — so a one-shot command boots detached too
     // (but doesn't announce the id and powers the VM off when the command ends).
@@ -1360,6 +1375,7 @@ pub(crate) fn run_machine(
             detach,
             interactive,
             verbose,
+            post,
             build,
         );
     }
@@ -1386,6 +1402,11 @@ pub(crate) fn run_machine(
     }
     let (ctx, gvproxy) = build()?;
     info!(id = %machine_id, kind, image, "booting machine");
+    // Foreground: this process is the VM, so the import runs on a thread
+    // beside it and reports to the terminal.
+    if let Some(pb) = post {
+        zfs::spawn_post_boot(vdir.to_path_buf(), machine_id.to_string(), pb);
+    }
     finish_recording(ctx, gvproxy, machine_id.to_string())
 }
 
@@ -1530,10 +1551,14 @@ pub(crate) fn finalize_network(
 }
 
 pub(crate) fn boot_linux_from(
-    args: LinuxArgs,
+    mut args: LinuxArgs,
     rootfs_override: Option<PathBuf>,
     provision: &[String],
 ) -> Result<()> {
+    // `--zfs` volumes ride as ordinary attached disks (so `start` re-attaches
+    // them) tagged with the pool and branches the init should mount.
+    args.attach_disk.extend(zfs::disks_from_flags(&args.zfs)?);
+    args.zfs.clear();
     #[cfg(target_os = "macos")]
     crate::store::ensure_linux_storage()?;
 
@@ -1600,10 +1625,19 @@ pub(crate) fn boot_linux_from(
         .iter()
         .enumerate()
         .filter_map(|(index, d)| {
+            if let Some(z) = &d.zfs {
+                return Some(linux::DiskMount {
+                    index,
+                    guest: String::new(),
+                    ro: false,
+                    zfs: Some(z.clone()),
+                });
+            }
             d.mount.as_ref().map(|guest| linux::DiskMount {
                 index,
                 guest: guest.clone(),
                 ro: d.read_only,
+                zfs: None,
             })
         })
         .collect();
@@ -1771,6 +1805,7 @@ pub(crate) fn run_detached(
     keep_running: bool,
     interactive: bool,
     verbose: bool,
+    post: Option<zfs::PostBoot>,
     build: impl FnOnce() -> Result<(Ctx, Option<Gvproxy>)>,
 ) -> Result<()> {
     use std::io::Write;
@@ -1820,6 +1855,7 @@ pub(crate) fn run_detached(
             keep_running,
             interactive,
             verbose,
+            post,
             pid as libc::pid_t,
         );
     }
@@ -1849,6 +1885,14 @@ pub(crate) fn run_detached(
         tty::install();
         let (ctx, gvproxy) = build()?;
         info!(id = %machine_id, kind, "detached machine booting");
+        // Nobody waits for a plain `-d`/`start`, so the ZFS import runs on a
+        // thread in this (the VM's) process; with a command, the parent runs
+        // it before the command instead, so the two are ordered.
+        if exec_after.is_empty() {
+            if let Some(pb) = post {
+                zfs::spawn_post_boot(vdir.to_path_buf(), machine_id.to_string(), pb);
+            }
+        }
         let code = ctx.start_enter().context("starting machine")?;
         db::update_machine_status(machine_id, "exited", Some(code as i64));
         drop(gvproxy);
@@ -2144,6 +2188,7 @@ pub(crate) fn run_guest_command(
     keep_running: bool,
     interactive: bool,
     verbose: bool,
+    post: Option<zfs::PostBoot>,
     child_pid: libc::pid_t,
 ) -> Result<()> {
     use std::io::IsTerminal;
@@ -2154,6 +2199,10 @@ pub(crate) fn run_guest_command(
         .flatten()
         .map(|vm| std::path::PathBuf::from(vm.state_dir).join("console.log"));
     let port = wait_for_agent(id, kind, console.as_deref())?;
+    // ZFS volumes mount before the command runs, so `-- ls /mnt/data` sees them.
+    if let Some(pb) = &post {
+        zfs::run_post_boot(&machine_dir_or_tmp(id), id, pb);
+    }
     // Only the synthesized shell gets a PTY, and only when both ends are a real
     // terminal. Explicit commands run non-interactively so their output isn't
     // lost to the guest agent's PTY drain race on a fast exit.
@@ -2168,6 +2217,17 @@ pub(crate) fn run_guest_command(
     let code = agent::exec(port, &argv, &env, tty).map_err(|e| agent_error(kind, e))?;
     if !keep_running {
         // One-shot: tear the VM down (SIGTERM -> the child's cleanup + poweroff).
+        // A ZFS pool commits writes in transaction groups a few seconds apart,
+        // so what the command just wrote is lost to a kill unless the pool is
+        // exported (which forces the commit) first.
+        if post.is_some() {
+            let argv = [
+                "sh".into(),
+                "-c".into(),
+                "sync; zpool export -a 2>/dev/null; true".into(),
+            ];
+            let _ = agent::exec_quiet(port, &argv);
+        }
         unsafe { libc::kill(child_pid, libc::SIGTERM) };
         db::update_machine_status(id, "exited", Some(128 + libc::SIGTERM as i64));
     }
@@ -2284,6 +2344,7 @@ pub(crate) fn cmd_start(id: &str) -> Result<()> {
             // Re-attach the disks recorded at the original boot, so guest data
             // living on a block device survives stop/start.
             attach_disk: load_attached_disks(&legacy_machine_dir),
+            zfs: vec![],
             entrypoint: None,
             // Re-apply the `-e` env recorded at the original boot: for many
             // images it decides what the entrypoint does at all.
@@ -2380,6 +2441,7 @@ pub(crate) fn cmd_start(id: &str) -> Result<()> {
             // Re-attach the extra disks recorded at the original boot (e.g. a
             // build disk) — dropping them here silently unmounts guest data.
             attach_disk: load_attached_disks(&machine_dir_or_tmp(&vm.id)),
+            zfs: vec![],
             disk_size: None,
             run: RunConfig {
                 detach: true,
@@ -2440,6 +2502,7 @@ pub(crate) fn flavor_linux_args(
         volume,
         mounts: vec![],
         attach_disk: vec![],
+        zfs: vec![],
         entrypoint: None,
         env,
         console: "hvc0".to_string(),
@@ -2573,6 +2636,7 @@ pub(crate) fn cmd_flavor_build(name: &str, key: &str, cpus: u8, mem: u32) -> Res
         volume: Some(vol),
         mounts: vec![],
         attach_disk: vec![],
+        zfs: vec![],
         entrypoint: None,
         env: spec.env.clone(),
         console: "hvc0".to_string(),
@@ -2777,6 +2841,7 @@ fn boot_ai_sandbox(
             path: path.clone(),
             read_only: false,
             mount: Some(what.guest_path().to_string()),
+            zfs: None,
         })
         .collect();
 
@@ -2793,6 +2858,7 @@ fn boot_ai_sandbox(
         volume: None,
         mounts: ai::mounts(agent, workspace, !args.no_ssh)?,
         attach_disk,
+        zfs: vec![],
         entrypoint: None,
         env: vec![format!("HOME={}", ai::GUEST_HOME)],
         console: "hvc0".to_string(),
@@ -2916,6 +2982,7 @@ fn boot_docker_vm(args: &DockerStartArgs) -> Result<()> {
                 path,
                 read_only: false,
                 mount: Some(docker::DATA_MOUNT.to_string()),
+                zfs: None,
             }]
         }
         None => vec![],
@@ -2945,6 +3012,7 @@ fn boot_docker_vm(args: &DockerStartArgs) -> Result<()> {
         volume: Some(docker::VOLUME.to_string()),
         mounts,
         attach_disk,
+        zfs: vec![],
         entrypoint: None,
         // An empty TLS dir is what makes dind listen on plaintext 2375 instead
         // of generating certs and listening on 2376 — the whole reason the
@@ -3056,6 +3124,7 @@ pub(crate) fn cmd_branch(args: BranchArgs) -> Result<()> {
                 firmware: None,
                 force: false,
                 attach_disk: vec![],
+                zfs: vec![],
                 disk_size: None,
                 run: RunConfig {
                     detach: args.detach,
@@ -3208,6 +3277,7 @@ pub(crate) fn cmd_flavor_run(args: FlavorRunArgs) -> Result<()> {
             firmware: None,
             force: false,
             attach_disk: vec![],
+            zfs: vec![],
             disk_size: None,
             run: RunConfig {
                 detach: args.detach,
@@ -3278,6 +3348,7 @@ pub(crate) fn cmd_flavor_run(args: FlavorRunArgs) -> Result<()> {
         firmware: None,
         force: false,
         attach_disk: vec![],
+        zfs: vec![],
         disk_size: None,
         run: RunConfig {
             detach: args.detach,

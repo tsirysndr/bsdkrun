@@ -37,6 +37,12 @@ pub use crate::commands::snapshot::{
     rollback as rollback_snapshot, Restored,
 };
 pub use crate::commands::volumes::remove_volume;
+/// ZFS volumes. The engine's types are the wire shapes (`zfs ls --json`).
+pub use crate::zfs::{
+    attach as attach_zfs_volume, branch as branch_zfs_volume, create as create_zfs_volume,
+    destroy as destroy_zfs_volume, detach as detach_zfs_volume, list as list_zfs_volumes,
+    ZfsAttachment, ZfsBranch, ZfsVolume,
+};
 
 /// Docker compatibility. The engine's types are already the wire shapes (they
 /// are what `--json` prints), so nothing is re-declared here.

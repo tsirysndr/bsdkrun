@@ -447,6 +447,9 @@ pub struct DiskMount {
     pub index: usize,
     pub guest: String,
     pub ro: bool,
+    /// A `bsdkrun zfs` volume: import the pool and mount its branches instead
+    /// of formatting/mounting the disk as ext4 (`guest`/`ro` unused).
+    pub zfs: Option<crate::cli::ZfsDisk>,
 }
 
 fn generate_init(
@@ -598,6 +601,16 @@ fn generate_init(
     // is formatted on first boot, and `resize2fs` every boot picks up an image
     // the host has since grown — the guest half of `bsdkrun grow`.
     for d in disks {
+        if let Some(z) = &d.zfs {
+            // ZFS does its own device probing, pool import and mounting; the
+            // script is shared with the BSD post-boot path.
+            s.push_str(&crate::zfs::setup_script(
+                crate::host::GuestOs::Linux,
+                d.index,
+                z,
+            ));
+            continue;
+        }
         let g = sh_quote(&d.guest);
         let nth = d.index + 1;
         s.push_str(&format!(

@@ -343,6 +343,128 @@ pub fn fetch_netbsd_kernel(version: Option<String>, force: bool) -> Result<PathB
     Ok(out)
 }
 
+/// The `zfs` and `solaris` kernel modules matching a NetBSD guest's kernel,
+/// as a gzip tar rooted at `stand/` (so `tar -xzpf - -C /` in the guest puts
+/// them where `kern.module.path` looks). Cached per kernel version.
+///
+/// Needed because the bundled NetBSD image and the CDN kernel are pinned
+/// separately: the image ships modules for the kernel it was built with, the
+/// guest boots whatever `fetch_netbsd_kernel` cached, and a module only loads
+/// into the kernel it was built against. `version` is the `--version` the
+/// kernel was fetched with (`None` = current); `kver`/`mach` are the guest's
+/// `uname -r`/`uname -m`. A `current` kernel older than today's daily build
+/// cannot be served: the CDN keeps only the latest, so this refreshes the
+/// cached kernel and asks for a restart.
+pub fn fetch_netbsd_zfs_modules(version: Option<&str>, kver: &str, mach: &str) -> Result<PathBuf> {
+    use crate::host::Arch;
+    let arch = Arch::current()?;
+    let cache = cache_dir()?;
+    std::fs::create_dir_all(&cache)
+        .with_context(|| format!("creating cache dir {}", cache.display()))?;
+    let out = cache.join(format!("netbsd-zfs-modules-{kver}-{}.tgz", arch.slug()));
+    if out.exists() {
+        return Ok(out);
+    }
+    let port = match arch {
+        Arch::Aarch64 => "evbarm-aarch64",
+        Arch::X86_64 => "amd64",
+    };
+    let version = version.unwrap_or("current");
+    let base = if version == "current" {
+        format!("{NETBSD_DAILY_HEAD}/{port}/binary/sets")
+    } else {
+        format!("{NETBSD_PUB}/NetBSD-{version}/{port}/binary/sets")
+    };
+    let work = cache.join(format!("netbsd-zfs-modules-{kver}.tmp"));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work)?;
+    // Daily builds and 10.x releases ship `.tar.xz`; older releases `.tgz`.
+    let mut archive = None;
+    for (name, flag) in [("modules.tar.xz", "-J"), ("modules.tgz", "-z")] {
+        let url = format!("{base}/{name}");
+        let dst = work.join(name);
+        info!(%url, "downloading NetBSD modules…");
+        let ok = run(
+            Command::new("curl")
+                .args(["-L", "--fail", "-sS", "-o"])
+                .arg(&dst)
+                .arg(&url),
+            "curl (download NetBSD modules)",
+        )
+        .is_ok();
+        if ok {
+            archive = Some((dst, flag));
+            break;
+        }
+    }
+    let Some((archive, flag)) = archive else {
+        let _ = std::fs::remove_dir_all(&work);
+        bail!("could not download the NetBSD modules set from {base}");
+    };
+    // The set's own version directory says which kernel it was built for.
+    let listing = Command::new("tar")
+        .args(["-t", flag, "-f"])
+        .arg(&archive)
+        .output()
+        .map_err(|e| spawn_error(&Command::new("tar"), "listing the NetBSD modules set", e))?;
+    let listing = String::from_utf8_lossy(&listing.stdout);
+    let set_ver = listing
+        .lines()
+        .find_map(|l| {
+            let rest = l.trim_start_matches("./").strip_prefix("stand/")?;
+            let (_, rest) = rest.split_once('/')?;
+            let (ver, rest) = rest.split_once('/')?;
+            rest.starts_with("modules/zfs/zfs.kmod")
+                .then(|| ver.to_string())
+        })
+        .ok_or_else(|| anyhow::anyhow!("the NetBSD modules set carries no zfs module"))?;
+    if set_ver != kver {
+        let _ = std::fs::remove_dir_all(&work);
+        if version == "current" {
+            // Refresh the kernel so the next boot matches today's modules.
+            fetch_netbsd_kernel(None, true)?;
+            bail!(
+                "the guest runs NetBSD {kver} but the CDN's current build is {set_ver}; \
+                 the cached kernel was refreshed to {set_ver} — restart the machine and retry"
+            );
+        }
+        bail!("NetBSD {version}'s modules set is for kernel {set_ver}, but the guest runs {kver}");
+    }
+    let prefix = format!("./stand/{mach}/{kver}/modules");
+    run(
+        Command::new("tar")
+            .args(["-x", flag, "-f"])
+            .arg(&archive)
+            .arg("-C")
+            .arg(&work)
+            .arg(format!("{prefix}/zfs"))
+            .arg(format!("{prefix}/solaris")),
+        "tar (extract the zfs modules)",
+    )?;
+    // Owned by root in the archive regardless of who runs this: NetBSD's
+    // kernel loads only root-owned module files (the guest chowns too, belt
+    // and braces).
+    let mut pack = Command::new("tar");
+    pack.env("COPYFILE_DISABLE", "1")
+        .args(["-c", "-z", "-f"])
+        .arg(&out)
+        .arg("-C")
+        .arg(&work);
+    #[cfg(target_os = "macos")]
+    pack.args(["--no-xattrs", "--uid", "0", "--gid", "0", "--numeric-owner"]);
+    #[cfg(not(target_os = "macos"))]
+    pack.args(["--owner=0", "--group=0", "--numeric-owner"]);
+    pack.arg("stand");
+    if let Err(e) = run(&mut pack, "tar (pack the zfs modules)") {
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_dir_all(&work);
+        return Err(e);
+    }
+    let _ = std::fs::remove_dir_all(&work);
+    info!(path = %out.display(), "NetBSD zfs modules for {kver} cached");
+    Ok(out)
+}
+
 /// Download + decompress a release asset into `cache/<out_name>` (cached).
 /// `ext`/`bin` are the compression suffix + decompressor (`gz`/`gzip`, `xz`/`xz`).
 fn fetch_compressed_asset(
@@ -536,7 +658,7 @@ pub fn grow(disk: &Path, size: &str) -> Result<()> {
 }
 
 /// Parse a size like `8G`, `4096M`, `1.5g`, or a plain byte count.
-fn parse_size(s: &str) -> Result<u64> {
+pub(crate) fn parse_size(s: &str) -> Result<u64> {
     let s = s.trim();
     let (num, mult): (&str, u64) = match s.chars().last() {
         Some('G' | 'g') => (&s[..s.len() - 1], 1 << 30),

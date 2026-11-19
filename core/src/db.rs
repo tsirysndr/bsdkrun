@@ -190,6 +190,26 @@ pub struct VolumeRow {
     pub created_at: String,
 }
 
+/// A `bsdkrun zfs` volume: the image holding its pool.
+#[derive(Debug, Clone)]
+pub struct ZfsVolumeRow {
+    pub name: String,
+    pub path: String,
+    /// Nominal image size in bytes.
+    pub size: i64,
+    pub created_at: String,
+}
+
+/// A branch of a ZFS volume, as recorded on the host. The pool is the source
+/// of truth; this is what `zfs ls` can show without booting anything.
+#[derive(Debug, Clone)]
+pub struct ZfsBranchRow {
+    pub volume: String,
+    pub name: String,
+    pub origin: Option<String>,
+    pub created_at: String,
+}
+
 /// A saved snapshot flavor (a CoW clone of a machine's rootfs/disk).
 #[derive(Debug, Clone)]
 pub struct FlavorRow {
@@ -328,6 +348,27 @@ impl Db {
                     base TEXT NOT NULL,
                     path TEXT NOT NULL,
                     created_at TEXT NOT NULL
+                )",
+            )
+            .execute(&self.pool)
+            .await?;
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS zfs_volumes (
+                    name TEXT PRIMARY KEY,
+                    path TEXT NOT NULL,
+                    size INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                )",
+            )
+            .execute(&self.pool)
+            .await?;
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS zfs_branches (
+                    volume TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    origin TEXT,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (volume, name)
                 )",
             )
             .execute(&self.pool)
@@ -865,6 +906,118 @@ impl Db {
             .map_err(Into::into)
     }
 
+    // ---- zfs volumes ----------------------------------------------------
+
+    pub fn upsert_zfs_volume(&self, name: &str, path: &str, size: i64) -> Result<()> {
+        self.rt
+            .block_on(async {
+                sqlx::query(
+                    "INSERT INTO zfs_volumes (name, path, size, created_at)
+                     VALUES (?, ?, ?, ?)
+                     ON CONFLICT(name) DO UPDATE SET path = excluded.path, size = excluded.size",
+                )
+                .bind(name)
+                .bind(path)
+                .bind(size)
+                .bind(now())
+                .execute(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn list_zfs_volumes(&self) -> Result<Vec<ZfsVolumeRow>> {
+        self.rt
+            .block_on(async {
+                let rows = sqlx::query(
+                    "SELECT name, path, size, created_at FROM zfs_volumes ORDER BY created_at DESC",
+                )
+                .fetch_all(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(rows.into_iter().map(row_to_zfs_volume).collect())
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn find_zfs_volume(&self, name: &str) -> Result<Option<ZfsVolumeRow>> {
+        self.rt
+            .block_on(async {
+                let row = sqlx::query(
+                    "SELECT name, path, size, created_at FROM zfs_volumes WHERE name = ?",
+                )
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(row.map(row_to_zfs_volume))
+            })
+            .map_err(Into::into)
+    }
+
+    /// Remove a volume and its branch records.
+    pub fn remove_zfs_volume(&self, name: &str) -> Result<bool> {
+        self.rt
+            .block_on(async {
+                sqlx::query("DELETE FROM zfs_branches WHERE volume = ?")
+                    .bind(name)
+                    .execute(&self.pool)
+                    .await?;
+                let r = sqlx::query("DELETE FROM zfs_volumes WHERE name = ?")
+                    .bind(name)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(r.rows_affected() > 0)
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn add_zfs_branch(&self, volume: &str, name: &str, origin: Option<&str>) -> Result<()> {
+        self.rt
+            .block_on(async {
+                sqlx::query(
+                    "INSERT INTO zfs_branches (volume, name, origin, created_at)
+                     VALUES (?, ?, ?, ?)
+                     ON CONFLICT(volume, name) DO NOTHING",
+                )
+                .bind(volume)
+                .bind(name)
+                .bind(origin)
+                .bind(now())
+                .execute(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(())
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn list_zfs_branches(&self, volume: &str) -> Result<Vec<ZfsBranchRow>> {
+        self.rt
+            .block_on(async {
+                let rows = sqlx::query(
+                    "SELECT volume, name, origin, created_at FROM zfs_branches
+                     WHERE volume = ? ORDER BY created_at ASC, name ASC",
+                )
+                .bind(volume)
+                .fetch_all(&self.pool)
+                .await?;
+                Ok::<_, sqlx::Error>(rows.into_iter().map(row_to_zfs_branch).collect())
+            })
+            .map_err(Into::into)
+    }
+
+    pub fn remove_zfs_branch(&self, volume: &str, name: &str) -> Result<bool> {
+        self.rt
+            .block_on(async {
+                let r = sqlx::query("DELETE FROM zfs_branches WHERE volume = ? AND name = ?")
+                    .bind(volume)
+                    .bind(name)
+                    .execute(&self.pool)
+                    .await?;
+                Ok::<_, sqlx::Error>(r.rows_affected() > 0)
+            })
+            .map_err(Into::into)
+    }
+
     // ---- flavors (snapshots) --------------------------------------------
 
     /// Record (or replace) a snapshot flavor.
@@ -1368,6 +1521,24 @@ fn row_to_volume(r: sqlx::sqlite::SqliteRow) -> VolumeRow {
         kind: r.get("kind"),
         base: r.get("base"),
         path: r.get("path"),
+        created_at: r.get("created_at"),
+    }
+}
+
+fn row_to_zfs_volume(r: sqlx::sqlite::SqliteRow) -> ZfsVolumeRow {
+    ZfsVolumeRow {
+        name: r.get("name"),
+        path: r.get("path"),
+        size: r.get("size"),
+        created_at: r.get("created_at"),
+    }
+}
+
+fn row_to_zfs_branch(r: sqlx::sqlite::SqliteRow) -> ZfsBranchRow {
+    ZfsBranchRow {
+        volume: r.get("volume"),
+        name: r.get("name"),
+        origin: r.get("origin"),
         created_at: r.get("created_at"),
     }
 }

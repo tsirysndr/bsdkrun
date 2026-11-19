@@ -25,6 +25,7 @@
 //// - `bsdkrun/args` — the create options and their builders.
 //// - `bsdkrun/images` — list downloaded images.
 //// - `bsdkrun/volumes` — list and remove persistent volumes.
+//// - `bsdkrun/zfs` — ZFS volumes: create, branch (copy-on-write), attach, destroy.
 //// - `bsdkrun/networks` — global networks; reach machines by name.
 //// - `bsdkrun/system` — probe, fetch BSD images, list versions, grow disks.
 //// - `bsdkrun/types` — the decoded records and `CommandResult` helpers.

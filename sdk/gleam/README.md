@@ -262,6 +262,16 @@ images.list()
 volumes.list()
 volumes.remove(["scratch"], False)
 
+// ZFS volumes: one zpool per volume, branched copy-on-write in the guest
+// (zfs clone), held by one machine at a time (Linux, FreeBSD, NetBSD).
+zfs.create("data", Some("10G"))               // sparse image; pool made on first import
+zfs.attach("data", vm_id, None)               // data@main at /mnt/data on next start
+zfs.branch("data", "feature", None)           // zfs snapshot + clone, no copy
+zfs.attach("data@feature", vm_id, Some("/srv"))
+zfs.list()                                    // List(ZfsVolumeInfo)
+zfs.destroy(["data@feature"], False)
+zfs.destroy(["data"], True)
+
 networks.list()
 networks.create("lab")
 networks.connect("web", "lab")

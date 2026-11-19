@@ -190,6 +190,42 @@ pub type VolumeInfo {
   )
 }
 
+/// One branch of a ZFS volume mounted in a guest.
+pub type ZfsMount {
+  ZfsMount(branch: String, mountpoint: String)
+}
+
+/// A branch of a ZFS volume: a dataset cloned copy-on-write inside its pool.
+/// `origin` is the branch it was cloned from, `None` for `main`.
+pub type ZfsBranch {
+  ZfsBranch(name: String, origin: Option(String), created_at: Option(Int))
+}
+
+/// The machine holding a ZFS volume and what it mounts.
+pub type ZfsAttachment {
+  ZfsAttachment(
+    machine: String,
+    machine_name: Option(String),
+    running: Bool,
+    mounts: List(ZfsMount),
+  )
+}
+
+/// A ZFS volume, as reported by `bsdkrun zfs ls --json`. `size_bytes` is the
+/// image's nominal size (what the guest sees); `size` the space actually
+/// allocated on the host. `attached_to` holds the one machine holding it.
+pub type ZfsVolumeInfo {
+  ZfsVolumeInfo(
+    name: String,
+    path: String,
+    size_bytes: Int,
+    size: Option(String),
+    branches: List(ZfsBranch),
+    attached_to: List(ZfsAttachment),
+    created_at: Option(Int),
+  )
+}
+
 /// A stored cache entry, as reported by `bsdkrun cache ls --json`.
 pub type CacheEntry {
   CacheEntry(
@@ -460,6 +496,54 @@ pub fn volume_info_decoder() -> Decoder(VolumeInfo) {
     size:,
     created_at:,
     tracked:,
+  ))
+}
+
+/// Decoder for one mount of a ZFS attachment.
+pub fn zfs_mount_decoder() -> Decoder(ZfsMount) {
+  use branch <- field_or("branch", "", decode.string)
+  use mountpoint <- field_or("mountpoint", "", decode.string)
+  decode.success(ZfsMount(branch:, mountpoint:))
+}
+
+/// Decoder for one branch of a `zfs ls VOL --json` listing.
+pub fn zfs_branch_decoder() -> Decoder(ZfsBranch) {
+  use name <- field_or("name", "", decode.string)
+  use origin <- optional_field("origin", decode.string)
+  use created_at <- optional_field("created_at", lenient_int())
+  decode.success(ZfsBranch(name:, origin:, created_at:))
+}
+
+/// Decoder for the holder entry of a `zfs ls --json` row.
+pub fn zfs_attachment_decoder() -> Decoder(ZfsAttachment) {
+  use machine <- field_or("machine", "", decode.string)
+  use machine_name <- optional_field("machine_name", decode.string)
+  use running <- field_or("running", False, decode.bool)
+  use mounts <- field_or("mounts", [], decode.list(zfs_mount_decoder()))
+  decode.success(ZfsAttachment(machine:, machine_name:, running:, mounts:))
+}
+
+/// Decoder for one `zfs ls --json` row.
+pub fn zfs_volume_info_decoder() -> Decoder(ZfsVolumeInfo) {
+  use name <- field_or("name", "", decode.string)
+  use path <- field_or("path", "", decode.string)
+  use size_bytes <- field_or("size_bytes", 0, lenient_int())
+  use size <- optional_field("size", decode.string)
+  use branches <- field_or("branches", [], decode.list(zfs_branch_decoder()))
+  use attached_to <- field_or(
+    "attached_to",
+    [],
+    decode.list(zfs_attachment_decoder()),
+  )
+  use created_at <- optional_field("created_at", lenient_int())
+  decode.success(ZfsVolumeInfo(
+    name:,
+    path:,
+    size_bytes:,
+    size:,
+    branches:,
+    attached_to:,
+    created_at:,
   ))
 }
 

@@ -1,0 +1,19 @@
+{
+  "name": "@bsdkrun/purescript",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PureScript SDK for bsdkrun, with pipe-friendly Aff APIs",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "spago build",
+    "test": "spago test"
+  },
+  "dependencies": {
+    "@bsdkrun/sdk": "^0.7.0"
+  },
+  "devDependencies": {
+    "purescript": "^0.15.16",
+    "spago": "^1.0.5"
+  }
+}

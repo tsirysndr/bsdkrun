@@ -1,0 +1,14 @@
+import { async } from "../Bsdkrun.Internal/foreign.js";
+import * as SDK from "@bsdkrun/sdk";
+export const imagesImpl = async(signal => SDK.listImages());
+export const volumesImpl = async(signal => SDK.listVolumes());
+export const removeVolumesImpl = names => force => async(signal => SDK.removeVolume(names, {force}));
+export const networksImpl = async(signal => SDK.listNetworks());
+export const createNetworkImpl = name => async(signal => SDK.createNetwork(name));
+export const removeNetworksImpl = names => force => async(signal => SDK.removeNetwork(names, {force}));
+export const syncNetworkImpl = name => async(signal => SDK.syncNetwork(name));
+export const networkMembersImpl = name => async(signal => SDK.networkMembers(name));
+export const probeImpl = async(signal => SDK.probe());
+export const versionsImpl = os => async(signal => SDK.versions(os));
+export const fetchImageImpl = os => opts => async(signal => SDK.fetchImage(os, opts));
+export const growDiskImpl = disk => size => async(signal => SDK.growDisk(disk, size));

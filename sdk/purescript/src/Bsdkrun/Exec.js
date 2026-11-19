@@ -1,0 +1,14 @@
+export const options = {};
+export const withEnv = value => opts => ({ ...opts, env: value });
+export const withStdin = value => opts => ({ ...opts, stdin: value });
+export const withInput = value => opts => ({ ...opts, stdin: value });
+export const withCwd = value => opts => ({ ...opts, cwd: value });
+export const withTty = value => opts => ({ ...opts, tty: value });
+export const withThrowOnError = value => opts => ({ ...opts, throwOnError: value });
+export const withLogLevel = value => opts => ({ ...opts, logLevel: value });
+export const withStdout = callback => opts => ({ ...opts, onStdout: chunk => callback(chunk)() });
+export const withStderr = callback => opts => ({ ...opts, onStderr: chunk => callback(chunk)() });
+export const encodeUtf8 = text => new TextEncoder().encode(text);
+export const decodeUtf8 = bytes => new TextDecoder().decode(bytes);
+export const fromBytes = bytes => Uint8Array.from(bytes);
+export const toBytes = bytes => Array.from(bytes);

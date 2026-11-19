@@ -1,0 +1,22 @@
+import { workflow as create } from "@bsdkrun/sdk";
+import { async } from "../Bsdkrun.Internal/foreign.js";
+const append = (method, args, plan) => ({...plan, calls: [...plan.calls, [method, args]]});
+const materialize = plan => {
+  const instance = create(plan.name);
+  for (const [method, args] of plan.calls) instance[method](...args);
+  return instance;
+};
+export const workflow = name => ({name, calls: []});
+export const engine = value => plan => append("engine", [value], plan);
+export const onPush = branches => plan => append("onPush", branches, plan);
+export const onPullRequest = branches => plan => append("onPullRequest", branches, plan);
+export const deps = packages => plan => append("deps", packages, plan);
+export const depsFrom = registry => packages => plan => append("depsFrom", [registry, ...packages], plan);
+export const env = key => value => plan => append("env", [key, value], plan);
+export const step = name => command => plan => append("step", [name, command], plan);
+export const stepWithEnv = name => command => env => plan => append("step", [name, command, env], plan);
+export const cloneDepth = value => plan => append("cloneDepth", [value], plan);
+export const skipClone = plan => append("skipClone", [], plan);
+export const yaml = plan => materialize(plan).yaml();
+export const save = dir => plan => () => materialize(plan).save(dir);
+export const runImpl = dir => plan => async(() => materialize(plan).run(dir || undefined));

@@ -1,0 +1,24 @@
+import { async } from "../Bsdkrun.Internal/foreign.js";
+import * as SDK from "@bsdkrun/sdk";
+export const createImpl = opts => async(signal => SDK.Sandbox.create(opts));
+export const getImpl = id => async(signal => SDK.Sandbox.get(id));
+export const listImpl = all => async(signal => SDK.Sandbox.list({all}));
+export const execWithImpl = command => opts => box => async(signal => box.exec(command, {...opts, signal}));
+export const statusRawImpl = box => async(signal => box.status());
+export const isRunningImpl = box => async(signal => box.isRunning());
+export const logsImpl = boot => box => async(signal => box.logs({boot}));
+export const stopImpl = box => async(signal => Promise.resolve(box.stop()).then(() => box));
+export const startImpl = box => async(signal => Promise.resolve(box.start()).then(() => box));
+export const removeImpl = force => box => async(signal => Promise.resolve(box.remove({force})).then(() => box));
+export const updateImpl = cpus => mem => box => async(signal => Promise.resolve(box.update({cpus, mem})).then(() => box));
+export const connectNetworkImpl = network => box => async(signal => Promise.resolve(box.connectNetwork(network)).then(() => box));
+export const disconnectNetworkImpl = box => async(signal => Promise.resolve(box.disconnectNetwork()).then(() => box));
+export const sandboxId = box => box.id;
+export const setBinaryPath = path => () => SDK.setBinaryPath(path);
+export const resolveBinary = () => SDK.resolveBinary();
+
+export const sshSetupImpl = opts => box => async(signal => box.ssh.setup(opts));
+export const sshAddKeyImpl = keys => box => async(signal => box.ssh.addKey(keys));
+export const sshStatusImpl = box => async(signal => box.ssh.status());
+export const tailscaleUpImpl = opts => box => async(signal => box.tailscale.up(opts));
+export const tailscaleStatusImpl = box => async(signal => box.tailscale.status());

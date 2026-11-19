@@ -94,9 +94,10 @@ export default function BranchDialog() {
       backdrop="opaque"
       shouldBlockScroll={false}
       classNames={{ base: "border border-white/10 bg-content1" }}
+      scrollBehavior="inside"
     >
       <ModalContent>
-        <form onSubmit={onSubmit}>
+        <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
           <ModalHeader className="flex items-center gap-2 text-base">
             <IconGitBranch size={18} className="text-violet-300" />
             {target?.fromMachine ? "Branch machine" : "Branch from snapshot"}

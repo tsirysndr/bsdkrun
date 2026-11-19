@@ -293,7 +293,7 @@ export default function RunDialog() {
       classNames={{ base: "border border-white/10 bg-content1" }}
     >
       <ModalContent>
-        <form onSubmit={handleSubmit(onSubmit)}>
+        <form className="flex min-h-0 flex-1 flex-col" onSubmit={handleSubmit(onSubmit)}>
           <ModalHeader className="flex flex-col gap-1">
             <div className="flex items-center gap-2 text-base">
               <IconRocket size={18} className="text-primary" />

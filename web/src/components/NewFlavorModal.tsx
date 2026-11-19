@@ -132,7 +132,7 @@ export default function NewFlavorModal() {
       classNames={{ base: "border border-white/10 bg-content1" }}
     >
       <ModalContent>
-        <form onSubmit={onSubmit}>
+        <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
           <ModalHeader className="flex items-center gap-2 text-base">
             <IconApps size={18} className="text-primary" />
             New flavor

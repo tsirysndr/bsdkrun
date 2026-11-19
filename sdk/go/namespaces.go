@@ -7,7 +7,7 @@ import (
 
 // Host-level operations that aren't tied to a single machine, grouped into
 // the same namespaces the Python SDK ships as submodules:
-// bsdkrun.Images.List(), bsdkrun.Volumes.Remove(...),
+// bsdkrun.Images.List(), bsdkrun.Volumes.Remove(...), bsdkrun.Zfs.Branch(...),
 // bsdkrun.Networks.Create(...), bsdkrun.System.Probe().
 
 // ImagesNamespace groups host-level image operations; use the Images var.

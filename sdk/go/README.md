@@ -207,6 +207,16 @@ Host-level namespaces:
 bsdkrun.System.Probe()   // toolchain sanity check
 bsdkrun.Images.List()    // []ImageInfo
 bsdkrun.Volumes.List()   // []VolumeInfo
+
+// ZFS volumes: one zpool per volume, branched copy-on-write in the guest
+// (zfs clone), held by one machine at a time (Linux, FreeBSD, NetBSD).
+bsdkrun.Zfs.Create("data", "10G")           // sparse image; pool made on first import
+bsdkrun.Zfs.Attach("data", vmID, "")        // data@main at /mnt/data on next start
+bsdkrun.Zfs.Branch("data", "feature", "")   // zfs snapshot + clone, no copy
+bsdkrun.Zfs.Attach("data@feature", vmID, "/srv")
+bsdkrun.Zfs.List()                          // []ZfsVolumeInfo
+bsdkrun.Zfs.Destroy("data@feature")
+bsdkrun.Zfs.ForceDestroy("data")
 bsdkrun.Volumes.ForceRemove("web")
 bsdkrun.Networks.List()  // []NetworkInfo
 bsdkrun.System.FetchImage("freebsd").Version("14.3").Run()

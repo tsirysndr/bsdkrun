@@ -310,6 +310,42 @@ type VolumeInfo struct {
 	Tracked   bool   `json:"tracked"`
 }
 
+// ZfsMountInfo is one branch of a ZFS volume mounted in a guest.
+type ZfsMountInfo struct {
+	Branch     string `json:"branch"`
+	Mountpoint string `json:"mountpoint"`
+}
+
+// ZfsBranchInfo is a branch of a ZFS volume: a dataset cloned copy-on-write
+// inside its pool. Origin is nil for "main".
+type ZfsBranchInfo struct {
+	Name      string  `json:"name"`
+	Origin    *string `json:"origin"`
+	CreatedAt *int64  `json:"created_at,string"`
+}
+
+// ZfsAttachmentInfo is the machine holding a ZFS volume and what it mounts.
+type ZfsAttachmentInfo struct {
+	Machine     string         `json:"machine"`
+	MachineName *string        `json:"machine_name"`
+	Running     bool           `json:"running"`
+	Mounts      []ZfsMountInfo `json:"mounts"`
+}
+
+// ZfsVolumeInfo is a ZFS volume as reported by `bsdkrun zfs ls --json`.
+type ZfsVolumeInfo struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+	// SizeBytes is the image's nominal size: what the guest sees as the disk.
+	SizeBytes uint64 `json:"size_bytes"`
+	// Size is the space actually allocated on the host ("1.2 GiB"), nil if unmeasured.
+	Size     *string         `json:"size"`
+	Branches []ZfsBranchInfo `json:"branches"`
+	// AttachedTo is the holder, if any; at most one.
+	AttachedTo []ZfsAttachmentInfo `json:"attached_to"`
+	CreatedAt  *int64              `json:"created_at,string"`
+}
+
 // NetworkInfo is a global network as reported by `bsdkrun network ls --json`.
 type NetworkInfo struct {
 	Name      string `json:"name"`

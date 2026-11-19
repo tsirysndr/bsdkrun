@@ -16,7 +16,7 @@
 //	fmt.Println(res.Text())
 //	sbx.Stop()
 //
-// Host-level operations live on the Images, Volumes, Networks, and System
+// Host-level operations live on the Images, Volumes, Zfs, Networks, and System
 // namespaces. Client is the network sibling: it drives the same operations
 // against a remote bsdkrund daemon over its GraphQL API (HTTP for queries
 // and mutations, a hand-rolled graphql-transport-ws WebSocket for

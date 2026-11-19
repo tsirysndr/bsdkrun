@@ -21,7 +21,7 @@
 //! # Ok::<(), bsdkrun_sdk::Error>(())
 //! ```
 //!
-//! Host-level operations live in the [`images`], [`volumes`], [`networks`]
+//! Host-level operations live in the [`images`], [`volumes`], [`zfs`], [`networks`]
 //! and [`system`] modules; the remote client in [`Client`].
 
 mod args;
@@ -40,6 +40,7 @@ pub mod images;
 pub mod networks;
 pub mod system;
 pub mod volumes;
+pub mod zfs;
 
 pub use binary::{reset_binary_cache, resolve_binary, set_binary_path};
 pub use cache::{Cache, CacheEntry, RestoreResult};
@@ -60,5 +61,5 @@ pub use transport::{normalize_url, ws_url, TOKEN_ENV, URL_ENV};
 pub use types::{
     AiAgent, AiSession, CommandResult, DockerContainer, DockerStatus, ExecResult, ImageInfo,
     NetworkInfo, PortForward, RemoteExecResult, SandboxInfo, ShellSessionInfo, SnapshotInfo,
-    VolumeInfo,
+    VolumeInfo, ZfsAttachment, ZfsBranch, ZfsMount, ZfsVolumeInfo,
 };

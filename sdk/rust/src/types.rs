@@ -432,6 +432,93 @@ impl VolumeInfo {
     }
 }
 
+/// One branch of a ZFS volume mounted in a guest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ZfsMount {
+    pub branch: String,
+    pub mountpoint: String,
+}
+
+/// A branch of a ZFS volume: a dataset cloned copy-on-write inside its pool.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ZfsBranch {
+    pub name: String,
+    /// The branch it was cloned from; `None` for `main`.
+    pub origin: Option<String>,
+    pub created_at: Option<i64>,
+}
+
+impl ZfsBranch {
+    pub fn from_row(row: &Value) -> ZfsBranch {
+        ZfsBranch {
+            name: get_str(row, "name"),
+            origin: get_opt_str(row, "origin"),
+            created_at: get_num(row, "created_at"),
+        }
+    }
+}
+
+/// The machine holding a ZFS volume and what it mounts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ZfsAttachment {
+    pub machine: String,
+    pub machine_name: Option<String>,
+    pub running: bool,
+    pub mounts: Vec<ZfsMount>,
+}
+
+impl ZfsAttachment {
+    pub fn from_row(row: &Value) -> ZfsAttachment {
+        ZfsAttachment {
+            machine: get_str(row, "machine"),
+            machine_name: get_opt_str(row, "machine_name"),
+            running: get_bool(row, "running"),
+            mounts: row
+                .get("mounts")
+                .and_then(Value::as_array)
+                .map(|ms| {
+                    ms.iter()
+                        .map(|m| ZfsMount {
+                            branch: get_str(m, "branch"),
+                            mountpoint: get_str(m, "mountpoint"),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// A ZFS volume as reported by `bsdkrun zfs ls --json`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ZfsVolumeInfo {
+    pub name: String,
+    pub path: String,
+    /// The image's nominal size: what the guest sees as the disk.
+    pub size_bytes: i64,
+    /// Space actually allocated on the host, e.g. "1.2 GiB"; `None` if unmeasured.
+    pub size: Option<String>,
+    pub branches: Vec<ZfsBranch>,
+    /// The holder, if any; at most one.
+    pub attached_to: Vec<ZfsAttachment>,
+    pub created_at: Option<i64>,
+}
+
+impl ZfsVolumeInfo {
+    pub fn from_row(row: &Value) -> ZfsVolumeInfo {
+        let list = |key: &str| row.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
+        ZfsVolumeInfo {
+            name: get_str(row, "name"),
+            path: get_str(row, "path"),
+            size_bytes: get_num(row, "size_bytes").unwrap_or(0),
+            size: get_opt_str(row, "size"),
+            branches: list("branches").iter().map(ZfsBranch::from_row).collect(),
+            attached_to: list("attached_to").iter().map(ZfsAttachment::from_row).collect(),
+            created_at: get_num(row, "created_at"),
+        }
+    }
+}
+
 /// A global network as reported by `bsdkrun network ls --json`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NetworkInfo {

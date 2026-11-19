@@ -16,7 +16,7 @@ Host-level operations live in the :mod:`bsdkrun.images`, :mod:`bsdkrun.volumes`,
 
 from __future__ import annotations
 
-from . import caches, ci, images, networks, system, volumes
+from . import caches, ci, images, networks, system, volumes, zfs
 from .args import build_create_args
 from .binary import reset_binary_cache, resolve_binary, set_binary_path
 from .cache import Cache, CacheEntry, RestoreResult
@@ -47,6 +47,10 @@ from .types import (
     ShellSessionInfo,
     SnapshotInfo,
     VolumeInfo,
+    ZfsAttachment,
+    ZfsBranch,
+    ZfsMount,
+    ZfsVolumeInfo,
 )
 
 __version__ = "0.5.0"
@@ -60,6 +64,7 @@ __all__ = [
     # namespaces
     "images",
     "volumes",
+    "zfs",
     "networks",
     "system",
     "caches",
@@ -87,6 +92,10 @@ __all__ = [
     "SandboxInfo",
     "ImageInfo",
     "VolumeInfo",
+    "ZfsVolumeInfo",
+    "ZfsBranch",
+    "ZfsAttachment",
+    "ZfsMount",
     "NetworkInfo",
     "PortForward",
     "Result",

@@ -210,6 +210,17 @@ system.probe()  # toolchain sanity check
 images.list()  # list[ImageInfo]
 volumes.list()  # list[VolumeInfo]
 volumes.remove("web", force=True)
+
+# ZFS volumes: one zpool per volume, branched copy-on-write in the guest
+# (zfs clone), held by one machine at a time (Linux, FreeBSD, NetBSD).
+from bsdkrun import zfs
+zfs.create("data", size="10G")             # sparse image; pool made on first import
+zfs.attach("data", vm_id)                  # data@main at /mnt/data on next start
+zfs.branch("data", "feature")              # zfs snapshot + clone, no copy
+zfs.attach("data@feature", vm_id, mount="/srv")
+zfs.list()                                 # list[ZfsVolumeInfo]
+zfs.destroy("data@feature")
+zfs.destroy("data", force=True)
 networks.list()  # list[NetworkInfo]
 system.fetch_image("freebsd", version="14.3")
 system.versions("netbsd")

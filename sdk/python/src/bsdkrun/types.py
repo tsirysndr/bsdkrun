@@ -20,6 +20,10 @@ __all__ = [
     "SandboxInfo",
     "ImageInfo",
     "VolumeInfo",
+    "ZfsMount",
+    "ZfsBranch",
+    "ZfsAttachment",
+    "ZfsVolumeInfo",
     "NetworkInfo",
     "CommandResult",
     "ShellSessionInfo",
@@ -449,6 +453,79 @@ class VolumeInfo:
             size=str(row.get("size")),
             created_at=_num(row.get("created_at")),
             tracked=bool(row.get("tracked")),
+        )
+
+
+@dataclass
+class ZfsMount:
+    """One branch of a ZFS volume mounted in a guest."""
+
+    branch: str
+    mountpoint: str
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any]) -> ZfsMount:
+        return cls(branch=str(row.get("branch")), mountpoint=str(row.get("mountpoint")))
+
+
+@dataclass
+class ZfsBranch:
+    """A branch of a ZFS volume: a dataset cloned copy-on-write inside its pool."""
+
+    name: str
+    origin: str | None
+    created_at: int | None
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any]) -> ZfsBranch:
+        return cls(
+            name=str(row.get("name")),
+            origin=row.get("origin"),
+            created_at=_num(row.get("created_at")),
+        )
+
+
+@dataclass
+class ZfsAttachment:
+    """The machine holding a ZFS volume and what it mounts."""
+
+    machine: str
+    machine_name: str | None
+    running: bool
+    mounts: list[ZfsMount]
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any]) -> ZfsAttachment:
+        return cls(
+            machine=str(row.get("machine")),
+            machine_name=row.get("machine_name"),
+            running=bool(row.get("running")),
+            mounts=[ZfsMount.from_row(m) for m in row.get("mounts") or []],
+        )
+
+
+@dataclass
+class ZfsVolumeInfo:
+    """A ZFS volume as reported by ``bsdkrun zfs ls --json``."""
+
+    name: str
+    path: str
+    size_bytes: int
+    size: str | None
+    branches: list[ZfsBranch]
+    attached_to: list[ZfsAttachment]
+    created_at: int | None
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any]) -> ZfsVolumeInfo:
+        return cls(
+            name=str(row.get("name")),
+            path=str(row.get("path")),
+            size_bytes=int(row.get("size_bytes") or 0),
+            size=row.get("size"),
+            branches=[ZfsBranch.from_row(b) for b in row.get("branches") or []],
+            attached_to=[ZfsAttachment.from_row(a) for a in row.get("attached_to") or []],
+            created_at=_num(row.get("created_at")),
         )
 
 

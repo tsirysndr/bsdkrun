@@ -166,6 +166,16 @@ sbx.shell()           // inherits this process's terminal
 ```scala
 Images.list()
 Volumes.list()  / Volumes.remove(Seq("cache"))
+
+// ZFS volumes: one zpool per volume, branched copy-on-write in the guest
+// (zfs clone), held by one machine at a time (Linux, FreeBSD, NetBSD).
+Zfs.create("data", Some("10G"))                // sparse image; pool made on first import
+Zfs.attach("data", vmId)                       // data@main at /mnt/data on next start
+Zfs.branch("data", "feature")                  // zfs snapshot + clone, no copy
+Zfs.attach("data@feature", vmId, Some("/srv"))
+Zfs.list()                                     // Seq[ZfsVolumeInfo]
+Zfs.destroy(Seq("data@feature"))
+Zfs.destroy(Seq("data"), force = true)
 Networks.list() / .create("devnet") / .connect("devnet", id)
 Host.probe()    / Host.doctor() / Host.fetchImage("freebsd")
 ```

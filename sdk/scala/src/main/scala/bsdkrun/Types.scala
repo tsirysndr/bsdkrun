@@ -157,6 +157,36 @@ object Types:
       tracked: Boolean
   )
 
+  /** One branch of a ZFS volume mounted in a guest. */
+  final case class ZfsMount(branch: String, mountpoint: String)
+
+  /** A branch of a ZFS volume: a dataset cloned copy-on-write inside its pool.
+    * `origin` is the branch it was cloned from, `None` for `main`.
+    */
+  final case class ZfsBranch(name: String, origin: Option[String], createdAt: Option[Long])
+
+  /** The machine holding a ZFS volume and what it mounts. */
+  final case class ZfsAttachment(
+      machine: String,
+      machineName: Option[String],
+      running: Boolean,
+      mounts: Seq[ZfsMount]
+  )
+
+  /** A ZFS volume, as `bsdkrun zfs ls --json` reports it. `sizeBytes` is the
+    * image's nominal size (what the guest sees); `size` the space actually
+    * allocated on the host. `attachedTo` holds the one machine holding it.
+    */
+  final case class ZfsVolumeInfo(
+      name: String,
+      path: String,
+      sizeBytes: Long,
+      size: Option[String],
+      branches: Seq[ZfsBranch],
+      attachedTo: Seq[ZfsAttachment],
+      createdAt: Option[Long]
+  )
+
   /** A global network, as `bsdkrun network ls --json` reports it. */
   final case class NetworkInfo(
       name: String,
@@ -333,6 +363,35 @@ object Types:
       size = str(v, "size"),
       createdAt = optLong(v, "created_at").orElse(optLong(v, "createdAt")),
       tracked = bool(v, "tracked")
+    )
+
+  /** An array-of-objects field, empty when absent. */
+  private def objects(v: Value, key: String): Seq[Value] =
+    v.objOpt.flatMap(_.get(key)).flatMap(_.arrOpt).map(_.toSeq).getOrElse(Seq.empty)
+
+  def zfsBranch(v: Value): ZfsBranch =
+    ZfsBranch(
+      name = str(v, "name"),
+      origin = optStr(v, "origin"),
+      createdAt = optLong(v, "created_at").orElse(optLong(v, "createdAt"))
+    )
+
+  def zfsVolumeInfo(v: Value): ZfsVolumeInfo =
+    ZfsVolumeInfo(
+      name = str(v, "name"),
+      path = str(v, "path"),
+      sizeBytes = optLong(v, "size_bytes").orElse(optLong(v, "sizeBytes")).getOrElse(0L),
+      size = optStr(v, "size"),
+      branches = objects(v, "branches").map(zfsBranch),
+      attachedTo = objects(v, "attached_to").map { a =>
+        ZfsAttachment(
+          machine = str(a, "machine"),
+          machineName = optStr(a, "machine_name").orElse(optStr(a, "machineName")),
+          running = bool(a, "running"),
+          mounts = objects(a, "mounts").map(m => ZfsMount(str(m, "branch"), str(m, "mountpoint")))
+        )
+      },
+      createdAt = optLong(v, "created_at").orElse(optLong(v, "createdAt"))
     )
 
   def networkInfo(v: Value): NetworkInfo =

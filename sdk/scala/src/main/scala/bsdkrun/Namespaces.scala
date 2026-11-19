@@ -1,6 +1,6 @@
 package bsdkrun
 
-import bsdkrun.Types.{ImageInfo, NetworkInfo, VolumeInfo}
+import bsdkrun.Types.{ImageInfo, NetworkInfo, VolumeInfo, ZfsBranch, ZfsVolumeInfo}
 
 /** Downloaded images — OCI images pulled and BSD images fetched. */
 object Images:
@@ -23,6 +23,63 @@ object Volumes:
   def remove(names: Seq[String], force: Boolean = false): Either[BsdkrunError, Unit] =
     val args = Seq("volume", "rm") ++ (if force then Seq("--force") else Nil) ++ names
     Proc.runChecked(args, "bsdkrun volume rm").map(_ => ())
+
+/** ZFS volumes: one zpool per volume on a disk image, held by one machine at
+  * a time (Linux, FreeBSD, NetBSD). Branches are datasets cloned copy-on-write
+  * inside the pool (`zfs snapshot` + `zfs clone`), so a branch costs nothing
+  * until it diverges.
+  */
+object Zfs:
+
+  private def flag(name: String, value: Option[String]): Seq[String] =
+    value.toSeq.flatMap(v => Seq(name, v))
+
+  private def line(args: Seq[String], label: String): Either[BsdkrunError, String] =
+    Proc.runChecked(args, label).map(_.stdout.trim)
+
+  /** List ZFS volumes, with their branches and holder. */
+  def list(): Either[BsdkrunError, Seq[ZfsVolumeInfo]] =
+    Proc
+      .runChecked(Seq("zfs", "ls", "--json"), "bsdkrun zfs ls")
+      .flatMap(res => Types.rows(res.stdout, "bsdkrun zfs ls", Types.zfsVolumeInfo))
+
+  /** The branches of one volume. */
+  def branches(volume: String): Either[BsdkrunError, Seq[ZfsBranch]] =
+    Proc
+      .runChecked(Seq("zfs", "ls", volume, "--json"), "bsdkrun zfs ls")
+      .flatMap(res => Types.rows(res.stdout, "bsdkrun zfs ls", Types.zfsBranch))
+
+  /** Create a volume: a sparse image that becomes a zpool with a `main` branch
+    * the first time a guest imports it. `size` like `"10G"` (the default).
+    */
+  def create(name: String, size: Option[String] = None): Either[BsdkrunError, String] =
+    line(Seq("zfs", "create", name) ++ flag("--size", size), "bsdkrun zfs create")
+
+  /** Fork a branch copy-on-write from `from` (`main` when `None`). Runs in the
+    * machine holding the volume or in a short-lived FreeBSD helper, so it can
+    * take as long as a BSD boot. Returns the new `VOL@BRANCH`.
+    */
+  def branch(volume: String, name: String, from: Option[String] = None): Either[BsdkrunError, String] =
+    line(Seq("zfs", "branch", volume, name) ++ flag("--from", from), "bsdkrun zfs branch")
+
+  /** Attach `VOL` or `VOL@BRANCH` to a machine at `mount` (`/mnt/VOL`, or
+    * `/mnt/VOL-BRANCH`, when `None`). A pool is imported by one machine at a
+    * time; a stopped machine picks it up on start, a running holder mounts the
+    * branch live. Returns the CLI's one-line report.
+    */
+  def attach(target: String, machine: String, mount: Option[String] = None): Either[BsdkrunError, String] =
+    line(Seq("zfs", "attach", target, machine) ++ flag("--mount", mount), "bsdkrun zfs attach")
+
+  /** Detach one branch (`VOL@BRANCH`) or the whole volume (`VOL`) from a machine. */
+  def detach(target: String, machine: String): Either[BsdkrunError, String] =
+    line(Seq("zfs", "detach", target, machine), "bsdkrun zfs detach")
+
+  /** Destroy branches (`VOL@BRANCH`) or whole volumes (`VOL`). `force` destroys
+    * a volume a stopped machine still has attached.
+    */
+  def destroy(targets: Seq[String], force: Boolean = false): Either[BsdkrunError, Unit] =
+    val args = Seq("zfs", "destroy") ++ (if force then Seq("--force") else Nil) ++ targets
+    Proc.runChecked(args, "bsdkrun zfs destroy").map(_ => ())
 
 /** Global networks — a shared subnet plus internal DNS, so machines reach each
   * other by name.

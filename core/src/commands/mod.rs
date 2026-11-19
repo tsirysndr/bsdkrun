@@ -149,6 +149,66 @@ pub(crate) fn load_attached_disks(vdir: &std::path::Path) -> Vec<crate::cli::Dis
         .collect()
 }
 
+/// File in a Linux machine's state dir recording the kernel it was booted
+/// with, so `start` boots the same one. Without it a machine booted on a
+/// `--kernel` (a ZFS-enabled build, say) silently came back on the default
+/// release, and whatever only that kernel provided was gone after a restart.
+const KERNEL_FILE: &str = "kernel.json";
+
+/// What `start` needs to pick the same kernel again.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+pub(crate) struct SavedKernel {
+    /// An explicit `--kernel` path (made absolute), if one was given.
+    pub kernel: Option<PathBuf>,
+    /// The vmlinux-builder release otherwise (`--kernel-version`).
+    pub kernel_version: String,
+}
+
+/// Record the kernel choice for restarts. The default release is recorded
+/// too, so a later change of the default does not move a machine that was
+/// started under the old one.
+pub(crate) fn save_kernel(vdir: &std::path::Path, kernel: Option<&std::path::Path>, version: &str) {
+    let saved = SavedKernel {
+        kernel: kernel.map(|k| std::fs::canonicalize(k).unwrap_or_else(|_| k.to_path_buf())),
+        kernel_version: version.to_string(),
+    };
+    match serde_json::to_vec(&saved) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(vdir.join(KERNEL_FILE), json) {
+                tracing::warn!("could not record the kernel choice: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("could not encode the kernel choice: {e}"),
+    }
+}
+
+/// Load what [`save_kernel`] wrote. A machine from before this, or whose
+/// `--kernel` file is gone, gets the default release (with a warning for the
+/// latter: the kernel it was running is not the one coming back).
+pub(crate) fn load_kernel(vdir: &std::path::Path) -> SavedKernel {
+    let mut saved: SavedKernel = std::fs::read(vdir.join(KERNEL_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_else(|| SavedKernel {
+            kernel: None,
+            kernel_version: crate::linux::DEFAULT_KERNEL_VERSION.to_string(),
+        });
+    if let Some(k) = &saved.kernel {
+        if !k.exists() {
+            tracing::warn!(
+                kernel = %k.display(),
+                "the recorded --kernel is gone; restarting on release {}",
+                saved.kernel_version
+            );
+            saved.kernel = None;
+        }
+    }
+    if saved.kernel_version.is_empty() {
+        saved.kernel_version = crate::linux::DEFAULT_KERNEL_VERSION.to_string();
+    }
+    saved
+}
+
 /// File in a machine's state dir recording its `-e` environment, so `start`
 /// re-applies it. The DB row doesn't carry it, and a Linux guest's entrypoint
 /// often *is* its configuration: `docker:dind` picks TLS-on-2376 versus

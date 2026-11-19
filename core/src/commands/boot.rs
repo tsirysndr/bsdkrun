@@ -23,8 +23,8 @@ use super::guest::{
     agent_error, agent_target, guest_os_kind, interactive_shell_argv, interactive_shell_env,
 };
 use super::{
-    basename, load_attached_disks, load_env, load_mounts, machine_dir_or_tmp, machine_rootfs_dir,
-    save_attached_disks, save_env, save_mounts, volume_dir,
+    basename, load_attached_disks, load_env, load_kernel, load_mounts, machine_dir_or_tmp,
+    machine_rootfs_dir, save_attached_disks, save_env, save_kernel, save_mounts, volume_dir,
 };
 
 /// Attach any `--attach-disk` images after the root disk. Block ids are
@@ -1698,6 +1698,7 @@ pub(crate) fn boot_linux_from(
     // lose (see `save_env` / `save_mounts`).
     save_env(&vdir, &args.env);
     save_mounts(&vdir, &mounts);
+    save_kernel(&vdir, args.kernel.as_deref(), &args.kernel_version);
     // Linux never uses the SMP-shutdown watchdog: it redirects fd 2, which
     // libkrun's implicit virtio-console (hvc0) claims for the guest.
     let result = run_machine(
@@ -2331,10 +2332,13 @@ pub(crate) fn cmd_start(id: &str) -> Result<()> {
         #[cfg(target_os = "macos")]
         crate::store::ensure_linux_storage()?;
 
+        // The kernel it was booted with: a `--kernel` build or a pinned
+        // release, not whatever the default is today.
+        let kernel = load_kernel(&legacy_machine_dir);
         let largs = LinuxArgs {
             image: vm.image.clone(),
-            kernel: None,
-            kernel_version: linux::DEFAULT_KERNEL_VERSION.to_string(),
+            kernel: kernel.kernel,
+            kernel_version: kernel.kernel_version,
             detach: true,
             initramfs: false,
             volume: volume.clone(),

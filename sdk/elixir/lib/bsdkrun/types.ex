@@ -236,6 +236,62 @@ defmodule Bsdkrun.Types do
     defstruct [:name, :guest, :base, :path, :size, :created_at, :tracked]
   end
 
+  defmodule ZfsMount do
+    @moduledoc "One branch of a ZFS volume mounted in a guest."
+
+    @type t :: %__MODULE__{branch: String.t(), mountpoint: String.t()}
+
+    defstruct [:branch, :mountpoint]
+  end
+
+  defmodule ZfsBranch do
+    @moduledoc """
+    A branch of a ZFS volume: a dataset cloned copy-on-write inside its pool.
+    `origin` is the branch it was cloned from, `nil` for `main`.
+    """
+
+    @type t :: %__MODULE__{
+            name: String.t(),
+            origin: String.t() | nil,
+            created_at: integer() | nil
+          }
+
+    defstruct [:name, :origin, :created_at]
+  end
+
+  defmodule ZfsAttachment do
+    @moduledoc "The machine holding a ZFS volume and what it mounts."
+
+    @type t :: %__MODULE__{
+            machine: String.t(),
+            machine_name: String.t() | nil,
+            running: boolean(),
+            mounts: [ZfsMount.t()]
+          }
+
+    defstruct [:machine, :machine_name, :running, mounts: []]
+  end
+
+  defmodule ZfsVolumeInfo do
+    @moduledoc """
+    A ZFS volume as reported by `bsdkrun zfs ls --json`. `size_bytes` is the
+    image's nominal size (what the guest sees); `size` the space actually
+    allocated on the host. `attached_to` holds the one machine holding it.
+    """
+
+    @type t :: %__MODULE__{
+            name: String.t(),
+            path: String.t(),
+            size_bytes: integer(),
+            size: String.t() | nil,
+            branches: [ZfsBranch.t()],
+            attached_to: [ZfsAttachment.t()],
+            created_at: integer() | nil
+          }
+
+    defstruct [:name, :path, :size_bytes, :size, :created_at, branches: [], attached_to: []]
+  end
+
   defmodule NetworkInfo do
     @moduledoc "A global network as reported by `bsdkrun network ls --json`."
 
@@ -513,6 +569,41 @@ defmodule Bsdkrun.Types do
       size: to_string(row["size"]),
       created_at: num(row["created_at"]),
       tracked: truthy(row["tracked"])
+    }
+  end
+
+  @doc "Map a `zfs ls VOL --json` row to a `ZfsBranch`."
+  @spec zfs_branch(map()) :: ZfsBranch.t()
+  def zfs_branch(row) do
+    %ZfsBranch{
+      name: to_string(row["name"]),
+      origin: row["origin"],
+      created_at: num(row["created_at"])
+    }
+  end
+
+  @doc "Map a `zfs ls --json` row to a `ZfsVolumeInfo`."
+  @spec zfs_volume_info(map()) :: ZfsVolumeInfo.t()
+  def zfs_volume_info(row) do
+    %ZfsVolumeInfo{
+      name: to_string(row["name"]),
+      path: to_string(row["path"]),
+      size_bytes: num(row["size_bytes"]) || 0,
+      size: row["size"],
+      branches: Enum.map(row["branches"] || [], &zfs_branch/1),
+      attached_to:
+        Enum.map(row["attached_to"] || [], fn a ->
+          %ZfsAttachment{
+            machine: to_string(a["machine"]),
+            machine_name: a["machine_name"],
+            running: truthy(a["running"]),
+            mounts:
+              Enum.map(a["mounts"] || [], fn m ->
+                %ZfsMount{branch: to_string(m["branch"]), mountpoint: to_string(m["mountpoint"])}
+              end)
+          }
+        end),
+      created_at: num(row["created_at"])
     }
   end
 

@@ -30,6 +30,7 @@ defmodule Bsdkrun do
     * `Bsdkrun.Sandbox`  — create / inspect / drive microVMs.
     * `Bsdkrun.Images`   — list downloaded images.
     * `Bsdkrun.Volumes`  — list / remove persistent volumes.
+    * `Bsdkrun.Zfs`      — ZFS volumes: create, branch (copy-on-write), attach, destroy.
     * `Bsdkrun.Networks` — global networks (reach machines by name).
     * `Bsdkrun.System`   — probe, fetch BSD images, list versions, grow disks.
     * `Bsdkrun.Types`    — result structs + `Bsdkrun.Types.Result`.

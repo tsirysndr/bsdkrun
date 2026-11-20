@@ -733,20 +733,19 @@ fn the_binary_generates_and_prints_a_token() {
     assert_eq!(token.len(), 64);
 }
 
-/// Locate the `bsdkrund` binary next to the test executable.
-fn built_binary(name: &str) -> Option<PathBuf> {
-    let mut dir = std::env::current_exe().expect("test exe");
-    dir.pop(); // deps/
-    if dir.ends_with("deps") {
-        dir.pop();
-    }
-    let exe = dir.join(name);
-    Path::new(&exe).exists().then_some(exe)
+/// The `bsdkrund` this test run built. Cargo builds a package's binaries for
+/// its integration tests and hands over the path; deriving it from the test
+/// executable's location broke when cargo 1.100 moved test executables under
+/// `target/<profile>/build/<pkg>/<hash>/out/`.
+fn daemon_binary() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_bsdkrund"))
 }
 
-fn daemon_binary() -> PathBuf {
-    built_binary("bsdkrund")
-        .expect("bsdkrund not built; run `cargo build --release -p bsdkrun-daemon` first")
+/// Locate a binary of another workspace package beside `bsdkrund`, in the
+/// profile directory this run built into.
+fn built_binary(name: &str) -> Option<PathBuf> {
+    let exe = daemon_binary().with_file_name(name);
+    Path::new(&exe).exists().then_some(exe)
 }
 
 /// The real supervisor, if this checkout could build one.

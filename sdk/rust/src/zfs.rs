@@ -19,7 +19,10 @@ fn rows(stdout: String) -> Result<Vec<Value>> {
 /// List ZFS volumes, with their branches and holder.
 pub fn list() -> Result<Vec<ZfsVolumeInfo>> {
     let res = run_checked(["zfs", "ls", "--json"], "bsdkrun zfs ls")?;
-    Ok(rows(res.stdout)?.iter().map(ZfsVolumeInfo::from_row).collect())
+    Ok(rows(res.stdout)?
+        .iter()
+        .map(ZfsVolumeInfo::from_row)
+        .collect())
 }
 
 /// The branches of one volume.
@@ -36,7 +39,10 @@ pub fn create(name: &str, size: Option<&str>) -> Result<String> {
         args.push("--size".to_string());
         args.push(s.to_string());
     }
-    Ok(run_checked(args, "bsdkrun zfs create")?.stdout.trim().to_string())
+    Ok(run_checked(args, "bsdkrun zfs create")?
+        .stdout
+        .trim()
+        .to_string())
 }
 
 /// Fork a branch copy-on-write (`zfs snapshot` + `zfs clone`) from `from`
@@ -54,7 +60,10 @@ pub fn branch(volume: &str, name: &str, from: Option<&str>) -> Result<String> {
         args.push("--from".to_string());
         args.push(f.to_string());
     }
-    Ok(run_checked(args, "bsdkrun zfs branch")?.stdout.trim().to_string())
+    Ok(run_checked(args, "bsdkrun zfs branch")?
+        .stdout
+        .trim()
+        .to_string())
 }
 
 /// Attach `VOL` or `VOL@BRANCH` to a machine at `mount` (`/mnt/VOL`, or
@@ -72,13 +81,19 @@ pub fn attach(target: &str, machine: &str, mount: Option<&str>) -> Result<String
         args.push("--mount".to_string());
         args.push(m.to_string());
     }
-    Ok(run_checked(args, "bsdkrun zfs attach")?.stdout.trim().to_string())
+    Ok(run_checked(args, "bsdkrun zfs attach")?
+        .stdout
+        .trim()
+        .to_string())
 }
 
 /// Detach one branch (`VOL@BRANCH`) or the whole volume (`VOL`) from a machine.
 pub fn detach(target: &str, machine: &str) -> Result<String> {
     let args = ["zfs", "detach", target, machine];
-    Ok(run_checked(args, "bsdkrun zfs detach")?.stdout.trim().to_string())
+    Ok(run_checked(args, "bsdkrun zfs detach")?
+        .stdout
+        .trim()
+        .to_string())
 }
 
 /// Destroy branches (`VOL@BRANCH`) or whole volumes (`VOL`). `force` destroys

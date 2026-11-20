@@ -192,17 +192,21 @@ fn run_mutation(
 
 /// The `MACHINE_FIELDS` selection `web/src/lib/api.ts` uses, transcribed
 /// verbatim so `sandbox_info_from_graphql` always has what it expects.
-const machine_fields = "id name image kind command status running exitCode pid detached cpus mem volume stateDir createdAt finishedAt network netIp origin ports { bind host guest }"
+const machine_fields =
+  "id name image kind command status running exitCode pid detached cpus mem volume stateDir createdAt finishedAt network netIp origin ports { bind host guest }"
 
 const ai_agent_fields = "id label flavor description installed running"
 
 const ai_session_fields = "id name agent running workspace createdAt"
 
-const docker_status_fields = "running machineId machineRunning socket socketReady apiPort version containers images mounts disk diskSize"
+const docker_status_fields =
+  "running machineId machineRunning socket socketReady apiPort version containers images mounts disk diskSize"
 
-const docker_container_fields = "id name image command state status ports created"
+const docker_container_fields =
+  "id name image command state status ports created"
 
-const snapshot_fields = "id name machineId machineName kind image path parent description cpus mem size createdAt ports { bind host guest }"
+const snapshot_fields =
+  "id name machineId machineName kind image path parent description cpus mem size createdAt ports { bind host guest }"
 
 /// Machines. `all: True` includes stopped ones, like `bsdkrun ps -a`.
 pub fn list(client: Client, all all: Bool) -> Result(List(SandboxInfo), Error) {
@@ -1218,7 +1222,8 @@ pub fn run_flavor(
 // exec / shell — openShell + shellOutput + closeShell, per daemon/README.md
 // ---------------------------------------------------------------------------
 
-const shell_output_doc = "subscription($sessionId: String!) { shellOutput(sessionId: $sessionId) { dataBase64 exitCode } }"
+const shell_output_doc =
+  "subscription($sessionId: String!) { shellOutput(sessionId: $sessionId) { dataBase64 exitCode } }"
 
 fn open_shell(
   client: Client,

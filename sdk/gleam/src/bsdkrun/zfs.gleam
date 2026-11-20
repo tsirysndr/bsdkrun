@@ -30,7 +30,11 @@ pub fn list() -> Result(List(ZfsVolumeInfo), Error) {
     "bsdkrun zfs ls",
     cli.options(),
   ))
-  types.decode_rows(out.stdout, "bsdkrun zfs ls", types.zfs_volume_info_decoder())
+  types.decode_rows(
+    out.stdout,
+    "bsdkrun zfs ls",
+    types.zfs_volume_info_decoder(),
+  )
 }
 
 /// The branches of one volume.

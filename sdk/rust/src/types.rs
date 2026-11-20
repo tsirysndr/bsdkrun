@@ -506,14 +506,22 @@ pub struct ZfsVolumeInfo {
 
 impl ZfsVolumeInfo {
     pub fn from_row(row: &Value) -> ZfsVolumeInfo {
-        let list = |key: &str| row.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
+        let list = |key: &str| {
+            row.get(key)
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        };
         ZfsVolumeInfo {
             name: get_str(row, "name"),
             path: get_str(row, "path"),
             size_bytes: get_num(row, "size_bytes").unwrap_or(0),
             size: get_opt_str(row, "size"),
             branches: list("branches").iter().map(ZfsBranch::from_row).collect(),
-            attached_to: list("attached_to").iter().map(ZfsAttachment::from_row).collect(),
+            attached_to: list("attached_to")
+                .iter()
+                .map(ZfsAttachment::from_row)
+                .collect(),
             created_at: get_num(row, "created_at"),
         }
     }

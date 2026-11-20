@@ -22,7 +22,11 @@ permissions:
 jobs:
   boot:
     name: x86_64
-    runs-on: ubuntu-latest # x86_64; has /dev/kvm
+    # 24.04, not latest: ubuntu-latest is 26.04 with GCC 15, whose C23 default
+    # reads Unikraft stable's `void (*uk_ctor_func_t)()` as taking no
+    # arguments, and lib/ukboot fails to compile — the catalog is cloned from
+    # upstream here, so there is nothing to patch on our side.
+    runs-on: ubuntu-24.04 # x86_64; has /dev/kvm
     timeout-minutes: 45
     steps:
       # `submodules` for library/solo5: core/build.rs builds the Solo5

@@ -176,7 +176,9 @@ jobs:
           api_bind_addr = "127.0.0.1:3903"
           admin_token = "$(head -c 32 /dev/urandom | xxd -p -c 64)"
           EOF
-          nix build nixpkgs#garage -o /tmp/garage/pkg
+          # garage_2: the plain `garage` attribute is the 1.x line, which
+          # nixpkgs marks EOL and refuses to evaluate.
+          nix build nixpkgs#garage_2 -o /tmp/garage/pkg
           garage() { /tmp/garage/pkg/bin/garage -c /tmp/garage/garage.toml "$@"; }
           nohup /tmp/garage/pkg/bin/garage -c /tmp/garage/garage.toml server > /tmp/garage/server.log 2>&1 &
           # Wait for it rather than sleeping: a fixed sleep is either too short

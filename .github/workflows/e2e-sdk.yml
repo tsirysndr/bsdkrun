@@ -170,7 +170,10 @@ jobs:
           # e2e suite on. (No auto-install on Linux — libkrun is built above.)
           BSDKRUN_BIN: ${{ github.workspace }}/target/release/bsdkrun
           BSDKRUN_E2E: "1"
-        run: bun test test/e2e.test.ts
+        # The timeout also bounds beforeAll, which creates the sandbox: on a
+        # runner with a cold ~/.cache/bsdkrun that is a kernel and an image
+        # download plus a boot, well past bun's 5 s default.
+        run: bun test --timeout 300000 test/e2e.test.ts
 
       # The JDK, Scala and sbt versions come from sdk/scala/mise.toml, so CI and
       # a developer's checkout build against exactly the same toolchain.

@@ -49,6 +49,16 @@ jobs:
       flavors: ${{ steps.pick.outputs.flavors }}
     steps:
       - uses: actions/checkout@v4
+      - uses: fluentci-io/setup-fluentci@next
+      - name: Set up Determinate Nix
+        shell: bash
+        run: fluentci run setup-determinate-nix setup --sudo true | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Cachix
+        shell: bash
+        run: fluentci run setup-cachix setup --cache bsdkrun | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Rust (stable)
+        shell: bash
+        run: fluentci run setup-rust setup --toolchain stable | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
 
       - name: Pick the flavors to build
         id: pick
@@ -81,7 +91,16 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: fluentci-io/setup-fluentci@next
+      - name: Set up Determinate Nix
+        shell: bash
+        run: fluentci run setup-determinate-nix setup --sudo true | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Cachix
+        shell: bash
+        run: fluentci run setup-cachix setup --cache bsdkrun | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Rust (stable)
+        shell: bash
+        run: fluentci run setup-rust setup --toolchain stable | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
 
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -114,6 +133,16 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - uses: fluentci-io/setup-fluentci@next
+      - name: Set up Determinate Nix
+        shell: bash
+        run: fluentci run setup-determinate-nix setup --sudo true | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Cachix
+        shell: bash
+        run: fluentci run setup-cachix setup --cache bsdkrun | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Rust (stable)
+        shell: bash
+        run: fluentci run setup-rust setup --toolchain stable | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
@@ -138,6 +167,16 @@ jobs:
         flavor: ${{ fromJson(needs.plan.outputs.flavors) }}
     steps:
       - uses: actions/checkout@v4
+      - uses: fluentci-io/setup-fluentci@next
+      - name: Set up Determinate Nix
+        shell: bash
+        run: fluentci run setup-determinate-nix setup --sudo true | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Cachix
+        shell: bash
+        run: fluentci run setup-cachix setup --cache bsdkrun | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Rust (stable)
+        shell: bash
+        run: fluentci run setup-rust setup --toolchain stable | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
 
       # Multi-arch: bsdkrun runs a guest of the *host's* architecture, so an
       # arm64 Mac and an amd64 CI box each need their own image.

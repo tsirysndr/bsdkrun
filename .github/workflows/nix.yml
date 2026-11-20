@@ -30,12 +30,20 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@v16
-      - name: Setup Cachix
-        uses: cachix/cachix-action@v17
-        with:
-          name: bsdkrun
-          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+      - uses: fluentci-io/setup-fluentci@next
+      - name: Set up Determinate Nix
+        shell: bash
+        run: fluentci run setup-determinate-nix setup --sudo true | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      # The token lets `cachix push` below publish what this job built; the
+      # module picks it up from the environment. Reads need none.
+      - name: Set up Cachix
+        shell: bash
+        env:
+          CACHIX_AUTH_TOKEN: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+        run: fluentci run setup-cachix setup --cache bsdkrun | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Rust (stable)
+        shell: bash
+        run: fluentci run setup-rust setup --toolchain stable | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
 
       # macOS has no libkrun in nixpkgs — the flake links Homebrew's (impurely).
       - name: Install libkrun (macOS)
@@ -91,3 +99,13 @@ jobs:
         env:
           BSDKRUN_IMPURE: "1"
         run: nix flake check -L ${{ matrix.flags }}
+
+      # cachix-action pushed as a post step; with the CLI it is one explicit
+      # push of the four outputs. Forks have no token, so it is a no-op there
+      # (secrets cannot gate an `if:`, hence the shell test).
+      - name: Push to Cachix
+        env:
+          CACHIX_AUTH_TOKEN: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+        run: |
+          if [ -z "$CACHIX_AUTH_TOKEN" ]; then echo "no CACHIX_AUTH_TOKEN; not pushing"; exit 0; fi
+          cachix push bsdkrun ./result ./result-solo5 ./result-bsdkrund ./result-supervisor

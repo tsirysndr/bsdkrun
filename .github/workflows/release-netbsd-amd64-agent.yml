@@ -26,6 +26,16 @@ jobs:
     steps:
       # Deliberately no `ref:` — build the current branch's agent, not the tag's.
       - uses: actions/checkout@v4
+      - uses: fluentci-io/setup-fluentci@next
+      - name: Set up Determinate Nix
+        shell: bash
+        run: fluentci run setup-determinate-nix setup --sudo true | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Cachix
+        shell: bash
+        run: fluentci run setup-cachix setup --cache bsdkrun | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Rust (stable)
+        shell: bash
+        run: fluentci run setup-rust setup --toolchain stable | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
 
       - name: Start NetBSD x86_64 VM
         uses: cross-platform-actions/action@v1.3.0

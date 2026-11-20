@@ -34,6 +34,13 @@ jobs:
           # A release built without it ships a bsdkrun whose `solo5`
           # subcommand reports itself as unsupported.
           submodules: recursive
+      - uses: fluentci-io/setup-fluentci@next
+      - name: Set up Determinate Nix
+        shell: bash
+        run: fluentci run setup-determinate-nix setup --sudo true | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Cachix
+        shell: bash
+        run: fluentci run setup-cachix setup --cache bsdkrun | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
 
       # libkrun provides the C ABI bsdkrun links against (build.rs finds it via
       # `brew --prefix libkrun`). It lives in a third-party tap, which Homebrew
@@ -44,15 +51,16 @@ jobs:
           brew trust libkrun/krun || true  # `trust` only exists on Homebrew 6.x+
           brew install libkrun
 
-      # Stable (default) with the musl target for the Linux agent.
+      # Stable (default) with the musl target for the Linux agent. Both go
+      # into one `--install-dir`: setup-rust keeps each toolchain in its own
+      # rustup home otherwise, and `make agent` runs `cargo +nightly` from the
+      # stable environment the last call leaves behind.
       - name: Rust nightly (+ rust-src for build-std)
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rust-src
+        shell: bash
+        run: fluentci run setup-rust setup --install-dir "$HOME/.rust" --toolchain nightly --components rust-src | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
       - name: Rust stable (default) + linux-musl targets (both arches)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-musl, x86_64-unknown-linux-musl
+        shell: bash
+        run: fluentci run setup-rust setup --install-dir "$HOME/.rust" --toolchain stable --targets aarch64-unknown-linux-musl,x86_64-unknown-linux-musl | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
 
       - name: Cache cargo + build
         uses: Swatinem/rust-cache@v2
@@ -210,6 +218,13 @@ jobs:
           # A release built without it ships a bsdkrun whose `solo5`
           # subcommand reports itself as unsupported.
           submodules: recursive
+      - uses: fluentci-io/setup-fluentci@next
+      - name: Set up Determinate Nix
+        shell: bash
+        run: fluentci run setup-determinate-nix setup --sudo true | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Cachix
+        shell: bash
+        run: fluentci run setup-cachix setup --cache bsdkrun | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
 
       # build.rs links libkrun; libkrun links libkrunfw (a from-source kernel).
       # Same deps the KVM e2e job uses.
@@ -223,7 +238,9 @@ jobs:
             flex bison bc libelf-dev libssl-dev \
             clang libclang-dev llvm-dev libseccomp-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust (stable)
+        shell: bash
+        run: fluentci run setup-rust setup --toolchain stable | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
       - uses: Swatinem/rust-cache@v2
 
       # Cache the built libkrunfw/libkrun trees per arch — the kernel compile is

@@ -20,7 +20,16 @@ jobs:
         with:
           persist-credentials: false
           ref: "${{ (inputs.tag != null) && format('refs/tags/{0}', inputs.tag) || '' }}"
-      - uses: "DeterminateSystems/determinate-nix-action@v3"
+      - uses: fluentci-io/setup-fluentci@next
+      - name: Set up Determinate Nix
+        shell: bash
+        run: fluentci run setup-determinate-nix setup --sudo true | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Cachix
+        shell: bash
+        run: fluentci run setup-cachix setup --cache bsdkrun | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Rust (stable)
+        shell: bash
+        run: fluentci run setup-rust setup --toolchain stable | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
       - uses: "DeterminateSystems/flakehub-push@main"
         with:
           visibility: "public"

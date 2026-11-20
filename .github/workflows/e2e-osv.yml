@@ -50,6 +50,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - uses: fluentci-io/setup-fluentci@next
+      - name: Set up Determinate Nix
+        shell: bash
+        run: fluentci run setup-determinate-nix setup --sudo true | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Cachix
+        shell: bash
+        run: fluentci run setup-cachix setup --cache bsdkrun | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
 
       - name: Enable KVM
         run: |
@@ -98,7 +105,9 @@ jobs:
           sudo chmod +x /usr/local/bin/gvproxy
           gvproxy --help >/dev/null 2>&1 || which gvproxy
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust (stable)
+        shell: bash
+        run: fluentci run setup-rust setup --toolchain stable | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
       - uses: Swatinem/rust-cache@v2
 
       # libkrun links libkrunfw (the bundled kernel), whose build compiles a

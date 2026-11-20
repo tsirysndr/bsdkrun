@@ -35,13 +35,19 @@ jobs:
         # instead would silently republish the very binary you are trying to
         # replace. (The NetBSD workflow learned this the hard way.)
         uses: actions/checkout@v4
+      - uses: fluentci-io/setup-fluentci@next
+      - name: Set up Determinate Nix
+        shell: bash
+        run: fluentci run setup-determinate-nix setup --sudo true | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Cachix
+        shell: bash
+        run: fluentci run setup-cachix setup --cache bsdkrun | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
 
       # Tier-3 targets have no prebuilt std, so `make agent-freebsd` passes
       # `-Z build-std` — which needs nightly and rust-src.
       - name: Rust nightly (+ rust-src for build-std)
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rust-src
+        shell: bash
+        run: fluentci run setup-rust setup --toolchain nightly --components rust-src | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
 
       - name: Cache cargo + build
         uses: Swatinem/rust-cache@v2

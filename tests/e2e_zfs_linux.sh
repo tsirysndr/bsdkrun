@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # End-to-end check of `bsdkrun zfs` against a Linux guest. The default
-# kernel (vmlinux-builder 7.3.5 and later) has OpenZFS built in; the image
-# supplies `zpool`.
+# kernel (vmlinux-builder 7.3.5 and later) has OpenZFS built in; the guest
+# script installs `zpool` from the image's package manager when it is
+# missing, which this test relies on (nothing is installed by hand).
 #
-# The image is prepared once on a named volume: `apk add zfs` on Alpine's
-# edge, whose userland matches the OpenZFS the kernel carries. The pool is
-# then imported by the generated init, before the entrypoint, so the command
-# sees it mounted.
+# Alpine's edge: its userland matches the OpenZFS the kernel carries. The
+# rootfs sits on a named volume so the install survives the restarts below.
+# The pool is imported by the generated init, before the entrypoint, so the
+# command sees it mounted.
 #
 # Usage: tests/e2e_zfs_linux.sh [path/to/bsdkrun]
 # Another kernel: E2E_KERNEL=/path/to/vmlinux or E2E_KERNEL_VERSION=<release>.
@@ -43,18 +44,20 @@ expect() { if ! grep -q -- "$1"; then echo "expected $1" >&2; exit 1; fi; }
 echo "== linux ($IMAGE) =="
 "$B" zfs create "$VOL" --size 1G
 
-# A rootfs with zpool, kept on a volume so the restart below keeps it.
+# A stock image with no ZFS userland, on a volume so the restart below keeps
+# what the init installs.
 "$B" linux -d -v "$ROOT" --name "$MACHINE" "${KERNEL_ARGS[@]}" "$IMAGE" >/dev/null
 wait_agent "$MACHINE"
-"$B" exec "$MACHINE" sh -c 'apk add --no-cache zfs >/dev/null && zpool version' | expect "zfs-"
-"$B" exec "$MACHINE" sh -c 'uname -r'
+"$B" exec "$MACHINE" sh -c 'uname -r; command -v zpool || echo "no zpool yet"' | expect "no zpool yet"
 "$B" stop "$MACHINE" >/dev/null
 
 # Attach while stopped; `start` boots the same kernel (recorded at the first
-# boot) and the init imports the pool before anything else runs.
+# boot) and the init installs zpool and imports the pool before anything
+# else runs.
 "$B" zfs attach "$VOL" "$MACHINE" | expect "takes effect"
 "$B" start "$MACHINE" >/dev/null
 wait_agent "$MACHINE"
+"$B" exec "$MACHINE" sh -c 'zpool version' | expect "zfs-"
 "$B" exec "$MACHINE" sh -c "zpool list -H -o name,health $VOL; echo hello > /mnt/$VOL/f" | expect "ONLINE"
 
 # Branch live (the holder runs) and mount the branch live: real CoW, the

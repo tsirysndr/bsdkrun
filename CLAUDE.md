@@ -214,7 +214,7 @@ from the generated init. Learned by probing, not from docs:
 | all     | `canmount` is not inherited: `zfs set mountpoint=` on a child mounts it at once; check `mounted` before `zfs mount`.                                                                                                                                         |
 | FreeBSD | Default pool features (`zstd`, `log_spacemap`, …) do not import on NetBSD; create with `-d` plus the explicit list in `PORTABLE_FEATURES`.                                                                                                                  |
 | all     | A one-shot command's writes are lost to the SIGTERM teardown unless the pool is exported first (txg commit).                                                                                                                                                |
-| Linux   | vmlinux-builder kernels carry OpenZFS from 7.3.5 on (the default); older ones have none, and the init reports a missing `zpool` and carries on. Userland comes from the image (`apk add zfs`).                                                              |
+| Linux   | vmlinux-builder kernels carry OpenZFS from 7.3.5 on (the default); older ones have none. Userland is fetched by the guest script from the image's package manager when `zpool` is missing (`bk_pkg`), which needs the network up before the disks. |                  |
 
 The guest script refuses to `zpool create` on a disk anything is mounted from —
 the device index was off by one on NetBSD once and only ZFS's own refusal saved

@@ -45,10 +45,12 @@
 //!   separately from the image. [`prepare_netbsd`] ships the matching
 //!   `zfs`/`solaris` modules in and registers them; the machine then needs
 //!   one restart.
-//! - **Linux** needs `zpool` in the image; the kernel side is built in.
+//! - **Linux** gets `zpool` from the image's package manager when it is
+//!   missing (apk, apt-get, dnf, zypper, pacman); the kernel side is built in.
 //!   vmlinux-builder has carried OpenZFS in every release since 7.3.5, the
 //!   default kernel, so nothing is loaded or matched. The init reports
-//!   clearly when `zpool` is missing instead of failing the mount silently.
+//!   clearly when `zpool` could not be installed instead of failing the
+//!   mount silently.
 //!
 //! Pools created by the FreeBSD helper (or a Linux guest) are created with an
 //! explicit feature set NetBSD's older implementation understands, so a volume
@@ -249,6 +251,47 @@ fn module_load(os: GuestOs) -> &'static str {
     }
 }
 
+/// Linux: fetch ZFS userland from the image's package manager when `zpool`
+/// is missing, since no stock image carries it (`zfs` on Alpine,
+/// `zfsutils-linux` on Debian/Ubuntu, `zfs` on dnf/zypper, `zfs-utils` on
+/// pacman). The kernel side is built into the default kernel. A rootfs on a
+/// named volume keeps the install; an ephemeral one repeats it per boot. The
+/// BSDs ship ZFS in base.
+fn userland_install(os: GuestOs) -> String {
+    match os {
+        GuestOs::Linux => format!(
+            "{}bk_pkg zpool zfs zfsutils-linux zfs zfs zfs-utils || true\n",
+            crate::linux::PKG_HELPER
+        ),
+        GuestOs::Freebsd | GuestOs::Netbsd => String::new(),
+    }
+}
+
+/// What `zpool create` is given: the disk, or on Linux a partition this
+/// script makes when it can. OpenZFS on Linux labels a whole disk itself
+/// (GPT, a data partition and a reserved one) and then waits for the
+/// partitions to appear — through libudev where it was built with it (Debian,
+/// Ubuntu, Fedora), which never reports them ready in a guest with no udevd
+/// and fails after 30 s with "failed to detect device partitions ... 19".
+/// A partition handed over is used as is, so the disk gets one ZFS partition
+/// first, from `sfdisk` — fetched like the other tools when the image lacks
+/// it (Debian's slim images do; Alpine's busybox has none). Alpine's build
+/// has no libudev, so the whole disk works there, and that is the fallback
+/// when sfdisk cannot be had.
+fn label_disk(os: GuestOs) -> &'static str {
+    match os {
+        GuestOs::Linux => {
+            "\x20   part=\"$dev\"\n\
+             \x20   bk_pkg sfdisk sfdisk fdisk util-linux util-linux util-linux || true\n\
+             \x20   if command -v sfdisk >/dev/null 2>&1 && printf 'label: gpt\\n,,6A898CC3-1DD2-11B2-99A6-080020736631\\n' | sfdisk -q \"$dev\" >/dev/null 2>&1; then\n\
+             \x20     for _ in 1 2 3 4 5 6 7 8 9 10; do [ -e \"${dev}1\" ] && break; blockdev --rereadpt \"$dev\" >/dev/null 2>&1; sleep 1; done\n\
+             \x20     [ -e \"${dev}1\" ] && part=\"${dev}1\"\n\
+             \x20   fi\n"
+        }
+        GuestOs::Freebsd | GuestOs::Netbsd => "\x20   part=\"$dev\"\n",
+    }
+}
+
 /// `zpool create` options for a portable pool (see [`PORTABLE_FEATURES`]).
 /// NetBSD knows no `-o feature@` it does not already enable by default.
 fn create_opts(os: GuestOs) -> String {
@@ -276,6 +319,8 @@ pub fn setup_script(os: GuestOs, index: usize, disk: &ZfsDisk) -> String {
     let pool = sq(&disk.volume);
     let dev = device_expr(os, index);
     let load = module_load(os);
+    let userland = userland_install(os);
+    let label = label_disk(os);
     let create = create_opts(os);
     let mut s = format!(
         "bk_zfs_setup() {{\n\
@@ -283,6 +328,7 @@ pub fn setup_script(os: GuestOs, index: usize, disk: &ZfsDisk) -> String {
          dev=\"{dev}\"\n\
          if [ -z \"$dev\" ] || [ ! -e \"$dev\" ]; then echo \"[bsdkrun] zfs: no disk for pool $pool (expected attached disk #{n})\"; return 1; fi\n\
          {load}\n\
+         {userland}\
          command -v zpool >/dev/null 2>&1 || {{ echo \"[bsdkrun] zfs: this guest has no zpool; install ZFS userland (and a kernel with the module) to use pool $pool\"; return 1; }}\n\
          # A pool the module auto-imported from a stale zpool.cache at boot\n\
          # (an old vdev path) is UNAVAIL; export it and import it properly.\n\
@@ -330,7 +376,8 @@ pub fn setup_script(os: GuestOs, index: usize, disk: &ZfsDisk) -> String {
          \x20   for w in $(dkctl $(basename \"$disk\") listwedges 2>/dev/null | sed -n 's/^\\(dk[0-9]*\\):.*/\\1/p'); do\n\
          \x20     if mount 2>/dev/null | grep -q \"^/dev/$w \"; then echo \"[bsdkrun] zfs: refusing to create pool $pool on $dev: $w on that disk is mounted\"; return 1; fi\n\
          \x20   done\n\
-         \x20   zpool create {create} \"$pool\" \"$dev\" || {{ echo \"[bsdkrun] zfs: could not create pool $pool on $dev\"; return 1; }}\n\
+         {label}\
+         \x20   zpool create {create} \"$pool\" \"$part\" || {{ echo \"[bsdkrun] zfs: could not create pool $pool on $part\"; return 1; }}\n\
          \x20   zfs create -o canmount=noauto \"$pool/{main}\" || return 1\n\
          \x20 fi\n\
          fi\n",

@@ -286,8 +286,23 @@ jobs:
           # build runs as a nixbld uid the unprivileged virtio-fs server cannot
           # act as, and fails with
           # `creating directory ".../user-environment": Permission denied`.
+          # What the guest's nix thinks it is doing, for when the install below
+          # fails: Nix 2.36 builds under /nix/var/nix/builds and sandboxes by
+          # default, both of which meet virtio-fs here for the first time.
+          timeout 60 ./target/release/bsdkrun exec "$id" /bin/sh -c \
+            'nix config show 2>/dev/null | grep -E "^(sandbox|build-dir|build-users-group|auto-allocate-uids|use-cgroups) " || true'
+          set +e
           timeout 300 ./target/release/bsdkrun exec "$id" /bin/sh -c \
-            'nix-env -iA nixpkgs.hello 2>&1 | tail -5'
+            'nix-env -iA nixpkgs.hello > /tmp/nix-env.log 2>&1; rc=$?; tail -5 /tmp/nix-env.log; exit $rc'
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "::group::nix-env failed (rc=$rc): guest state"
+            timeout 60 ./target/release/bsdkrun exec "$id" /bin/sh -c \
+              'tail -40 /tmp/nix-env.log; echo ---; id; ls -lan /nix/var/nix /nix/var/nix/builds 2>&1; for d in /nix/var/nix/builds/*; do stat "$d" 2>&1; ls -lan "$d" 2>&1 | head; done; echo ---; mount | grep -E " / |nix" ' || true
+            echo "::endgroup::"
+            exit "$rc"
+          fi
           timeout 60 ./target/release/bsdkrun exec "$id" /bin/sh -c \
             '/root/.nix-profile/bin/hello' | grep -q Hello
           echo "🎉 nix-env installed and ran a package from the profile"

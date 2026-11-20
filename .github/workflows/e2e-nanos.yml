@@ -38,7 +38,7 @@ jobs:
       - uses: fluentci-io/setup-fluentci@next
       - name: Set up Determinate Nix
         shell: bash
-        run: fluentci run setup-determinate-nix setup --sudo true | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+        run: fluentci run setup-determinate-nix setup --sudo true --trusted-users runner | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
       - name: Set up Cachix
         shell: bash
         run: fluentci run setup-cachix setup --cache bsdkrun | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"

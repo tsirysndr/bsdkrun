@@ -33,7 +33,7 @@ jobs:
       - uses: fluentci-io/setup-fluentci@next
       - name: Set up Determinate Nix
         shell: bash
-        run: fluentci run setup-determinate-nix setup --sudo true | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+        run: fluentci run setup-determinate-nix setup --sudo true --trusted-users runner | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
       # The token lets `cachix push` below publish what this job built; the
       # module picks it up from the environment. Reads need none.
       - name: Set up Cachix

@@ -49,7 +49,10 @@ permissions:
 jobs:
   boot:
     name: unikraft-go (x86_64, via bsdkrun pack)
-    runs-on: ubuntu-latest # x86_64; has /dev/kvm and a docker daemon (for BuildKit)
+    # 24.04, not latest: ubuntu-latest is 26.04 with GCC 15, whose C23 default
+    # rejects Unikraft stable's old-style `void (*uk_ctor_func_t)()` typedef
+    # (lib/ukboot: "too many arguments to function"), and kraft builds here.
+    runs-on: ubuntu-24.04 # x86_64; has /dev/kvm and a docker daemon (for BuildKit)
     timeout-minutes: 60
     steps:
       # `submodules` for library/solo5: core/build.rs builds the Solo5

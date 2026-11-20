@@ -33,7 +33,7 @@ Add `:bsdkrun_ex` to your `mix.exs` deps:
 ```elixir
 def deps do
   [
-    {:bsdkrun_ex, "~> 0.6.0"}
+    {:bsdkrun_ex, "~> 0.7.0"}
   ]
 end
 ```

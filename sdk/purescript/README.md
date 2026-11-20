@@ -31,7 +31,7 @@ workspace:
 Install the JavaScript runtime in **your application** as well:
 
 ```sh
-npm install @bsdkrun/sdk@^0.7.0
+npm install @bsdkrun/sdk@^0.8.0
 spago build
 ```
 

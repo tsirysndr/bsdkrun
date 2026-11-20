@@ -43,6 +43,11 @@ newest images and hosts changed underneath us.
   (apk, apt-get with Debian's contrib, dnf, zypper, pacman). The daemon
   exposes it over gRPC and GraphQL, and the TypeScript, Python, Rust, Go,
   Gleam, Clojure, Elixir, Ruby and Scala SDKs each gain a `zfs` namespace.
+  SDK versions shipping with it: `@bsdkrun/sdk` 0.8.0, `bsdkrun` (PyPI) 0.7.0,
+  `bsdkrun-sdk` (crates.io) 0.5.0, `bsdkrun` (Gleam, Hex) 1.7.0,
+  `io.github.tsirysndr/bsdkrun` (Clojars) 0.6.0, `bsdkrun_ex` (Hex) 0.7.0,
+  `bsdkrun` (RubyGems) 0.7.0, `io.github.tsirysndr::bsdkrun` (Scala) 0.4.0,
+  and the PureScript SDK's first 0.1.0.
 - **Default Linux kernel 7.3.5**, built by vmlinux-builder with OpenZFS in
   the kernel, so a Linux guest needs only the userland. A machine restarts on
   the kernel it was first booted with, recorded per machine.

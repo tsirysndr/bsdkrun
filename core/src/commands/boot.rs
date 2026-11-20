@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::cli::*;
 use crate::krun::Ctx;
@@ -2068,6 +2068,37 @@ pub(crate) fn log_boot_timing(
     eprintln!("  {:<45} {}", "total (launch → agent ready)", s(total));
 }
 
+/// Set a BSD guest's clock from the host's when it is more than two minutes
+/// off. libkrun gives the guest no RTC it can trust (none on aarch64, a blank
+/// CMOS on x86_64), so NetBSD boots with the image's build date and FreeBSD
+/// can too — and every TLS certificate is then "not yet valid": a `git clone`
+/// over HTTPS fails, pkg over HTTPS fails, and nothing names the clock. Linux
+/// gets the same treatment from its generated init; the BSDs have no init of
+/// ours, so it happens here, the moment the agent answers. Both BSDs' `date`
+/// take `[[CC]YY]MMDDhhmm[.SS]`.
+fn sync_bsd_clock(port: u16) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (y, mo, d, h, mi, s) = crate::linux::utc_parts(now);
+    let script = format!(
+        "n=$(date +%s); d=$((n - {now})); \
+         if [ \"$d\" -gt 120 ] || [ \"$d\" -lt -120 ]; then \
+         date -u {y:04}{mo:02}{d:02}{h:02}{mi:02}.{s:02} >/dev/null 2>&1 && echo synced; fi"
+    );
+    let argv = ["sh".to_string(), "-c".to_string(), script];
+    let mut out = Vec::new();
+    match agent::exec_stream(port, &argv, None, &mut out) {
+        Ok(_) if String::from_utf8_lossy(&out).contains("synced") => {
+            info!("guest clock was off; set it from the host");
+        }
+        Ok(_) => {}
+        Err(e) => debug!("could not check the guest clock: {e:#}"),
+    }
+}
+
 pub(crate) fn wait_for_agent(
     id: &str,
     kind: &str,
@@ -2140,6 +2171,9 @@ pub(crate) fn wait_for_agent(
                     }
                     let marks = scanner.as_ref().map(|s| s.marks()).unwrap_or_default();
                     log_boot_timing(id, kind, start.elapsed(), &marks, boot_timing);
+                    if matches!(kind, "freebsd" | "netbsd") {
+                        sync_bsd_clock(port);
+                    }
                     return Ok(port);
                 }
             }

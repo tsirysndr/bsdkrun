@@ -49,11 +49,24 @@ jobs:
           trap 'rm -rf "$curl_home"' EXIT
           printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" > "$curl_home/.curlrc"
           CURL_HOME="$curl_home" fluentci run setup-flakehub-push setup | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      # flakehub-push exchanges the workflow token for FlakeHub's OIDC
+      # identity and records the revision it publishes; Nix itself fetches
+      # the flake's GitHub inputs and takes its token from NIX_CONFIG.
       - name: Publish to FlakeHub
         shell: bash
-        run: >-
-          fluentci run nix-publish flakehub
-          --run-dir "$RUNNER_TEMP/nix-publish"
-          --name tsirysndr/bsdkrun
-          --version "${{ inputs.tag || github.ref_name }}"
-          --visibility public
+        env:
+          FLAKEHUB_PUSH_GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          NIX_CONFIG: |
+            access-tokens = github.com=${{ github.token }}
+        run: |
+          set -euo pipefail
+          export FLAKEHUB_PUSH_REV
+          FLAKEHUB_PUSH_REV=$(git rev-parse HEAD)
+          fluentci run nix-publish flakehub \
+            --run-dir "$RUNNER_TEMP/nix-publish-$GITHUB_RUN_ATTEMPT" \
+            --name tsirysndr/bsdkrun \
+            --version "${{ inputs.tag || github.ref_name }}" \
+            --visibility public \
+            --timeout-ms 2400000

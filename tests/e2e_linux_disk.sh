@@ -5,20 +5,24 @@
 #
 #   1. the disk shows up in the guest as /dev/vda,
 #   2. guest writes to the device reach the host image (flushed on `stop`),
-#   3. `start` re-attaches the recorded disk, with the data intact.
+#   3. `start` re-attaches the recorded disk, with the data intact,
+#   4. automatic ext4 formatting preserves image size and restart persistence.
 #
 # The marker is written straight to the block device (no mkfs), so the test
-# needs no network access inside the guest beyond what `exec` already needs.
+# needs no package installation. The formatted-disk stage uses docker:dind
+# and exercises installation of e2fsprogs when its image does not include it.
 #
 # Exit 0 on success, 1 on failure, 2 on missing prerequisites. Overridable via
 # environment:
 #   BSDKRUN_BIN  (default target/debug/bsdkrun — build + sign with `make build`)
-#   IMAGE        (default "alpine")
+#   IMAGE        (default "alpine", raw-device stage)
+#   FORMATTED_IMAGE (default "docker:dind", ext4-formatting stage)
 #   TIMEOUT      (seconds per boot, default 180)
 set -uo pipefail
 
 BIN="${BSDKRUN_BIN:-target/debug/bsdkrun}"
 IMAGE="${IMAGE:-alpine}"
+FORMATTED_IMAGE="${FORMATTED_IMAGE:-docker:dind}"
 TIMEOUT="${TIMEOUT:-180}"
 NAME="e2e-linux-disk-$$"
 MARKER="bsdkrun-e2e-disk-marker-$$"
@@ -34,9 +38,11 @@ fi
 
 DISK="$(mktemp -t bsdkrun-e2e-disk.XXXXXX)"
 ID=""
+VOLUME=""
 
 cleanup() {
   [ -n "$ID" ] && "$BIN" rm -f "$ID" >/dev/null 2>&1
+  [ -n "$VOLUME" ] && "$BIN" volume rm "$VOLUME" >/dev/null 2>&1
   rm -f "$DISK"
 }
 trap cleanup EXIT INT TERM
@@ -93,5 +99,47 @@ echo "e2e: reading the marker back through the re-attached disk"
   "dd if=/dev/vda bs=$BS skip=$BLOCK count=1 2>/dev/null | grep -aq '$MARKER'" \
   || fail "marker not readable from /dev/vda after restart"
 
-echo "e2e: PASS — disk attached, flushed on stop, and re-attached on start"
+echo "e2e: PASS — raw disk attached, flushed and re-attached"
+"$BIN" rm -f "$ID" >/dev/null || fail "raw-disk cleanup failed"
+ID=""
+
+# mke2fs's final optimized zeroout used to shrink the backing raw file by
+# 64 KiB. The first mount still succeeded because the running virtio device
+# advertised the old capacity; ext4 rejected it at the next boot. Exercise
+# the actual guest formatter, not a host-preformatted fixture.
+FS_BYTES=$(( 512 * 1024 * 1024 ))
+python3 -c 'import sys; open(sys.argv[1], "wb").truncate(int(sys.argv[2]))' "$DISK" "$FS_BYTES" \
+  || fail "could not create the blank filesystem image"
+VOLUME="$NAME-ext4"
+ID="$("$BIN" linux -d --name "$VOLUME" -v "$VOLUME" --entrypoint /bin/sh \
+  --attach-disk "$DISK:/data" "$FORMATTED_IMAGE" 2>/dev/null | tail -n 1)"
+[ -n "$ID" ] || fail "formatted-disk boot did not return an id"
+wait_for_agent
+
+check_ext4() {
+  "$BIN" exec "$ID" awk '$2 == "/data" && $3 == "ext4" { found=1 } END { exit !found }' /proc/mounts \
+    || fail "/data is not mounted as ext4"
+}
+check_size() {
+  python3 -c 'import os,sys; size=os.path.getsize(sys.argv[1]); expected=int(sys.argv[2]); assert size == expected, (size,expected)' "$DISK" "$FS_BYTES" \
+    || fail "formatting or restart changed the backing file size"
+}
+
+check_ext4
+check_size
+"$BIN" exec "$ID" sh -c "printf '%s' '$MARKER' > /data/marker && sync" \
+  || fail "could not write the ext4 marker"
+for cycle in 1 2; do
+  echo "e2e: checking formatted-disk restart $cycle"
+  "$BIN" stop "$ID" >/dev/null || fail "formatted-disk stop failed"
+  check_size
+  "$BIN" start "$ID" >/dev/null || fail "formatted-disk restart failed"
+  wait_for_agent
+  check_ext4
+  check_size
+  got="$("$BIN" exec "$ID" cat /data/marker)" || fail "could not read the ext4 marker"
+  [ "$got" = "$MARKER" ] || fail "ext4 data did not survive restart"
+done
+
+echo "e2e: PASS — guest-formatted ext4 retains its size, mount and data across restarts"
 exit 0

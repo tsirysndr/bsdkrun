@@ -691,6 +691,15 @@ fn generate_init(
             // it. A disk is blank only when its first 64 KiB are zero as well
             // (every filesystem and partition table marks itself in there).
             //
+            // Keep e2fsprogs on ordinary writes: the block backend can shrink
+            // a raw image when it handles the formatter's final 64 KiB
+            // BLKZEROOUT request. The running guest still sees its original
+            // capacity, so the first mount succeeds, but the next boot rejects
+            // ext4 with "bad geometry". nodiscard alone does not disable that
+            // zeroout ioctl. UNIX_IO_NOZEROOUT makes libext2fs fall back to
+            // explicit zero writes without assuming the storage is prezeroed.
+            // This applies to both macOS and Linux hosts.
+            //
             // mkfs.ext4 is fetched when the image has none: docker:dind lost
             // e2fsprogs with Docker 29, and a /var/lib/docker that silently
             // stayed on virtio-fs cost a day of "read-only file system".
@@ -698,7 +707,7 @@ fn generate_init(
                 "  fresh=0\n  if [ -z \"$(blkid \"$dev\" 2>/dev/null)\" ] && \
                  [ \"$(head -c 65536 \"$dev\" 2>/dev/null | tr -d '\\000' | wc -c | tr -d ' ')\" = 0 ]; then\n\
                  \x20   bk_pkg mkfs.ext4 e2fsprogs e2fsprogs e2fsprogs e2fsprogs e2fsprogs\n\
-                 \x20   mkfs.ext4 -q -F \"$dev\" && fresh=1 || echo \"[bsdkrun] could not format $dev\"\n\
+                 \x20   UNIX_IO_NOZEROOUT=1 mkfs.ext4 -q -F -E nodiscard \"$dev\" && fresh=1 || echo \"[bsdkrun] could not format $dev\"\n\
                  \x20 fi\n",
             );
             // Seed a freshly formatted disk from whatever is already at the
@@ -726,7 +735,8 @@ fn generate_init(
              echo '[bsdkrun] mount {g} failed'\n"
         ));
         if !d.ro {
-            s.push_str("  resize2fs \"$dev\" >/dev/null 2>&1 || true\n");
+            // Growing ext4 can issue the same optimized zeroout requests.
+            s.push_str("  UNIX_IO_NOZEROOUT=1 resize2fs \"$dev\" >/dev/null 2>&1 || true\n");
         }
         s.push_str("fi\n");
     }
@@ -949,6 +959,20 @@ mod tests {
             env: vec!["PATH=/root/.nix-profile/bin:/nix/var/nix/profiles/default/bin".into()],
             workdir: String::new(),
         }
+    }
+
+    #[test]
+    fn ext4_format_and_growth_use_explicit_zero_writes() {
+        let disk = DiskMount {
+            index: 0,
+            guest: "/data".into(),
+            ro: false,
+            zfs: None,
+        };
+        let s = generate_init(&ep(), true, false, &[], &[disk]);
+        assert!(s.contains("UNIX_IO_NOZEROOUT=1 mkfs.ext4 -q -F -E nodiscard \"$dev\""));
+        assert!(s.contains("UNIX_IO_NOZEROOUT=1 resize2fs \"$dev\""));
+        assert!(!s.contains("assume_storage_prezeroed"));
     }
 
     #[test]

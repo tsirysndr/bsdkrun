@@ -3,7 +3,9 @@ name: e2e (Linux attach-disk / KVM)
 # Boots a real OCI microVM under KVM and validates `linux --attach-disk`:
 # the raw image appears in the guest as /dev/vda, guest writes are flushed to
 # the host image on `stop`, and `start` re-attaches the recorded disk with the
-# data intact (tests/e2e_linux_disk.sh). Only GitHub's x86_64 runners expose
+# data intact. It also formats a blank ext4 disk inside the guest and checks
+# its backing size, mount and data across repeated restarts
+# (tests/e2e_linux_disk.sh). Only GitHub's x86_64 runners expose
 # /dev/kvm (the arm64 runners don't), so CI runs amd64 here; arm64 (macOS
 # Hypervisor.framework) must be validated on a dev machine.
 
@@ -148,5 +150,5 @@ jobs:
           ( cd agent && cargo build --release --target x86_64-unknown-linux-musl )
           echo "BSDKRUN_AGENT_LINUX=$PWD/agent/target/x86_64-unknown-linux-musl/release/bsdkrun-agent" >> "$GITHUB_ENV"
 
-      - name: e2e — attach-disk lifecycle (attach, flush on stop, re-attach on start)
+      - name: e2e — raw disk I/O and guest-formatted ext4 restart persistence
         run: BSDKRUN_BIN=target/release/bsdkrun ./tests/e2e_linux_disk.sh

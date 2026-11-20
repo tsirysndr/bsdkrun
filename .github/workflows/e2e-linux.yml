@@ -102,7 +102,7 @@ jobs:
           path: |
             libkrunfw
             libkrun
-          key: libkrun-build-x86_64-pvh-v16
+          key: libkrun-build-x86_64-pvh-v17
 
       # Build only on a cache miss. libkrun links libkrunfw, so libkrunfw must be
       # installed before libkrun builds. Use `cd`, NOT `make -C`: `-C` implies
@@ -125,7 +125,7 @@ jobs:
           path: |
             libkrunfw
             libkrun
-          key: libkrun-build-x86_64-pvh-v16
+          key: libkrun-build-x86_64-pvh-v17
 
       # Install (fast) on every run — a cache hit restores the built trees but not
       # the system-installed libraries.

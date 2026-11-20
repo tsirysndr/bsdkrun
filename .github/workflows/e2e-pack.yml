@@ -113,7 +113,7 @@ jobs:
           path: |
             libkrunfw
             libkrun
-          key: libkrun-build-x86_64-pvh-v16
+          key: libkrun-build-x86_64-pvh-v17
 
       - name: Build libkrun (cache miss)
         if: steps.libkrun-cache.outputs.cache-hit != 'true'
@@ -131,7 +131,7 @@ jobs:
           path: |
             libkrunfw
             libkrun
-          key: libkrun-build-x86_64-pvh-v16
+          key: libkrun-build-x86_64-pvh-v17
 
       - name: Install libkrun
         run: |

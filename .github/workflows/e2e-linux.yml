@@ -12,6 +12,7 @@ on:
       - "main"
     paths:
       - "src/**"
+      - "core/**"
       - "agent/**"
       - "build.rs"
       - ".github/workflows/e2e-linux.yml"

@@ -8,6 +8,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+          token: ${{ github.token }}
       - name: test
         run: |
           bun --version

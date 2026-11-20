@@ -196,3 +196,35 @@ inputs:
 		t.Fatalf("plain defaults must survive: %v", steps[0].Env)
 	}
 }
+
+func TestExplicitTokenOverridesConditionalDefault(t *testing.T) {
+	fake(t, map[string]string{
+		"oven-sh/setup-bun": `
+name: Setup Bun
+runs: {using: node20, main: index.js}
+inputs:
+  token:
+    default: ${{ github.server_url == 'https://github.com' && github.token || '' }}
+`,
+	})
+	for _, token := range []string{"injected-test-token", ""} {
+		repo := testRepo
+		repo.Token = token
+		steps, _, err := Translate("oven-sh/setup-bun@v2", "setup",
+			map[string]string{"token": "${{ github.token }}"}, nil, repo)
+		if err != nil || len(steps) != 1 {
+			t.Fatalf("steps=%+v err=%v", steps, err)
+		}
+		got, present := steps[0].Env["INPUT_TOKEN"]
+		if token == "" {
+			if present {
+				t.Fatal("missing token must leave INPUT_TOKEN unset")
+			}
+		} else if !present || got != token {
+			t.Fatal("explicit token did not reach the action input")
+		}
+		if token != "" && strings.Contains(steps[0].Command, token) {
+			t.Fatal("token must be passed through the environment, not shell text")
+		}
+	}
+}

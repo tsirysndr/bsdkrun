@@ -239,7 +239,7 @@ jobs:
           git -C "$d" -c user.email=ci@e2e -c user.name=e2e commit -qm init
           set +e
           timeout 900 ./target/release/bsdkrun ci run --plain -w "$d" \
-            --secret GITHUB_TOKEN="${GITHUB_TOKEN}" 2>&1 | tee /tmp/ci-gha.log
+            --secret GITHUB_TOKEN 2>&1 | tee /tmp/ci-gha.log
           rc=${PIPESTATUS[0]}
           set -e
           grep -q "Provision actions runtime (node)" /tmp/ci-gha.log

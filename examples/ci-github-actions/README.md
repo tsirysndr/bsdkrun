@@ -19,5 +19,12 @@ repository:
 cp -r examples/ci-github-actions /tmp/ci-github-actions
 cd /tmp/ci-github-actions
 git init -q && git add -A && git commit -qm init
-bsdkrun ci run
+bsdkrun ci run --secret GITHUB_TOKEN
 ```
+
+Set `GITHUB_TOKEN` in your environment before running the example. The workflow
+passes `${{ github.token }}` explicitly to setup-bun's `token` input, so its
+GitHub API requests authenticate instead of sharing the runner IP's anonymous
+rate limit. This works with both GitHub's built-in token and bsdkrun's injected
+secret. The explicit input avoids setup-bun's conditional default expression,
+which is outside bsdkrun's supported expression subset.

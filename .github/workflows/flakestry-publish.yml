@@ -1,0 +1,76 @@
+name: "Publish tags to Flakestry"
+
+# The Flakestry counterpart of flakehub-publish-tagged.yml, through the same
+# FluentCI modules: Determinate Nix, then nix-publish's flakestry function,
+# which publishes the locked flake metadata and outputs for a release tag
+# with GitHub's OIDC token (hence id-token: write). Bun is the publisher's
+# runtime. Modelled on fluentci-io/fluentci's flakestry-publish workflow.
+
+on:
+  push:
+    tags:
+      - "v?[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish (for example v0.12.0)"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: flakestry-publish-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to Flakestry
+    if: github.repository == 'tsirysndr/bsdkrun'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # The whole history, so a manual run can resolve any existing tag.
+      - uses: actions/checkout@v4
+        with:
+          ref: "${{ (inputs.tag != null) && format('refs/tags/{0}', inputs.tag) || '' }}"
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve the release revision
+        id: release
+        env:
+          PUBLISH_TAG: ${{ inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$PUBLISH_TAG" =~ ^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Expected a release version tag, for example v0.12.0" >&2
+            exit 1
+          fi
+          echo "revision=$(git rev-parse --verify "refs/tags/$PUBLISH_TAG^{commit}")" >> "$GITHUB_OUTPUT"
+
+      - uses: fluentci-io/setup-fluentci@next
+      - name: Set up Determinate Nix
+        shell: bash
+        run: fluentci run setup-determinate-nix setup --sudo true --trusted-users runner | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Bun
+        shell: bash
+        run: fluentci run setup-bun setup | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+
+      - name: Publish to Flakestry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          # Nix fetches the flake's inputs itself and does not read GH_TOKEN.
+          NIX_CONFIG: |
+            access-tokens = github.com=${{ github.token }}
+        shell: bash
+        run: >-
+          fluentci run nix-publish flakestry
+          --run-dir "$RUNNER_TEMP/flakestry-$GITHUB_RUN_ATTEMPT"
+          --version "${{ inputs.tag || github.ref_name }}"
+          --ref "${{ steps.release.outputs.revision }}"
+          --timeout-ms 2400000

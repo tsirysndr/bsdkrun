@@ -18,6 +18,20 @@ shipped alongside it.
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-11-20
+
+### Fixed
+
+- **Guest-formatted ext4 disks survive restart on macOS and Linux.** The
+  formatter's optimized zeroout path could truncate a raw backing image by
+  64 KiB. Its first mount still succeeded, but the next boot rejected ext4
+  with "bad geometry", leaving Docker's image store on virtio-fs. Automatic
+  formatting now disables discard and uses libext2fs's explicit-write
+  fallback (`UNIX_IO_NOZEROOUT=1`); filesystem growth uses the same fallback.
+  Existing filesystems are not reformatted. The live attach-disk test now
+  checks image size, the actual ext4 mount and marker persistence across
+  repeated restarts after in-guest formatting.
+
 ## [0.12.0] — 2026-11-20
 
 ZFS volumes: a zpool on a sparse disk image that any Linux, FreeBSD or NetBSD

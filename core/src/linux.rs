@@ -782,6 +782,21 @@ fn generate_init(
     if !ep.env.iter().any(|e| e.starts_with("NIX_CONFIG=")) {
         s.push_str("if [ -d /nix/store ]; then export NIX_CONFIG='build-users-group ='; fi\n");
     }
+    // Nix's scratch space must not live on virtio-fs. Since 2.29 Nix creates
+    // each build's top directory under /nix/var/nix/builds with mode 0000 and
+    // counts on root's CAP_DAC_OVERRIDE to work inside it; on a Linux host
+    // the virtio-fs server is an unprivileged user, for whom a 0000 directory
+    // it owns is simply closed, so every build died at "opening directory
+    // /nix/var/nix/builds/nix-…: Permission denied" (macOS lets the owner
+    // through, so it never showed there). A tmpfs is kernel-backed and root
+    // is root on it. Outputs are built in /nix/store itself, so only the
+    // scratch directory moves; a rootfs on a real disk (`--disk-size`) has no
+    // such problem and keeps its disk-backed scratch space.
+    s.push_str(
+        "if [ -d /nix/store ] && [ \"$(awk '$2==\"/\"{print $3}' /proc/mounts 2>/dev/null)\" = virtiofs ]; then\n\
+         \x20 mkdir -p /nix/var/nix/builds 2>/dev/null && mount -t tmpfs -o mode=0755 tmpfs /nix/var/nix/builds 2>/dev/null\n\
+         fi\n",
+    );
     // Default HOME when the image didn't set one. The kernel launches init with
     // no HOME, so it stays empty/`/` — nix then warns "$HOME ('/') is not owned
     // by you, falling back to … ('/root')". Guests run as root, so derive HOME

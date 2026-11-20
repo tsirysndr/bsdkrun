@@ -1,10 +1,10 @@
-name: "e2e (cache: disk + S3/MinIO)"
+name: "e2e (cache: disk + S3/Garage)"
 
 # Boots a real OCI microVM under KVM and validates `bsdkrun cache` end to end:
 # save a guest directory and restore it byte for byte in every archive format
 # (gzip / zstd / estargz / none), against both backends.
 #
-# The S3 half runs against a real MinIO rather than a mock.
+# The S3 half runs against a real S3 server (Garage) rather than a mock.
 # SigV4 either produces a request a server accepts or it does not, and when it
 # does not the answer is a flat 403 that names none of the five derivation
 # steps — so the only signing test worth having is one that talks to something
@@ -55,6 +55,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - uses: fluentci-io/setup-fluentci@next
+      - name: Set up Determinate Nix
+        shell: bash
+        run: fluentci run setup-determinate-nix setup --sudo true | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Set up Cachix
+        shell: bash
+        run: fluentci run setup-cachix setup --cache bsdkrun | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
 
       - name: Enable KVM
         run: |
@@ -85,9 +92,9 @@ jobs:
           sudo chmod +x /usr/local/bin/gvproxy
           gvproxy --help >/dev/null 2>&1 || which gvproxy
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
+      - name: Set up Rust (stable)
+        shell: bash
+        run: fluentci run setup-rust setup --toolchain stable --targets x86_64-unknown-linux-musl | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
       - uses: Swatinem/rust-cache@v2
 
       # Same cache key as e2e-linux.yml / e2e-linux-disk.yml so the three share
@@ -143,48 +150,57 @@ jobs:
         # log of a failed run, whether the host was ever able to run machines.
         run: target/release/bsdkrun doctor || true
 
-      # Started with `docker run`, not a `services:` container: MinIO's
-      # entrypoint needs the `server /data` argument, and `services:` has no way
-      # to pass one — the workaround people reach for is a different image whose
-      # default command happens to be right, which is a worse dependency than
-      # one explicit line.
-      - name: Start MinIO
+      # Garage, from nixpkgs, not MinIO: MinIO left Docker Hub in September
+      # 2026, then quay.io stopped anonymous pulls, dl.min.io answers 410 and
+      # nixpkgs removed the package as abandoned upstream. Garage is a plain
+      # binary with its own CLI for the layout, bucket and key, so there is no
+      # container and no second client to fetch. It is created with the keys
+      # the test uses (Garage's own key format: `GK` + 24 hex, 64-hex secret).
+      - name: Start Garage (S3)
         run: |
           set -eux
-          docker run -d --name minio -p 9000:9000 \
-            -e MINIO_ROOT_USER=bsdkruntest \
-            -e MINIO_ROOT_PASSWORD=bsdkruntest123 \
-            minio/minio:latest server /data
+          mkdir -p /tmp/garage/meta /tmp/garage/data
+          cat > /tmp/garage/garage.toml <<EOF
+          metadata_dir = "/tmp/garage/meta"
+          data_dir = "/tmp/garage/data"
+          db_engine = "sqlite"
+          replication_factor = 1
+          rpc_bind_addr = "127.0.0.1:3901"
+          rpc_public_addr = "127.0.0.1:3901"
+          rpc_secret = "$(head -c 32 /dev/urandom | xxd -p -c 64)"
+          [s3_api]
+          s3_region = "us-east-1"
+          api_bind_addr = "127.0.0.1:9000"
+          root_domain = ".s3.garage.localhost"
+          [admin]
+          api_bind_addr = "127.0.0.1:3903"
+          admin_token = "$(head -c 32 /dev/urandom | xxd -p -c 64)"
+          EOF
+          nix build nixpkgs#garage -o /tmp/garage/pkg
+          garage() { /tmp/garage/pkg/bin/garage -c /tmp/garage/garage.toml "$@"; }
+          nohup /tmp/garage/pkg/bin/garage -c /tmp/garage/garage.toml server > /tmp/garage/server.log 2>&1 &
           # Wait for it rather than sleeping: a fixed sleep is either too short
           # on a slow runner or wasted on a fast one.
           for _ in $(seq 60); do
-            if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null 2>&1; then
-              echo "minio is live"; break
-            fi
+            garage status >/dev/null 2>&1 && break
             sleep 1
           done
-          curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null
-
-      # `mc` rather than curl: creating a bucket is itself a signed request, and
-      # using the vendor's client keeps this step from becoming a second,
-      # untested implementation of SigV4.
-      - name: Create the MinIO bucket
-        env:
-          MC_HOST_local: http://bsdkruntest:bsdkruntest123@127.0.0.1:9000
-        run: |
-          set -eux
-          curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /tmp/mc
-          chmod +x /tmp/mc
-          /tmp/mc mb --ignore-existing local/bsdkrun-cache
-          /tmp/mc ls local/
+          node=$(garage status | awk '/==== HEALTHY/{f=1;next} f && NF && $1!="ID"{print $1; exit}')
+          garage layout assign -z dc1 -c 1G "$node"
+          garage layout apply --version 1
+          garage bucket create bsdkrun-cache
+          garage key import --yes -n e2e GK0123456789abcdef01234567 \
+            0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          garage bucket allow --read --write --owner bsdkrun-cache --key e2e
+          garage bucket info bsdkrun-cache
 
       - name: e2e — cache save/restore across formats, on disk and on S3
         env:
           BSDKRUN_BIN: target/release/bsdkrun
           S3_ENDPOINT: http://127.0.0.1:9000
           S3_BUCKET: bsdkrun-cache
-          AWS_ACCESS_KEY_ID: bsdkruntest
-          AWS_SECRET_ACCESS_KEY: bsdkruntest123
+          AWS_ACCESS_KEY_ID: GK0123456789abcdef01234567
+          AWS_SECRET_ACCESS_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
           AWS_REGION: us-east-1
         run: ./tests/e2e_cache.sh
 
@@ -196,6 +212,6 @@ jobs:
           BSDKRUN_BIN: target/release/bsdkrun
         run: ./tests/estargz_interop.sh
 
-      - name: MinIO logs (on failure)
+      - name: Garage logs (on failure)
         if: failure()
-        run: docker logs minio 2>&1 | tail -50
+        run: tail -50 /tmp/garage/server.log

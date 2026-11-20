@@ -4,14 +4,15 @@
 # restore it into a different path, byte for byte, in every archive format —
 # against both backends.
 #
-# The disk backend needs nothing. The S3 backend runs against a real MinIO,
+# The disk backend needs nothing. The S3 backend runs against a real S3 server,
 # because that is the half that unit tests cannot reach: SigV4 either signs a
 # request a server accepts or it does not, and the failure is a flat 403 with
 # no hint as to which of the five derivation steps drifted. It also pins the
 # behaviour that broke on first contact with a real bucket — a 404 from the
 # "is this key already cached?" probe is an *answer*, not an error.
 #
-# MinIO is optional: without S3_ENDPOINT the S3 half is skipped and the disk
+# The server (Garage in CI; MinIO is gone from every registry) is optional:
+# without S3_ENDPOINT the S3 half is skipped and the disk
 # half still runs, so the script is useful on a laptop.
 #
 # Exit 0 on success, 1 on failure, 2 on missing prerequisites. Overridable via
@@ -119,9 +120,15 @@ run_backend() {
     echo "e2e: $label/$fmt round-tripped"
   done
 
-  # `ls` has to show what we just saved.
-  "$BIN" cache ls | grep -q "e2e-$$-gzip" \
-    || fail "$label: cache ls does not list the entry it just saved"
+  # `ls` has to show what we just saved. Captured first, not piped into
+  # `grep -q`: with pipefail, grep closing the pipe on its first match made
+  # bsdkrun die on EPIPE and the pipeline fail *because* the entry was listed
+  # early — which is what happened the moment the listing order changed.
+  local listing
+  listing="$("$BIN" cache ls)"
+  printf '%s\n' "$listing" | grep -q "e2e-$$-gzip" \
+    || fail "$label: cache ls does not list the entry it just saved:
+$listing"
 
   # A miss is an ordinary answer, not a failure — a first CI run depends on it.
   if ! "$BIN" cache restore "$ID:/miss" --key "definitely-absent-$$" >/dev/null 2>&1; then
@@ -177,7 +184,7 @@ unset BSDKRUN_CACHE_BACKEND
 run_backend "disk"
 
 # ---------------------------------------------------------------------------
-# S3 backend, against MinIO when one is reachable.
+# S3 backend, against the server S3_ENDPOINT names when one is reachable.
 # ---------------------------------------------------------------------------
 if [ -z "${S3_ENDPOINT:-}" ]; then
   echo

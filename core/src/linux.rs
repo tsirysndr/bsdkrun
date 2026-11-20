@@ -432,6 +432,38 @@ fn concat_files(parts: &[&Path], out: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A shell function the generated scripts use to install a tool the image
+/// lacks, from whatever package manager it ships:
+/// `bk_pkg TOOL APK_PKG APT_PKG DNF_PKG ZYPPER_PKG PACMAN_PKG`.
+///
+/// Two callers: the init, for `mkfs.ext4` (`docker:dind` dropped e2fsprogs
+/// with Docker 29, so a blank attached disk could not be formatted and
+/// dockerd silently landed on virtio-fs), and the ZFS script, for `zpool`
+/// (no stock image carries ZFS userland). Silent when the tool is there;
+/// a failure names the manager and the package it asked for, which is all a
+/// user needs to add the package to their image instead.
+///
+/// `apt-get` retries with Debian's `contrib` component enabled: that is where
+/// Debian keeps `zfsutils-linux`, and its images leave it off.
+pub(crate) const PKG_HELPER: &str = r#"bk_pkg() {
+  command -v "$1" >/dev/null 2>&1 && return 0
+  echo "[bsdkrun] $1 is not in this image; installing it"
+  if command -v apk >/dev/null 2>&1; then m=apk; apk add --no-cache "$2" >/dev/null 2>&1
+  elif command -v apt-get >/dev/null 2>&1; then m=apt-get; export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq --no-install-recommends "$3" >/dev/null 2>&1 || {
+      sed -i 's/^Components: main$/Components: main contrib/' /etc/apt/sources.list.d/*.sources 2>/dev/null
+      sed -i 's/ main$/ main contrib/' /etc/apt/sources.list 2>/dev/null
+      apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq --no-install-recommends "$3" >/dev/null 2>&1; }
+  elif command -v dnf >/dev/null 2>&1; then m=dnf; dnf install -y -q "$4" >/dev/null 2>&1
+  elif command -v microdnf >/dev/null 2>&1; then m=microdnf; microdnf install -y "$4" >/dev/null 2>&1
+  elif command -v yum >/dev/null 2>&1; then m=yum; yum install -y -q "$4" >/dev/null 2>&1
+  elif command -v zypper >/dev/null 2>&1; then m=zypper; zypper -n -q install "$5" >/dev/null 2>&1
+  elif command -v pacman >/dev/null 2>&1; then m=pacman; pacman -Sy --noconfirm -q "$6" >/dev/null 2>&1
+  else echo "[bsdkrun] no package manager in this image to install $1 with"; return 1; fi
+  command -v "$1" >/dev/null 2>&1 || { echo "[bsdkrun] $m could not install $1 (asked for $2/$3/$4/$5/$6); add it to the image"; return 1; }
+}
+"#;
+
 /// Generate the `/init` (PID 1) shell script for the initramfs boot: mount the
 /// core pseudo-filesystems, point DNS at gvproxy, run the entrypoint, then power
 /// the VM off cleanly (via magic-sysrq — no shutdown binary needed in the image).
@@ -587,6 +619,35 @@ fn generate_init(
             "if command -v date >/dev/null 2>&1; then [ \"$(date +%s 2>/dev/null)\" -lt 1000000000 ] && date -u {mo:02}{d:02}{h:02}{mi:02}{y:04}.{sec:02} >/dev/null 2>&1; fi\n"
         ));
     }
+    // The package helper and the network come before the disks: formatting
+    // a blank disk may need e2fsprogs fetched first (see PKG_HELPER), and
+    // so may importing a ZFS pool.
+    s.push_str(PKG_HELPER);
+    if net {
+        // On a global network, add a `search <network>` domain so bare peer names
+        // (e.g. `ping db`) resolve against the network's gvproxy DNS zone.
+        let search = std::env::var("BSDKRUN_NET_NAME")
+            .ok()
+            .filter(|n| !n.is_empty())
+            .map(|n| format!("search {n}\\n"))
+            .unwrap_or_default();
+        s.push_str(&format!(
+            "printf '{search}nameserver {GATEWAY_IP}\\n' > /etc/resolv.conf 2>/dev/null\n"
+        ));
+        // The kernel's `ip=` autoconfig (see add_ip) hardcodes the guest's own
+        // hostname to "bsdkrun", but gvproxy's DNS has no record for it (that
+        // only happens for named --network members). Anything that resolves
+        // its own hostname — e.g. dind's entrypoint doing `hostname`/`getent
+        // hosts $(hostname)` for its TLS cert CN — fails with "Host not
+        // found" without a local /etc/hosts entry.
+        let guest = std::env::var("BSDKRUN_NET_IP")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| GUEST_IP.to_string());
+        s.push_str(&format!(
+            "printf '127.0.0.1 localhost\\n{guest} bsdkrun\\n' >> /etc/hosts 2>/dev/null\n"
+        ));
+    }
     // Bind-mounted host directories (`--mount HOST:GUEST[:ro]`), over virtio-fs.
     for (i, m) in mounts.iter().enumerate() {
         let g = sh_quote(&m.guest);
@@ -625,9 +686,20 @@ fn generate_init(
             // Test blkid's *output*, not its exit status: busybox's blkid
             // exits 0 for a blank device, which silently skipped the format and
             // left `mount` reporting a bare "Invalid argument".
+            // And not blkid alone: an image without blkid gives the same
+            // empty answer for a disk full of data, and `mkfs -F` would take
+            // it. A disk is blank only when its first 64 KiB are zero as well
+            // (every filesystem and partition table marks itself in there).
+            //
+            // mkfs.ext4 is fetched when the image has none: docker:dind lost
+            // e2fsprogs with Docker 29, and a /var/lib/docker that silently
+            // stayed on virtio-fs cost a day of "read-only file system".
             s.push_str(
-                "  fresh=0\n  if [ -z \"$(blkid \"$dev\" 2>/dev/null)\" ]; then \
-                 mkfs.ext4 -q -F \"$dev\" && fresh=1 || echo \"[bsdkrun] could not format $dev\"; fi\n",
+                "  fresh=0\n  if [ -z \"$(blkid \"$dev\" 2>/dev/null)\" ] && \
+                 [ \"$(head -c 65536 \"$dev\" 2>/dev/null | tr -d '\\000' | wc -c | tr -d ' ')\" = 0 ]; then\n\
+                 \x20   bk_pkg mkfs.ext4 e2fsprogs e2fsprogs e2fsprogs e2fsprogs e2fsprogs\n\
+                 \x20   mkfs.ext4 -q -F \"$dev\" && fresh=1 || echo \"[bsdkrun] could not format $dev\"\n\
+                 \x20 fi\n",
             );
             // Seed a freshly formatted disk from whatever is already at the
             // mount point. Mounting over a populated directory *hides* it, so
@@ -657,31 +729,6 @@ fn generate_init(
             s.push_str("  resize2fs \"$dev\" >/dev/null 2>&1 || true\n");
         }
         s.push_str("fi\n");
-    }
-    if net {
-        // On a global network, add a `search <network>` domain so bare peer names
-        // (e.g. `ping db`) resolve against the network's gvproxy DNS zone.
-        let search = std::env::var("BSDKRUN_NET_NAME")
-            .ok()
-            .filter(|n| !n.is_empty())
-            .map(|n| format!("search {n}\\n"))
-            .unwrap_or_default();
-        s.push_str(&format!(
-            "printf '{search}nameserver {GATEWAY_IP}\\n' > /etc/resolv.conf 2>/dev/null\n"
-        ));
-        // The kernel's `ip=` autoconfig (see add_ip) hardcodes the guest's own
-        // hostname to "bsdkrun", but gvproxy's DNS has no record for it (that
-        // only happens for named --network members). Anything that resolves
-        // its own hostname — e.g. dind's entrypoint doing `hostname`/`getent
-        // hosts $(hostname)` for its TLS cert CN — fails with "Host not
-        // found" without a local /etc/hosts entry.
-        let guest = std::env::var("BSDKRUN_NET_IP")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| GUEST_IP.to_string());
-        s.push_str(&format!(
-            "printf '127.0.0.1 localhost\\n{guest} bsdkrun\\n' >> /etc/hosts 2>/dev/null\n"
-        ));
     }
     // systemd handoff: `bsdkrun-agent systemd setup` installs systemd, writes
     // an agent unit, and drops this marker — from then on the guest boots a
@@ -818,7 +865,7 @@ fn sh_quote(s: &str) -> String {
 
 /// Split a unix timestamp into UTC (year, month, day, hour, min, sec) — the
 /// civil-from-days algorithm (Howard Hinnant), no chrono dependency needed.
-fn utc_parts(epoch: u64) -> (u64, u64, u64, u64, u64, u64) {
+pub(crate) fn utc_parts(epoch: u64) -> (u64, u64, u64, u64, u64, u64) {
     let days = epoch / 86_400;
     let secs = epoch % 86_400;
     let (h, mi, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);

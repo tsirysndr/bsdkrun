@@ -84,6 +84,16 @@ if ! mountpoint -q /run 2>/dev/null; then
 fi
 mkdir -p /run/docker /var/run/docker 2>/dev/null || true
 echo "docker runtime dir: $(stat -f -c %T /var/run 2>/dev/null || echo unknown)"
+# The run attached a disk for /var/lib/docker (see DaggerDockerDisk). If the
+# init could not format and mount it, dockerd would start on virtio-fs and
+# the engine would die later, in a container, with a read-only file system
+# — which is how a docker:dind without e2fsprogs read for a day. Say so here.
+mkdir -p /var/lib/docker
+if [ -e /dev/vda ] && ! mountpoint -q /var/lib/docker 2>/dev/null; then
+  echo "the /var/lib/docker disk (/dev/vda) is not mounted; see the console for why the init could not format it"
+  exit 1
+fi
+echo "docker data dir: $(stat -f -c %T /var/lib/docker 2>/dev/null || echo unknown)"
 if docker info >/dev/null 2>&1; then
   echo "docker is already running"
 else

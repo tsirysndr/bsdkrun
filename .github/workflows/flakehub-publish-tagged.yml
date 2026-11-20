@@ -30,9 +30,18 @@ jobs:
       - name: Set up Rust (stable)
         shell: bash
         run: fluentci run setup-rust setup --toolchain stable | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
-      - uses: "DeterminateSystems/flakehub-push@main"
-        with:
-          visibility: "public"
-          name: "tsirysndr/bsdkrun"
-          tag: "${{ inputs.tag }}"
-          include-output-paths: true
+      # flakehub-push through FluentCI: the setup module installs the tool and
+      # the nix-publish module runs it with GitHub's OIDC token (hence the
+      # id-token permission above). The tag is the pushed ref, or the one
+      # given to a manual run.
+      - name: Set up flakehub-push
+        shell: bash
+        run: fluentci run setup-flakehub-push setup --sudo true | node "$GITHUB_WORKSPACE/.fluentci/github-env.mjs"
+      - name: Publish to FlakeHub
+        shell: bash
+        run: >-
+          fluentci run nix-publish flakehub
+          --run-dir "$RUNNER_TEMP/nix-publish"
+          --name tsirysndr/bsdkrun
+          --version "${{ inputs.tag || github.ref_name }}"
+          --visibility public

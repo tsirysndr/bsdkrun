@@ -205,6 +205,16 @@ Homebrew will ask you to remove it first:
 brew uninstall --ignore-dependencies libkrun
 ```
 
+**Desktop app (macOS, Apple Silicon)** — [bsdkrun Desktop](desktop/) ships from the same tap as a
+cask:
+
+```sh
+brew install --cask tsirysndr/tap/bsdkrun
+```
+
+It pulls in the `bsdkrun` formula above (the app is a thin front end that drives the CLI) and strips
+the quarantine flag on install, so the ad-hoc-signed app opens without the right-click → Open dance.
+
 **curl** — install the prebuilt host binary for your platform (macOS/arm64, Linux/x64, Linux/arm64)
 with a one-liner:
 

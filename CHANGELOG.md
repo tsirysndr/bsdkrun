@@ -18,6 +18,72 @@ shipped alongside it.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-11-20
+
+ZFS volumes: a zpool on a sparse disk image that any Linux, FreeBSD or NetBSD
+machine can hold, branched copy-on-write with `zfs clone`, and driven from
+the CLI, the daemon and every SDK. The default Linux kernel moves to 7.3.5,
+which carries OpenZFS. Around it, a run of guest-side fixes for what the
+newest images and hosts changed underneath us.
+
+### Added
+
+- **`bsdkrun zfs`.** `create`, `ls`, `branch`, `attach`, `detach` and
+  `destroy` manage volumes — one zpool each, on a sparse image under the
+  state directory — and their branches, which are `zfs snapshot` + `zfs clone`
+  datasets inside the pool: `bsdkrun zfs branch data feature` costs nothing
+  and diverges on write. A pool is held by one machine at a time; a running
+  holder blocks a second attach, a stopped one is displaced. `--zfs
+  VOL[@BRANCH][:/mount]` on `linux`, `freebsd` and `netbsd` attaches at boot,
+  `attach` on a stopped machine takes effect at the next start, and a branch
+  can be attached to a running holder live. When no machine holds the pool a
+  FreeBSD helper VM does the branching and destroying. NetBSD machines are
+  prepared once with the kernel's own `zfs` and `solaris` modules; Linux
+  guests get `zpool` from the image's package manager when it is missing
+  (apk, apt-get with Debian's contrib, dnf, zypper, pacman). The daemon
+  exposes it over gRPC and GraphQL, and the TypeScript, Python, Rust, Go,
+  Gleam, Clojure, Elixir, Ruby and Scala SDKs each gain a `zfs` namespace.
+- **Default Linux kernel 7.3.5**, built by vmlinux-builder with OpenZFS in
+  the kernel, so a Linux guest needs only the userland. A machine restarts on
+  the kernel it was first booted with, recorded per machine.
+- **PureScript SDK.** Pipe-friendly, `Aff`-based, with the same streaming and
+  transport behaviour as the others.
+
+### Changed
+
+- **`bsdkrun ci` runs composer projects on `php:8.4-cli-alpine`** — or the
+  newer line a project's `require.php` asks for — with composer, unzip and
+  mbstring set up in a first step, instead of `composer:2`, which tracks the
+  newest PHP the day it is built (8.6 since 2026-11-19, which Laravel's
+  session handler turns into a 500 on every request, and whose build dropped
+  mbstring, without which PHPUnit does not start).
+- **BSD guests take their clock from the host** when the agent comes up and
+  the guest is more than two minutes off. libkrun gives the guest no RTC it
+  can trust, and a NetBSD that boots with its image's build date fails every
+  TLS handshake with "certificate is not yet valid".
+
+### Fixed
+
+- **A blank attached disk formats on images without e2fsprogs.** `docker:dind`
+  dropped it with Docker 29, so a dagger run's `/var/lib/docker` disk stayed
+  unformatted and dockerd silently landed on virtio-fs, where the engine
+  died with "mount callback failed … read-only file system". The init now
+  fetches a missing tool from the image's package manager (the same helper
+  that fetches `zpool`), and only treats a disk as blank when its first 64 KiB
+  are zero as well as `blkid` printing nothing — an image without blkid gave
+  the same empty answer for a full disk.
+- **Nix guests work on Linux hosts again.** Nix 2.36 skips its
+  chmod-before-rename as root and creates its build directories with mode
+  0000, counting on CAP_DAC_OVERRIDE; the unprivileged virtio-fs server has
+  none. The bundled libkrun now renames a read-only directory it owns on the
+  guest's behalf, and the init mounts a tmpfs on `/nix/var/nix/builds` when
+  the rootfs is virtio-fs (outputs are built in `/nix/store` itself, so only
+  scratch space moves).
+- **Long dialogs in the web UI scroll inside the modal** instead of
+  overflowing it.
+- The daemon's own test suite finds `bsdkrund` under cargo 1.100's new
+  target layout, and the workspace is clippy-clean under Rust 1.100.
+
 ## [0.11.4] — 2026-08-20
 
 Dagger runs locally: `bsdkrun ci` detects a module and runs it in a microVM

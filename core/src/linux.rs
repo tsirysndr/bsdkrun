@@ -792,9 +792,16 @@ fn generate_init(
     // is root on it. Outputs are built in /nix/store itself, so only the
     // scratch directory moves; a rootfs on a real disk (`--disk-size`) has no
     // such problem and keeps its disk-backed scratch space.
+    //
+    // Plain shell to read /proc/mounts: the nixos/nix image has no awk on the
+    // init's PATH, and the first version of this check silently never fired.
     s.push_str(
-        "if [ -d /nix/store ] && [ \"$(awk '$2==\"/\"{print $3}' /proc/mounts 2>/dev/null)\" = virtiofs ]; then\n\
-         \x20 mkdir -p /nix/var/nix/builds 2>/dev/null && mount -t tmpfs -o mode=0755 tmpfs /nix/var/nix/builds 2>/dev/null\n\
+        "if [ -d /nix/store ]; then\n\
+         \x20 bk_rootfs=\"\"; while read -r _ bk_mnt bk_type _; do [ \"$bk_mnt\" = / ] && bk_rootfs=\"$bk_type\"; done < /proc/mounts\n\
+         \x20 if [ \"$bk_rootfs\" = virtiofs ]; then\n\
+         \x20   mkdir -p /nix/var/nix/builds 2>/dev/null\n\
+         \x20   mount -t tmpfs -o mode=0755 tmpfs /nix/var/nix/builds || echo '[bsdkrun] could not put a tmpfs on /nix/var/nix/builds; nix builds will fail on this host'\n\
+         \x20 fi\n\
          fi\n",
     );
     // Default HOME when the image didn't set one. The kernel launches init with

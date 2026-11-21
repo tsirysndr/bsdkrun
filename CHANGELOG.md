@@ -18,6 +18,20 @@ shipped alongside it.
 
 ## [Unreleased]
 
+## [0.12.2] — 2026-11-21
+
+### Fixed
+
+- **Linux guests delegate available cgroup v2 controllers to Docker.** Enable
+  controllers in the parent hierarchy before binding the workload's subtree
+  over `/sys/fs/cgroup`. Previously that subtree exposed no controllers,
+  leaving nested containers without memory accounting files such as
+  `memory.max`; TiDB failed during startup when probing them. The existing
+  workload delegation is preserved, with controller setup checked before the
+  bind mount.
+- **GitHub Actions CI example authenticates Bun setup.** Pass the GitHub
+  token through FluentCI to avoid unauthenticated GitHub API rate limits.
+
 ## [0.12.1] — 2026-11-20
 
 ### Fixed

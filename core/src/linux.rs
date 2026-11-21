@@ -568,11 +568,15 @@ fn generate_init(
     // cgroup v1 hierarchy, finds nothing mounted at all, and gives up.
     s.push_str("mkdir -p /sys/fs/cgroup\n");
     s.push_str("is_mounted /sys/fs/cgroup || mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null\n");
+    // Controllers are enabled top-down. Populate the delegated child's
+    // cgroup.controllers before hiding the real root behind its bind mount.
+    // The true root is exempt from cgroup v2's no-internal-process rule.
+    s.push_str("for controller in $(cat /sys/fs/cgroup/cgroup.controllers); do echo \"+$controller\" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null; done\n");
     // Delegate a leaf cgroup to the workload instead of leaving it at the true
     // root. The root cgroup permanently holds every kernel thread (they can
     // never be moved out — that's fundamental cgroup semantics, not a config
-    // issue), so anything that tries to enable controllers there fails with
-    // EINVAL forever. On a real Docker host this is a non-issue: `--privileged`
+    // issue). Docker expects an empty delegated subtree when it enables
+    // its controllers. On a real Docker host, `--privileged`
     // gives the container its own cgroup NAMESPACE, so /sys/fs/cgroup already
     // shows a kernel-thread-free subtree. We can't unshare(CLONE_NEWCGROUP) —
     // busybox's `unshare` in these images has no -C/--cgroup support — so we
@@ -1031,7 +1035,11 @@ mod tests {
         // Delegated after the cgroup2 mount exists, before the workload runs.
         let cgroup2_pos = s.find("mount -t cgroup2").expect("cgroup2 mount");
         let bind_pos = s.find("mount --bind").expect("bind mount");
-        assert!(cgroup2_pos < bind_pos);
+        let controller_pos = s
+            .find("for controller in $(cat /sys/fs/cgroup/cgroup.controllers)")
+            .expect("enable parent controllers");
+        assert!(cgroup2_pos < controller_pos);
+        assert!(controller_pos < bind_pos);
     }
 
     #[test]
